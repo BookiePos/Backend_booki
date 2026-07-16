@@ -4,10 +4,10 @@
   "private": true,
   "description": "API del ERP (restaurante -> retail). Node/TS + NestJS + MongoDB.",
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only -r tsconfig-paths/register src/main.ts",
+    "dev": "nest start --watch",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
-    "seed": "ts-node-dev --transpile-only --no-notify -r tsconfig-paths/register --exit-child src/seed.ts",
+    "seed": "tsc -p tsconfig.json && node dist/seed.js",
     "test": "echo \"TODO: configurar test runner (vitest/jest)\" && exit 0",
     "lint": "echo \"TODO: eslint\" && exit 0"
   },
