@@ -1,0 +1,30 @@
+# Mongo como replica set de un solo nodo — requerido para transacciones multi-documento.
+# Levantar:  docker compose up -d
+services:
+  mongo:
+    image: mongo:7
+    container_name: erp-mongo
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - erp_mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Inicializa el replica set una sola vez.
+  mongo-init:
+    image: mongo:7
+    depends_on:
+      mongo:
+        condition: service_healthy
+    entrypoint: >
+      mongosh --host mongo:27017 --eval
+      'try { rs.status() } catch (e) { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27017" }] }) }'
+    restart: "no"
+
+volumes:
+  erp_mongo_data:
