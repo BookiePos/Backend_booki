@@ -2,19 +2,36 @@
   "name": "erp-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "API del ERP (restaurante -> retail). Node/TS + MongoDB.",
-  "type": "module",
+  "description": "API del ERP (restaurante -> retail). Node/TS + NestJS + MongoDB.",
   "scripts": {
-    "dev": "echo \"TODO: configurar servidor (NestJS recomendado)\" && exit 0",
+    "dev": "ts-node-dev --respawn --transpile-only -r tsconfig-paths/register src/main.ts",
     "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
     "test": "echo \"TODO: configurar test runner (vitest/jest)\" && exit 0",
     "lint": "echo \"TODO: eslint\" && exit 0"
   },
   "engines": {
     "node": ">=20"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@nestjs/common": "^10.4.22",
+    "@nestjs/config": "^4.0.4",
+    "@nestjs/core": "^10.4.22",
+    "@nestjs/mongoose": "^11.0.4",
+    "@nestjs/platform-express": "^10.4.22",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "mongoose": "^9.7.4",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
   "devDependencies": {
-    "typescript": "^5.6.0"
+    "@nestjs/cli": "^11.0.24",
+    "@nestjs/schematics": "^11.1.0",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.1.1",
+    "ts-node-dev": "^2.0.0",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.9.3"
   }
 }

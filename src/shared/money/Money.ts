@@ -26,7 +26,7 @@ export class Money {
     if (!/^-?\d+(\.\d{1,2})?$/.test(value)) {
       throw new Error(`Monto inválido: ${value}`);
     }
-    const [intPart, fracPart = ""] = value.replace("-", "").split(".");
+    const [intPart = "0", fracPart = ""] = value.replace("-", "").split(".");
     const frac = (fracPart + "00").slice(0, 2);
     const cents = BigInt(intPart) * 100n + BigInt(frac);
     return new Money(value.startsWith("-") ? -cents : cents, currency);

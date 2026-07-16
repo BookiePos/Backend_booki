@@ -1,4 +1,4 @@
-import { Money } from "@shared/money/Money.js";
+import { Money } from "@shared/money/Money";
 
 /**
  * Ledger de partida doble — esqueleto del dominio.
