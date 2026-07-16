@@ -3,6 +3,8 @@ import { ConfigModule } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import type { Connection } from 'mongoose';
 import { HealthModule } from './modules/health/health.module';
+import { CoreAuthModule } from './modules/core-auth/core-auth.module';
+import { SedesModule } from './modules/sedes/sedes.module';
 
 @Module({
   imports: [
@@ -37,6 +39,8 @@ import { HealthModule } from './modules/health/health.module';
       },
     }),
     HealthModule,
+    CoreAuthModule,
+    SedesModule,
   ],
 })
 export class AppModule {}

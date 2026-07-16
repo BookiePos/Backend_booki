@@ -1,0 +1,48 @@
+import { ALL_PERMISSIONS, PERMISSIONS, Permission } from './permissions';
+
+/** Roles predefinidos. Un usuario tiene un rol + permisos extra opcionales. */
+export const ROLES = {
+  ADMIN: 'admin',
+  MANAGER: 'manager',
+  CASHIER: 'cashier',
+} as const;
+
+export type Role = (typeof ROLES)[keyof typeof ROLES];
+
+export const ROLE_VALUES: Role[] = Object.values(ROLES);
+
+export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
+  admin: ALL_PERMISSIONS,
+  manager: [
+    PERMISSIONS.SEDE_MANAGE,
+    PERMISSIONS.PARAMS_MANAGE,
+    PERMISSIONS.TAX_MANAGE,
+    PERMISSIONS.AUDIT_VIEW,
+    PERMISSIONS.POS_SELL,
+    PERMISSIONS.POS_DISCOUNT_AUTHORIZE,
+    PERMISSIONS.POS_VOID_AUTHORIZE,
+    PERMISSIONS.POS_REFUND,
+    PERMISSIONS.CAJA_OPEN,
+    PERMISSIONS.CAJA_CLOSE,
+    PERMISSIONS.CAJA_MOVEMENT,
+    PERMISSIONS.CAJA_SANGRIA,
+    PERMISSIONS.INVENTORY_VIEW,
+    PERMISSIONS.INVENTORY_ADJUST,
+    PERMISSIONS.INVENTORY_TRANSFER,
+    PERMISSIONS.PURCHASING_MANAGE,
+    PERMISSIONS.FINANCE_VIEW,
+    PERMISSIONS.REPORTS_VIEW,
+  ],
+  cashier: [
+    PERMISSIONS.POS_SELL,
+    PERMISSIONS.POS_REFUND,
+    PERMISSIONS.CAJA_OPEN,
+    PERMISSIONS.CAJA_CLOSE,
+    PERMISSIONS.CAJA_MOVEMENT,
+    PERMISSIONS.INVENTORY_VIEW,
+  ],
+};
+
+export function permissionsForRole(role: Role): Permission[] {
+  return ROLE_PERMISSIONS[role] ?? [];
+}
