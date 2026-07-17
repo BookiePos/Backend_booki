@@ -34,3 +34,64 @@ export const PERMISSIONS = {
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
 
 export const ALL_PERMISSIONS: Permission[] = Object.values(PERMISSIONS);
+
+/**
+ * Catálogo agrupado con etiquetas en español para pintar la UI de roles.
+ * No rompe los exports anteriores; es una vista de presentación de los permisos.
+ */
+export const PERMISSION_GROUPS: {
+  group: string;
+  label: string;
+  items: { key: Permission; label: string }[];
+}[] = [
+  {
+    group: 'admin',
+    label: 'Administración',
+    items: [
+      { key: PERMISSIONS.USERS_MANAGE, label: 'Gestionar usuarios' },
+      { key: PERMISSIONS.ROLES_MANAGE, label: 'Gestionar roles' },
+      { key: PERMISSIONS.SEDE_MANAGE, label: 'Gestionar sedes' },
+      { key: PERMISSIONS.PARAMS_MANAGE, label: 'Gestionar parámetros' },
+      { key: PERMISSIONS.TAX_MANAGE, label: 'Gestionar impuestos' },
+      { key: PERMISSIONS.AUDIT_VIEW, label: 'Ver auditoría' },
+    ],
+  },
+  {
+    group: 'pos',
+    label: 'Punto de venta',
+    items: [
+      { key: PERMISSIONS.POS_SELL, label: 'Vender en POS' },
+      { key: PERMISSIONS.POS_DISCOUNT_AUTHORIZE, label: 'Autorizar descuentos' },
+      { key: PERMISSIONS.POS_VOID_AUTHORIZE, label: 'Autorizar anulaciones' },
+      { key: PERMISSIONS.POS_REFUND, label: 'Devoluciones' },
+    ],
+  },
+  {
+    group: 'caja',
+    label: 'Caja',
+    items: [
+      { key: PERMISSIONS.CAJA_OPEN, label: 'Abrir caja' },
+      { key: PERMISSIONS.CAJA_CLOSE, label: 'Cerrar caja' },
+      { key: PERMISSIONS.CAJA_MOVEMENT, label: 'Movimientos de caja' },
+      { key: PERMISSIONS.CAJA_SANGRIA, label: 'Sangrías' },
+    ],
+  },
+  {
+    group: 'inventory',
+    label: 'Inventario',
+    items: [
+      { key: PERMISSIONS.INVENTORY_VIEW, label: 'Ver inventario' },
+      { key: PERMISSIONS.INVENTORY_ADJUST, label: 'Ajustar inventario' },
+      { key: PERMISSIONS.INVENTORY_TRANSFER, label: 'Transferir inventario' },
+    ],
+  },
+  {
+    group: 'purchasing_finance',
+    label: 'Compras y finanzas',
+    items: [
+      { key: PERMISSIONS.PURCHASING_MANAGE, label: 'Gestionar compras' },
+      { key: PERMISSIONS.FINANCE_VIEW, label: 'Ver finanzas' },
+      { key: PERMISSIONS.REPORTS_VIEW, label: 'Ver reportes' },
+    ],
+  },
+];
