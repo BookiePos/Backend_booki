@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { UsersService } from './modules/core-auth/application/users.service';
+import { RolesService } from './modules/core-auth/application/roles.service';
 import { SedesService } from './modules/sedes/application/sedes.service';
 import { ROLES } from './modules/core-auth/domain/roles';
 
@@ -18,6 +19,11 @@ async function seed(): Promise<void> {
   try {
     const sedes = app.get(SedesService);
     const users = app.get(UsersService);
+    const roles = app.get(RolesService);
+
+    // Roles de sistema (owner/admin/manager/cashier) en la colección `roles`.
+    await roles.ensureSystemRoles();
+    logger.log('Roles de sistema asegurados.');
 
     let sede = (await sedes.list())[0];
     if (!sede) {
@@ -38,12 +44,16 @@ async function seed(): Promise<void> {
         email: adminEmail,
         password: adminPassword,
         name: 'Administrador',
-        role: ROLES.ADMIN,
+        role: ROLES.OWNER,
         sedeIds: [sede.id],
       });
-      logger.log(`Admin creado: ${adminEmail} / ${adminPassword}`);
+      logger.log(`Admin (Dueño) creado: ${adminEmail} / ${adminPassword}`);
+    } else if (existing.role !== ROLES.OWNER) {
+      // Migración idempotente: el admin previo pasa a ser Dueño.
+      await users.update(existing.id, { role: ROLES.OWNER });
+      logger.log(`Admin migrado a Dueño: ${adminEmail}`);
     } else {
-      logger.log(`Admin ya existe: ${adminEmail}`);
+      logger.log(`Admin (Dueño) ya existe: ${adminEmail}`);
     }
 
     logger.log('Seed completado.');

@@ -53,7 +53,7 @@ export class AuthService {
       throw new UnauthorizedException('Credenciales inválidas');
     }
     const tokens = await this.issueTokens(user);
-    return { tokens, user: this.toView(user) };
+    return { tokens, user: await this.toView(user) };
   }
 
   async refresh(refreshToken: string): Promise<AuthTokens> {
@@ -89,12 +89,12 @@ export class AuthService {
     }
   }
 
-  me(user: UserDocument): AuthUserView {
+  me(user: UserDocument): Promise<AuthUserView> {
     return this.toView(user);
   }
 
   private async issueTokens(user: UserDocument): Promise<AuthTokens> {
-    const permissions = this.users.effectivePermissions(user);
+    const permissions = await this.users.effectivePermissions(user);
     const sedeIds = user.sedeIds.map((s) => s.toString());
 
     const accessToken = await this.jwt.signAsync({
@@ -133,13 +133,13 @@ export class AuthService {
     );
   }
 
-  private toView(user: UserDocument): AuthUserView {
+  private async toView(user: UserDocument): Promise<AuthUserView> {
     return {
       id: user.id,
       email: user.email,
       name: user.name,
       role: user.role,
-      permissions: this.users.effectivePermissions(user),
+      permissions: await this.users.effectivePermissions(user),
       sedeIds: user.sedeIds.map((s) => s.toString()),
     };
   }

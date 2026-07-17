@@ -1,13 +1,11 @@
 import {
   IsArray,
   IsEmail,
-  IsIn,
   IsMongoId,
   IsOptional,
   IsString,
   MinLength,
 } from 'class-validator';
-import { ROLE_VALUES, Role } from '../../domain/roles';
 
 export class CreateUserDto {
   @IsEmail()
@@ -21,8 +19,9 @@ export class CreateUserDto {
   @MinLength(1)
   name!: string;
 
-  @IsIn(ROLE_VALUES)
-  role!: Role;
+  // La validez del rol se comprueba contra la DB en el servicio.
+  @IsString()
+  role!: string;
 
   @IsOptional()
   @IsArray()

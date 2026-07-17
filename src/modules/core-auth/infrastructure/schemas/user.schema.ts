@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
-import { ROLE_VALUES, Role } from '../../domain/roles';
+import { Role } from '../../domain/roles';
 
 export type UserDocument = HydratedDocument<User>;
 
@@ -15,7 +15,8 @@ export class User {
   @Prop({ required: true, trim: true })
   name!: string;
 
-  @Prop({ required: true, enum: ROLE_VALUES, default: 'cashier' })
+  // La clave de rol es dinámica (colección `roles`); se valida en el servicio.
+  @Prop({ required: true, default: 'cashier', lowercase: true, trim: true })
   role!: Role;
 
   /** Permisos extra además de los del rol (granularidad fina). */

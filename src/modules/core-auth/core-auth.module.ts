@@ -5,15 +5,18 @@ import { ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { APP_GUARD } from '@nestjs/core';
 import { User, UserSchema } from './infrastructure/schemas/user.schema';
+import { Role, RoleSchema } from './infrastructure/schemas/role.schema';
 import {
   RefreshToken,
   RefreshTokenSchema,
 } from './infrastructure/schemas/refresh-token.schema';
 import { UsersService } from './application/users.service';
+import { RolesService } from './application/roles.service';
 import { AuthService } from './application/auth.service';
 import { JwtStrategy } from './infrastructure/jwt.strategy';
 import { AuthController } from './infrastructure/auth.controller';
 import { UsersController } from './infrastructure/users.controller';
+import { RolesController } from './infrastructure/roles.controller';
 import { JwtAuthGuard } from './infrastructure/guards/jwt-auth.guard';
 import { PermissionsGuard } from './infrastructure/guards/permissions.guard';
 
@@ -22,6 +25,7 @@ import { PermissionsGuard } from './infrastructure/guards/permissions.guard';
     PassportModule,
     MongooseModule.forFeature([
       { name: User.name, schema: UserSchema },
+      { name: Role.name, schema: RoleSchema },
       { name: RefreshToken.name, schema: RefreshTokenSchema },
     ]),
     JwtModule.registerAsync({
@@ -35,15 +39,16 @@ import { PermissionsGuard } from './infrastructure/guards/permissions.guard';
         }) as JwtModuleOptions,
     }),
   ],
-  controllers: [AuthController, UsersController],
+  controllers: [AuthController, UsersController, RolesController],
   providers: [
     UsersService,
+    RolesService,
     AuthService,
     JwtStrategy,
     // Guards globales: autenticación + permisos en toda la API.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
   ],
-  exports: [UsersService],
+  exports: [UsersService, RolesService],
 })
 export class CoreAuthModule {}
