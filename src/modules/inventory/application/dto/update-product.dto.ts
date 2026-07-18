@@ -27,6 +27,10 @@ export class UpdateProductDto {
 
   @IsOptional()
   @IsString()
+  brand?: string;
+
+  @IsOptional()
+  @IsString()
   description?: string;
 
   /** Cadena vacía = quitar categoría. */

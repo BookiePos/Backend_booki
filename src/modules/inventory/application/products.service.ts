@@ -95,6 +95,7 @@ export class ProductsService {
     }
 
     if (dto.name !== undefined) product.name = dto.name;
+    if (dto.brand !== undefined) product.brand = dto.brand;
     if (dto.description !== undefined) product.description = dto.description;
     if (dto.unit !== undefined) product.unit = dto.unit;
     if (dto.barcode !== undefined) product.barcode = dto.barcode;

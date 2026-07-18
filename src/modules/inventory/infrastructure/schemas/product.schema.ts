@@ -18,6 +18,9 @@ export class Product {
   name!: string;
 
   @Prop({ trim: true })
+  brand?: string;
+
+  @Prop({ trim: true })
   description?: string;
 
   @Prop({ type: Types.ObjectId, ref: 'ProductCategory' })
