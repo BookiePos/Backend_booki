@@ -115,14 +115,6 @@ export class ProductsService {
     return product;
   }
 
-  /** Baja lógica: el producto deja de aparecer pero conserva su historial. */
-  async deactivate(id: string): Promise<ProductDocument> {
-    const product = await this.getOrFail(id);
-    product.active = false;
-    await product.save();
-    return product;
-  }
-
   // ─── Categorías ────────────────────────────────────────────────────────────
 
   listCategories(): Promise<ProductCategoryDocument[]> {

@@ -48,10 +48,11 @@ export class InventoryController {
     return this.products.update(id, dto);
   }
 
+  /** Elimina el producto y todo su historial (existencias, lotes, kardex). */
   @RequirePermissions(PERMISSIONS.INVENTORY_ADJUST)
   @Delete('products/:id')
-  deactivateProduct(@Param('id') id: string) {
-    return this.products.deactivate(id);
+  deleteProduct(@Param('id') id: string) {
+    return this.stock.removeProduct(id);
   }
 
   // ─── Categorías ────────────────────────────────────────────────────────────

@@ -340,6 +340,30 @@ export class StockService {
     });
   }
 
+  /**
+   * Elimina definitivamente un producto junto con sus existencias, lotes y
+   * movimientos de kardex en todas las sedes.
+   */
+  async removeProduct(productId: string) {
+    const product = await this.products.getOrFail(productId);
+    return this.withTransaction(async (session) => {
+      await this.movementModel
+        .deleteMany({ productId: product._id })
+        .session(session ?? null)
+        .exec();
+      await this.lotModel
+        .deleteMany({ productId: product._id })
+        .session(session ?? null)
+        .exec();
+      await this.stockItemModel
+        .deleteMany({ productId: product._id })
+        .session(session ?? null)
+        .exec();
+      await product.deleteOne({ session });
+      return { ok: true };
+    });
+  }
+
   // ─── Consultas ─────────────────────────────────────────────────────────────
 
   /** Existencias consolidadas (opcionalmente filtradas por sede). */
