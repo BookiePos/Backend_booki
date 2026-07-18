@@ -27,6 +27,10 @@ export class Product {
   @Prop({ required: true, trim: true, default: 'und' })
   unit!: string;
 
+  /** Peso/contenido por unidad, expresado en la unidad de medida (p. ej. 500 g). */
+  @Prop({ min: 0 })
+  weight?: number;
+
   @Prop({ trim: true })
   barcode?: string;
 

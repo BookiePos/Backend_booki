@@ -98,6 +98,7 @@ export class ProductsService {
     if (dto.description !== undefined) product.description = dto.description;
     if (dto.unit !== undefined) product.unit = dto.unit;
     if (dto.barcode !== undefined) product.barcode = dto.barcode;
+    if (dto.weight !== undefined) product.weight = dto.weight;
     if (dto.shelfLifeDays !== undefined) product.shelfLifeDays = dto.shelfLifeDays;
     if (dto.minStock !== undefined) product.minStock = dto.minStock;
     if (dto.cost !== undefined) product.cost = dto.cost;

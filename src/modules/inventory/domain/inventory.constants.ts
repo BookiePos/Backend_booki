@@ -6,8 +6,9 @@
  * Tipo de ítem del catálogo:
  * - ingredient: insumo/materia prima; solo tiene precio de compra.
  * - product: se vende; tiene precio de compra y precio de venta.
+ * - assembly: montaje/preparación (se arma con ingredientes y se vende).
  */
-export const ITEM_TYPES = ['ingredient', 'product'] as const;
+export const ITEM_TYPES = ['ingredient', 'product', 'assembly'] as const;
 
 export type ItemType = (typeof ITEM_TYPES)[number];
 

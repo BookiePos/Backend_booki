@@ -41,6 +41,11 @@ export class CreateProductDto {
   barcode?: string;
 
   @IsOptional()
+  @IsNumber()
+  @Min(0)
+  weight?: number;
+
+  @IsOptional()
   @IsBoolean()
   perishable?: boolean;
 
