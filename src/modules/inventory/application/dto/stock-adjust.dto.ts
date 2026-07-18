@@ -1,4 +1,5 @@
 import {
+  IsDateString,
   IsIn,
   IsMongoId,
   IsNumber,
@@ -30,6 +31,16 @@ export class StockAdjustDto {
   @IsOptional()
   @IsMongoId()
   lotId?: string;
+
+  /** Solo para direction=add en productos con lotes: código del lote nuevo. */
+  @IsOptional()
+  @IsString()
+  lotCode?: string;
+
+  /** Solo para direction=add: vencimiento (obligatorio si es perecedero). */
+  @IsOptional()
+  @IsDateString()
+  expiresAt?: string;
 
   @IsOptional()
   @IsString()

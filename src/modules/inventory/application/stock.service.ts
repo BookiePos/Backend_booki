@@ -20,6 +20,7 @@ import {
 } from '../infrastructure/schemas/stock-movement.schema';
 import { ProductDocument } from '../infrastructure/schemas/product.schema';
 import { ProductsService } from './products.service';
+import { SedesService } from '../../sedes/application/sedes.service';
 import { StockEntryDto } from './dto/stock-entry.dto';
 import { StockAdjustDto } from './dto/stock-adjust.dto';
 import { StockTransferDto } from './dto/stock-transfer.dto';
@@ -47,6 +48,7 @@ export class StockService {
     private readonly movementModel: Model<StockMovementDocument>,
     @InjectConnection() private readonly connection: Connection,
     private readonly products: ProductsService,
+    private readonly sedes: SedesService,
   ) {}
 
   /**
@@ -83,6 +85,7 @@ export class StockService {
         'Un producto perecedero requiere fecha de vencimiento en la entrada',
       );
     }
+    await this.sedes.findOrFail(dto.sedeId);
     const sedeId = new Types.ObjectId(dto.sedeId);
     const unitCost = dto.unitCost ?? product.cost ?? 0;
 
@@ -147,9 +150,16 @@ export class StockService {
 
   async adjust(dto: StockAdjustDto, user: JwtUser) {
     const product = await this.products.getOrFail(dto.productId);
+    await this.sedes.findOrFail(dto.sedeId);
     const sedeId = new Types.ObjectId(dto.sedeId);
 
     if (dto.direction === 'add') {
+      // Un perecedero no puede entrar sin vencimiento (rompería el FEFO).
+      if (product.perishable && !dto.expiresAt) {
+        throw new BadRequestException(
+          'Un ajuste positivo de un producto perecedero requiere fecha de vencimiento',
+        );
+      }
       return this.withTransaction(async (session) => {
         const item = await this.stockItemModel
           .findOneAndUpdate(
@@ -166,7 +176,8 @@ export class StockService {
               {
                 productId: product._id,
                 sedeId,
-                lotCode: this.generateLotCode('AJ'),
+                lotCode: dto.lotCode?.trim() || this.generateLotCode('AJ'),
+                expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
                 qty: dto.qty,
                 initialQty: dto.qty,
                 unitCost: product.cost ?? 0,
@@ -234,6 +245,8 @@ export class StockService {
       );
     }
     const product = await this.products.getOrFail(dto.productId);
+    await this.sedes.findOrFail(dto.fromSedeId);
+    await this.sedes.findOrFail(dto.toSedeId);
     const fromSedeId = new Types.ObjectId(dto.fromSedeId);
     const toSedeId = new Types.ObjectId(dto.toSedeId);
     const transferGroupId = new Types.ObjectId().toString();
@@ -364,7 +377,8 @@ export class StockService {
     );
 
     return items
-      .filter((item) => item.productId) // producto borrado físicamente
+      // Descarta referencias huérfanas (producto o sede borrados físicamente).
+      .filter((item) => item.productId && item.sedeId)
       .map((item) => {
         const product = item.productId as unknown as ProductDocument;
         const key = `${product._id.toString()}:${(

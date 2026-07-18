@@ -1,6 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { Sede, SedeDocument } from '../infrastructure/schemas/sede.schema';
 import { CreateSedeDto } from './dto/create-sede.dto';
 
@@ -20,5 +20,13 @@ export class SedesService {
 
   count(): Promise<number> {
     return this.sedeModel.countDocuments().exec();
+  }
+
+  async findOrFail(id: string): Promise<SedeDocument> {
+    const sede = Types.ObjectId.isValid(id)
+      ? await this.sedeModel.findById(id).exec()
+      : null;
+    if (!sede) throw new NotFoundException('Sede no encontrada');
+    return sede;
   }
 }

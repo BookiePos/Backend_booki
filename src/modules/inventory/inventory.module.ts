@@ -23,9 +23,11 @@ import {
 import { ProductsService } from './application/products.service';
 import { StockService } from './application/stock.service';
 import { InventoryController } from './infrastructure/inventory.controller';
+import { SedesModule } from '../sedes/sedes.module';
 
 @Module({
   imports: [
+    SedesModule,
     MongooseModule.forFeature([
       { name: Product.name, schema: ProductSchema },
       { name: ProductCategory.name, schema: ProductCategorySchema },
