@@ -123,6 +123,14 @@ export class ProductsService {
     return this.categoryModel.find({ active: true }).sort({ name: 1 }).exec();
   }
 
+  private async getCategoryOrFail(id: string): Promise<ProductCategoryDocument> {
+    const category = Types.ObjectId.isValid(id)
+      ? await this.categoryModel.findById(id).exec()
+      : null;
+    if (!category) throw new NotFoundException('Categoría no encontrada');
+    return category;
+  }
+
   async createCategory(dto: CreateCategoryDto): Promise<ProductCategoryDocument> {
     const name = dto.name.trim();
     const exists = await this.categoryModel.findOne({ name }).exec();
@@ -137,21 +145,32 @@ export class ProductsService {
     return this.categoryModel.create({ name });
   }
 
+  async updateCategory(
+    id: string,
+    dto: CreateCategoryDto,
+  ): Promise<ProductCategoryDocument> {
+    const category = await this.getCategoryOrFail(id);
+    const name = dto.name.trim();
+    const clash = await this.categoryModel
+      .findOne({ name, _id: { $ne: category._id } })
+      .exec();
+    if (clash) throw new ConflictException(`Ya existe la categoría "${name}"`);
+    category.name = name;
+    await category.save();
+    return category;
+  }
+
+  /** Elimina la categoría; si algún ítem la usa, exige reasignarlos antes. */
   async deleteCategory(id: string): Promise<void> {
-    if (!Types.ObjectId.isValid(id)) {
-      throw new NotFoundException('Categoría no encontrada');
-    }
-    const category = await this.categoryModel.findById(id).exec();
-    if (!category) throw new NotFoundException('Categoría no encontrada');
+    const category = await this.getCategoryOrFail(id);
     const inUse = await this.productModel
-      .countDocuments({ categoryId: category._id, active: true })
+      .countDocuments({ categoryId: category._id })
       .exec();
     if (inUse > 0) {
       throw new ConflictException(
-        `La categoría tiene ${inUse} producto(s) activo(s); reasígnalos primero`,
+        `La categoría tiene ${inUse} ítem(s) asignado(s); reasígnalos primero`,
       );
     }
-    category.active = false;
-    await category.save();
+    await category.deleteOne();
   }
 }

@@ -70,6 +70,12 @@ export class InventoryController {
   }
 
   @RequirePermissions(PERMISSIONS.INVENTORY_ADJUST)
+  @Patch('categories/:id')
+  updateCategory(@Param('id') id: string, @Body() dto: CreateCategoryDto) {
+    return this.products.updateCategory(id, dto);
+  }
+
+  @RequirePermissions(PERMISSIONS.INVENTORY_ADJUST)
   @Delete('categories/:id')
   async deleteCategory(@Param('id') id: string) {
     await this.products.deleteCategory(id);
