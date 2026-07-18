@@ -49,6 +49,10 @@ export class Product {
   @Prop({ min: 0 })
   shelfLifeDays?: number;
 
+  /** Fecha de vencimiento de referencia (solo perecederos; sugiere el lote). */
+  @Prop()
+  expiresAt?: Date;
+
   /** Stock mínimo por defecto (alerta de reposición). */
   @Prop({ default: 0, min: 0 })
   minStock!: number;

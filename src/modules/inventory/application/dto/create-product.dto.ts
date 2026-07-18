@@ -1,5 +1,6 @@
 import {
   IsBoolean,
+  IsDateString,
   IsIn,
   IsMongoId,
   IsNumber,
@@ -61,6 +62,10 @@ export class CreateProductDto {
   @IsNumber()
   @Min(0)
   shelfLifeDays?: number;
+
+  @IsOptional()
+  @IsDateString()
+  expiresAt?: string;
 
   @IsOptional()
   @IsNumber()

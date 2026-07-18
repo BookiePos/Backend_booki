@@ -65,6 +65,11 @@ export class UpdateProductDto {
   @Min(0)
   shelfLifeDays?: number;
 
+  /** Cadena vacía = quitar fecha de vencimiento. */
+  @IsOptional()
+  @IsString()
+  expiresAt?: string;
+
   @IsOptional()
   @IsNumber()
   @Min(0)

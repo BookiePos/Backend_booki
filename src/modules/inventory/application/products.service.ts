@@ -64,6 +64,8 @@ export class ProductsService {
       trackLots,
       // Un ingrediente no se vende: no lleva precio de venta.
       salePrice: itemType === 'ingredient' ? undefined : dto.salePrice,
+      // La fecha de vencimiento solo aplica a perecederos.
+      expiresAt: perishable && dto.expiresAt ? new Date(dto.expiresAt) : undefined,
       categoryId: dto.categoryId
         ? new Types.ObjectId(dto.categoryId)
         : undefined,
@@ -101,6 +103,17 @@ export class ProductsService {
     if (dto.barcode !== undefined) product.barcode = dto.barcode;
     if (dto.weight !== undefined) product.weight = dto.weight;
     if (dto.shelfLifeDays !== undefined) product.shelfLifeDays = dto.shelfLifeDays;
+    if (dto.expiresAt !== undefined) {
+      if (dto.expiresAt === '') {
+        product.expiresAt = undefined;
+      } else {
+        const parsed = new Date(dto.expiresAt);
+        if (Number.isNaN(parsed.getTime())) {
+          throw new BadRequestException('Fecha de vencimiento inválida');
+        }
+        product.expiresAt = parsed;
+      }
+    }
     if (dto.minStock !== undefined) product.minStock = dto.minStock;
     if (dto.cost !== undefined) product.cost = dto.cost;
     if (dto.salePrice !== undefined) product.salePrice = dto.salePrice;
@@ -110,6 +123,8 @@ export class ProductsService {
     if (dto.itemType !== undefined) product.itemType = dto.itemType;
     // Invariante: perecedero implica control de lotes.
     if (product.perishable) product.trackLots = true;
+    // Invariante: la fecha de vencimiento solo aplica a perecederos.
+    if (!product.perishable) product.expiresAt = undefined;
     // Invariante: un ingrediente no lleva precio de venta.
     if (product.itemType === 'ingredient') product.salePrice = undefined;
 
