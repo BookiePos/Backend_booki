@@ -23,3 +23,7 @@ export class RefreshToken {
 }
 
 export const RefreshTokenSchema = SchemaFactory.createForClass(RefreshToken);
+
+// TTL: Mongo elimina automáticamente cada registro cuando pasa su expiresAt.
+// Un token cuyo registro ya no existe se rechaza igual que uno revocado.
+RefreshTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
