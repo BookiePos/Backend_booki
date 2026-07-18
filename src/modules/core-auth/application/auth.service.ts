@@ -93,6 +93,15 @@ export class AuthService {
     return this.toView(user);
   }
 
+  /** Emite una sesión (tokens + vista) para un usuario ya resuelto.
+   *  Lo usa el flujo de aceptación de invitaciones para auto-loguear. */
+  async issueSession(
+    user: UserDocument,
+  ): Promise<{ tokens: AuthTokens; user: AuthUserView }> {
+    const tokens = await this.issueTokens(user);
+    return { tokens, user: await this.toView(user) };
+  }
+
   private async issueTokens(user: UserDocument): Promise<AuthTokens> {
     const permissions = await this.users.effectivePermissions(user);
     const sedeIds = user.sedeIds.map((s) => s.toString());
