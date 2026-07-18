@@ -55,11 +55,15 @@ export class ProductsService {
     // Un perecedero siempre controla lotes (necesita fecha de vencimiento).
     const perishable = dto.perishable ?? false;
     const trackLots = perishable ? true : (dto.trackLots ?? false);
+    const itemType = dto.itemType ?? 'product';
     return this.productModel.create({
       ...dto,
       sku,
+      itemType,
       perishable,
       trackLots,
+      // Un ingrediente no se vende: no lleva precio de venta.
+      salePrice: itemType === 'ingredient' ? undefined : dto.salePrice,
       categoryId: dto.categoryId
         ? new Types.ObjectId(dto.categoryId)
         : undefined,
@@ -101,8 +105,11 @@ export class ProductsService {
     if (dto.active !== undefined) product.active = dto.active;
     if (dto.perishable !== undefined) product.perishable = dto.perishable;
     if (dto.trackLots !== undefined) product.trackLots = dto.trackLots;
+    if (dto.itemType !== undefined) product.itemType = dto.itemType;
     // Invariante: perecedero implica control de lotes.
     if (product.perishable) product.trackLots = true;
+    // Invariante: un ingrediente no lleva precio de venta.
+    if (product.itemType === 'ingredient') product.salePrice = undefined;
 
     await product.save();
     return product;

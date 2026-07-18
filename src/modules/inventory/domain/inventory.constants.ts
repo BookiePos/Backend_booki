@@ -2,6 +2,15 @@
  * Constantes de dominio del módulo de inventario.
  */
 
+/**
+ * Tipo de ítem del catálogo:
+ * - ingredient: insumo/materia prima; solo tiene precio de compra.
+ * - product: se vende; tiene precio de compra y precio de venta.
+ */
+export const ITEM_TYPES = ['ingredient', 'product'] as const;
+
+export type ItemType = (typeof ITEM_TYPES)[number];
+
 /** Tipos de movimiento del kardex. */
 export const MOVEMENT_TYPES = [
   'entry', // entrada de mercancía (compra/recepción)

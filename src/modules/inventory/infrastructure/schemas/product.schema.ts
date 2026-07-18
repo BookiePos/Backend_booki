@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
+import { ITEM_TYPES, ItemType } from '../../domain/inventory.constants';
 
 export type ProductDocument = HydratedDocument<Product>;
 
@@ -8,6 +9,10 @@ export class Product {
   /** Código interno único (SKU). Se normaliza a mayúsculas. */
   @Prop({ required: true, unique: true, trim: true, uppercase: true })
   sku!: string;
+
+  /** Ingrediente (solo compra) o producto (compra + venta). */
+  @Prop({ required: true, enum: ITEM_TYPES, default: 'product' })
+  itemType!: ItemType;
 
   @Prop({ required: true, trim: true })
   name!: string;
@@ -45,7 +50,7 @@ export class Product {
   @Prop({ default: 0, min: 0 })
   cost!: number;
 
-  /** Precio de venta (el POS podrá refinarlo luego). */
+  /** Precio de venta (solo para itemType=product; el POS podrá refinarlo). */
   @Prop({ min: 0 })
   salePrice?: number;
 

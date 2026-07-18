@@ -1,5 +1,6 @@
 import {
   IsBoolean,
+  IsIn,
   IsMongoId,
   IsNumber,
   IsOptional,
@@ -7,11 +8,16 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
+import { ITEM_TYPES, ItemType } from '../../domain/inventory.constants';
 
 export class CreateProductDto {
   @IsString()
   @MinLength(1)
   sku!: string;
+
+  @IsOptional()
+  @IsIn(ITEM_TYPES as readonly string[])
+  itemType?: ItemType;
 
   @IsString()
   @MinLength(1)
