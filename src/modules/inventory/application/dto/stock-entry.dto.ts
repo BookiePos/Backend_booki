@@ -28,6 +28,11 @@ export class StockEntryDto {
   @IsString()
   lotCode?: string;
 
+  /** Proveedor del que ingresa el lote. */
+  @IsOptional()
+  @IsString()
+  supplier?: string;
+
   /** Fecha de vencimiento (obligatoria si el producto es perecedero). */
   @IsOptional()
   @IsDateString()
