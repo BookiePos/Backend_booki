@@ -373,7 +373,11 @@ export class StockService {
     const filter = sedeId ? { sedeId: new Types.ObjectId(sedeId) } : {};
     const items = await this.stockItemModel
       .find(filter)
-      .populate('productId')
+      // Anidado: la UI muestra la categoría del producto en existencias.
+      .populate({
+        path: 'productId',
+        populate: { path: 'categoryId', select: 'name' },
+      })
       .populate('sedeId', 'code name')
       .sort({ updatedAt: -1 })
       .exec();
