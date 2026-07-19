@@ -34,6 +34,11 @@ export class UpdateProductDto {
   @IsString()
   supplier?: string;
 
+  /** Cadena vacía = quitar referencia al proveedor registrado. */
+  @IsOptional()
+  @IsString()
+  supplierId?: string;
+
   @IsOptional()
   @IsString()
   description?: string;

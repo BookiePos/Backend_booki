@@ -33,6 +33,10 @@ export class CreateProductDto {
   supplier?: string;
 
   @IsOptional()
+  @IsMongoId()
+  supplierId?: string;
+
+  @IsOptional()
   @IsString()
   description?: string;
 

@@ -108,6 +108,9 @@ export class StockService {
               lotCode: dto.lotCode?.trim() || this.generateLotCode(),
               // Sin proveedor en la entrada, hereda el habitual del producto.
               supplier: dto.supplier?.trim() || product.supplier || undefined,
+              supplierId: dto.supplierId
+                ? new Types.ObjectId(dto.supplierId)
+                : (product.supplierId ?? undefined),
               expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
               qty: dto.qty,
               initialQty: dto.qty,

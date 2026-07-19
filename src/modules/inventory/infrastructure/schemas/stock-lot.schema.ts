@@ -19,9 +19,13 @@ export class StockLot {
   @Prop({ required: true, trim: true })
   lotCode!: string;
 
-  /** Proveedor del que ingresó el lote. */
+  /** Proveedor del que ingresó el lote (texto legible). */
   @Prop({ trim: true })
   supplier?: string;
+
+  /** Referencia al proveedor registrado (opcional; convive con el texto). */
+  @Prop({ type: Types.ObjectId, ref: 'Supplier' })
+  supplierId?: Types.ObjectId;
 
   @Prop()
   expiresAt?: Date;

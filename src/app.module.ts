@@ -6,6 +6,7 @@ import { HealthModule } from './modules/health/health.module';
 import { CoreAuthModule } from './modules/core-auth/core-auth.module';
 import { SedesModule } from './modules/sedes/sedes.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
+import { SuppliersModule } from './modules/suppliers/suppliers.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { InventoryModule } from './modules/inventory/inventory.module';
     CoreAuthModule,
     SedesModule,
     InventoryModule,
+    SuppliersModule,
   ],
 })
 export class AppModule {}

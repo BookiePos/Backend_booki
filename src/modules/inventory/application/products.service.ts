@@ -70,6 +70,9 @@ export class ProductsService {
       categoryId: dto.categoryId
         ? new Types.ObjectId(dto.categoryId)
         : undefined,
+      supplierId: dto.supplierId
+        ? new Types.ObjectId(dto.supplierId)
+        : undefined,
     });
   }
 
@@ -101,6 +104,15 @@ export class ProductsService {
     if (dto.brand !== undefined) product.brand = dto.brand;
     if (dto.supplier !== undefined)
       product.supplier = dto.supplier || undefined;
+    if (dto.supplierId !== undefined) {
+      if (!dto.supplierId) {
+        product.supplierId = undefined;
+      } else if (Types.ObjectId.isValid(dto.supplierId)) {
+        product.supplierId = new Types.ObjectId(dto.supplierId);
+      } else {
+        throw new BadRequestException('supplierId inválido');
+      }
+    }
     if (dto.description !== undefined) product.description = dto.description;
     if (dto.unit !== undefined) product.unit = dto.unit;
     if (dto.barcode !== undefined) product.barcode = dto.barcode;
