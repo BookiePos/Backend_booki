@@ -53,9 +53,11 @@ export class ProductsService {
       throw new ConflictException(`Ya existe un producto con el SKU ${sku}`);
     }
     // Un perecedero siempre controla lotes (necesita fecha de vencimiento).
+    // Un montaje también: cada entrada queda registrada como lote.
     const perishable = dto.perishable ?? false;
-    const trackLots = perishable ? true : (dto.trackLots ?? false);
     const itemType = dto.itemType ?? 'product';
+    const trackLots =
+      perishable || itemType === 'assembly' ? true : (dto.trackLots ?? false);
     return this.productModel.create({
       ...dto,
       sku,
@@ -122,8 +124,9 @@ export class ProductsService {
     if (dto.perishable !== undefined) product.perishable = dto.perishable;
     if (dto.trackLots !== undefined) product.trackLots = dto.trackLots;
     if (dto.itemType !== undefined) product.itemType = dto.itemType;
-    // Invariante: perecedero implica control de lotes.
-    if (product.perishable) product.trackLots = true;
+    // Invariante: perecedero o montaje implica control de lotes.
+    if (product.perishable || product.itemType === 'assembly')
+      product.trackLots = true;
     // Invariante: la fecha de vencimiento solo aplica a perecederos.
     if (!product.perishable) product.expiresAt = undefined;
 

@@ -106,7 +106,8 @@ export class StockService {
               productId: product._id,
               sedeId,
               lotCode: dto.lotCode?.trim() || this.generateLotCode(),
-              supplier: dto.supplier?.trim() || undefined,
+              // Sin proveedor en la entrada, hereda el habitual del producto.
+              supplier: dto.supplier?.trim() || product.supplier || undefined,
               expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
               qty: dto.qty,
               initialQty: dto.qty,
