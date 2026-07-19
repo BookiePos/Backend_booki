@@ -29,6 +29,11 @@ export class UpdateProductDto {
   @IsString()
   brand?: string;
 
+  /** Cadena vacía = quitar proveedor. */
+  @IsOptional()
+  @IsString()
+  supplier?: string;
+
   @IsOptional()
   @IsString()
   description?: string;

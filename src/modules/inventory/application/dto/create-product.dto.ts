@@ -30,6 +30,10 @@ export class CreateProductDto {
 
   @IsOptional()
   @IsString()
+  supplier?: string;
+
+  @IsOptional()
+  @IsString()
   description?: string;
 
   @IsOptional()

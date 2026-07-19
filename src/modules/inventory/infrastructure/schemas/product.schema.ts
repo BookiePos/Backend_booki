@@ -20,6 +20,10 @@ export class Product {
   @Prop({ trim: true })
   brand?: string;
 
+  /** Proveedor habitual (texto libre; se conectará al módulo de proveedores). */
+  @Prop({ trim: true })
+  supplier?: string;
+
   @Prop({ trim: true })
   description?: string;
 
