@@ -437,13 +437,15 @@ export class StockService {
       .sort({ updatedAt: -1 })
       .exec();
 
-    // Resumen de lotes vigentes por producto+sede para vencimientos.
+    // Resumen de lotes vigentes por producto+sede para vencimientos y valor.
+    // `value` = Σ (qty × unitCost) del lote: costo real de lo que hay en bodega.
     const lotFilter: Record<string, unknown> = { qty: { $gt: 0 } };
     if (sedeId) lotFilter.sedeId = new Types.ObjectId(sedeId);
     const lotSummary = await this.lotModel.aggregate<{
       _id: { productId: Types.ObjectId; sedeId: Types.ObjectId };
       lotCount: number;
       nextExpiresAt: Date | null;
+      value: number;
     }>([
       { $match: lotFilter },
       {
@@ -451,6 +453,7 @@ export class StockService {
           _id: { productId: '$productId', sedeId: '$sedeId' },
           lotCount: { $sum: 1 },
           nextExpiresAt: { $min: '$expiresAt' },
+          value: { $sum: { $multiply: ['$qty', '$unitCost'] } },
         },
       },
     ]);
@@ -470,6 +473,11 @@ export class StockService {
           item.sedeId as unknown as { _id: Types.ObjectId }
         )._id.toString()}`;
         const summary = summaryMap.get(key);
+        // Valor a costo real: si hay lotes, suma su (qty × unitCost); si el
+        // producto no maneja lotes, se aproxima con qty × costo del producto.
+        const value = summary
+          ? summary.value
+          : item.qty * (product.cost ?? 0);
         return {
           id: item._id.toString(),
           product,
@@ -478,6 +486,7 @@ export class StockService {
           minStock: item.minStock ?? product.minStock ?? 0,
           lotCount: summary?.lotCount ?? 0,
           nextExpiresAt: summary?.nextExpiresAt ?? null,
+          value,
         };
       });
   }
