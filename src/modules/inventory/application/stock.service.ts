@@ -30,9 +30,21 @@ import {
 } from '../domain/inventory.constants';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 
-interface ConsumedPortion {
+export interface ConsumedPortion {
   lot?: StockLotDocument;
   qty: number;
+}
+
+/** Línea de venta a descontar del stock de una sede. */
+export interface SaleLineInput {
+  productId: string;
+  qty: number;
+}
+
+/** Resultado del descuento de una línea vendida (para derivar costos). */
+export interface SoldLine {
+  product: ProductDocument;
+  portions: ConsumedPortion[];
 }
 
 @Injectable()
@@ -343,6 +355,45 @@ export class StockService {
       }
 
       return { fromItem, toItem, transferGroupId };
+    });
+  }
+
+  // ─── Ventas (POS) ──────────────────────────────────────────────────────────
+
+  /**
+   * Descuenta del stock de la sede las líneas de una venta, consumiendo
+   * lotes FEFO y registrando movimientos tipo 'sale'. Falla completa si
+   * alguna línea no tiene stock suficiente.
+   */
+  async sell(
+    sedeId: string,
+    lines: SaleLineInput[],
+    user: JwtUser,
+  ): Promise<SoldLine[]> {
+    await this.sedes.findOrFail(sedeId);
+    const sede = new Types.ObjectId(sedeId);
+    const items = await Promise.all(
+      lines.map(async (l) => ({
+        product: await this.products.getOrFail(l.productId),
+        qty: l.qty,
+      })),
+    );
+
+    return this.withTransaction(async (session) => {
+      const sold: SoldLine[] = [];
+      for (const { product, qty } of items) {
+        const { item, portions } = await this.consume(
+          product,
+          sede,
+          qty,
+          session,
+        );
+        await this.recordExits('sale', product, sede, item, portions, session, {
+          user,
+        });
+        sold.push({ product, portions });
+      }
+      return sold;
     });
   }
 
