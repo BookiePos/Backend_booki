@@ -20,6 +20,10 @@ import { RequirePermissions } from '../../core-auth/infrastructure/decorators/re
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
+import {
+  allowedSedeIds,
+  assertSedeAccess,
+} from '../../core-auth/domain/sede-access';
 
 @Controller('inventory')
 export class InventoryController {
@@ -86,23 +90,35 @@ export class InventoryController {
 
   @RequirePermissions(PERMISSIONS.INVENTORY_VIEW)
   @Get('stock')
-  getStock(@Query('sedeId') sedeId?: string) {
-    return this.stock.stock(sedeId);
+  getStock(@CurrentUser() user: JwtUser, @Query('sedeId') sedeId?: string) {
+    if (sedeId) assertSedeAccess(user, sedeId);
+    return this.stock.stock(sedeId, allowedSedeIds(user));
   }
 
   @RequirePermissions(PERMISSIONS.INVENTORY_VIEW)
   @Get('products/:id/lots')
-  getLots(@Param('id') productId: string, @Query('sedeId') sedeId?: string) {
-    return this.stock.lots(productId, sedeId);
+  getLots(
+    @Param('id') productId: string,
+    @CurrentUser() user: JwtUser,
+    @Query('sedeId') sedeId?: string,
+  ) {
+    if (sedeId) assertSedeAccess(user, sedeId);
+    return this.stock.lots(productId, sedeId, allowedSedeIds(user));
   }
 
   @RequirePermissions(PERMISSIONS.INVENTORY_VIEW)
   @Get('alerts')
-  getAlerts(@Query('sedeId') sedeId?: string, @Query('days') days?: string) {
+  getAlerts(
+    @CurrentUser() user: JwtUser,
+    @Query('sedeId') sedeId?: string,
+    @Query('days') days?: string,
+  ) {
+    if (sedeId) assertSedeAccess(user, sedeId);
     const parsed = days ? Number.parseInt(days, 10) : undefined;
     return this.stock.alerts(
       sedeId,
       parsed && parsed > 0 ? parsed : undefined,
+      allowedSedeIds(user),
     );
   }
 
@@ -111,18 +127,21 @@ export class InventoryController {
   @RequirePermissions(PERMISSIONS.INVENTORY_VIEW)
   @Get('movements')
   getMovements(
+    @CurrentUser() user: JwtUser,
     @Query('sedeId') sedeId?: string,
     @Query('productId') productId?: string,
     @Query('type') type?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
+    if (sedeId) assertSedeAccess(user, sedeId);
     return this.stock.movements({
       sedeId: sedeId || undefined,
       productId: productId || undefined,
       type: type || undefined,
       page: page ? Number.parseInt(page, 10) : undefined,
       limit: limit ? Number.parseInt(limit, 10) : undefined,
+      restrict: allowedSedeIds(user),
     });
   }
 

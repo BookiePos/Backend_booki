@@ -8,6 +8,7 @@ export const PERMISSIONS = {
   USERS_MANAGE: 'users.manage',
   ROLES_MANAGE: 'roles.manage',
   SEDE_MANAGE: 'sede.manage',
+  SEDE_VIEW_ALL: 'sede.view_all',
   PARAMS_MANAGE: 'params.manage',
   TAX_MANAGE: 'tax.manage',
   AUDIT_VIEW: 'audit.view',
@@ -59,6 +60,7 @@ export const PERMISSION_GROUPS: {
     label: 'Sedes',
     items: [
       { key: PERMISSIONS.SEDE_MANAGE, label: 'Gestionar sedes' },
+      { key: PERMISSIONS.SEDE_VIEW_ALL, label: 'Ver todas las sedes' },
     ],
   },
   {

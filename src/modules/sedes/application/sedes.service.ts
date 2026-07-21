@@ -26,8 +26,13 @@ export class SedesService {
     @InjectModel(Sede.name) private readonly sedeModel: Model<SedeDocument>,
   ) {}
 
-  list(): Promise<SedeDocument[]> {
-    return this.sedeModel.find().sort({ code: 1 }).exec();
+  /**
+   * Lista sedes. Si `scope` es un arreglo, limita a esas sedes (aislamiento
+   * por usuario); si es `null`/`undefined`, devuelve todas.
+   */
+  list(scope?: string[] | null): Promise<SedeDocument[]> {
+    const filter = scope ? { _id: { $in: scope } } : {};
+    return this.sedeModel.find(filter).sort({ code: 1 }).exec();
   }
 
   async create(dto: CreateSedeDto): Promise<SedeDocument> {

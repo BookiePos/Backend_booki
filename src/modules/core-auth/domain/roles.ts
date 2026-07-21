@@ -70,8 +70,13 @@ export const SYSTEM_ROLES: {
   {
     key: ROLES.ADMIN,
     name: 'Administrador',
-    description: 'Acceso total a la administración del sistema.',
-    permissions: ALL_PERMISSIONS,
+    // Como puede haber un administrador por sede, NO ve todas las sedes por
+    // defecto: queda limitado a las que se le asignen (a diferencia del Dueño).
+    description:
+      'Acceso total a la administración, limitado a sus sedes asignadas.',
+    permissions: ALL_PERMISSIONS.filter(
+      (p) => p !== PERMISSIONS.SEDE_VIEW_ALL,
+    ),
     isSystem: true,
   },
   {

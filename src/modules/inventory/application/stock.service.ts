@@ -29,6 +29,7 @@ import {
   WASTE_REASONS,
 } from '../domain/inventory.constants';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
+import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 
 export interface ConsumedPortion {
   lot?: StockLotDocument;
@@ -88,6 +89,7 @@ export class StockService {
   // ─── Entradas ──────────────────────────────────────────────────────────────
 
   async entry(dto: StockEntryDto, user: JwtUser) {
+    assertSedeAccess(user, dto.sedeId);
     const product = await this.products.getOrFail(dto.productId);
     if (!product.active) {
       throw new BadRequestException('El producto está inactivo');
@@ -166,6 +168,7 @@ export class StockService {
   // ─── Ajustes y mermas ──────────────────────────────────────────────────────
 
   async adjust(dto: StockAdjustDto, user: JwtUser) {
+    assertSedeAccess(user, dto.sedeId);
     const product = await this.products.getOrFail(dto.productId);
     await this.sedes.findOrFail(dto.sedeId);
     const sedeId = new Types.ObjectId(dto.sedeId);
@@ -261,6 +264,9 @@ export class StockService {
         'La sede de origen y destino deben ser distintas',
       );
     }
+    // El usuario debe tener acceso a ambas sedes del traslado.
+    assertSedeAccess(user, dto.fromSedeId);
+    assertSedeAccess(user, dto.toSedeId);
     const product = await this.products.getOrFail(dto.productId);
     await this.sedes.findOrFail(dto.fromSedeId);
     await this.sedes.findOrFail(dto.toSedeId);
@@ -424,8 +430,9 @@ export class StockService {
   // ─── Consultas ─────────────────────────────────────────────────────────────
 
   /** Existencias consolidadas (opcionalmente filtradas por sede). */
-  async stock(sedeId?: string) {
-    const filter = sedeId ? { sedeId: new Types.ObjectId(sedeId) } : {};
+  async stock(sedeId?: string, restrict?: string[] | null) {
+    const sedeMatch = this.sedeMatch(sedeId, restrict);
+    const filter = sedeMatch ?? {};
     const items = await this.stockItemModel
       .find(filter)
       // Anidado: la UI muestra la categoría del producto en existencias.
@@ -439,8 +446,7 @@ export class StockService {
 
     // Resumen de lotes vigentes por producto+sede para vencimientos y valor.
     // `value` = Σ (qty × unitCost) del lote: costo real de lo que hay en bodega.
-    const lotFilter: Record<string, unknown> = { qty: { $gt: 0 } };
-    if (sedeId) lotFilter.sedeId = new Types.ObjectId(sedeId);
+    const lotFilter: Record<string, unknown> = { qty: { $gt: 0 }, ...sedeMatch };
     const lotSummary = await this.lotModel.aggregate<{
       _id: { productId: Types.ObjectId; sedeId: Types.ObjectId };
       lotCount: number;
@@ -492,15 +498,15 @@ export class StockService {
   }
 
   /** Lotes vigentes de un producto (FEFO). */
-  async lots(productId: string, sedeId?: string) {
+  async lots(productId: string, sedeId?: string, restrict?: string[] | null) {
     if (!Types.ObjectId.isValid(productId)) {
       throw new NotFoundException('Producto no encontrado');
     }
     const filter: Record<string, unknown> = {
       productId: new Types.ObjectId(productId),
       qty: { $gt: 0 },
+      ...this.sedeMatch(sedeId, restrict),
     };
-    if (sedeId) filter.sedeId = new Types.ObjectId(sedeId);
     const lots = await this.lotModel
       .find(filter)
       .populate('sedeId', 'code name')
@@ -515,9 +521,11 @@ export class StockService {
     type?: string;
     page?: number;
     limit?: number;
+    restrict?: string[] | null;
   }) {
-    const filter: Record<string, unknown> = {};
-    if (query.sedeId) filter.sedeId = new Types.ObjectId(query.sedeId);
+    const filter: Record<string, unknown> = {
+      ...this.sedeMatch(query.sedeId, query.restrict),
+    };
     if (query.productId) filter.productId = new Types.ObjectId(query.productId);
     if (query.type) filter.type = query.type;
 
@@ -541,17 +549,17 @@ export class StockService {
   }
 
   /** Alertas: stock bajo + lotes vencidos o por vencer. */
-  async alerts(sedeId?: string, days = 7) {
+  async alerts(sedeId?: string, days = 7, restrict?: string[] | null) {
     const [stock, expiringLots] = await Promise.all([
-      this.stock(sedeId),
+      this.stock(sedeId, restrict),
       (async () => {
         const limitDate = new Date();
         limitDate.setDate(limitDate.getDate() + days);
         const filter: Record<string, unknown> = {
           qty: { $gt: 0 },
           expiresAt: { $lte: limitDate },
+          ...this.sedeMatch(sedeId, restrict),
         };
-        if (sedeId) filter.sedeId = new Types.ObjectId(sedeId);
         return this.lotModel
           .find(filter)
           .sort({ expiresAt: 1 })
@@ -572,6 +580,23 @@ export class StockService {
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
+
+  /**
+   * Construye el match por sede: una sede concreta, o `{ $in }` con las sedes
+   * permitidas del usuario (aislamiento), o `null` si no hay restricción.
+   */
+  private sedeMatch(
+    sedeId?: string,
+    restrict?: string[] | null,
+  ): Record<string, unknown> | null {
+    if (sedeId) return { sedeId: new Types.ObjectId(sedeId) };
+    if (restrict) {
+      return {
+        sedeId: { $in: restrict.map((id) => new Types.ObjectId(id)) },
+      };
+    }
+    return null;
+  }
 
   private generateLotCode(prefix = 'L'): string {
     const now = new Date();
