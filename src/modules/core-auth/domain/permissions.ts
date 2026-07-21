@@ -48,12 +48,26 @@ export const PERMISSION_GROUPS: {
     group: 'admin',
     label: 'Administración',
     items: [
-      { key: PERMISSIONS.USERS_MANAGE, label: 'Gestionar usuarios' },
-      { key: PERMISSIONS.ROLES_MANAGE, label: 'Gestionar roles' },
-      { key: PERMISSIONS.SEDE_MANAGE, label: 'Gestionar sedes' },
-      { key: PERMISSIONS.PARAMS_MANAGE, label: 'Gestionar parámetros' },
-      { key: PERMISSIONS.TAX_MANAGE, label: 'Gestionar impuestos' },
+      { key: PERMISSIONS.USERS_MANAGE, label: 'Gestionar usuarios e invitaciones' },
+      { key: PERMISSIONS.ROLES_MANAGE, label: 'Gestionar roles y permisos' },
       { key: PERMISSIONS.AUDIT_VIEW, label: 'Ver auditoría' },
+      { key: PERMISSIONS.PARAMS_MANAGE, label: 'Gestionar parámetros' },
+    ],
+  },
+  {
+    group: 'sedes',
+    label: 'Sedes',
+    items: [
+      { key: PERMISSIONS.SEDE_MANAGE, label: 'Gestionar sedes' },
+    ],
+  },
+  {
+    group: 'inventory',
+    label: 'Inventario y proveedores',
+    items: [
+      { key: PERMISSIONS.INVENTORY_VIEW, label: 'Ver inventario y proveedores' },
+      { key: PERMISSIONS.INVENTORY_ADJUST, label: 'Ajustar inventario y proveedores' },
+      { key: PERMISSIONS.INVENTORY_TRANSFER, label: 'Trasladar entre sedes' },
     ],
   },
   {
@@ -77,21 +91,13 @@ export const PERMISSION_GROUPS: {
     ],
   },
   {
-    group: 'inventory',
-    label: 'Inventario',
-    items: [
-      { key: PERMISSIONS.INVENTORY_VIEW, label: 'Ver inventario' },
-      { key: PERMISSIONS.INVENTORY_ADJUST, label: 'Ajustar inventario' },
-      { key: PERMISSIONS.INVENTORY_TRANSFER, label: 'Transferir inventario' },
-    ],
-  },
-  {
-    group: 'purchasing_finance',
+    group: 'finance',
     label: 'Compras y finanzas',
     items: [
       { key: PERMISSIONS.PURCHASING_MANAGE, label: 'Gestionar compras' },
       { key: PERMISSIONS.FINANCE_VIEW, label: 'Ver finanzas' },
       { key: PERMISSIONS.REPORTS_VIEW, label: 'Ver reportes' },
+      { key: PERMISSIONS.TAX_MANAGE, label: 'Gestionar impuestos' },
     ],
   },
 ];
