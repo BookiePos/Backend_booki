@@ -6,7 +6,7 @@ export type InvitationDocument = HydratedDocument<Invitation>;
 export type InvitationStatus = 'pending' | 'accepted' | 'revoked';
 
 /**
- * Invitación para que un nuevo usuario se una al ERP. El dueño la crea con un
+ * Invitación para que un nuevo usuario se una al Sistema POS. El dueño la crea con un
  * correo + rol; se envía por email un enlace con un token (guardamos solo su
  * hash). Al aceptarlo, el invitado define su contraseña y se crea el usuario.
  */

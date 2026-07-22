@@ -1,6 +1,6 @@
-# Backend — ERP
+# Backend — Sistema POS
 
-API del ERP. **Node.js / TypeScript**, base de datos **MongoDB** (replica set). Se trabaja de forma independiente del frontend (`../frontend`), exponiendo una **API REST**.
+API del Sistema POS. **Node.js / TypeScript**, base de datos **MongoDB** (replica set). Se trabaja de forma independiente del frontend (`../frontend`), exponiendo una **API REST**.
 
 ## Estándares no negociables
 

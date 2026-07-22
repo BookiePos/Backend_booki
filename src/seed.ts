@@ -85,7 +85,7 @@ async function seed(): Promise<void> {
       logger.log(`Sede existente: ${sede.code}`);
     }
 
-    const adminEmail = process.env.SEED_ADMIN_EMAIL ?? 'admin@erp.local';
+    const adminEmail = process.env.SEED_ADMIN_EMAIL ?? 'admin@sistemapos.local';
     const adminPassword = process.env.SEED_ADMIN_PASSWORD ?? 'Admin123!';
     const existing = await users.findByEmail(adminEmail);
     if (!existing) {

@@ -24,7 +24,7 @@ async function bootstrap(): Promise<void> {
 
   const port = Number(process.env.PORT ?? 3001);
   await app.listen(port);
-  logger.log(`ERP backend escuchando en http://localhost:${port}`);
+  logger.log(`Sistema POS backend escuchando en http://localhost:${port}`);
   logger.log(`Health check: http://localhost:${port}/health`);
 }
 

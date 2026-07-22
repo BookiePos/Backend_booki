@@ -1,8 +1,8 @@
 {
-  "name": "erp-backend",
+  "name": "sistema-pos-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "API del ERP (restaurante -> retail). Node/TS + NestJS + MongoDB.",
+  "description": "API del Sistema POS (restaurante -> retail). Node/TS + NestJS + MongoDB.",
   "scripts": {
     "dev": "nest start --watch",
     "build": "tsc -p tsconfig.json",

@@ -38,7 +38,7 @@ export class MailService {
   }
 
   async sendInvitation(msg: InvitationEmail): Promise<MailResult> {
-    const subject = 'Te invitaron a unirte al ERP';
+    const subject = 'Te invitaron a unirte al Sistema POS';
     if (!this.resend) {
       this.logger.log(
         `[correo simulado] Invitación para ${msg.to} (rol: ${msg.roleName}). Enlace: ${msg.inviteUrl}`,
@@ -73,8 +73,8 @@ export class MailService {
 <html lang="es"><body style="margin:0;background:#faf9f7;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#201f1d;">
   <div style="max-width:480px;margin:0 auto;padding:40px 24px;">
     <div style="background:#ffffff;border:1px solid #e8e4de;border-radius:16px;padding:32px;">
-      <div style="width:40px;height:40px;border-radius:8px;background:#3f4a5a;color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:600;">E</div>
-      <h1 style="font-size:22px;margin:24px 0 8px;font-weight:600;">Únete al ERP</h1>
+      <div style="width:40px;height:40px;border-radius:8px;background:#3f4a5a;color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:600;">S</div>
+      <h1 style="font-size:22px;margin:24px 0 8px;font-weight:600;">Únete al Sistema POS</h1>
       <p style="font-size:15px;line-height:1.5;color:#4b4842;margin:0 0 8px;">
         ${inviter} a unirte con el rol <strong>${escapeHtml(msg.roleName)}</strong>.
       </p>

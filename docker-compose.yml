@@ -3,12 +3,12 @@
 services:
   mongo:
     image: mongo:7
-    container_name: erp-mongo
+    container_name: sistema-pos-mongo
     command: ["--replSet", "rs0", "--bind_ip_all"]
     ports:
       - "27017:27017"
     volumes:
-      - erp_mongo_data:/data/db
+      - sistema_pos_mongo_data:/data/db
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s
@@ -27,4 +27,4 @@ services:
     restart: "no"
 
 volumes:
-  erp_mongo_data:
+  sistema_pos_mongo_data:

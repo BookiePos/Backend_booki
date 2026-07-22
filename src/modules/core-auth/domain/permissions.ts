@@ -1,5 +1,5 @@
 /**
- * Catálogo de permisos granulares del ERP.
+ * Catálogo de permisos granulares del Sistema POS.
  * Cada permiso es una cadena estable `modulo.accion`. Los roles se componen
  * de estos permisos (ver roles.ts) y un usuario puede recibir permisos extra.
  */

@@ -16,7 +16,7 @@ import { SalesModule } from './modules/sales/sales.module';
       useFactory: () => {
         const uri =
           process.env.MONGODB_URI ??
-          'mongodb://localhost:27017/erp?replicaSet=rs0';
+          'mongodb://localhost:27017/sistema-pos?replicaSet=rs0';
         const logger = new Logger('MongooseModule');
         return {
           uri,
