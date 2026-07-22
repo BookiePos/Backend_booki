@@ -6,6 +6,7 @@ import { HealthModule } from './modules/health/health.module';
 import { CoreAuthModule } from './modules/core-auth/core-auth.module';
 import { SedesModule } from './modules/sedes/sedes.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
+import { CatalogModule } from './modules/catalog/catalog.module';
 import { SuppliersModule } from './modules/suppliers/suppliers.module';
 import { SalesModule } from './modules/sales/sales.module';
 
@@ -45,6 +46,7 @@ import { SalesModule } from './modules/sales/sales.module';
     CoreAuthModule,
     SedesModule,
     InventoryModule,
+    CatalogModule,
     SuppliersModule,
     SalesModule,
   ],
