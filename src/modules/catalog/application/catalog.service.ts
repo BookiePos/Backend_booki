@@ -51,18 +51,21 @@ export class CatalogService {
   }
 
   async create(dto: CreateCatalogProductDto): Promise<CatalogProductDocument> {
-    const sku = dto.sku.trim().toUpperCase();
-    const exists = await this.model.findOne({ sku }).exec();
-    if (exists) {
-      throw new ConflictException(`Ya existe un producto con el SKU ${sku}`);
-    }
-
     const source = await this.resolveSource(
       dto.sourceType,
       dto.inventoryProductId,
       dto.qtyPerUnit,
       dto.recipe,
     );
+
+    // El SKU de un producto "del inventario" lo manda el ítem vinculado
+    // (fuente única de verdad); el de una receta lo define el usuario.
+    const { sku: derivedSku, ...sourceFields } = source;
+    const sku = (derivedSku ?? dto.sku).trim().toUpperCase();
+    const exists = await this.model.findOne({ sku }).exec();
+    if (exists) {
+      throw new ConflictException(`Ya existe un producto con el SKU ${sku}`);
+    }
 
     const created = await this.model.create({
       sku,
@@ -73,7 +76,7 @@ export class CatalogService {
         : undefined,
       salePrice: dto.salePrice,
       active: dto.active ?? true,
-      ...source,
+      ...sourceFields,
     });
     return this.getOrFail(created.id);
   }
@@ -84,17 +87,6 @@ export class CatalogService {
   ): Promise<CatalogProductDocument> {
     const product = await this.model.findById(id).exec();
     if (!product) throw new NotFoundException('Producto no encontrado');
-
-    if (dto.sku) {
-      const sku = dto.sku.trim().toUpperCase();
-      const clash = await this.model
-        .findOne({ sku, _id: { $ne: product._id } })
-        .exec();
-      if (clash) {
-        throw new ConflictException(`Ya existe un producto con el SKU ${sku}`);
-      }
-      product.sku = sku;
-    }
 
     if (dto.name !== undefined) product.name = dto.name;
     if (dto.description !== undefined)
@@ -120,6 +112,7 @@ export class CatalogService {
       dto.inventoryProductId !== undefined ||
       dto.qtyPerUnit !== undefined ||
       dto.recipe !== undefined;
+    let derivedSku: string | undefined;
     if (touchesSource) {
       const source = await this.resolveSource(
         sourceType,
@@ -137,6 +130,26 @@ export class CatalogService {
       product.inventoryProductId = source.inventoryProductId;
       product.qtyPerUnit = source.qtyPerUnit;
       product.recipe = source.recipe;
+      derivedSku = source.sku;
+    }
+
+    // SKU: en modo inventario queda atado al del ítem vinculado; en receta lo
+    // define el usuario. Se ignora dto.sku para productos del inventario.
+    const nextSku =
+      product.sourceType === 'inventory' ? derivedSku : dto.sku;
+    if (nextSku) {
+      const sku = nextSku.trim().toUpperCase();
+      if (sku !== product.sku) {
+        const clash = await this.model
+          .findOne({ sku, _id: { $ne: product._id } })
+          .exec();
+        if (clash) {
+          throw new ConflictException(
+            `Ya existe un producto con el SKU ${sku}`,
+          );
+        }
+        product.sku = sku;
+      }
     }
 
     await product.save();
@@ -191,6 +204,8 @@ export class CatalogService {
     inventoryProductId?: Types.ObjectId;
     qtyPerUnit?: number;
     recipe: { productId: Types.ObjectId; qty: number }[];
+    /** SKU heredado del ítem de inventario (solo en modo inventario). */
+    sku?: string;
   }> {
     if (sourceType === 'inventory') {
       if (!inventoryProductId) {
@@ -198,12 +213,13 @@ export class CatalogService {
           'Selecciona el ítem de inventario que se venderá',
         );
       }
-      await this.assertInventoryItem(inventoryProductId);
+      const item = await this.loadInventoryItemOrFail(inventoryProductId);
       return {
         sourceType,
         inventoryProductId: new Types.ObjectId(inventoryProductId),
         qtyPerUnit: qtyPerUnit && qtyPerUnit > 0 ? qtyPerUnit : 1,
         recipe: [],
+        sku: item.sku,
       };
     }
 
@@ -213,7 +229,7 @@ export class CatalogService {
       throw new BadRequestException('Agrega al menos un ingrediente a la receta');
     }
     for (const line of lines) {
-      await this.assertInventoryItem(line.productId.toString());
+      await this.loadInventoryItemOrFail(line.productId.toString());
     }
     return { sourceType, qtyPerUnit: undefined, recipe: lines };
   }
@@ -235,9 +251,10 @@ export class CatalogService {
     }));
   }
 
-  private async assertInventoryItem(id: string): Promise<void> {
+  /** Carga el ítem de inventario (para heredar su SKU) o lanza 400 claro. */
+  private async loadInventoryItemOrFail(id: string): Promise<{ sku: string }> {
     try {
-      await this.inventory.getOrFail(id);
+      return await this.inventory.getOrFail(id);
     } catch {
       throw new BadRequestException(
         'Uno de los ítems de inventario no existe o fue eliminado',
