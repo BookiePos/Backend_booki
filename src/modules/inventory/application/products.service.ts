@@ -46,6 +46,13 @@ export class ProductsService {
     return product;
   }
 
+  /** Busca un ítem de inventario por SKU (normalizado). Null si no existe. */
+  findBySku(sku: string): Promise<ProductDocument | null> {
+    return this.productModel
+      .findOne({ sku: sku.trim().toUpperCase() })
+      .exec();
+  }
+
   async create(dto: CreateProductDto): Promise<ProductDocument> {
     const sku = dto.sku.trim().toUpperCase();
     const exists = await this.productModel.findOne({ sku }).exec();

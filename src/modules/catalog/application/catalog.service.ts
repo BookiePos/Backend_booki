@@ -66,6 +66,12 @@ export class CatalogService {
     if (exists) {
       throw new ConflictException(`Ya existe un producto con el SKU ${sku}`);
     }
+    // En una receta el SKU lo escribe el usuario: no debe chocar con el de un
+    // ítem de inventario (los productos "del inventario" sí lo comparten a
+    // propósito, por eso solo se valida cuando no viene heredado).
+    if (!derivedSku) {
+      await this.ensureSkuFreeInInventory(sku);
+    }
 
     const created = await this.model.create({
       sku,
@@ -147,6 +153,11 @@ export class CatalogService {
           throw new ConflictException(
             `Ya existe un producto con el SKU ${sku}`,
           );
+        }
+        // Igual que al crear: el SKU de una receta no puede pisar un ítem de
+        // inventario (en modo inventario el SKU viene heredado, no se valida).
+        if (product.sourceType !== 'inventory') {
+          await this.ensureSkuFreeInInventory(sku);
         }
         product.sku = sku;
       }
@@ -249,6 +260,19 @@ export class CatalogService {
       productId: new Types.ObjectId(productId),
       qty,
     }));
+  }
+
+  /**
+   * Impide que el SKU de una receta reutilice el de un ítem de inventario.
+   * (Los productos vinculados a inventario sí lo comparten a propósito.)
+   */
+  private async ensureSkuFreeInInventory(sku: string): Promise<void> {
+    const invItem = await this.inventory.findBySku(sku);
+    if (invItem) {
+      throw new ConflictException(
+        `El SKU ${sku} ya pertenece a un ítem de inventario`,
+      );
+    }
   }
 
   /** Carga el ítem de inventario (para heredar su SKU) o lanza 400 claro. */
