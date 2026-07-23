@@ -7,9 +7,16 @@ async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule, { bufferLogs: false });
 
-  // CORS para el frontend (Next/React en :3000)
+  // CORS para los frontends: panel admin (:3000) y POS de trabajadores (:3002).
+  // CORS_ORIGIN admite varios orígenes separados por coma.
+  const corsOrigins = (
+    process.env.CORS_ORIGIN ?? 'http://localhost:3000,http://localhost:3002'
+  )
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
   app.enableCors({
-    origin: process.env.CORS_ORIGIN ?? 'http://localhost:3000',
+    origin: corsOrigins,
     credentials: true,
   });
 
