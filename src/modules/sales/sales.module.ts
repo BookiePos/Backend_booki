@@ -9,6 +9,10 @@ import {
   StockItem,
   StockItemSchema,
 } from '../inventory/infrastructure/schemas/stock-item.schema';
+import {
+  CajaSession,
+  CajaSessionSchema,
+} from '../caja/infrastructure/schemas/caja-session.schema';
 import { SalesService } from './application/sales.service';
 import { SalesController } from './infrastructure/sales.controller';
 import { InventoryModule } from '../inventory/inventory.module';
@@ -24,6 +28,7 @@ import { CatalogModule } from '../catalog/catalog.module';
       { name: Sale.name, schema: SaleSchema },
       { name: Counter.name, schema: CounterSchema },
       { name: StockItem.name, schema: StockItemSchema },
+      { name: CajaSession.name, schema: CajaSessionSchema },
     ]),
   ],
   controllers: [SalesController],

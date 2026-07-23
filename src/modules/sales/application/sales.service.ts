@@ -15,6 +15,10 @@ import {
   StockItem,
   StockItemDocument,
 } from '../../inventory/infrastructure/schemas/stock-item.schema';
+import {
+  CajaSession,
+  CajaSessionDocument,
+} from '../../caja/infrastructure/schemas/caja-session.schema';
 import { StockService } from '../../inventory/application/stock.service';
 import { ProductsService } from '../../inventory/application/products.service';
 import { SedesService } from '../../sedes/application/sedes.service';
@@ -32,6 +36,8 @@ export class SalesService {
     private readonly counterModel: Model<CounterDocument>,
     @InjectModel(StockItem.name)
     private readonly stockItemModel: Model<StockItemDocument>,
+    @InjectModel(CajaSession.name)
+    private readonly cajaSessionModel: Model<CajaSessionDocument>,
     private readonly stock: StockService,
     private readonly products: ProductsService,
     private readonly sedes: SedesService,
@@ -178,12 +184,18 @@ export class SalesService {
       };
     });
 
+    // Si hay una caja abierta en la sede, la venta queda enlazada para el arqueo.
+    const openCaja = await this.cajaSessionModel
+      .findOne({ sedeId: new Types.ObjectId(dto.sedeId), status: 'open' })
+      .exec();
+
     const saleNumber = await this.nextSaleNumber(dto.sedeId, sede.code);
     return this.saleModel.create({
       saleNumber,
       sedeId: new Types.ObjectId(dto.sedeId),
       cashierId: user.userId,
       cashierEmail: user.email,
+      cajaSessionId: openCaja?._id,
       status: 'completed',
       lines: lineTotals.map((l) => ({
         productId: l.product._id,
