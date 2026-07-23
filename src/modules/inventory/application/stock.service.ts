@@ -404,6 +404,81 @@ export class StockService {
   }
 
   /**
+   * Reversa el consumo de una venta anulada: devuelve cada componente al stock
+   * de la sede, restaura los lotes consumidos y registra movimientos
+   * 'sale_void'. Es idempotente por venta a nivel de negocio (el llamador marca
+   * la venta como 'void' para no reversarla dos veces).
+   */
+  async reverseSale(
+    sedeId: string,
+    units: {
+      productId: string;
+      qty: number;
+      consumedLots: { lotId?: string; qty: number; unitCost?: number }[];
+    }[],
+    user: JwtUser,
+  ): Promise<void> {
+    const sede = new Types.ObjectId(sedeId);
+    // Cargar productos fuera de la transacción (falla claro si alguno ya no existe).
+    const loaded = await Promise.all(
+      units.map(async (u) => ({
+        product: await this.products.getOrFail(u.productId),
+        qty: u.qty,
+        consumedLots: u.consumedLots,
+      })),
+    );
+
+    await this.withTransaction(async (session) => {
+      for (const { product, qty, consumedLots } of loaded) {
+        const item = await this.stockItemModel
+          .findOneAndUpdate(
+            { productId: product._id, sedeId: sede },
+            { $inc: { qty } },
+            { upsert: true, new: true, session },
+          )
+          .exec();
+
+        // Reparte la devolución en las porciones de lote consumidas; si no había
+        // lotes (producto sin trackLots), una sola porción por el total.
+        const portions =
+          consumedLots.length > 0 ? consumedLots : [{ qty, unitCost: undefined }];
+        let balance = item.qty - qty; // saldo antes de la devolución
+        for (const portion of portions) {
+          if (portion.lotId) {
+            await this.lotModel
+              .updateOne(
+                { _id: new Types.ObjectId(portion.lotId) },
+                { $inc: { qty: portion.qty } },
+                { session },
+              )
+              .exec();
+          }
+          balance += portion.qty;
+          await this.movementModel.create(
+            [
+              {
+                type: 'sale_void' satisfies MovementType,
+                productId: product._id,
+                sedeId: sede,
+                lotId: portion.lotId
+                  ? new Types.ObjectId(portion.lotId)
+                  : undefined,
+                delta: portion.qty,
+                balanceAfter: balance,
+                unitCost: portion.unitCost,
+                note: 'Anulación de venta',
+                userId: user.userId,
+                userEmail: user.email,
+              },
+            ],
+            { session },
+          );
+        }
+      }
+    });
+  }
+
+  /**
    * Elimina definitivamente un producto junto con sus existencias, lotes y
    * movimientos de kardex en todas las sedes.
    */

@@ -15,6 +15,7 @@ import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 
 @Controller('sales')
+// Endpoints del POS: catálogo vendible, historial, venta y anulación.
 export class SalesController {
   constructor(private readonly sales: SalesService) {}
 
@@ -53,5 +54,12 @@ export class SalesController {
   @Post()
   create(@Body() dto: CreateSaleDto, @CurrentUser() user: JwtUser) {
     return this.sales.create(dto, user);
+  }
+
+  /** Anula una venta y devuelve su consumo al inventario. */
+  @RequirePermissions(PERMISSIONS.POS_VOID_AUTHORIZE)
+  @Post(':id/void')
+  void(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.sales.void(id, user);
   }
 }

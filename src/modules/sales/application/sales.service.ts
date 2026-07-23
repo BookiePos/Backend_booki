@@ -179,6 +179,39 @@ export class SalesService {
     });
   }
 
+  /**
+   * Anula una venta: la marca como 'void' y devuelve al inventario lo que
+   * consumió (componentes de la venta; en ventas antiguas, las líneas).
+   */
+  async void(id: string, user: JwtUser): Promise<SaleDocument> {
+    const sale = await this.getOrFail(id);
+    const sedeId = (
+      sale.sedeId as unknown as { _id: Types.ObjectId }
+    )._id.toString();
+    this.assertSedeAccess(sedeId, user);
+    if (sale.status === 'void') {
+      throw new BadRequestException('La venta ya está anulada');
+    }
+
+    const source = sale.components.length > 0 ? sale.components : sale.lines;
+    const units = source.map((x) => ({
+      productId: x.productId.toString(),
+      qty: x.qty,
+      consumedLots: (x.consumedLots ?? []).map((cl) => ({
+        lotId: cl.lotId?.toString(),
+        qty: cl.qty,
+        unitCost: cl.unitCost,
+      })),
+    }));
+    if (units.length > 0) {
+      await this.stock.reverseSale(sedeId, units, user);
+    }
+
+    sale.status = 'void';
+    await sale.save();
+    return this.getOrFail(sale.id);
+  }
+
   /** Ventas de una sede, paginadas (más recientes primero). */
   async list(sedeId: string, user: JwtUser, page = 1, limit = 20) {
     this.assertSedeAccess(sedeId, user);
