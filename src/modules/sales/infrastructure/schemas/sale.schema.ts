@@ -23,10 +23,11 @@ class SaleConsumedLot {
 }
 const SaleConsumedLotSchema = SchemaFactory.createForClass(SaleConsumedLot);
 
-/** Línea de venta con snapshot del producto (el catálogo puede cambiar). */
+/** Línea de venta: snapshot del producto vendible del catálogo (POS). */
 @Schema({ _id: false })
 class SaleLine {
-  @Prop({ type: Types.ObjectId, ref: 'Product', required: true })
+  /** Producto de catálogo vendido (lo que ve el cliente en el recibo). */
+  @Prop({ type: Types.ObjectId, ref: 'CatalogProduct', required: true })
   productId!: Types.ObjectId;
 
   @Prop({ required: true })
@@ -48,10 +49,43 @@ class SaleLine {
   @Prop({ required: true, min: 0 })
   lineTotal!: number;
 
+  /** Vestigial: la trazabilidad de lotes vive ahora en `components`. */
   @Prop({ type: [SaleConsumedLotSchema], default: [] })
   consumedLots!: SaleConsumedLot[];
 }
 const SaleLineSchema = SchemaFactory.createForClass(SaleLine);
+
+/**
+ * Consumo de inventario que generó la venta (ítem directo o ingredientes de
+ * las recetas, agregado por ítem). Guarda el costo real (FEFO) para el COGS.
+ */
+@Schema({ _id: false })
+class SaleComponent {
+  /** Ítem de inventario descontado. */
+  @Prop({ type: Types.ObjectId, ref: 'Product', required: true })
+  productId!: Types.ObjectId;
+
+  @Prop({ required: true })
+  sku!: string;
+
+  @Prop({ required: true })
+  name!: string;
+
+  @Prop({ required: true })
+  unit!: string;
+
+  /** Cantidad total descontada del inventario. */
+  @Prop({ required: true, min: 0 })
+  qty!: number;
+
+  /** Costo real de lo consumido (Σ qty × unitCost de los lotes). */
+  @Prop({ default: 0, min: 0 })
+  cost!: number;
+
+  @Prop({ type: [SaleConsumedLotSchema], default: [] })
+  consumedLots!: SaleConsumedLot[];
+}
+const SaleComponentSchema = SchemaFactory.createForClass(SaleComponent);
 
 @Schema({ _id: false })
 class SalePayment {
@@ -88,6 +122,10 @@ export class Sale {
 
   @Prop({ type: [SaleLineSchema], required: true })
   lines!: SaleLine[];
+
+  /** Salidas de inventario que originó la venta (para stock y costo). */
+  @Prop({ type: [SaleComponentSchema], default: [] })
+  components!: SaleComponent[];
 
   @Prop({ required: true, min: 0 })
   subtotal!: number;

@@ -175,17 +175,41 @@ export class CatalogService {
     await product.deleteOne();
   }
 
+  /** Catálogo vendible del POS: activo y con precio de venta. */
+  listSellable(): Promise<CatalogProductDocument[]> {
+    return this.model
+      .find({ active: true, salePrice: { $gt: 0 } })
+      .populate('categoryId', 'name')
+      .sort({ name: 1 })
+      .exec();
+  }
+
+  /**
+   * Carga un producto de catálogo asegurando que se puede vender (activo y con
+   * precio). Lo usa el POS al registrar la venta (precio siempre del servidor).
+   */
+  async loadSellableOrFail(id: string): Promise<CatalogProductDocument> {
+    const doc = Types.ObjectId.isValid(id)
+      ? await this.model.findById(id).exec()
+      : null;
+    if (!doc) throw new NotFoundException('Producto no encontrado');
+    if (!doc.active || !doc.salePrice || doc.salePrice <= 0) {
+      throw new BadRequestException(
+        `${doc.name} no está disponible para la venta`,
+      );
+    }
+    return doc;
+  }
+
   /**
    * Expande un producto vendible en las salidas de inventario que genera
-   * (ítem directo o ingredientes de la receta). Lo usará el POS para
-   * descontar del inventario cada venta.
+   * (ítem directo o ingredientes de la receta), sin ir a la BD. Lo usa el POS
+   * para calcular disponibilidad y descontar del inventario en cada venta.
    */
-  async componentsFor(
-    id: string,
-    qty: number,
-  ): Promise<{ productId: string; qty: number }[]> {
-    const product = await this.model.findById(id).exec();
-    if (!product) throw new NotFoundException('Producto no encontrado');
+  componentsOf(
+    product: CatalogProductDocument,
+    qty = 1,
+  ): { productId: string; qty: number }[] {
     if (product.sourceType === 'inventory') {
       if (!product.inventoryProductId) return [];
       return [
@@ -199,6 +223,16 @@ export class CatalogService {
       productId: line.productId.toString(),
       qty: line.qty * qty,
     }));
+  }
+
+  /** Versión que carga el producto por id (para usos puntuales). */
+  async componentsFor(
+    id: string,
+    qty: number,
+  ): Promise<{ productId: string; qty: number }[]> {
+    const product = await this.model.findById(id).exec();
+    if (!product) throw new NotFoundException('Producto no encontrado');
+    return this.componentsOf(product, qty);
   }
 
   /**

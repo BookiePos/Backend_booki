@@ -12,15 +12,13 @@ import {
   CounterDocument,
 } from '../infrastructure/schemas/counter.schema';
 import {
-  Product,
-  ProductDocument,
-} from '../../inventory/infrastructure/schemas/product.schema';
-import {
   StockItem,
   StockItemDocument,
 } from '../../inventory/infrastructure/schemas/stock-item.schema';
 import { StockService } from '../../inventory/application/stock.service';
+import { ProductsService } from '../../inventory/application/products.service';
 import { SedesService } from '../../sedes/application/sedes.service';
+import { CatalogService } from '../../catalog/application/catalog.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { CreateSaleDto } from './dto/create-sale.dto';
 
@@ -31,12 +29,12 @@ export class SalesService {
     private readonly saleModel: Model<SaleDocument>,
     @InjectModel(Counter.name)
     private readonly counterModel: Model<CounterDocument>,
-    @InjectModel(Product.name)
-    private readonly productModel: Model<ProductDocument>,
     @InjectModel(StockItem.name)
     private readonly stockItemModel: Model<StockItemDocument>,
     private readonly stock: StockService,
+    private readonly products: ProductsService,
     private readonly sedes: SedesService,
+    private readonly catalog: CatalogService,
   ) {}
 
   /** El cajero solo opera sedes asignadas a su usuario (JWT). */
@@ -62,30 +60,23 @@ export class SalesService {
     this.assertSedeAccess(dto.sedeId, user);
     const sede = await this.sedes.findOrFail(dto.sedeId);
 
-    // Validación de líneas con precio del servidor.
-    const products = new Map<string, ProductDocument>();
-    for (const line of dto.lines) {
-      const product =
-        products.get(line.productId) ??
-        (await this.productModel.findById(line.productId).exec());
-      if (!product) {
-        throw new NotFoundException('Producto no encontrado');
-      }
-      if (!product.active || !product.salePrice || product.salePrice <= 0) {
-        throw new BadRequestException(
-          `${product.name} no está disponible para la venta`,
-        );
-      }
-      products.set(line.productId, product);
-    }
+    // 1. Cargar los productos de catálogo vendidos (precio del servidor).
+    const catalogById = new Map(
+      await Promise.all(
+        [...new Set(dto.lines.map((l) => l.productId))].map(
+          async (id) =>
+            [id, await this.catalog.loadSellableOrFail(id)] as const,
+        ),
+      ),
+    );
 
     const lineTotals = dto.lines.map((line) => {
-      const product = products.get(line.productId)!;
+      const product = catalogById.get(line.productId)!;
       return {
         product,
         qty: line.qty,
-        unitPrice: product.salePrice!,
-        lineTotal: product.salePrice! * line.qty,
+        unitPrice: product.salePrice,
+        lineTotal: product.salePrice * line.qty,
       };
     });
     const subtotal = lineTotals.reduce((sum, l) => sum + l.lineTotal, 0);
@@ -104,12 +95,65 @@ export class SalesService {
       change = received - total;
     }
 
-    // Descuento FEFO + kardex 'sale'. Si falta stock, lanza y no hay venta.
-    const sold = await this.stock.sell(
-      dto.sedeId,
-      dto.lines.map((l) => ({ productId: l.productId, qty: l.qty })),
-      user,
+    // 2. Explotar cada línea a su consumo de inventario y agregar por ítem.
+    const demand = new Map<string, number>();
+    for (const line of dto.lines) {
+      const product = catalogById.get(line.productId)!;
+      for (const c of this.catalog.componentsOf(product, line.qty)) {
+        demand.set(c.productId, (demand.get(c.productId) ?? 0) + c.qty);
+      }
+    }
+    const componentLines = [...demand.entries()].map(([productId, qty]) => ({
+      productId,
+      qty,
+    }));
+    if (componentLines.length === 0) {
+      throw new BadRequestException(
+        'Los productos vendidos no están enlazados al inventario',
+      );
+    }
+
+    // 3. Pre-chequeo de stock (evita descuentos parciales en Mongo standalone).
+    const items = await this.stockItemModel
+      .find({ sedeId: new Types.ObjectId(dto.sedeId) })
+      .exec();
+    const stockByProduct = new Map(
+      items.map((i) => [i.productId.toString(), i.qty]),
     );
+    for (const c of componentLines) {
+      const have = stockByProduct.get(c.productId) ?? 0;
+      if (have < c.qty) {
+        const prod = await this.products.getOrFail(c.productId);
+        throw new BadRequestException(
+          `Stock insuficiente de ${prod.name}: hay ${have} y se requieren ${c.qty}`,
+        );
+      }
+    }
+
+    // 4. Descuento FEFO + kardex 'sale' (una sola operación agregada).
+    const sold = await this.stock.sell(dto.sedeId, componentLines, user);
+
+    const components = componentLines.map((c, i) => {
+      const soldLine = sold[i];
+      const consumedLots = (soldLine?.portions ?? []).map((p) => ({
+        lotId: p.lot?._id,
+        qty: p.qty,
+        unitCost: p.lot?.unitCost ?? 0,
+      }));
+      const cost = consumedLots.reduce(
+        (sum, cl) => sum + cl.qty * cl.unitCost,
+        0,
+      );
+      return {
+        productId: soldLine?.product._id ?? new Types.ObjectId(c.productId),
+        sku: soldLine?.product.sku ?? '',
+        name: soldLine?.product.name ?? '',
+        unit: soldLine?.product.unit ?? 'und',
+        qty: c.qty,
+        cost,
+        consumedLots,
+      };
+    });
 
     const saleNumber = await this.nextSaleNumber(dto.sedeId, sede.code);
     return this.saleModel.create({
@@ -118,20 +162,16 @@ export class SalesService {
       cashierId: user.userId,
       cashierEmail: user.email,
       status: 'completed',
-      lines: lineTotals.map((l, i) => ({
+      lines: lineTotals.map((l) => ({
         productId: l.product._id,
         sku: l.product.sku,
         name: l.product.name,
-        unit: l.product.unit,
+        unit: 'und',
         qty: l.qty,
         unitPrice: l.unitPrice,
         lineTotal: l.lineTotal,
-        consumedLots: (sold[i]?.portions ?? []).map((p) => ({
-          lotId: p.lot?._id,
-          qty: p.qty,
-          unitCost: p.lot?.unitCost ?? 0,
-        })),
       })),
+      components,
       subtotal,
       taxTotal,
       total,
@@ -169,16 +209,15 @@ export class SalesService {
     return sale;
   }
 
-  /** Catálogo vendible (activo y con precio) + stock de la sede. */
+  /**
+   * Catálogo vendible del POS con la disponibilidad calculada en la sede:
+   * cuántas unidades se pueden vender según el stock de sus componentes.
+   */
   async posProducts(sedeId: string, user: JwtUser) {
     this.assertSedeAccess(sedeId, user);
     await this.sedes.findOrFail(sedeId);
-    const [products, items] = await Promise.all([
-      this.productModel
-        .find({ active: true, salePrice: { $gt: 0 } })
-        .sort({ name: 1 })
-        .populate('categoryId', 'name')
-        .exec(),
+    const [catalog, items] = await Promise.all([
+      this.catalog.listSellable(),
       this.stockItemModel
         .find({ sedeId: new Types.ObjectId(sedeId) })
         .exec(),
@@ -186,7 +225,17 @@ export class SalesService {
     const stockByProduct = new Map(
       items.map((i) => [i.productId.toString(), i.qty]),
     );
-    return products.map((p) => {
+    return catalog.map((p) => {
+      const components = this.catalog.componentsOf(p, 1);
+      // Disponible = mínimo, entre sus componentes, de floor(stock / consumo).
+      let available = components.length > 0 ? Infinity : 0;
+      for (const c of components) {
+        if (c.qty <= 0) continue;
+        const have = stockByProduct.get(c.productId) ?? 0;
+        available = Math.min(available, Math.floor(have / c.qty));
+      }
+      if (!Number.isFinite(available)) available = 0;
+
       const cat = p.categoryId as unknown as
         | { _id: Types.ObjectId; name: string }
         | null
@@ -195,9 +244,9 @@ export class SalesService {
         _id: p._id,
         sku: p.sku,
         name: p.name,
-        unit: p.unit,
+        unit: 'und',
         salePrice: p.salePrice,
-        stock: stockByProduct.get(p._id.toString()) ?? 0,
+        stock: available,
         categoryId: cat?._id ? cat._id.toString() : null,
         categoryName: cat?.name ?? null,
       };

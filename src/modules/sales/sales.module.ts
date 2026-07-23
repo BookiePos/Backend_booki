@@ -6,10 +6,6 @@ import {
   CounterSchema,
 } from './infrastructure/schemas/counter.schema';
 import {
-  Product,
-  ProductSchema,
-} from '../inventory/infrastructure/schemas/product.schema';
-import {
   StockItem,
   StockItemSchema,
 } from '../inventory/infrastructure/schemas/stock-item.schema';
@@ -17,15 +13,16 @@ import { SalesService } from './application/sales.service';
 import { SalesController } from './infrastructure/sales.controller';
 import { InventoryModule } from '../inventory/inventory.module';
 import { SedesModule } from '../sedes/sedes.module';
+import { CatalogModule } from '../catalog/catalog.module';
 
 @Module({
   imports: [
     InventoryModule,
     SedesModule,
+    CatalogModule,
     MongooseModule.forFeature([
       { name: Sale.name, schema: SaleSchema },
       { name: Counter.name, schema: CounterSchema },
-      { name: Product.name, schema: ProductSchema },
       { name: StockItem.name, schema: StockItemSchema },
     ]),
   ],
