@@ -10,7 +10,22 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
-import { PAYMENT_METHODS, PaymentMethod } from '../../domain/sales.constants';
+import {
+  DISCOUNT_TYPES,
+  DiscountType,
+  PAYMENT_METHODS,
+  PaymentMethod,
+} from '../../domain/sales.constants';
+
+export class SaleDiscountDto {
+  @IsIn(DISCOUNT_TYPES as readonly string[])
+  type!: DiscountType;
+
+  /** Monto en pesos (amount) o porcentaje 0–100 (percent). */
+  @IsNumber()
+  @Min(0)
+  value!: number;
+}
 
 export class SaleLineDto {
   @IsMongoId()
@@ -46,4 +61,10 @@ export class CreateSaleDto {
   @ValidateNested()
   @Type(() => SalePaymentDto)
   payment!: SalePaymentDto;
+
+  /** Descuento opcional sobre el total (requiere pos.discount.authorize). */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SaleDiscountDto)
+  discount?: SaleDiscountDto;
 }

@@ -20,6 +20,7 @@ import { ProductsService } from '../../inventory/application/products.service';
 import { SedesService } from '../../sedes/application/sedes.service';
 import { CatalogService } from '../../catalog/application/catalog.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
+import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { CreateSaleDto } from './dto/create-sale.dto';
 
 @Injectable()
@@ -80,8 +81,30 @@ export class SalesService {
       };
     });
     const subtotal = lineTotals.reduce((sum, l) => sum + l.lineTotal, 0);
+
+    // Descuento opcional (requiere permiso). Se acota a [0, subtotal].
+    let discount: { type: 'amount' | 'percent'; value: number; amount: number } | undefined;
+    let discountTotal = 0;
+    if (dto.discount && dto.discount.value > 0) {
+      if (!user.permissions.includes(PERMISSIONS.POS_DISCOUNT_AUTHORIZE)) {
+        throw new ForbiddenException(
+          'No tienes permiso para aplicar descuentos',
+        );
+      }
+      const raw =
+        dto.discount.type === 'percent'
+          ? (subtotal * Math.min(dto.discount.value, 100)) / 100
+          : dto.discount.value;
+      discountTotal = Math.round(Math.min(Math.max(raw, 0), subtotal) * 100) / 100;
+      discount = {
+        type: dto.discount.type,
+        value: dto.discount.value,
+        amount: discountTotal,
+      };
+    }
+
     const taxTotal = 0;
-    const total = subtotal + taxTotal;
+    const total = subtotal - discountTotal + taxTotal;
 
     let received: number | undefined;
     let change: number | undefined;
@@ -173,6 +196,8 @@ export class SalesService {
       })),
       components,
       subtotal,
+      discount,
+      discountTotal,
       taxTotal,
       total,
       payment: { method: dto.payment.method, received, change },

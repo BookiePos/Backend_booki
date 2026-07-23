@@ -1,6 +1,8 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 import {
+  DISCOUNT_TYPES,
+  DiscountType,
   PAYMENT_METHODS,
   PaymentMethod,
   SALE_STATUSES,
@@ -87,6 +89,22 @@ class SaleComponent {
 }
 const SaleComponentSchema = SchemaFactory.createForClass(SaleComponent);
 
+/** Descuento aplicado a la venta (descriptor + monto resuelto). */
+@Schema({ _id: false })
+class SaleDiscount {
+  @Prop({ required: true, enum: DISCOUNT_TYPES })
+  type!: DiscountType;
+
+  /** Valor pedido: pesos (amount) o porcentaje (percent). */
+  @Prop({ required: true, min: 0 })
+  value!: number;
+
+  /** Monto de descuento efectivamente aplicado (en pesos). */
+  @Prop({ required: true, min: 0 })
+  amount!: number;
+}
+const SaleDiscountSchema = SchemaFactory.createForClass(SaleDiscount);
+
 @Schema({ _id: false })
 class SalePayment {
   @Prop({ required: true, enum: PAYMENT_METHODS })
@@ -129,6 +147,14 @@ export class Sale {
 
   @Prop({ required: true, min: 0 })
   subtotal!: number;
+
+  /** Descuento aplicado (opcional). */
+  @Prop({ type: SaleDiscountSchema })
+  discount?: SaleDiscount;
+
+  /** Monto total de descuento (0 si no hubo). */
+  @Prop({ default: 0, min: 0 })
+  discountTotal!: number;
 
   /** Impuestos: 0 hasta que exista el módulo de impuestos. */
   @Prop({ default: 0, min: 0 })
