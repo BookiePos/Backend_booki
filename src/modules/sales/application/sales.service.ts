@@ -177,6 +177,7 @@ export class SalesService {
       this.productModel
         .find({ active: true, salePrice: { $gt: 0 } })
         .sort({ name: 1 })
+        .populate('categoryId', 'name')
         .exec(),
       this.stockItemModel
         .find({ sedeId: new Types.ObjectId(sedeId) })
@@ -185,13 +186,21 @@ export class SalesService {
     const stockByProduct = new Map(
       items.map((i) => [i.productId.toString(), i.qty]),
     );
-    return products.map((p) => ({
-      _id: p._id,
-      sku: p.sku,
-      name: p.name,
-      unit: p.unit,
-      salePrice: p.salePrice,
-      stock: stockByProduct.get(p._id.toString()) ?? 0,
-    }));
+    return products.map((p) => {
+      const cat = p.categoryId as unknown as
+        | { _id: Types.ObjectId; name: string }
+        | null
+        | undefined;
+      return {
+        _id: p._id,
+        sku: p.sku,
+        name: p.name,
+        unit: p.unit,
+        salePrice: p.salePrice,
+        stock: stockByProduct.get(p._id.toString()) ?? 0,
+        categoryId: cat?._id ? cat._id.toString() : null,
+        categoryName: cat?.name ?? null,
+      };
+    });
   }
 }
