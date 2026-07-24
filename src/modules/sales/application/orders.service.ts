@@ -12,6 +12,10 @@ import {
   Counter,
   CounterDocument,
 } from '../infrastructure/schemas/counter.schema';
+import {
+  CajaSession,
+  CajaSessionDocument,
+} from '../../caja/infrastructure/schemas/caja-session.schema';
 import { SedesService } from '../../sedes/application/sedes.service';
 import { CatalogService } from '../../catalog/application/catalog.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
@@ -27,6 +31,8 @@ export class OrdersService {
     private readonly orderModel: Model<OrderDocument>,
     @InjectModel(Counter.name)
     private readonly counterModel: Model<CounterDocument>,
+    @InjectModel(CajaSession.name)
+    private readonly cajaSessionModel: Model<CajaSessionDocument>,
     private readonly sedes: SedesService,
     private readonly catalog: CatalogService,
     private readonly sales: SalesService,
@@ -36,6 +42,18 @@ export class OrdersService {
   private assertSedeAccess(sedeId: string, user: JwtUser): void {
     if (!user.sedeIds.includes(sedeId)) {
       throw new ForbiddenException('No tienes acceso a esta sede');
+    }
+  }
+
+  /** Toda cuenta se abre dentro de un turno de caja (integridad contable). */
+  private async assertCajaOpen(sedeId: string): Promise<void> {
+    const open = await this.cajaSessionModel
+      .findOne({ sedeId: new Types.ObjectId(sedeId), status: 'open' })
+      .exec();
+    if (!open) {
+      throw new BadRequestException(
+        'Debes abrir la caja de la sede antes de crear cuentas',
+      );
     }
   }
 
@@ -78,6 +96,7 @@ export class OrdersService {
 
   async open(dto: CreateOrderDto, user: JwtUser): Promise<OrderDocument> {
     this.assertSedeAccess(dto.sedeId, user);
+    await this.assertCajaOpen(dto.sedeId);
     const sede = await this.sedes.findOrFail(dto.sedeId);
     const lines = dto.lines?.length ? await this.buildLines(dto.lines) : [];
     const orderNumber = await this.nextOrderNumber(dto.sedeId, sede.code);

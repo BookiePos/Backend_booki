@@ -9,6 +9,7 @@ import {
   CajaMovementSchema,
 } from './infrastructure/schemas/caja-movement.schema';
 import { Sale, SaleSchema } from '../sales/infrastructure/schemas/sale.schema';
+import { Order, OrderSchema } from '../sales/infrastructure/schemas/order.schema';
 import { CajaService } from './application/caja.service';
 import { CajaController } from './infrastructure/caja.controller';
 
@@ -18,6 +19,7 @@ import { CajaController } from './infrastructure/caja.controller';
       { name: CajaSession.name, schema: CajaSessionSchema },
       { name: CajaMovement.name, schema: CajaMovementSchema },
       { name: Sale.name, schema: SaleSchema },
+      { name: Order.name, schema: OrderSchema },
     ]),
   ],
   controllers: [CajaController],

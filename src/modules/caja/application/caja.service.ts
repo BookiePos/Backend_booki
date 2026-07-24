@@ -16,6 +16,7 @@ import {
   CajaMovementDocument,
 } from '../infrastructure/schemas/caja-movement.schema';
 import { Sale, SaleDocument } from '../../sales/infrastructure/schemas/sale.schema';
+import { Order, OrderDocument } from '../../sales/infrastructure/schemas/order.schema';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import { OpenCajaDto } from './dto/open-caja.dto';
@@ -42,6 +43,8 @@ export class CajaService {
     private readonly movements: Model<CajaMovementDocument>,
     @InjectModel(Sale.name)
     private readonly sales: Model<SaleDocument>,
+    @InjectModel(Order.name)
+    private readonly orders: Model<OrderDocument>,
   ) {}
 
   private findOpen(sedeId: string): Promise<CajaSessionDocument | null> {
@@ -85,6 +88,18 @@ export class CajaService {
     const session = await this.findOpen(dto.sedeId);
     if (!session) {
       throw new NotFoundException('No hay una caja abierta en esta sede');
+    }
+    // No se cierra el turno con cuentas abiertas sin liquidar (contabilidad).
+    const openOrders = await this.orders
+      .countDocuments({
+        sedeId: new Types.ObjectId(dto.sedeId),
+        status: 'open',
+      })
+      .exec();
+    if (openOrders > 0) {
+      throw new ConflictException(
+        `Hay ${openOrders} cuenta(s) abierta(s) en esta sede. Cóbralas o ciérralas antes de cerrar la caja.`,
+      );
     }
     const { totals } = await this.summarize(session);
     session.status = 'closed';

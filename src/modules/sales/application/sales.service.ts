@@ -71,6 +71,17 @@ export class SalesService {
     this.assertSedeAccess(dto.sedeId, user);
     const sede = await this.sedes.findOrFail(dto.sedeId);
 
+    // 0. Exigir caja abierta ANTES de tocar inventario: toda venta ocurre
+    //    dentro de un turno de caja (integridad contable). Se enlaza al arqueo.
+    const openCaja = await this.cajaSessionModel
+      .findOne({ sedeId: new Types.ObjectId(dto.sedeId), status: 'open' })
+      .exec();
+    if (!openCaja) {
+      throw new BadRequestException(
+        'Debes abrir la caja de la sede antes de registrar ventas',
+      );
+    }
+
     // 1. Cargar los productos de catálogo vendidos (precio del servidor).
     const catalogById = new Map(
       await Promise.all(
@@ -187,11 +198,6 @@ export class SalesService {
         consumedLots,
       };
     });
-
-    // Si hay una caja abierta en la sede, la venta queda enlazada para el arqueo.
-    const openCaja = await this.cajaSessionModel
-      .findOne({ sedeId: new Types.ObjectId(dto.sedeId), status: 'open' })
-      .exec();
 
     const saleNumber = await this.nextSaleNumber(dto.sedeId, sede.code);
     return this.saleModel.create({
