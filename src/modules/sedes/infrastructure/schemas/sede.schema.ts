@@ -14,6 +14,14 @@ export class Sede {
   @Prop({ trim: true })
   address?: string;
 
+  /** NIT / identificación tributaria del negocio (encabezado de factura). */
+  @Prop({ trim: true })
+  nit?: string;
+
+  /** Teléfono de contacto del negocio (encabezado de factura). */
+  @Prop({ trim: true })
+  phone?: string;
+
   @Prop({ default: true })
   active!: boolean;
 }

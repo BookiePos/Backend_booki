@@ -119,6 +119,24 @@ class SalePayment {
 }
 const SalePaymentSchema = SchemaFactory.createForClass(SalePayment);
 
+/** Datos del cliente para la factura (todos opcionales). */
+@Schema({ _id: false })
+class SaleCustomer {
+  @Prop({ trim: true })
+  name?: string;
+
+  /** Cédula / NIT del cliente. */
+  @Prop({ trim: true })
+  idNumber?: string;
+
+  @Prop({ trim: true })
+  phone?: string;
+
+  @Prop({ trim: true })
+  email?: string;
+}
+const SaleCustomerSchema = SchemaFactory.createForClass(SaleCustomer);
+
 /** Venta del POS. Documento único y atómico (Mongo standalone). */
 @Schema({ timestamps: true, collection: 'sales' })
 export class Sale {
@@ -166,9 +184,17 @@ export class Sale {
   @Prop({ type: SalePaymentSchema, required: true })
   payment!: SalePayment;
 
+  /** Datos del cliente para la factura (opcional). */
+  @Prop({ type: SaleCustomerSchema })
+  customer?: SaleCustomer;
+
   /** Turno de caja; se llenará cuando exista el módulo de Caja. */
   @Prop({ type: Types.ObjectId })
   cajaSessionId?: Types.ObjectId;
+
+  /** Cuenta abierta que originó la venta (si se liquidó una cuenta). */
+  @Prop({ type: Types.ObjectId, ref: 'Order' })
+  orderId?: Types.ObjectId;
 }
 
 export const SaleSchema = SchemaFactory.createForClass(Sale);

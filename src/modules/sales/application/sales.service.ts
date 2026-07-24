@@ -63,7 +63,11 @@ export class SalesService {
     return `${sedeCode.toUpperCase()}-${String(counter.seq).padStart(6, '0')}`;
   }
 
-  async create(dto: CreateSaleDto, user: JwtUser): Promise<SaleDocument> {
+  async create(
+    dto: CreateSaleDto,
+    user: JwtUser,
+    orderId?: Types.ObjectId,
+  ): Promise<SaleDocument> {
     this.assertSedeAccess(dto.sedeId, user);
     const sede = await this.sedes.findOrFail(dto.sedeId);
 
@@ -213,7 +217,18 @@ export class SalesService {
       taxTotal,
       total,
       payment: { method: dto.payment.method, received, change },
+      customer: this.cleanCustomer(dto.customer),
+      orderId,
     });
+  }
+
+  /** Descarta un customer vacío (sin ningún dato) para no guardar {} . */
+  private cleanCustomer(customer?: CreateSaleDto['customer']) {
+    if (!customer) return undefined;
+    const entries = (['name', 'idNumber', 'phone', 'email'] as const)
+      .map((k) => [k, customer[k]?.trim()] as const)
+      .filter(([, v]) => v);
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
   }
 
   /**

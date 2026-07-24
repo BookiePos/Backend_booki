@@ -7,6 +7,8 @@ import {
   IsNumber,
   IsOptional,
   IsPositive,
+  IsString,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -47,6 +49,29 @@ export class SalePaymentDto {
   received?: number;
 }
 
+/** Datos del cliente para la factura (todos opcionales). */
+export class SaleCustomerDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  idNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  email?: string;
+}
+
 /** El precio NUNCA viene del cliente: se toma el salePrice del servidor. */
 export class CreateSaleDto {
   @IsMongoId()
@@ -67,4 +92,10 @@ export class CreateSaleDto {
   @ValidateNested()
   @Type(() => SaleDiscountDto)
   discount?: SaleDiscountDto;
+
+  /** Datos del cliente para la factura (opcional). */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SaleCustomerDto)
+  customer?: SaleCustomerDto;
 }
