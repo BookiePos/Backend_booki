@@ -50,9 +50,17 @@ export class CajaSession {
   @Prop()
   closedByEmail?: string;
 
-  /** Efectivo contado físicamente al cerrar. */
+  /** Efectivo contado físicamente al cerrar (billetes + monedas). */
   @Prop({ min: 0 })
   countedAmount?: number;
+
+  /** Desglose del efectivo contado: billetes. */
+  @Prop({ min: 0 })
+  countedBills?: number;
+
+  /** Desglose del efectivo contado: monedas. */
+  @Prop({ min: 0 })
+  countedCoins?: number;
 
   /** Efectivo esperado en caja según ventas y movimientos. */
   @Prop()

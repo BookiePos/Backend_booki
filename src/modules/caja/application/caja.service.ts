@@ -109,6 +109,8 @@ export class CajaService {
     session.closedById = user.userId;
     session.closedByEmail = user.email;
     session.countedAmount = dto.countedAmount;
+    session.countedBills = dto.countedBills;
+    session.countedCoins = dto.countedCoins;
     session.expectedCash = totals.expectedCash;
     session.difference =
       Math.round((dto.countedAmount - totals.expectedCash) * 100) / 100;
