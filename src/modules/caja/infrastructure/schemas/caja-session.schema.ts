@@ -16,9 +16,17 @@ export class CajaSession {
   @Prop({ required: true, enum: CAJA_STATUSES, default: 'open' })
   status!: CajaStatus;
 
-  /** Efectivo con el que se abre la caja (base). */
+  /** Efectivo con el que se abre la caja (base = billetes + monedas). */
   @Prop({ required: true, min: 0 })
   openingAmount!: number;
+
+  /** Desglose de la base: efectivo en billetes. */
+  @Prop({ min: 0 })
+  openingBills?: number;
+
+  /** Desglose de la base: efectivo en monedas. */
+  @Prop({ min: 0 })
+  openingCoins?: number;
 
   @Prop({ required: true })
   openedById!: string;

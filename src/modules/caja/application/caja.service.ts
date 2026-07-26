@@ -72,6 +72,8 @@ export class CajaService {
         sedeId: new Types.ObjectId(dto.sedeId),
         status: 'open',
         openingAmount: dto.openingAmount,
+        openingBills: dto.openingBills,
+        openingCoins: dto.openingCoins,
         openedById: user.userId,
         openedByEmail: user.email,
         openedAt: new Date(),
