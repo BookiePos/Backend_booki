@@ -51,7 +51,13 @@ export class SedesService {
 
     if (dto.code !== undefined) sede.code = dto.code;
     if (dto.name !== undefined) sede.name = dto.name;
+    if (dto.businessName !== undefined)
+      sede.businessName = dto.businessName || undefined;
     if (dto.address !== undefined) sede.address = dto.address || undefined;
+    if (dto.nit !== undefined) sede.nit = dto.nit || undefined;
+    if (dto.phone !== undefined) sede.phone = dto.phone || undefined;
+    if (dto.legalNote !== undefined)
+      sede.legalNote = dto.legalNote || undefined;
     if (dto.active !== undefined) sede.active = dto.active;
 
     try {

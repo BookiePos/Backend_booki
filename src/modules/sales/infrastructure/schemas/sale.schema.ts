@@ -140,7 +140,7 @@ const SaleCustomerSchema = SchemaFactory.createForClass(SaleCustomer);
 /** Venta del POS. Documento único y atómico (Mongo standalone). */
 @Schema({ timestamps: true, collection: 'sales' })
 export class Sale {
-  /** Consecutivo por sede, ej. "CENTRO-000123". */
+  /** Consecutivo por sede, ej. "FV-000123". */
   @Prop({ required: true, trim: true })
   saleNumber!: string;
 
@@ -152,6 +152,10 @@ export class Sale {
 
   @Prop({ required: true })
   cashierEmail!: string;
+
+  /** Nombre del cajero al momento de la venta (encabezado de factura). */
+  @Prop({ trim: true })
+  cashierName?: string;
 
   @Prop({ required: true, enum: SALE_STATUSES, default: 'completed' })
   status!: SaleStatus;

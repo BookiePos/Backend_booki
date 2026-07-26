@@ -51,8 +51,12 @@ export class SalesService {
     }
   }
 
-  /** Consecutivo por sede vía $inc atómico (no requiere transacciones). */
-  private async nextSaleNumber(sedeId: string, sedeCode: string) {
+  /**
+   * Consecutivo por sede vía $inc atómico (no requiere transacciones).
+   * Formato "FV-000123" (Factura de Venta): prefijo fijo + consecutivo, sin el
+   * nombre de la sede en el número.
+   */
+  private async nextSaleNumber(sedeId: string) {
     const counter = await this.counterModel
       .findOneAndUpdate(
         { _id: `sale:${sedeId}` },
@@ -60,7 +64,7 @@ export class SalesService {
         { upsert: true, new: true },
       )
       .exec();
-    return `${sedeCode.toUpperCase()}-${String(counter.seq).padStart(6, '0')}`;
+    return `FV-${String(counter.seq).padStart(6, '0')}`;
   }
 
   async create(
@@ -69,7 +73,8 @@ export class SalesService {
     orderId?: Types.ObjectId,
   ): Promise<SaleDocument> {
     this.assertSedeAccess(dto.sedeId, user);
-    const sede = await this.sedes.findOrFail(dto.sedeId);
+    // Valida que la sede exista (lanza 404 si no).
+    await this.sedes.findOrFail(dto.sedeId);
 
     // 0. Exigir caja abierta ANTES de tocar inventario: toda venta ocurre
     //    dentro de un turno de caja (integridad contable). Se enlaza al arqueo.
@@ -199,12 +204,13 @@ export class SalesService {
       };
     });
 
-    const saleNumber = await this.nextSaleNumber(dto.sedeId, sede.code);
+    const saleNumber = await this.nextSaleNumber(dto.sedeId);
     return this.saleModel.create({
       saleNumber,
       sedeId: new Types.ObjectId(dto.sedeId),
       cashierId: user.userId,
       cashierEmail: user.email,
+      cashierName: user.name,
       cajaSessionId: openCaja?._id,
       status: 'completed',
       lines: lineTotals.map((l) => ({
