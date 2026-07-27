@@ -11,6 +11,7 @@ import { SuppliersModule } from './modules/suppliers/suppliers.module';
 import { SalesModule } from './modules/sales/sales.module';
 import { CajaModule } from './modules/caja/caja.module';
 import { DiscountsModule } from './modules/discounts/discounts.module';
+import { EinvoicingModule } from './modules/einvoicing/einvoicing.module';
 
 @Module({
   imports: [
@@ -53,6 +54,7 @@ import { DiscountsModule } from './modules/discounts/discounts.module';
     SalesModule,
     CajaModule,
     DiscountsModule,
+    EinvoicingModule,
   ],
 })
 export class AppModule {}
