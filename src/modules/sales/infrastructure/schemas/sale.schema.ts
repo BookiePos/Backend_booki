@@ -48,8 +48,17 @@ class SaleLine {
   @Prop({ required: true, min: 0 })
   unitPrice!: number;
 
+  /** Bruto de la línea: qty × unitPrice, antes de descuento. */
   @Prop({ required: true, min: 0 })
   lineTotal!: number;
+
+  /** Descuento aplicado a esta línea (0 si ninguno). Neto = lineTotal − esto. */
+  @Prop({ default: 0, min: 0 })
+  discountAmount!: number;
+
+  /** Nombre del descuento aplicado (snapshot para el recibo). */
+  @Prop({ trim: true })
+  discountName?: string;
 
   /** Vestigial: la trazabilidad de lotes vive ahora en `components`. */
   @Prop({ type: [SaleConsumedLotSchema], default: [] })

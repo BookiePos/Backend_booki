@@ -36,6 +36,11 @@ export class SaleLineDto {
   @IsNumber()
   @IsPositive()
   qty!: number;
+
+  /** Descuento predefinido (de la sede) aplicado a esta línea. Opcional. */
+  @IsOptional()
+  @IsMongoId()
+  discountId?: string;
 }
 
 export class SalePaymentDto {

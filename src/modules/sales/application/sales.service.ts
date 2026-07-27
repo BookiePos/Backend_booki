@@ -19,6 +19,10 @@ import {
   CajaSession,
   CajaSessionDocument,
 } from '../../caja/infrastructure/schemas/caja-session.schema';
+import {
+  Discount,
+  DiscountDocument,
+} from '../../discounts/infrastructure/schemas/discount.schema';
 import { StockService } from '../../inventory/application/stock.service';
 import { ProductsService } from '../../inventory/application/products.service';
 import { SedesService } from '../../sedes/application/sedes.service';
@@ -38,6 +42,8 @@ export class SalesService {
     private readonly stockItemModel: Model<StockItemDocument>,
     @InjectModel(CajaSession.name)
     private readonly cajaSessionModel: Model<CajaSessionDocument>,
+    @InjectModel(Discount.name)
+    private readonly discountModel: Model<DiscountDocument>,
     private readonly stock: StockService,
     private readonly products: ProductsService,
     private readonly sedes: SedesService,
@@ -97,35 +103,81 @@ export class SalesService {
       ),
     );
 
+    // Descuentos por línea: predefinidos de la sede. Aplicarlos requiere permiso.
+    const lineDiscountIds = [
+      ...new Set(
+        dto.lines
+          .map((l) => l.discountId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const discountsById = new Map<string, DiscountDocument>();
+    const usesDiscounts = lineDiscountIds.length > 0 || Boolean(dto.discount);
+    if (usesDiscounts && !user.permissions.includes(PERMISSIONS.POS_DISCOUNT_AUTHORIZE)) {
+      throw new ForbiddenException('No tienes permiso para aplicar descuentos');
+    }
+    if (lineDiscountIds.length > 0) {
+      const docs = await this.discountModel
+        .find({
+          _id: { $in: lineDiscountIds.map((id) => new Types.ObjectId(id)) },
+          sedeId: new Types.ObjectId(dto.sedeId),
+          active: true,
+        })
+        .exec();
+      for (const d of docs) discountsById.set(d.id, d);
+      for (const id of lineDiscountIds) {
+        if (!discountsById.has(id)) {
+          throw new BadRequestException(
+            'Descuento no válido o inactivo para esta sede',
+          );
+        }
+      }
+    }
+
     const lineTotals = dto.lines.map((line) => {
       const product = catalogById.get(line.productId)!;
+      const gross = product.salePrice * line.qty;
+      let discountAmount = 0;
+      let discountName: string | undefined;
+      if (line.discountId) {
+        const d = discountsById.get(line.discountId)!;
+        const raw =
+          d.type === 'percent' ? (gross * Math.min(d.value, 100)) / 100 : d.value;
+        discountAmount = Math.round(Math.min(Math.max(raw, 0), gross) * 100) / 100;
+        discountName = d.name;
+      }
       return {
         product,
         qty: line.qty,
         unitPrice: product.salePrice,
-        lineTotal: product.salePrice * line.qty,
+        lineTotal: gross,
+        discountAmount,
+        discountName,
       };
     });
     const subtotal = lineTotals.reduce((sum, l) => sum + l.lineTotal, 0);
+    const lineDiscountTotal = lineTotals.reduce(
+      (sum, l) => sum + l.discountAmount,
+      0,
+    );
 
-    // Descuento opcional (requiere permiso). Se acota a [0, subtotal].
+    // Descuento opcional a nivel de venta, sobre lo que queda tras descuentos de
+    // línea. Se acota a [0, base].
     let discount: { type: 'amount' | 'percent'; value: number; amount: number } | undefined;
-    let discountTotal = 0;
+    let discountTotal = lineDiscountTotal;
     if (dto.discount && dto.discount.value > 0) {
-      if (!user.permissions.includes(PERMISSIONS.POS_DISCOUNT_AUTHORIZE)) {
-        throw new ForbiddenException(
-          'No tienes permiso para aplicar descuentos',
-        );
-      }
+      const base = subtotal - lineDiscountTotal;
       const raw =
         dto.discount.type === 'percent'
-          ? (subtotal * Math.min(dto.discount.value, 100)) / 100
+          ? (base * Math.min(dto.discount.value, 100)) / 100
           : dto.discount.value;
-      discountTotal = Math.round(Math.min(Math.max(raw, 0), subtotal) * 100) / 100;
+      const saleLevel =
+        Math.round(Math.min(Math.max(raw, 0), base) * 100) / 100;
+      discountTotal = lineDiscountTotal + saleLevel;
       discount = {
         type: dto.discount.type,
         value: dto.discount.value,
-        amount: discountTotal,
+        amount: saleLevel,
       };
     }
 
@@ -221,6 +273,8 @@ export class SalesService {
         qty: l.qty,
         unitPrice: l.unitPrice,
         lineTotal: l.lineTotal,
+        discountAmount: l.discountAmount,
+        discountName: l.discountName,
       })),
       components,
       subtotal,
@@ -293,6 +347,26 @@ export class SalesService {
         .exec(),
     ]);
     return { total, page: current, limit: capped, rows };
+  }
+
+  /** Resumen de ventas de HOY en una sede: cantidad y total en dinero (sin anuladas). */
+  async statsToday(
+    sedeId: string,
+    user: JwtUser,
+  ): Promise<{ count: number; total: number }> {
+    this.assertSedeAccess(sedeId, user);
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const sales = await this.saleModel
+      .find({
+        sedeId: new Types.ObjectId(sedeId),
+        status: 'completed',
+        createdAt: { $gte: start },
+      })
+      .select('total')
+      .exec();
+    const total = sales.reduce((sum, s) => sum + s.total, 0);
+    return { count: sales.length, total };
   }
 
   async getOrFail(id: string): Promise<SaleDocument> {

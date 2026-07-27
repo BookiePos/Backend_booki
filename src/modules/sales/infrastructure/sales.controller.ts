@@ -44,6 +44,14 @@ export class SalesController {
     );
   }
 
+  /** Resumen de ventas de hoy (cantidad + total) de una sede. Antes de :id. */
+  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @Get('stats')
+  stats(@Query('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
+    if (!sedeId) throw new BadRequestException('sedeId es obligatorio');
+    return this.sales.statsToday(sedeId, user);
+  }
+
   @RequirePermissions(PERMISSIONS.POS_SELL)
   @Get(':id')
   get(@Param('id') id: string) {

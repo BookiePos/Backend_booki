@@ -21,12 +21,14 @@ import { OrdersController } from './infrastructure/orders.controller';
 import { InventoryModule } from '../inventory/inventory.module';
 import { SedesModule } from '../sedes/sedes.module';
 import { CatalogModule } from '../catalog/catalog.module';
+import { DiscountsModule } from '../discounts/discounts.module';
 
 @Module({
   imports: [
     InventoryModule,
     SedesModule,
     CatalogModule,
+    DiscountsModule,
     MongooseModule.forFeature([
       { name: Sale.name, schema: SaleSchema },
       { name: Order.name, schema: OrderSchema },

@@ -10,6 +10,7 @@ import { CatalogModule } from './modules/catalog/catalog.module';
 import { SuppliersModule } from './modules/suppliers/suppliers.module';
 import { SalesModule } from './modules/sales/sales.module';
 import { CajaModule } from './modules/caja/caja.module';
+import { DiscountsModule } from './modules/discounts/discounts.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { CajaModule } from './modules/caja/caja.module';
     SuppliersModule,
     SalesModule,
     CajaModule,
+    DiscountsModule,
   ],
 })
 export class AppModule {}
