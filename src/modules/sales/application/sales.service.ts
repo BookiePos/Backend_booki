@@ -181,8 +181,29 @@ export class SalesService {
       };
     }
 
-    const taxTotal = 0;
-    const total = subtotal - discountTotal + taxTotal;
+    // Discriminación de IVA (el precio YA incluye IVA). El descuento de venta se
+    // prorratea entre líneas según su neto antes de separar base + IVA.
+    const saleLevelDiscount = discountTotal - lineDiscountTotal;
+    const netSum = subtotal - lineDiscountTotal;
+    const linesWithTax = lineTotals.map((l) => {
+      const net = l.lineTotal - l.discountAmount;
+      const saleShare = netSum > 0 ? (saleLevelDiscount * net) / netSum : 0;
+      const finalNet = net - saleShare;
+      const rate = l.product.ivaType === 'gravado' ? l.product.ivaRate : 0;
+      const base =
+        rate > 0
+          ? Math.round((finalNet / (1 + rate / 100)) * 100) / 100
+          : Math.round(finalNet * 100) / 100;
+      const iva = Math.round((finalNet - base) * 100) / 100;
+      return { ...l, ivaRate: rate, taxBase: base, taxAmount: iva };
+    });
+    const taxableBase =
+      Math.round(linesWithTax.reduce((s, l) => s + l.taxBase, 0) * 100) / 100;
+    const taxTotal =
+      Math.round(linesWithTax.reduce((s, l) => s + l.taxAmount, 0) * 100) / 100;
+
+    // El IVA está incluido en los precios: el total NO lo vuelve a sumar.
+    const total = subtotal - discountTotal;
 
     let received: number | undefined;
     let change: number | undefined;
@@ -265,7 +286,7 @@ export class SalesService {
       cashierName: user.name,
       cajaSessionId: openCaja?._id,
       status: 'completed',
-      lines: lineTotals.map((l) => ({
+      lines: linesWithTax.map((l) => ({
         productId: l.product._id,
         sku: l.product.sku,
         name: l.product.name,
@@ -275,11 +296,15 @@ export class SalesService {
         lineTotal: l.lineTotal,
         discountAmount: l.discountAmount,
         discountName: l.discountName,
+        ivaRate: l.ivaRate,
+        taxBase: l.taxBase,
+        taxAmount: l.taxAmount,
       })),
       components,
       subtotal,
       discount,
       discountTotal,
+      taxableBase,
       taxTotal,
       total,
       payment: { method: dto.payment.method, received, change },

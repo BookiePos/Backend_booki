@@ -60,6 +60,18 @@ class SaleLine {
   @Prop({ trim: true })
   discountName?: string;
 
+  /** Tarifa de IVA aplicada a la línea (0/5/19). El precio ya la incluye. */
+  @Prop({ default: 0, min: 0 })
+  ivaRate!: number;
+
+  /** Base gravable de la línea (neto sin IVA), para la factura electrónica. */
+  @Prop({ default: 0, min: 0 })
+  taxBase!: number;
+
+  /** IVA de la línea (incluido en el precio), para la factura electrónica. */
+  @Prop({ default: 0, min: 0 })
+  taxAmount!: number;
+
   /** Vestigial: la trazabilidad de lotes vive ahora en `components`. */
   @Prop({ type: [SaleConsumedLotSchema], default: [] })
   consumedLots!: SaleConsumedLot[];
@@ -187,7 +199,11 @@ export class Sale {
   @Prop({ default: 0, min: 0 })
   discountTotal!: number;
 
-  /** Impuestos: 0 hasta que exista el módulo de impuestos. */
+  /** Base gravable total (Σ bases de línea sin IVA). */
+  @Prop({ default: 0, min: 0 })
+  taxableBase!: number;
+
+  /** IVA total (incluido en los precios). Informativo para la factura. */
   @Prop({ default: 0, min: 0 })
   taxTotal!: number;
 

@@ -14,6 +14,10 @@ import {
 import {
   CATALOG_SOURCE_TYPES,
   CatalogSourceType,
+  IVA_RATES,
+  IVA_TYPES,
+  IvaRate,
+  IvaType,
 } from '../../domain/catalog.constants';
 import { RecipeLineDto } from './recipe-line.dto';
 
@@ -41,6 +45,14 @@ export class UpdateCatalogProductDto {
   @IsNumber()
   @Min(0)
   salePrice?: number;
+
+  @IsOptional()
+  @IsIn(IVA_RATES as readonly number[])
+  ivaRate?: IvaRate;
+
+  @IsOptional()
+  @IsIn(IVA_TYPES as readonly string[])
+  ivaType?: IvaType;
 
   @IsOptional()
   @IsIn(CATALOG_SOURCE_TYPES as readonly string[])

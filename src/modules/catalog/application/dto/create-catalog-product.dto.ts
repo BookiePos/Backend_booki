@@ -15,6 +15,10 @@ import {
 import {
   CATALOG_SOURCE_TYPES,
   CatalogSourceType,
+  IVA_RATES,
+  IVA_TYPES,
+  IvaRate,
+  IvaType,
 } from '../../domain/catalog.constants';
 import { RecipeLineDto } from './recipe-line.dto';
 
@@ -38,6 +42,16 @@ export class CreateCatalogProductDto {
   @IsNumber()
   @Min(0)
   salePrice!: number;
+
+  /** Tarifa de IVA (0/5/19); el precio ya la incluye. Default 19. */
+  @IsOptional()
+  @IsIn(IVA_RATES as readonly number[])
+  ivaRate?: IvaRate;
+
+  /** Tratamiento de IVA: gravado / exento / excluido. Default gravado. */
+  @IsOptional()
+  @IsIn(IVA_TYPES as readonly string[])
+  ivaType?: IvaType;
 
   @IsIn(CATALOG_SOURCE_TYPES as readonly string[])
   sourceType!: CatalogSourceType;

@@ -3,6 +3,10 @@ import { HydratedDocument, Types } from 'mongoose';
 import {
   CATALOG_SOURCE_TYPES,
   CatalogSourceType,
+  IVA_RATES,
+  IVA_TYPES,
+  IvaRate,
+  IvaType,
 } from '../../domain/catalog.constants';
 
 /** Línea de receta: un ingrediente de inventario y cuánto consume. */
@@ -40,9 +44,17 @@ export class CatalogProduct {
   @Prop({ type: Types.ObjectId, ref: 'ProductCategory' })
   categoryId?: Types.ObjectId;
 
-  /** Precio de venta al público. */
+  /** Precio de venta al público (YA incluye IVA). */
   @Prop({ required: true, min: 0, default: 0 })
   salePrice!: number;
+
+  /** Tarifa de IVA del producto (0/5/19). El precio ya la incluye. */
+  @Prop({ required: true, enum: [...IVA_RATES], default: 19 })
+  ivaRate!: IvaRate;
+
+  /** Tratamiento de IVA: gravado / exento / excluido. */
+  @Prop({ required: true, enum: [...IVA_TYPES], default: 'gravado' })
+  ivaType!: IvaType;
 
   /** Cómo se abastece: directo del inventario o con receta. */
   @Prop({ required: true, enum: CATALOG_SOURCE_TYPES, default: 'inventory' })

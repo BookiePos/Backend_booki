@@ -81,6 +81,8 @@ export class CatalogService {
         ? new Types.ObjectId(dto.categoryId)
         : undefined,
       salePrice: dto.salePrice,
+      ivaRate: dto.ivaRate ?? 19,
+      ivaType: dto.ivaType ?? 'gravado',
       active: dto.active ?? true,
       ...sourceFields,
     });
@@ -98,6 +100,8 @@ export class CatalogService {
     if (dto.description !== undefined)
       product.description = dto.description || undefined;
     if (dto.salePrice !== undefined) product.salePrice = dto.salePrice;
+    if (dto.ivaRate !== undefined) product.ivaRate = dto.ivaRate;
+    if (dto.ivaType !== undefined) product.ivaType = dto.ivaType;
     if (dto.active !== undefined) product.active = dto.active;
 
     if (dto.categoryId !== undefined) {
