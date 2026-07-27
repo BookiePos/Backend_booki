@@ -8,6 +8,10 @@ import {
   User,
   UserSchema,
 } from '../core-auth/infrastructure/schemas/user.schema';
+import {
+  Sede,
+  SedeSchema,
+} from '../sedes/infrastructure/schemas/sede.schema';
 import { AttendanceService } from './application/attendance.service';
 import { AttendanceController } from './infrastructure/attendance.controller';
 
@@ -16,6 +20,7 @@ import { AttendanceController } from './infrastructure/attendance.controller';
     MongooseModule.forFeature([
       { name: AttendanceRecord.name, schema: AttendanceRecordSchema },
       { name: User.name, schema: UserSchema },
+      { name: Sede.name, schema: SedeSchema },
     ]),
   ],
   controllers: [AttendanceController],

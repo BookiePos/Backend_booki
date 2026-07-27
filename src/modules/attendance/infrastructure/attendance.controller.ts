@@ -25,6 +25,24 @@ export class AttendanceController {
     return this.attendance.workers(sedeId, user);
   }
 
+  /**
+   * Horas trabajadas por trabajador y sede en un rango (YYYY-MM-DD). Sin
+   * `sedeId` agrega sobre todas las sedes que el usuario puede ver.
+   */
+  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @Get('summary')
+  summary(
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Query('sedeId') sedeId: string | undefined,
+    @CurrentUser() user: JwtUser,
+  ) {
+    if (!from || !to) {
+      throw new BadRequestException('from y to son obligatorios');
+    }
+    return this.attendance.summary(from, to, sedeId, user);
+  }
+
   /** Registros de asistencia de una sede en un día (YYYY-MM-DD). */
   @RequirePermissions(PERMISSIONS.POS_SELL)
   @Get()
