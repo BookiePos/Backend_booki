@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import {
@@ -151,7 +151,11 @@ export class AttendanceService {
     }));
   }
 
-  /** Registra/actualiza las horas de un trabajador en un día. */
+  /**
+   * Registra las horas de un trabajador en un día. Write-once: una hora de
+   * entrada o de salida ya registrada NO se puede modificar (solo se puede
+   * completar la que aún falte). Así el control de horas es inmutable.
+   */
   async upsert(
     dto: UpsertAttendanceDto,
     user: JwtUser,
@@ -161,8 +165,23 @@ export class AttendanceService {
     const existing = await this.model
       .findOne({ sedeId, userId: dto.userId, workDate: dto.workDate })
       .exec();
-    const checkIn = dto.checkIn ?? existing?.checkIn;
-    const checkOut = dto.checkOut ?? existing?.checkOut;
+
+    // La hora ya registrada es inmutable: reintentar con el mismo valor es un
+    // no-op, pero intentar cambiarla se rechaza.
+    if (existing?.checkIn && dto.checkIn && dto.checkIn !== existing.checkIn) {
+      throw new BadRequestException(
+        'La hora de entrada ya fue registrada y no puede modificarse.',
+      );
+    }
+    if (existing?.checkOut && dto.checkOut && dto.checkOut !== existing.checkOut) {
+      throw new BadRequestException(
+        'La hora de salida ya fue registrada y no puede modificarse.',
+      );
+    }
+
+    // Lo ya guardado manda; solo se rellena lo que falte.
+    const checkIn = existing?.checkIn ?? dto.checkIn;
+    const checkOut = existing?.checkOut ?? dto.checkOut;
     const worker = Types.ObjectId.isValid(dto.userId)
       ? await this.users.findById(dto.userId).select('name').exec()
       : null;
