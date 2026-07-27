@@ -58,6 +58,23 @@ export class SedesService {
     if (dto.phone !== undefined) sede.phone = dto.phone || undefined;
     if (dto.legalNote !== undefined)
       sede.legalNote = dto.legalNote || undefined;
+
+    // Perfil fiscal (factura electrónica)
+    if (dto.nitDv !== undefined) sede.nitDv = dto.nitDv || undefined;
+    if (dto.tipoPersona !== undefined) sede.tipoPersona = dto.tipoPersona;
+    if (dto.responsabilidadFiscal !== undefined)
+      sede.responsabilidadFiscal = dto.responsabilidadFiscal;
+    if (dto.ciiu !== undefined) sede.ciiu = dto.ciiu || undefined;
+    if (dto.departamento !== undefined)
+      sede.departamento = dto.departamento || undefined;
+    if (dto.ciudad !== undefined) sede.ciudad = dto.ciudad || undefined;
+    if (dto.emailFacturacion !== undefined)
+      sede.emailFacturacion = dto.emailFacturacion || undefined;
+    if (dto.resolucionFe !== undefined) {
+      // Mongoose castea las fechas ISO string del DTO a Date al guardar.
+      sede.set('resolucionFe', dto.resolucionFe);
+    }
+
     if (dto.active !== undefined) sede.active = dto.active;
 
     try {

@@ -1,4 +1,18 @@
-import { IsOptional, IsString, MinLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  IsIn,
+  IsOptional,
+  IsString,
+  MinLength,
+  ValidateNested,
+} from 'class-validator';
+import {
+  RESPONSABILIDAD_FISCAL,
+  ResponsabilidadFiscal,
+  TIPO_PERSONA,
+  TipoPersona,
+} from '../../domain/sede.constants';
+import { ResolucionFeDto } from './resolucion-fe.dto';
 
 export class CreateSedeDto {
   @IsString()
@@ -32,4 +46,38 @@ export class CreateSedeDto {
   @IsOptional()
   @IsString()
   legalNote?: string;
+
+  // ── Perfil fiscal (factura electrónica) ──────────────────────────────────────
+  @IsOptional()
+  @IsString()
+  nitDv?: string;
+
+  @IsOptional()
+  @IsIn(TIPO_PERSONA as readonly string[])
+  tipoPersona?: TipoPersona;
+
+  @IsOptional()
+  @IsIn(RESPONSABILIDAD_FISCAL as readonly string[])
+  responsabilidadFiscal?: ResponsabilidadFiscal;
+
+  @IsOptional()
+  @IsString()
+  ciiu?: string;
+
+  @IsOptional()
+  @IsString()
+  departamento?: string;
+
+  @IsOptional()
+  @IsString()
+  ciudad?: string;
+
+  @IsOptional()
+  @IsString()
+  emailFacturacion?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ResolucionFeDto)
+  resolucionFe?: ResolucionFeDto;
 }
