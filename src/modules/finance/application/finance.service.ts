@@ -107,6 +107,53 @@ export interface FinanceOverview {
   utilidadMonth: number;
 }
 
+/** Semana de la proyección de flujo de caja. */
+export interface CashflowBucket {
+  index: number;
+  /** Primer día del bucket (YYYY-MM-DD). */
+  from: string;
+  /** Último día inclusivo del bucket (YYYY-MM-DD). */
+  to: string;
+  inflows: { receivables: number; projectedSales: number; total: number };
+  outflows: {
+    payables: number;
+    recurringExpenses: number;
+    payroll: number;
+    total: number;
+  };
+  net: number;
+  /** Saldo acumulado al cierre del bucket. */
+  balance: number;
+}
+
+/** Proyección de flujo de caja / runway. */
+export interface CashflowProjection {
+  sedeId?: string | null;
+  from: string;
+  to: string;
+  horizonDays: number;
+  includeProjections: boolean;
+  /** Saldo actual de tesorería (Σ cuentas de bancos/caja). */
+  openingBalance: number;
+  buckets: CashflowBucket[];
+  /** Compromisos ya vencidos (se ubican en la primera semana). */
+  overdue: { receivables: number; payables: number };
+  /** Supuestos de los estimados recurrentes (mensuales / diarios). */
+  assumptions: {
+    monthlyRecurringExpenses: number;
+    monthlyPayroll: number;
+    avgDailySales: number;
+  };
+  /** Si el saldo proyectado cruza a negativo dentro del horizonte. */
+  runway: { negative: boolean; date?: string; weeks?: number };
+  totals: {
+    inflows: number;
+    outflows: number;
+    net: number;
+    endingBalance: number;
+  };
+}
+
 /** Línea del comparativo presupuesto vs real. */
 export interface BudgetVsActualLine {
   categoryId: string;
@@ -947,5 +994,210 @@ export class FinanceService {
     const ov = await this.caja.overview(user);
     const rows = sedeId ? ov.rows.filter((r) => r.sedeId === sedeId) : ov.rows;
     return cop(rows.reduce((a, r) => a + (r.expectedCash ?? 0), 0));
+  }
+
+  // ── Flujo de caja proyectado / runway ───────────────────────────────────────
+
+  /**
+   * Proyecta el flujo de caja semana a semana sobre un horizonte (default 90d):
+   * parte del saldo de tesorería y suma/resta los compromisos ciertos (CxC por
+   * cobrar y CxP por pagar, por su vencimiento; los vencidos caen en la 1.ª
+   * semana) y, si se piden, los estimados recurrentes (ventas promedio, nómina
+   * y gastos recurrentes, prorrateados por día). Calcula el runway: la semana en
+   * que el saldo proyectado se vuelve negativo, si ocurre.
+   */
+  async cashflowProjection(
+    user: JwtUser,
+    opts: { days?: number; sedeId?: string; includeProjections?: boolean },
+  ): Promise<CashflowProjection> {
+    const scope = this.resolveSedeScope(user, opts.sedeId);
+    const horizonDays = Math.min(Math.max(opts.days ?? 90, 7), 365);
+    const nBuckets = Math.ceil(horizonDays / 7);
+    const includeProjections = opts.includeProjections ?? true;
+
+    const todayStr = this.todayStr();
+    const today = new Date(`${todayStr}T00:00:00`);
+    const dayMs = 24 * 60 * 60 * 1000;
+    const weekMs = 7 * dayMs;
+    const todayMs = today.getTime();
+    const sedeObjIds = scope ? scope.map((id) => new Types.ObjectId(id)) : null;
+
+    // Saldo inicial: Σ saldos de cuentas de tesorería del alcance (+ las
+    // consolidadas sin sede), igual que listAccounts.
+    const acctFilter: Record<string, unknown> = {};
+    if (sedeObjIds) {
+      acctFilter.$or = [{ sedeId: { $in: sedeObjIds } }, { sedeId: null }];
+    }
+    const accounts = await this.accounts.find(acctFilter).exec();
+    let openingBalance = 0;
+    for (const acc of accounts) openingBalance += await this.accountBalance(acc);
+    openingBalance = cop(openingBalance);
+
+    // CxC y CxP vivas del alcance (abiertas o con abono parcial).
+    const liveFilter = (): Record<string, unknown> => {
+      const f: Record<string, unknown> = { status: { $in: ['open', 'partial'] } };
+      if (sedeObjIds) f.sedeId = { $in: sedeObjIds };
+      return f;
+    };
+    const [receivables, payables] = await Promise.all([
+      this.receivables
+        .find(liveFilter())
+        .select('amount paidAmount dueDate')
+        .exec(),
+      this.payables.find(liveFilter()).select('amount paidAmount dueDate').exec(),
+    ]);
+
+    // Estimados recurrentes (opcionales, prorrateados por día).
+    let monthlyRecurringExpenses = 0;
+    let monthlyPayroll = 0;
+    let avgDailySales = 0;
+    if (includeProjections) {
+      // Gastos recurrentes del último mes como base mensual.
+      const from30 = this.toDateStr(new Date(todayMs - 30 * dayMs));
+      const recFilter: Record<string, unknown> = {
+        recurring: true,
+        date: { $gte: from30, $lte: todayStr },
+      };
+      if (sedeObjIds) recFilter.sedeId = { $in: sedeObjIds };
+      const recs = await this.expenses.find(recFilter).select('amount').exec();
+      monthlyRecurringExpenses = cop(
+        recs.reduce((a, e) => a + (e.amount || 0), 0),
+      );
+
+      // Nómina mensual estimada = costo − provisiones de la corrida más reciente
+      // (las provisiones no son caja mensual).
+      const runFilter: Record<string, unknown> = {};
+      if (sedeObjIds) {
+        runFilter.$or = [
+          { coverage: 'sede', sedeId: { $in: sedeObjIds } },
+          { coverage: 'all' },
+        ];
+      }
+      const lastRun = await this.runs
+        .find(runFilter)
+        .sort({ period: -1, createdAt: -1 })
+        .limit(1)
+        .exec();
+      if (lastRun[0]) {
+        const t = lastRun[0].totals;
+        monthlyPayroll = clampNonNegative((t?.costo || 0) - (t?.provisiones || 0));
+      }
+
+      // Ventas promedio/día de los últimos 30 días.
+      const salesFilter: Record<string, unknown> = {
+        status: 'completed',
+        createdAt: {
+          $gte: new Date(todayMs - 30 * dayMs),
+          $lt: new Date(todayMs + dayMs),
+        },
+      };
+      if (sedeObjIds) salesFilter.sedeId = { $in: sedeObjIds };
+      const sales = await this.sales.find(salesFilter).select('total').exec();
+      const sales30 = sales.reduce((a, s) => a + (s.total || 0), 0);
+      avgDailySales = cop(sales30 / 30);
+    }
+
+    // Índice de bucket para una fecha de vencimiento (vencido → semana 0).
+    const bucketIdx = (dueDate: string): number => {
+      const d = new Date(`${dueDate.slice(0, 10)}T00:00:00`).getTime();
+      const idx = Math.floor((d - todayMs) / weekMs);
+      if (idx < 0) return 0;
+      return idx >= nBuckets ? -1 : idx;
+    };
+
+    const perDayRecurring = includeProjections ? monthlyRecurringExpenses / 30 : 0;
+    const perDayPayroll = includeProjections ? monthlyPayroll / 30 : 0;
+
+    const buckets: CashflowBucket[] = [];
+    for (let i = 0; i < nBuckets; i += 1) {
+      const start = new Date(todayMs + i * weekMs);
+      const end = new Date(start.getTime() + weekMs - dayMs);
+      buckets.push({
+        index: i,
+        from: this.toDateStr(start),
+        to: this.toDateStr(end),
+        inflows: {
+          receivables: 0,
+          projectedSales: cop(avgDailySales * 7),
+          total: 0,
+        },
+        outflows: {
+          payables: 0,
+          recurringExpenses: cop(perDayRecurring * 7),
+          payroll: cop(perDayPayroll * 7),
+          total: 0,
+        },
+        net: 0,
+        balance: 0,
+      });
+    }
+
+    let overdueReceivables = 0;
+    let overduePayables = 0;
+    for (const r of receivables) {
+      const pending = clampNonNegative(r.amount - r.paidAmount);
+      if (pending <= 0) continue;
+      const b = buckets[bucketIdx(r.dueDate)];
+      if (!b) continue;
+      b.inflows.receivables += pending;
+      if (new Date(`${r.dueDate.slice(0, 10)}T00:00:00`).getTime() < todayMs) {
+        overdueReceivables += pending;
+      }
+    }
+    for (const p of payables) {
+      const pending = clampNonNegative(p.amount - p.paidAmount);
+      if (pending <= 0) continue;
+      const b = buckets[bucketIdx(p.dueDate)];
+      if (!b) continue;
+      b.outflows.payables += pending;
+      if (new Date(`${p.dueDate.slice(0, 10)}T00:00:00`).getTime() < todayMs) {
+        overduePayables += pending;
+      }
+    }
+
+    // Totales por semana + saldo acumulado + runway.
+    let running = openingBalance;
+    let runway: CashflowProjection['runway'] = { negative: false };
+    let totalIn = 0;
+    let totalOut = 0;
+    for (const b of buckets) {
+      b.inflows.receivables = cop(b.inflows.receivables);
+      b.inflows.total = cop(b.inflows.receivables + b.inflows.projectedSales);
+      b.outflows.payables = cop(b.outflows.payables);
+      b.outflows.total = cop(
+        b.outflows.payables + b.outflows.recurringExpenses + b.outflows.payroll,
+      );
+      b.net = cop(b.inflows.total - b.outflows.total);
+      running = cop(running + b.net);
+      b.balance = running;
+      totalIn += b.inflows.total;
+      totalOut += b.outflows.total;
+      if (!runway.negative && running < 0) {
+        runway = { negative: true, date: b.to, weeks: b.index + 1 };
+      }
+    }
+
+    const lastBucket = buckets[buckets.length - 1];
+    return {
+      sedeId: opts.sedeId ?? null,
+      from: this.toDateStr(today),
+      to: lastBucket ? lastBucket.to : todayStr,
+      horizonDays,
+      includeProjections,
+      openingBalance,
+      buckets,
+      overdue: {
+        receivables: cop(overdueReceivables),
+        payables: cop(overduePayables),
+      },
+      assumptions: { monthlyRecurringExpenses, monthlyPayroll, avgDailySales },
+      runway,
+      totals: {
+        inflows: cop(totalIn),
+        outflows: cop(totalOut),
+        net: cop(totalIn - totalOut),
+        endingBalance: running,
+      },
+    };
   }
 }

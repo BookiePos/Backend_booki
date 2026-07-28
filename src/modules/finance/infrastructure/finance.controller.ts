@@ -260,4 +260,19 @@ export class FinanceController {
   overview(@CurrentUser() user: JwtUser, @Query('sedeId') sedeId?: string) {
     return this.finance.overview(user, sedeId);
   }
+
+  @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @Get('cashflow')
+  cashflow(
+    @CurrentUser() user: JwtUser,
+    @Query('days') days?: string,
+    @Query('sedeId') sedeId?: string,
+    @Query('includeProjections') includeProjections?: string,
+  ) {
+    return this.finance.cashflowProjection(user, {
+      days: days ? Number.parseInt(days, 10) : undefined,
+      sedeId,
+      includeProjections: includeProjections !== 'false',
+    });
+  }
 }
