@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -6,6 +7,7 @@ import {
   Param,
   Post,
   Put,
+  Query,
 } from '@nestjs/common';
 import { PayrollService } from '../application/payroll.service';
 import { UpdatePayrollSettingsDto } from '../application/dto/update-settings.dto';
@@ -37,6 +39,19 @@ export class PayrollController {
   @Post('preview')
   preview(@Body() dto: PreviewPayrollDto) {
     return this.payroll.preview(dto);
+  }
+
+  @RequirePermissions(PERMISSIONS.USERS_MANAGE)
+  @Get('novedades-turnos')
+  novedadesTurnos(
+    @Query('employeeId') employeeId: string,
+    @Query('from') from: string,
+    @Query('to') to: string,
+  ) {
+    if (!employeeId || !from || !to) {
+      throw new BadRequestException('employeeId, from y to son obligatorios');
+    }
+    return this.payroll.novedadesTurnos(employeeId, from, to);
   }
 
   @RequirePermissions(PERMISSIONS.USERS_MANAGE)

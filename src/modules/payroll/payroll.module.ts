@@ -12,6 +12,10 @@ import {
   Employee,
   EmployeeSchema,
 } from '../employees/infrastructure/schemas/employee.schema';
+import {
+  AttendanceRecord,
+  AttendanceRecordSchema,
+} from '../attendance/infrastructure/schemas/attendance-record.schema';
 import { PayrollService } from './application/payroll.service';
 import { PayrollController } from './infrastructure/payroll.controller';
 
@@ -21,6 +25,7 @@ import { PayrollController } from './infrastructure/payroll.controller';
       { name: PayrollSettings.name, schema: PayrollSettingsSchema },
       { name: PayrollRun.name, schema: PayrollRunSchema },
       { name: Employee.name, schema: EmployeeSchema },
+      { name: AttendanceRecord.name, schema: AttendanceRecordSchema },
     ]),
   ],
   controllers: [PayrollController],

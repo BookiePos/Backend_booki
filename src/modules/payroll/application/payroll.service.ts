@@ -19,6 +19,14 @@ import {
   EmployeeDocument,
 } from '../../employees/infrastructure/schemas/employee.schema';
 import {
+  AttendanceRecord,
+  AttendanceRecordDocument,
+} from '../../attendance/infrastructure/schemas/attendance-record.schema';
+import {
+  classifyTurnos,
+  NovedadesTurnos,
+} from '../domain/turnos-classify';
+import {
   DEFAULT_PAYROLL_SETTINGS,
   PayrollSettingsData,
 } from '../domain/payroll.constants';
@@ -61,7 +69,28 @@ export class PayrollService {
     private readonly runs: Model<PayrollRunDocument>,
     @InjectModel(Employee.name)
     private readonly employees: Model<EmployeeDocument>,
+    @InjectModel(AttendanceRecord.name)
+    private readonly attendance: Model<AttendanceRecordDocument>,
   ) {}
+
+  /** Novedades (horas extra/recargos) sugeridas desde Turnos para un período. */
+  async novedadesTurnos(
+    employeeId: string,
+    from: string,
+    to: string,
+  ): Promise<NovedadesTurnos> {
+    const recs = await this.attendance
+      .find({ employeeId, workDate: { $gte: from, $lte: to } })
+      .select('workDate checkIn checkOut')
+      .exec();
+    return classifyTurnos(
+      recs.map((r) => ({
+        workDate: r.workDate,
+        checkIn: r.checkIn,
+        checkOut: r.checkOut,
+      })),
+    );
+  }
 
   async getSettings(): Promise<PayrollSettingsDocument> {
     const doc = await this.settings.findOne().exec();
