@@ -16,6 +16,13 @@ import { AttendanceModule } from './modules/attendance/attendance.module';
 import { EmployeesModule } from './modules/employees/employees.module';
 import { PayrollModule } from './modules/payroll/payroll.module';
 import { FinanceModule } from './modules/finance/finance.module';
+import { CoreParamsModule } from './modules/core-params/core-params.module';
+import { CoreTaxModule } from './modules/core-tax/core-tax.module';
+import { CoreAuditModule } from './modules/core-audit/core-audit.module';
+import { CoreLedgerModule } from './modules/core-ledger/core-ledger.module';
+import { CoreReportsModule } from './modules/core-reports/core-reports.module';
+import { PurchasingModule } from './modules/purchasing/purchasing.module';
+import { RestaurantModule } from './modules/restaurant/restaurant.module';
 
 @Module({
   imports: [
@@ -63,6 +70,14 @@ import { FinanceModule } from './modules/finance/finance.module';
     EmployeesModule,
     PayrollModule,
     FinanceModule,
+    CoreParamsModule,
+    CoreTaxModule,
+    CoreLedgerModule,
+    CoreReportsModule,
+    PurchasingModule,
+    RestaurantModule,
+    // La auditoría va de último: su interceptor global envuelve al resto.
+    CoreAuditModule,
   ],
 })
 export class AppModule {}
