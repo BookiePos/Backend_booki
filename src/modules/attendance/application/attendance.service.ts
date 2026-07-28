@@ -6,9 +6,9 @@ import {
   AttendanceRecordDocument,
 } from '../infrastructure/schemas/attendance-record.schema';
 import {
-  User,
-  UserDocument,
-} from '../../core-auth/infrastructure/schemas/user.schema';
+  Employee,
+  EmployeeDocument,
+} from '../../employees/infrastructure/schemas/employee.schema';
 import { Sede, SedeDocument } from '../../sedes/infrastructure/schemas/sede.schema';
 import { UpsertAttendanceDto } from './dto/upsert-attendance.dto';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
@@ -17,14 +17,14 @@ import {
   allowedSedeIds,
 } from '../../core-auth/domain/sede-access';
 
+/** Empleado del expediente asignado a la sede (para el control de horas). */
 export interface WorkerView {
   id: string;
   name: string;
-  email: string;
-  role: string;
+  position: string;
 }
 
-/** Horas trabajadas acumuladas de un trabajador en una sede (para "Turnos"). */
+/** Horas trabajadas acumuladas de un empleado en una sede (para "Turnos"). */
 export interface AttendanceSummaryRow {
   userId: string;
   userName: string;
@@ -49,8 +49,8 @@ function computeHours(checkIn?: string, checkOut?: string): number {
 }
 
 interface SummaryAggRow {
-  _id: { userId: string; sedeId: Types.ObjectId };
-  userName: string;
+  _id: { employeeId: string; sedeId: Types.ObjectId };
+  employeeName: string;
   hours: number;
   days: number;
 }
@@ -60,25 +60,24 @@ export class AttendanceService {
   constructor(
     @InjectModel(AttendanceRecord.name)
     private readonly model: Model<AttendanceRecordDocument>,
-    @InjectModel(User.name)
-    private readonly users: Model<UserDocument>,
+    @InjectModel(Employee.name)
+    private readonly employees: Model<EmployeeDocument>,
     @InjectModel(Sede.name)
     private readonly sedes: Model<SedeDocument>,
   ) {}
 
-  /** Trabajadores vinculados a la sede (activos). */
+  /** Empleados (activos) asignados a la sede — del expediente de RRHH. */
   async workers(sedeId: string, user: JwtUser): Promise<WorkerView[]> {
     assertSedeAccess(user, sedeId);
-    const docs = await this.users
-      .find({ sedeIds: new Types.ObjectId(sedeId), active: true })
-      .select('name email role')
-      .sort({ name: 1 })
+    const docs = await this.employees
+      .find({ sedeId: new Types.ObjectId(sedeId), status: 'activo' })
+      .select('firstName lastName positionName')
+      .sort({ lastName: 1, firstName: 1 })
       .exec();
-    return docs.map((u) => ({
-      id: u.id,
-      name: u.name,
-      email: u.email,
-      role: u.role,
+    return docs.map((e) => ({
+      id: e.id,
+      name: `${e.firstName} ${e.lastName}`.trim(),
+      position: e.positionName ?? '',
     }));
   }
 
@@ -91,12 +90,12 @@ export class AttendanceService {
     assertSedeAccess(user, sedeId);
     return this.model
       .find({ sedeId: new Types.ObjectId(sedeId), workDate })
-      .sort({ userName: 1 })
+      .sort({ employeeName: 1 })
       .exec();
   }
 
   /**
-   * Horas trabajadas por trabajador y sede en un rango de fechas. Base de
+   * Horas trabajadas por empleado y sede en un rango de fechas. Base de
    * "Turnos" / nómina. Alcance: si llega `sedeIdParam` se limita a esa sede
    * (con control de acceso); si no, agrega sobre las sedes que el usuario puede
    * ver (todas, para el dueño).
@@ -125,13 +124,13 @@ export class AttendanceService {
       { $match: match },
       {
         $group: {
-          _id: { userId: '$userId', sedeId: '$sedeId' },
-          userName: { $last: '$userName' },
+          _id: { employeeId: '$employeeId', sedeId: '$sedeId' },
+          employeeName: { $last: '$employeeName' },
           hours: { $sum: '$hours' },
           days: { $sum: 1 },
         },
       },
-      { $sort: { userName: 1 } },
+      { $sort: { employeeName: 1 } },
     ]);
 
     const sedeIds = [...new Set(rows.map((r) => String(r._id.sedeId)))];
@@ -142,8 +141,8 @@ export class AttendanceService {
     const nameById = new Map(sedeDocs.map((s) => [s.id, s.name]));
 
     return rows.map((r) => ({
-      userId: r._id.userId,
-      userName: r.userName,
+      userId: r._id.employeeId,
+      userName: r.employeeName,
       sedeId: String(r._id.sedeId),
       sedeName: nameById.get(String(r._id.sedeId)) ?? 'Sede',
       hours: Math.round(r.hours * 100) / 100,
@@ -152,7 +151,7 @@ export class AttendanceService {
   }
 
   /**
-   * Registra las horas de un trabajador en un día. Write-once: una hora de
+   * Registra las horas de un empleado en un día. Write-once: una hora de
    * entrada o de salida ya registrada NO se puede modificar (solo se puede
    * completar la que aún falte). Así el control de horas es inmutable.
    */
@@ -163,7 +162,7 @@ export class AttendanceService {
     assertSedeAccess(user, dto.sedeId);
     const sedeId = new Types.ObjectId(dto.sedeId);
     const existing = await this.model
-      .findOne({ sedeId, userId: dto.userId, workDate: dto.workDate })
+      .findOne({ sedeId, employeeId: dto.employeeId, workDate: dto.workDate })
       .exec();
 
     // La hora ya registrada es inmutable: reintentar con el mismo valor es un
@@ -182,18 +181,24 @@ export class AttendanceService {
     // Lo ya guardado manda; solo se rellena lo que falte.
     const checkIn = existing?.checkIn ?? dto.checkIn;
     const checkOut = existing?.checkOut ?? dto.checkOut;
-    const worker = Types.ObjectId.isValid(dto.userId)
-      ? await this.users.findById(dto.userId).select('name').exec()
+    const employee = Types.ObjectId.isValid(dto.employeeId)
+      ? await this.employees
+          .findById(dto.employeeId)
+          .select('firstName lastName')
+          .exec()
       : null;
+    const employeeName = employee
+      ? `${employee.firstName} ${employee.lastName}`.trim()
+      : (existing?.employeeName ?? 'Empleado');
     const record = await this.model
       .findOneAndUpdate(
-        { sedeId, userId: dto.userId, workDate: dto.workDate },
+        { sedeId, employeeId: dto.employeeId, workDate: dto.workDate },
         {
           $set: {
             checkIn,
             checkOut,
             hours: computeHours(checkIn, checkOut),
-            userName: worker?.name ?? existing?.userName ?? 'Trabajador',
+            employeeName,
             note: dto.note ?? existing?.note,
             registeredByEmail: user.email,
           },
