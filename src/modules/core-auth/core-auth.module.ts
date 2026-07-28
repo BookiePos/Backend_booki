@@ -64,6 +64,6 @@ import { PermissionsGuard } from './infrastructure/guards/permissions.guard';
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
   ],
-  exports: [UsersService, RolesService],
+  exports: [UsersService, RolesService, MailService],
 })
 export class CoreAuthModule {}

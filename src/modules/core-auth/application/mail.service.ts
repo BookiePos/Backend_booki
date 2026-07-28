@@ -9,10 +9,22 @@ interface InvitationEmail {
   inviterName?: string;
 }
 
+interface PayslipEmail {
+  to: string;
+  employeeName: string;
+  period: string;
+  netoPagar: string;
+  employerName: string;
+  pdf: Buffer;
+  filename: string;
+}
+
 export interface MailResult {
   sent: boolean;
   id?: string;
   error?: string;
+  /** true cuando no hay proveedor configurado y solo se registró en el log. */
+  simulated?: boolean;
 }
 
 /**
@@ -63,6 +75,62 @@ export class MailService {
       this.logger.error(`Fallo enviando invitación a ${msg.to}: ${message}`);
       return { sent: false, error: message };
     }
+  }
+
+  /** Envía el comprobante de nómina (PDF adjunto) al correo del empleado. */
+  async sendPayslip(msg: PayslipEmail): Promise<MailResult> {
+    const subject = `Comprobante de nómina · ${msg.period}`;
+    if (!this.resend) {
+      this.logger.log(
+        `[correo simulado] Comprobante de nómina para ${msg.to} ` +
+          `(${msg.employeeName}, período ${msg.period}, neto ${msg.netoPagar}). ` +
+          `PDF de ${msg.pdf.length} bytes generado.`,
+      );
+      return { sent: false, simulated: true };
+    }
+    try {
+      const { data, error } = await this.resend.emails.send({
+        from: this.from,
+        to: msg.to,
+        subject,
+        html: this.payslipHtml(msg),
+        attachments: [{ filename: msg.filename, content: msg.pdf }],
+      });
+      if (error) {
+        this.logger.error(`Resend rechazó el comprobante a ${msg.to}: ${error.message}`);
+        return { sent: false, error: error.message };
+      }
+      this.logger.log(`Comprobante de nómina enviado a ${msg.to} (id: ${data?.id})`);
+      return { sent: true, id: data?.id };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Fallo enviando comprobante a ${msg.to}: ${message}`);
+      return { sent: false, error: message };
+    }
+  }
+
+  private payslipHtml(msg: PayslipEmail): string {
+    return `<!doctype html>
+<html lang="es"><body style="margin:0;background:#faf9f7;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#201f1d;">
+  <div style="max-width:480px;margin:0 auto;padding:40px 24px;">
+    <div style="background:#ffffff;border:1px solid #e8e4de;border-radius:16px;padding:32px;">
+      <p style="font-size:13px;color:#8a857c;margin:0 0 4px;text-transform:uppercase;letter-spacing:.04em;">${escapeHtml(msg.employerName)}</p>
+      <h1 style="font-size:20px;margin:0 0 4px;font-weight:600;">Comprobante de nómina</h1>
+      <p style="font-size:14px;color:#4b4842;margin:0 0 24px;">Período ${escapeHtml(msg.period)}</p>
+      <p style="font-size:15px;line-height:1.5;color:#4b4842;margin:0 0 16px;">
+        Hola ${escapeHtml(msg.employeeName)}, adjuntamos tu comprobante de pago de nómina.
+      </p>
+      <div style="background:#eef1f6;border-radius:10px;padding:16px 20px;margin:0 0 20px;display:flex;justify-content:space-between;">
+        <span style="font-size:14px;color:#3f4a5a;font-weight:600;">Neto a pagar</span>
+        <span style="font-size:18px;color:#3f4a5a;font-weight:700;">${escapeHtml(msg.netoPagar)}</span>
+      </div>
+      <p style="font-size:13px;line-height:1.5;color:#8a857c;margin:0;">
+        El detalle completo (devengados, deducciones, aportes y provisiones) está en el
+        PDF adjunto. Comprobante de pago de salarios (art. 138 CST).
+      </p>
+    </div>
+  </div>
+</body></html>`;
   }
 
   private invitationHtml(msg: InvitationEmail): string {

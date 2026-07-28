@@ -23,6 +23,12 @@ import {
   AttendanceRecordDocument,
 } from '../../attendance/infrastructure/schemas/attendance-record.schema';
 import {
+  Sede,
+  SedeDocument,
+} from '../../sedes/infrastructure/schemas/sede.schema';
+import { MailService } from '../../core-auth/application/mail.service';
+import { buildPayslipPdf } from './payslip-pdf';
+import {
   classifyTurnos,
   NovedadesTurnos,
 } from '../domain/turnos-classify';
@@ -71,7 +77,92 @@ export class PayrollService {
     private readonly employees: Model<EmployeeDocument>,
     @InjectModel(AttendanceRecord.name)
     private readonly attendance: Model<AttendanceRecordDocument>,
+    @InjectModel(Sede.name)
+    private readonly sedes: Model<SedeDocument>,
+    private readonly mail: MailService,
   ) {}
+
+  /** Genera el comprobante (PDF) de un desprendible y lo envía al correo del empleado. */
+  async sendSlip(
+    runId: string,
+    employeeId: string,
+  ): Promise<{
+    sent: boolean;
+    simulated?: boolean;
+    email?: string;
+    error?: string;
+    id?: string;
+  }> {
+    const run = await this.getRun(runId);
+    const slip = run.slips.find((s) => s.employeeId === employeeId);
+    if (!slip) {
+      throw new NotFoundException('Desprendible no encontrado en esta corrida.');
+    }
+
+    const emp = await this.employees.findById(employeeId).exec();
+    const email = emp?.email?.trim();
+    if (!email) {
+      return {
+        sent: false,
+        error: 'El empleado no tiene correo registrado en su expediente.',
+      };
+    }
+
+    // Emisor: sede del desprendible si está disponible; si no, encabezado genérico.
+    let employerName = 'Empresa';
+    let employerNit: string | undefined;
+    let employerAddress: string | undefined;
+    let employerPhone: string | undefined;
+    if (slip.sedeId) {
+      const sede = await this.sedes.findById(slip.sedeId).exec();
+      if (sede) {
+        employerName = sede.businessName || sede.name;
+        employerNit = sede.nit;
+        employerAddress = sede.address;
+        employerPhone = sede.phone;
+      }
+    }
+
+    const money = new Intl.NumberFormat('es-CO', {
+      style: 'currency',
+      currency: 'COP',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    });
+
+    const pdf = await buildPayslipPdf({
+      employer: {
+        name: employerName,
+        nit: employerNit,
+        address: employerAddress,
+        phone: employerPhone,
+      },
+      employee: {
+        name: slip.employeeName,
+        docNumber: slip.docNumber,
+        position: slip.positionName,
+        salarioBase: slip.salarioBase,
+      },
+      period: run.period,
+      periodLabel: run.label,
+      breakdown: slip.breakdown,
+    });
+
+    const slug = (slip.docNumber || employeeId).replace(/[^a-zA-Z0-9]/g, '');
+    const filename = `comprobante-nomina-${run.period}-${slug}.pdf`;
+
+    const result = await this.mail.sendPayslip({
+      to: email,
+      employeeName: slip.employeeName,
+      period: run.period,
+      netoPagar: money.format(slip.netoPagar),
+      employerName,
+      pdf,
+      filename,
+    });
+
+    return { ...result, email };
+  }
 
   /** Novedades (horas extra/recargos) sugeridas desde Turnos para un período. */
   async novedadesTurnos(

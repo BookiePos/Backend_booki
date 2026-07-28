@@ -84,4 +84,13 @@ export class PayrollController {
     await this.payroll.removeRun(id);
     return { ok: true };
   }
+
+  @RequirePermissions(PERMISSIONS.USERS_MANAGE)
+  @Post('runs/:id/slips/:employeeId/send')
+  sendSlip(
+    @Param('id') id: string,
+    @Param('employeeId') employeeId: string,
+  ) {
+    return this.payroll.sendSlip(id, employeeId);
+  }
 }
