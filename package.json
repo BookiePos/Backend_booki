@@ -9,6 +9,7 @@
     "start": "node dist/main.js",
     "seed": "tsc -p tsconfig.json && node dist/seed.js",
     "seed:demo": "tsc -p tsconfig.json && node dist/seed-demo.js",
+    "seed:payroll": "tsc -p tsconfig.json && node dist/seed-payroll.js",
     "test": "echo \"TODO: configurar test runner (vitest/jest)\" && exit 0",
     "lint": "echo \"TODO: eslint\" && exit 0"
   },

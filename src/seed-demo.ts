@@ -14,9 +14,6 @@ import { SalesService } from './modules/sales/application/sales.service';
 import { FinanceService } from './modules/finance/application/finance.service';
 import { PurchasingService } from './modules/purchasing/application/purchasing.service';
 import { RestaurantService } from './modules/restaurant/application/restaurant.service';
-import { EmployeesService } from './modules/employees/application/employees.service';
-import { PositionsService } from './modules/employees/application/positions.service';
-import { PayrollService } from './modules/payroll/application/payroll.service';
 import { TaxService } from './modules/core-tax/application/tax.service';
 import { ParamsService } from './modules/core-params/application/params.service';
 import { LedgerService } from './modules/core-ledger/application/ledger.service';
@@ -24,6 +21,7 @@ import { AuditService } from './modules/core-audit/application/audit.service';
 import { ROLES } from './modules/core-auth/domain/roles';
 import { ALL_PERMISSIONS } from './modules/core-auth/domain/permissions';
 import { JwtUser } from './modules/core-auth/infrastructure/jwt.strategy';
+import { seedPayroll, recentPeriods } from './seed/payroll.seed';
 
 /**
  * Seeder de DEMOSTRACIÓN: carga un negocio completo y ejercita TODAS las
@@ -77,9 +75,6 @@ async function seedDemo(): Promise<void> {
     const financeSvc = app.get(FinanceService);
     const purchasingSvc = app.get(PurchasingService);
     const restaurantSvc = app.get(RestaurantService);
-    const employeesSvc = app.get(EmployeesService);
-    const positionsSvc = app.get(PositionsService);
-    const payrollSvc = app.get(PayrollService);
     const taxSvc = app.get(TaxService);
     const paramsSvc = app.get(ParamsService);
     const ledgerSvc = app.get(LedgerService);
@@ -416,31 +411,14 @@ async function seedDemo(): Promise<void> {
       );
     });
 
-    // ── Personal + Nómina ───────────────────────────────────────────────────────
+    // ── Personal + Nómina (seeder compartido, idempotente) ──────────────────────
     await section('Empleados + nómina', async () => {
-      const cargos: Record<string, string> = {};
-      for (const name of ['Cajero', 'Cocinero', 'Mesero']) {
-        try {
-          const pos = await positionsSvc.create({ name });
-          cargos[name] = oid(pos);
-        } catch {
-          /* ya existe */
-        }
-      }
-      const empleados = [
-        { docNumber: '1015447788', firstName: 'Laura', lastName: 'Martínez', position: 'Cajero', salary: 1623500 },
-        { docNumber: '1032556677', firstName: 'Diego', lastName: 'Ramírez', position: 'Cocinero', salary: 1800000 },
-        { docNumber: '1045667788', firstName: 'Sofía', lastName: 'Hernández', position: 'Mesero', salary: 1623500 },
-      ];
-      for (const e of empleados) {
-        await employeesSvc.create({
-          docType: 'CC', docNumber: e.docNumber, firstName: e.firstName, lastName: e.lastName,
-          positionId: cargos[e.position], sedeId: centroId, contractType: 'indefinido',
-          hireDate: '2026-01-15', salary: e.salary, salaryType: 'ordinario', status: 'activo',
-        });
-      }
-      // Corrida de nómina del período.
-      await payrollSvc.createRun({ period: '2026-07', coverage: 'all' }, owner);
+      await seedPayroll(app, {
+        sedeId: centroId,
+        owner,
+        periods: recentPeriods(3),
+        logger,
+      });
     });
 
     // ── Auditoría (las llamadas directas no pasan por el interceptor HTTP) ───────
