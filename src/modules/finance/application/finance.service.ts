@@ -67,7 +67,11 @@ import {
   CreateReceivableDto,
   CreateReceivablePaymentDto,
 } from './dto/receivable.dto';
-import { CreateAccountDto, CreateMovementDto } from './dto/account.dto';
+import {
+  CreateAccountDto,
+  CreateMovementDto,
+  ReconcileAccountDto,
+} from './dto/account.dto';
 import { CreateBudgetDto, UpdateBudgetDto } from './dto/budget.dto';
 
 /** Fila del P&L (una línea de gasto por categoría). */
@@ -178,6 +182,24 @@ export type FinanceAccountWithBalance = FinanceAccount & {
   _id: Types.ObjectId;
   balance: number;
 };
+
+/** Resultado del cuadre de una conciliación bancaria. */
+export interface ReconciliationResult {
+  accountId: string;
+  openingBalance: number;
+  /** Apertura + Σ movimientos conciliados. */
+  reconciledBalance: number;
+  /** Apertura + Σ todos los movimientos (saldo real de la app). */
+  currentBalance: number;
+  statementBalance: number;
+  /** statementBalance − reconciledBalance (0 = cuadra). */
+  difference: number;
+  outstandingCount: number;
+  /** Neto de los movimientos aún sin conciliar. */
+  outstandingNet: number;
+  lastReconciledDate?: string | null;
+  lastReconciledAt?: Date | null;
+}
 
 @Injectable()
 export class FinanceService {
@@ -648,9 +670,105 @@ export class FinanceService {
         ? new Types.ObjectId(dto.categoryId)
         : undefined,
       concept: dto.concept,
-      reconciled: false,
+      reconciled: dto.reconciled ?? false,
       createdByEmail: user.email,
     });
+  }
+
+  /**
+   * Finaliza la conciliación bancaria de una cuenta contra un extracto: crea los
+   * movimientos que faltaban (conciliados), fija de forma autoritativa el set de
+   * movimientos conciliados (el resto quedan sin conciliar) y guarda el saldo y
+   * la fecha del extracto en la cuenta. Devuelve el cuadre (diferencia).
+   */
+  async reconcileAccount(
+    accountId: string,
+    dto: ReconcileAccountDto,
+    user: JwtUser,
+  ): Promise<ReconciliationResult> {
+    const acc = await this.accountOrThrow(accountId, user);
+
+    // 1. Crear los movimientos del extracto que no estaban en la app.
+    const createdIds: Types.ObjectId[] = [];
+    for (const nm of dto.newMovements ?? []) {
+      if (nm.categoryId) await this.categoryOrThrow(nm.categoryId);
+      const created = await this.movements.create({
+        accountId: acc._id,
+        sedeId: acc.sedeId ?? null,
+        date: nm.date,
+        direction: nm.direction,
+        amount: cop(nm.amount),
+        categoryId: nm.categoryId
+          ? new Types.ObjectId(nm.categoryId)
+          : undefined,
+        concept: nm.concept,
+        reconciled: true,
+        createdByEmail: user.email,
+      });
+      createdIds.push(created._id);
+    }
+
+    // 2. Set autoritativo de conciliados (existentes marcados + recién creados).
+    const reconciledIds = [
+      ...(dto.reconciledMovementIds ?? []).map((id) => new Types.ObjectId(id)),
+      ...createdIds,
+    ];
+    await this.movements
+      .updateMany(
+        { accountId: acc._id, _id: { $in: reconciledIds } },
+        { $set: { reconciled: true } },
+      )
+      .exec();
+    await this.movements
+      .updateMany(
+        { accountId: acc._id, _id: { $nin: reconciledIds } },
+        { $set: { reconciled: false } },
+      )
+      .exec();
+
+    // 3. Snapshot de la conciliación en la cuenta.
+    acc.lastReconciledDate = dto.statementDate;
+    acc.lastReconciledBalance = cop(dto.statementBalance);
+    acc.lastReconciledAt = new Date();
+    await acc.save();
+
+    return this.reconciliationResult(acc, cop(dto.statementBalance));
+  }
+
+  /** Cuadre de la conciliación: saldo conciliado vs extracto + pendientes. */
+  private async reconciliationResult(
+    acc: FinanceAccountDocument,
+    statementBalance: number,
+  ): Promise<ReconciliationResult> {
+    const movements = await this.movements
+      .find({ accountId: acc._id })
+      .select('direction amount reconciled')
+      .exec();
+    let reconciledDelta = 0;
+    let outstandingNet = 0;
+    let outstandingCount = 0;
+    for (const m of movements) {
+      const signed = m.direction === 'in' ? m.amount : -m.amount;
+      if (m.reconciled) {
+        reconciledDelta += signed;
+      } else {
+        outstandingNet += signed;
+        outstandingCount += 1;
+      }
+    }
+    const reconciledBalance = cop(acc.openingBalance + reconciledDelta);
+    return {
+      accountId: acc._id.toString(),
+      openingBalance: acc.openingBalance,
+      reconciledBalance,
+      currentBalance: cop(reconciledBalance + outstandingNet),
+      statementBalance,
+      difference: cop(statementBalance - reconciledBalance),
+      outstandingCount,
+      outstandingNet: cop(outstandingNet),
+      lastReconciledDate: acc.lastReconciledDate ?? null,
+      lastReconciledAt: acc.lastReconciledAt ?? null,
+    };
   }
 
   // ── Presupuestos ─────────────────────────────────────────────────────────────

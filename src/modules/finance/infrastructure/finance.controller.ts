@@ -28,6 +28,7 @@ import {
 import {
   CreateAccountDto,
   CreateMovementDto,
+  ReconcileAccountDto,
 } from '../application/dto/account.dto';
 import {
   CreateBudgetDto,
@@ -190,6 +191,16 @@ export class FinanceController {
     @CurrentUser() user: JwtUser,
   ) {
     return this.finance.createMovement(id, dto, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.FINANCE_MANAGE)
+  @Post('accounts/:id/reconcile')
+  reconcileAccount(
+    @Param('id') id: string,
+    @Body() dto: ReconcileAccountDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.finance.reconcileAccount(id, dto, user);
   }
 
   // ── Presupuestos ─────────────────────────────────────────────────────────────

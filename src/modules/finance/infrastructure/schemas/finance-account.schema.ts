@@ -28,6 +28,17 @@ export class FinanceAccount {
 
   @Prop({ trim: true })
   note?: string;
+
+  /** Última conciliación bancaria: fecha del extracto (YYYY-MM-DD). */
+  @Prop({ type: String, default: null })
+  lastReconciledDate?: string | null;
+
+  /** Saldo del extracto en la última conciliación. */
+  @Prop({ type: Number, default: null })
+  lastReconciledBalance?: number | null;
+
+  @Prop({ type: Date, default: null })
+  lastReconciledAt?: Date | null;
 }
 
 export const FinanceAccountSchema =

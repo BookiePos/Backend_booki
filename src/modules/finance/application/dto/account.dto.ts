@@ -1,4 +1,7 @@
+import { Type } from 'class-transformer';
 import {
+  IsArray,
+  IsBoolean,
   IsIn,
   IsMongoId,
   IsNumber,
@@ -7,6 +10,7 @@ import {
   Matches,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 import {
   ACCOUNT_TYPES,
@@ -59,4 +63,36 @@ export class CreateMovementDto {
   @IsString()
   @MaxLength(200)
   concept!: string;
+
+  /** Marca el movimiento como conciliado al crearlo (flujo de conciliación). */
+  @IsOptional()
+  @IsBoolean()
+  reconciled?: boolean;
+}
+
+/**
+ * Finaliza la conciliación de una cuenta contra un extracto: marca el conjunto
+ * de movimientos conciliados (autoritativo: los demás quedan no conciliados),
+ * crea los movimientos del extracto que faltaban (p.ej. comisión de datáfono) y
+ * guarda el saldo/fecha del extracto en la cuenta.
+ */
+export class ReconcileAccountDto {
+  @Matches(YYYYMMDD, { message: 'statementDate debe ser YYYY-MM-DD' })
+  statementDate!: string;
+
+  @IsNumber()
+  statementBalance!: number;
+
+  /** Movimientos existentes que quedan conciliados. */
+  @IsOptional()
+  @IsArray()
+  @IsMongoId({ each: true })
+  reconciledMovementIds?: string[];
+
+  /** Movimientos del extracto que no estaban en la app (se crean conciliados). */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateMovementDto)
+  newMovements?: CreateMovementDto[];
 }
