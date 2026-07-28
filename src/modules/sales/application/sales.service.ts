@@ -31,6 +31,7 @@ import { StockService } from '../../inventory/application/stock.service';
 import { ProductsService } from '../../inventory/application/products.service';
 import { SedesService } from '../../sedes/application/sedes.service';
 import { CatalogService } from '../../catalog/application/catalog.service';
+import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { CreateSaleDto } from './dto/create-sale.dto';
@@ -54,6 +55,7 @@ export class SalesService {
     private readonly products: ProductsService,
     private readonly sedes: SedesService,
     private readonly catalog: CatalogService,
+    private readonly ledgerPosting: LedgerPostingService,
   ) {}
 
   /** El cajero solo opera sedes asignadas a su usuario (JWT). */
@@ -349,6 +351,21 @@ export class SalesService {
       });
     }
 
+    // Asiento contable de la venta (ingreso, IVA y costo). Best-effort.
+    const cogs = components.reduce((sum, c) => sum + (c.cost ?? 0), 0);
+    await this.ledgerPosting.postSale({
+      saleId: sale._id.toString(),
+      number: saleNumber,
+      date: new Date().toLocaleDateString('en-CA'),
+      sedeId: dto.sedeId,
+      total: Math.round(total),
+      tax: Math.round(taxTotal),
+      cogs: Math.round(cogs),
+      paymentMethod: dto.payment.method,
+      onCredit: isCredit,
+      userEmail: user.email,
+    });
+
     return sale;
   }
 
@@ -391,6 +408,8 @@ export class SalesService {
 
     sale.status = 'void';
     await sale.save();
+    // Reversa contable de la venta (contra-asiento).
+    await this.ledgerPosting.reverseSale(sale._id.toString(), user.email);
     return this.getOrFail(sale.id);
   }
 

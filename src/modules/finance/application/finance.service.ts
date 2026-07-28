@@ -44,6 +44,8 @@ import {
   assertSedeAccess,
 } from '../../core-auth/domain/sede-access';
 import { CajaService } from '../../caja/application/caja.service';
+import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
+import { ACC as LEDGER_ACC } from '../../core-ledger/domain/ledger.constants';
 import {
   CategoryKind,
   ExpenseStatus,
@@ -223,6 +225,7 @@ export class FinanceService {
     @InjectModel(PayrollRun.name)
     private readonly runs: Model<PayrollRunDocument>,
     private readonly caja: CajaService,
+    private readonly ledgerPosting: LedgerPostingService,
   ) {}
 
   private actualsModels(): ActualsModels {
@@ -355,7 +358,7 @@ export class FinanceService {
   ): Promise<FinanceExpenseDocument> {
     assertSedeAccess(user, dto.sedeId);
     const cat = await this.categoryOrThrow(dto.categoryId);
-    return this.expenses.create({
+    const expense = await this.expenses.create({
       sedeId: new Types.ObjectId(dto.sedeId),
       categoryId: cat._id,
       categoryName: cat.name,
@@ -373,6 +376,27 @@ export class FinanceService {
       note: dto.note,
       createdByEmail: user.email,
     });
+    // Asiento contable del gasto (best-effort).
+    await this.ledgerPosting.postExpense({
+      expenseId: expense._id.toString(),
+      date: expense.date,
+      sedeId: dto.sedeId,
+      amount: expense.amount,
+      tax: expense.taxAmount,
+      status: expense.status,
+      paymentMethod: expense.paymentMethod,
+      expenseAccount: this.expenseAccountFor(cat.kind),
+      concept: expense.concept,
+      userEmail: user.email,
+    });
+    return expense;
+  }
+
+  /** Mapea la naturaleza de la categoría a una cuenta de gasto del PUC. */
+  private expenseAccountFor(kind: CategoryKind): string | undefined {
+    if (kind === 'payroll') return LEDGER_ACC.GASTOS_PERSONAL;
+    if (kind === 'cogs') return LEDGER_ACC.COSTO_VENTA;
+    return undefined; // usa Gastos diversos por defecto
   }
 
   async updateExpense(
@@ -487,6 +511,17 @@ export class FinanceService {
     payable.paidAmount = newPaid;
     payable.status = this.payableStatus(payable.amount, newPaid);
     await payable.save();
+    // Asiento del pago a proveedor (best-effort). El id del abono es único por
+    // índice dentro de la CxP.
+    await this.ledgerPosting.postPayablePayment({
+      paymentId: `${payable._id.toString()}:${payable.payments.length - 1}`,
+      date: dto.date,
+      sedeId: payable.sedeId.toString(),
+      amount,
+      paymentMethod: dto.method,
+      docNumber: payable.docNumber,
+      userEmail: user.email,
+    });
     return payable;
   }
 
@@ -567,6 +602,16 @@ export class FinanceService {
     receivable.paidAmount = newPaid;
     receivable.status = this.receivableStatus(receivable.amount, newPaid);
     await receivable.save();
+    // Asiento del cobro a cliente (best-effort).
+    await this.ledgerPosting.postReceivablePayment({
+      paymentId: `${receivable._id.toString()}:${receivable.payments.length - 1}`,
+      date: dto.date,
+      sedeId: receivable.sedeId.toString(),
+      amount,
+      paymentMethod: dto.method,
+      docNumber: receivable.docNumber,
+      userEmail: user.email,
+    });
     return receivable;
   }
 

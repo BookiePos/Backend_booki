@@ -10,6 +10,7 @@ import {
 } from './infrastructure/schemas/journal-entry.schema';
 import { CoreAuthModule } from '../core-auth/core-auth.module';
 import { LedgerService } from './application/ledger.service';
+import { LedgerPostingService } from './application/ledger-posting.service';
 import { LedgerController } from './infrastructure/ledger.controller';
 
 @Module({
@@ -21,7 +22,7 @@ import { LedgerController } from './infrastructure/ledger.controller';
     ]),
   ],
   controllers: [LedgerController],
-  providers: [LedgerService],
-  exports: [LedgerService],
+  providers: [LedgerService, LedgerPostingService],
+  exports: [LedgerService, LedgerPostingService],
 })
 export class CoreLedgerModule {}

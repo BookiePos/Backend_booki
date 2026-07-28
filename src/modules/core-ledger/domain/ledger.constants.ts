@@ -35,6 +35,22 @@ export const NATURAL_SIDE: Record<AccountType, 'debit' | 'credit'> = {
   income: 'credit',
 };
 
+/** Códigos de cuenta usados por el posteo automático (deben existir en el seed). */
+export const ACC = {
+  CAJA: '1105',
+  BANCOS: '1110',
+  CLIENTES: '1305',
+  INVENTARIO: '1435',
+  PROVEEDORES: '2205',
+  IVA_POR_PAGAR: '2367',
+  SALARIOS_POR_PAGAR: '2505',
+  INGRESOS_VENTAS: '4135',
+  GASTOS_PERSONAL: '5105',
+  GASTOS_SERVICIOS: '5135',
+  GASTOS_DIVERSOS: '5195',
+  COSTO_VENTA: '6135',
+} as const;
+
 export interface SeedAccount {
   code: string;
   name: string;

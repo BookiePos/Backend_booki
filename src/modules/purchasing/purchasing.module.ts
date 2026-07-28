@@ -10,6 +10,7 @@ import {
 } from '../finance/infrastructure/schemas/finance-payable.schema';
 import { CoreAuthModule } from '../core-auth/core-auth.module';
 import { CoreTaxModule } from '../core-tax/core-tax.module';
+import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { PurchasingService } from './application/purchasing.service';
 import { PurchasingController } from './infrastructure/purchasing.controller';
@@ -18,6 +19,7 @@ import { PurchasingController } from './infrastructure/purchasing.controller';
   imports: [
     CoreAuthModule,
     CoreTaxModule,
+    CoreLedgerModule,
     InventoryModule,
     MongooseModule.forFeature([
       { name: PurchaseOrder.name, schema: PurchaseOrderSchema },

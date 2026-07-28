@@ -212,6 +212,27 @@ export class LedgerService {
     return entry;
   }
 
+  /** Asiento original (no contra-asiento) de un evento de negocio, si existe. */
+  async findBySource(
+    sourceType: string,
+    sourceId: string,
+  ): Promise<JournalEntryDocument | null> {
+    return this.entries
+      .findOne({ sourceType, sourceId, reversalOf: null })
+      .exec();
+  }
+
+  /** Reversa el asiento de un evento de negocio (p.ej. al anular una venta). */
+  async reverseBySource(
+    sourceType: string,
+    sourceId: string,
+    userEmail?: string,
+  ): Promise<JournalEntryDocument | null> {
+    const entry = await this.findBySource(sourceType, sourceId);
+    if (!entry || entry.reversedBy) return null;
+    return this.reverse(entry._id.toString(), userEmail);
+  }
+
   /** Reversa un asiento con un contra-asiento (débitos/créditos intercambiados). */
   async reverse(
     id: string,

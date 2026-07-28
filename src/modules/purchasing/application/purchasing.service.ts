@@ -15,6 +15,7 @@ import {
 } from '../../finance/infrastructure/schemas/finance-payable.schema';
 import { StockService } from '../../inventory/application/stock.service';
 import { TaxService } from '../../core-tax/application/tax.service';
+import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import {
   allowedSedeIds,
@@ -37,6 +38,7 @@ export class PurchasingService {
     private readonly payables: Model<FinancePayableDocument>,
     private readonly stock: StockService,
     private readonly tax: TaxService,
+    private readonly ledgerPosting: LedgerPostingService,
   ) {}
 
   private async nextNumber(): Promise<string> {
@@ -257,6 +259,18 @@ export class PurchasingService {
 
     po.status = this.computeStatus(po);
     await po.save();
+
+    // Asiento de la recepción: entra a Inventario contra CxP (si se generó) o
+    // Caja (pago de contado). Best-effort.
+    await this.ledgerPosting.postPurchaseReceipt({
+      receiptId: `${po._id.toString()}:${po.receipts.length - 1}`,
+      date: dto.date,
+      sedeId: po.sedeId.toString(),
+      amount: receivedValue,
+      onCredit: !!dto.generatePayable,
+      number: po.number,
+      userEmail: user.email,
+    });
     return po;
   }
 
