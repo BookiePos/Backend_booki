@@ -13,6 +13,10 @@ import {
   FinancePayableSchema,
 } from './infrastructure/schemas/finance-payable.schema';
 import {
+  FinanceReceivable,
+  FinanceReceivableSchema,
+} from './infrastructure/schemas/finance-receivable.schema';
+import {
   FinanceAccount,
   FinanceAccountSchema,
 } from './infrastructure/schemas/finance-account.schema';
@@ -43,6 +47,7 @@ import { FinanceController } from './infrastructure/finance.controller';
       { name: FinanceCategory.name, schema: FinanceCategorySchema },
       { name: FinanceExpense.name, schema: FinanceExpenseSchema },
       { name: FinancePayable.name, schema: FinancePayableSchema },
+      { name: FinanceReceivable.name, schema: FinanceReceivableSchema },
       { name: FinanceAccount.name, schema: FinanceAccountSchema },
       { name: FinanceMovement.name, schema: FinanceMovementSchema },
       { name: FinanceBudget.name, schema: FinanceBudgetSchema },

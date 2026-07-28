@@ -22,6 +22,10 @@ import {
   CreatePayablePaymentDto,
 } from '../application/dto/payable.dto';
 import {
+  CreateReceivableDto,
+  CreateReceivablePaymentDto,
+} from '../application/dto/receivable.dto';
+import {
   CreateAccountDto,
   CreateMovementDto,
 } from '../application/dto/account.dto';
@@ -36,6 +40,7 @@ import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import {
   ExpenseStatus,
   PayableStatus,
+  ReceivableStatus,
 } from '../domain/finance.constants';
 
 @Controller('finance')
@@ -121,6 +126,36 @@ export class FinanceController {
     @CurrentUser() user: JwtUser,
   ) {
     return this.finance.addPayablePayment(id, dto, user);
+  }
+
+  // ── Cuentas por cobrar (fiado) ──────────────────────────────────────────────
+  @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @Get('receivables')
+  listReceivables(
+    @CurrentUser() user: JwtUser,
+    @Query('sedeId') sedeId?: string,
+    @Query('status') status?: ReceivableStatus,
+  ) {
+    return this.finance.listReceivables(user, { sedeId, status });
+  }
+
+  @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
+  @Post('receivables')
+  createReceivable(
+    @Body() dto: CreateReceivableDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.finance.createReceivable(dto, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
+  @Post('receivables/:id/payments')
+  addReceivablePayment(
+    @Param('id') id: string,
+    @Body() dto: CreateReceivablePaymentDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.finance.addReceivablePayment(id, dto, user);
   }
 
   // ── Cuentas de tesorería y movimientos ──────────────────────────────────────

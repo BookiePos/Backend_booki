@@ -36,6 +36,10 @@ export type FinancePaymentMethod = (typeof PAYMENT_METHODS)[number];
 export const PAYABLE_STATUSES = ['open', 'partial', 'paid', 'void'] as const;
 export type PayableStatus = (typeof PAYABLE_STATUSES)[number];
 
+/** Estado de una cuenta por cobrar (fiado). Mismo ciclo que las CxP. */
+export const RECEIVABLE_STATUSES = ['open', 'partial', 'paid', 'void'] as const;
+export type ReceivableStatus = (typeof RECEIVABLE_STATUSES)[number];
+
 /** Tipo de una cuenta financiera (tesorería). */
 export const ACCOUNT_TYPES = ['bank', 'cash', 'wallet'] as const;
 export type AccountType = (typeof ACCOUNT_TYPES)[number];

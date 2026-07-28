@@ -14,6 +14,10 @@ import {
   CajaSession,
   CajaSessionSchema,
 } from '../caja/infrastructure/schemas/caja-session.schema';
+import {
+  FinanceReceivable,
+  FinanceReceivableSchema,
+} from '../finance/infrastructure/schemas/finance-receivable.schema';
 import { SalesService } from './application/sales.service';
 import { OrdersService } from './application/orders.service';
 import { SalesController } from './infrastructure/sales.controller';
@@ -35,6 +39,7 @@ import { DiscountsModule } from '../discounts/discounts.module';
       { name: Counter.name, schema: CounterSchema },
       { name: StockItem.name, schema: StockItemSchema },
       { name: CajaSession.name, schema: CajaSessionSchema },
+      { name: FinanceReceivable.name, schema: FinanceReceivableSchema },
     ]),
   ],
   controllers: [SalesController, OrdersController],

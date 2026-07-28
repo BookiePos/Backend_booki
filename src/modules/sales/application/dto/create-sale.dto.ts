@@ -8,6 +8,7 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  Matches,
   MaxLength,
   Min,
   ValidateNested,
@@ -52,6 +53,11 @@ export class SalePaymentDto {
   @IsNumber()
   @Min(0)
   received?: number;
+
+  /** Vencimiento de la cuenta por cobrar en ventas a crédito (fiado). */
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'dueDate debe ser YYYY-MM-DD' })
+  dueDate?: string;
 }
 
 /** Datos del cliente para la factura (todos opcionales). */

@@ -18,6 +18,10 @@ import {
   FinancePayableDocument,
 } from '../infrastructure/schemas/finance-payable.schema';
 import {
+  FinanceReceivable,
+  FinanceReceivableDocument,
+} from '../infrastructure/schemas/finance-receivable.schema';
+import {
   FinanceAccount,
   FinanceAccountDocument,
 } from '../infrastructure/schemas/finance-account.schema';
@@ -44,6 +48,7 @@ import {
   CategoryKind,
   ExpenseStatus,
   PayableStatus,
+  ReceivableStatus,
   SEED_CATEGORIES,
 } from '../domain/finance.constants';
 import { clampNonNegative, cop } from '../domain/money.util';
@@ -58,6 +63,10 @@ import {
   CreatePayableDto,
   CreatePayablePaymentDto,
 } from './dto/payable.dto';
+import {
+  CreateReceivableDto,
+  CreateReceivablePaymentDto,
+} from './dto/receivable.dto';
 import { CreateAccountDto, CreateMovementDto } from './dto/account.dto';
 import { CreateBudgetDto, UpdateBudgetDto } from './dto/budget.dto';
 
@@ -93,6 +102,8 @@ export interface FinanceOverview {
   expensesMonth: number;
   payablesOpen: number;
   payablesOverdue: number;
+  receivablesOpen: number;
+  receivablesOverdue: number;
   utilidadMonth: number;
 }
 
@@ -130,6 +141,8 @@ export class FinanceService {
     private readonly expenses: Model<FinanceExpenseDocument>,
     @InjectModel(FinancePayable.name)
     private readonly payables: Model<FinancePayableDocument>,
+    @InjectModel(FinanceReceivable.name)
+    private readonly receivables: Model<FinanceReceivableDocument>,
     @InjectModel(FinanceAccount.name)
     private readonly accounts: Model<FinanceAccountDocument>,
     @InjectModel(FinanceMovement.name)
@@ -410,6 +423,86 @@ export class FinanceService {
 
   /** Recalcula el estado de una CxP según abonado vs total. */
   private payableStatus(amount: number, paid: number): PayableStatus {
+    if (paid <= 0) return 'open';
+    if (paid >= amount) return 'paid';
+    return 'partial';
+  }
+
+  // ── Cuentas por cobrar (fiado) ──────────────────────────────────────────────
+
+  async listReceivables(
+    user: JwtUser,
+    query: { sedeId?: string; status?: ReceivableStatus },
+  ): Promise<FinanceReceivableDocument[]> {
+    const scope = this.resolveSedeScope(user, query.sedeId);
+    const filter: Record<string, unknown> = {};
+    if (scope) {
+      filter.sedeId = { $in: scope.map((id) => new Types.ObjectId(id)) };
+    }
+    if (query.status) filter.status = query.status;
+    return this.receivables.find(filter).sort({ dueDate: 1 }).exec();
+  }
+
+  async createReceivable(
+    dto: CreateReceivableDto,
+    user: JwtUser,
+  ): Promise<FinanceReceivableDocument> {
+    assertSedeAccess(user, dto.sedeId);
+    return this.receivables.create({
+      sedeId: new Types.ObjectId(dto.sedeId),
+      customerName: dto.customerName,
+      customerDoc: dto.customerDoc,
+      customerPhone: dto.customerPhone,
+      docNumber: dto.docNumber,
+      issueDate: dto.issueDate,
+      dueDate: dto.dueDate,
+      amount: cop(dto.amount),
+      paidAmount: 0,
+      status: 'open',
+      payments: [],
+      note: dto.note,
+      createdByEmail: user.email,
+    });
+  }
+
+  async addReceivablePayment(
+    id: string,
+    dto: CreateReceivablePaymentDto,
+    user: JwtUser,
+  ): Promise<FinanceReceivableDocument> {
+    const receivable = await this.receivables.findById(id).exec();
+    if (!receivable) {
+      throw new NotFoundException('Cuenta por cobrar no encontrada');
+    }
+    assertSedeAccess(user, receivable.sedeId.toString());
+    if (receivable.status === 'void') {
+      throw new BadRequestException('La cuenta por cobrar está anulada.');
+    }
+    const amount = cop(dto.amount);
+    if (amount <= 0) {
+      throw new BadRequestException('El abono debe ser mayor a cero.');
+    }
+    const newPaid = receivable.paidAmount + amount;
+    if (newPaid > receivable.amount) {
+      throw new BadRequestException(
+        'El abono excede el saldo pendiente de la cuenta.',
+      );
+    }
+    receivable.payments.push({
+      date: dto.date,
+      amount,
+      method: dto.method,
+      note: dto.note,
+      userEmail: user.email,
+    });
+    receivable.paidAmount = newPaid;
+    receivable.status = this.receivableStatus(receivable.amount, newPaid);
+    await receivable.save();
+    return receivable;
+  }
+
+  /** Recalcula el estado de una CxC según abonado vs total. */
+  private receivableStatus(amount: number, paid: number): ReceivableStatus {
     if (paid <= 0) return 'open';
     if (paid >= amount) return 'paid';
     return 'partial';
@@ -807,6 +900,27 @@ export class FinanceService {
       if (p.dueDate < today) payablesOverdue += pending;
     }
 
+    // CxC abiertas / vencidas (fiado por cobrar).
+    const receivableFilter: Record<string, unknown> = {
+      status: { $in: ['open', 'partial'] },
+    };
+    if (scope) {
+      receivableFilter.sedeId = {
+        $in: scope.map((id) => new Types.ObjectId(id)),
+      };
+    }
+    const openReceivables = await this.receivables
+      .find(receivableFilter)
+      .select('amount paidAmount dueDate')
+      .exec();
+    let receivablesOpen = 0;
+    let receivablesOverdue = 0;
+    for (const r of openReceivables) {
+      const pending = clampNonNegative(r.amount - r.paidAmount);
+      receivablesOpen += pending;
+      if (r.dueDate < today) receivablesOverdue += pending;
+    }
+
     // Efectivo del día: del módulo de Caja (suma de efectivo esperado hoy).
     const cashToday = await this.cashTodayFromCaja(user, sedeId);
 
@@ -819,6 +933,8 @@ export class FinanceService {
       expensesMonth,
       payablesOpen: cop(payablesOpen),
       payablesOverdue: cop(payablesOverdue),
+      receivablesOpen: cop(receivablesOpen),
+      receivablesOverdue: cop(receivablesOverdue),
       utilidadMonth,
     };
   }

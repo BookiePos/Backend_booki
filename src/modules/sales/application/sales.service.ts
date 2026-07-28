@@ -23,6 +23,10 @@ import {
   Discount,
   DiscountDocument,
 } from '../../discounts/infrastructure/schemas/discount.schema';
+import {
+  FinanceReceivable,
+  FinanceReceivableDocument,
+} from '../../finance/infrastructure/schemas/finance-receivable.schema';
 import { StockService } from '../../inventory/application/stock.service';
 import { ProductsService } from '../../inventory/application/products.service';
 import { SedesService } from '../../sedes/application/sedes.service';
@@ -44,6 +48,8 @@ export class SalesService {
     private readonly cajaSessionModel: Model<CajaSessionDocument>,
     @InjectModel(Discount.name)
     private readonly discountModel: Model<DiscountDocument>,
+    @InjectModel(FinanceReceivable.name)
+    private readonly receivableModel: Model<FinanceReceivableDocument>,
     private readonly stock: StockService,
     private readonly products: ProductsService,
     private readonly sedes: SedesService,
@@ -90,6 +96,15 @@ export class SalesService {
     if (!openCaja) {
       throw new BadRequestException(
         'Debes abrir la caja de la sede antes de registrar ventas',
+      );
+    }
+
+    // Venta a crédito (fiado): exige el nombre del cliente ANTES de tocar
+    // inventario, para poder crear después la cuenta por cobrar (CxC).
+    const isCredit = dto.payment.method === 'credit';
+    if (isCredit && !dto.customer?.name?.trim()) {
+      throw new BadRequestException(
+        'Una venta a crédito (fiado) requiere el nombre del cliente',
       );
     }
 
@@ -278,7 +293,7 @@ export class SalesService {
     });
 
     const saleNumber = await this.nextSaleNumber(dto.sedeId);
-    return this.saleModel.create({
+    const sale = await this.saleModel.create({
       saleNumber,
       sedeId: new Types.ObjectId(dto.sedeId),
       cashierId: user.userId,
@@ -311,6 +326,30 @@ export class SalesService {
       customer: this.cleanCustomer(dto.customer),
       orderId,
     });
+
+    // Venta a crédito (fiado): genera la cuenta por cobrar (CxC) enlazada a la
+    // venta. No entra a caja (el arqueo solo cuenta ventas en efectivo).
+    if (isCredit) {
+      const today = new Date().toLocaleDateString('en-CA');
+      await this.receivableModel.create({
+        sedeId: new Types.ObjectId(dto.sedeId),
+        customerName: dto.customer!.name!.trim(),
+        customerDoc: dto.customer?.idNumber?.trim() || undefined,
+        customerPhone: dto.customer?.phone?.trim() || undefined,
+        saleId: sale._id,
+        docNumber: saleNumber,
+        issueDate: today,
+        dueDate: dto.payment.dueDate || today,
+        amount: Math.round(total),
+        paidAmount: 0,
+        status: 'open',
+        payments: [],
+        note: 'Venta a crédito (fiado)',
+        createdByEmail: user.email,
+      });
+    }
+
+    return sale;
   }
 
   /** Descarta un customer vacío (sin ningún dato) para no guardar {} . */
