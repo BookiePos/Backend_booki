@@ -11,6 +11,7 @@ import { PayrollService } from '../application/payroll.service';
 import { UpdatePayrollSettingsDto } from '../application/dto/update-settings.dto';
 import { PreviewPayrollDto } from '../application/dto/preview-payroll.dto';
 import { CreateRunDto } from '../application/dto/create-run.dto';
+import { LiquidacionDto } from '../application/dto/liquidacion.dto';
 import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
@@ -36,6 +37,12 @@ export class PayrollController {
   @Post('preview')
   preview(@Body() dto: PreviewPayrollDto) {
     return this.payroll.preview(dto);
+  }
+
+  @RequirePermissions(PERMISSIONS.USERS_MANAGE)
+  @Post('liquidacion')
+  liquidacion(@Body() dto: LiquidacionDto) {
+    return this.payroll.liquidacion(dto);
   }
 
   @RequirePermissions(PERMISSIONS.USERS_MANAGE)

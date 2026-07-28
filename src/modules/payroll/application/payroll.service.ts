@@ -31,6 +31,13 @@ import {
 import { UpdatePayrollSettingsDto } from './dto/update-settings.dto';
 import { PreviewPayrollDto } from './dto/preview-payroll.dto';
 import { CreateRunDto } from './dto/create-run.dto';
+import { LiquidacionDto } from './dto/liquidacion.dto';
+import {
+  computeLiquidacion,
+  LiquidacionBreakdown,
+  LiquidacionInput,
+  MotivoRetiro,
+} from '../domain/liquidacion-calc';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 
 export interface PreviewResult {
@@ -198,6 +205,80 @@ export class PayrollService {
       totals,
       createdByEmail: user.email,
     });
+  }
+
+  async liquidacion(dto: LiquidacionDto): Promise<{
+    input: {
+      employeeId?: string;
+      employeeName?: string;
+      salarioBase: number;
+      salaryType: SalaryType;
+      contractType?: string;
+      fechaInicio: string;
+      fechaFin: string;
+      motivo: string;
+    };
+    breakdown: LiquidacionBreakdown;
+  }> {
+    const s = await this.settingsData();
+    let salarioBase = dto.salarioBase ?? 0;
+    let salaryType: SalaryType = (dto.salaryType as SalaryType) ?? 'ordinario';
+    let contractType = dto.contractType;
+    let fechaInicio = dto.fechaInicio;
+    let employeeName: string | undefined;
+
+    if (dto.employeeId) {
+      const emp = await this.employees.findById(dto.employeeId).exec();
+      if (!emp) throw new NotFoundException('Empleado no encontrado');
+      if (!emp.salary || emp.salary <= 0) {
+        throw new BadRequestException(
+          'El empleado no tiene salario registrado en el expediente.',
+        );
+      }
+      salarioBase = emp.salary;
+      salaryType = (emp.salaryType as SalaryType) ?? 'ordinario';
+      contractType = contractType ?? emp.contractType;
+      fechaInicio = fechaInicio ?? emp.hireDate;
+      employeeName = `${emp.firstName} ${emp.lastName}`.trim();
+    }
+
+    if (salarioBase <= 0) {
+      throw new BadRequestException('Se requiere un salario base mayor a 0.');
+    }
+    if (!fechaInicio) {
+      throw new BadRequestException(
+        'Falta la fecha de inicio (o el expediente sin fecha de ingreso).',
+      );
+    }
+    if (fechaInicio > dto.fechaFin) {
+      throw new BadRequestException(
+        'La fecha de inicio no puede ser posterior a la de retiro.',
+      );
+    }
+
+    const input: LiquidacionInput = {
+      salarioBase,
+      salaryType,
+      fechaInicio,
+      fechaFin: dto.fechaFin,
+      contractType,
+      motivo: dto.motivo as MotivoRetiro,
+      salariosPendientes: dto.salariosPendientes,
+      diasFaltantesContrato: dto.diasFaltantesContrato,
+    };
+    return {
+      input: {
+        employeeId: dto.employeeId,
+        employeeName,
+        salarioBase,
+        salaryType,
+        contractType,
+        fechaInicio,
+        fechaFin: dto.fechaFin,
+        motivo: dto.motivo,
+      },
+      breakdown: computeLiquidacion(input, s),
+    };
   }
 
   listRuns(): Promise<PayrollRunDocument[]> {
