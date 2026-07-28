@@ -29,6 +29,7 @@ export const PERMISSIONS = {
   // Compras / finanzas / reportes
   PURCHASING_MANAGE: 'purchasing.manage',
   FINANCE_VIEW: 'finance.view',
+  FINANCE_MANAGE: 'finance.manage',
   REPORTS_VIEW: 'reports.view',
 } as const;
 
@@ -98,6 +99,7 @@ export const PERMISSION_GROUPS: {
     items: [
       { key: PERMISSIONS.PURCHASING_MANAGE, label: 'Gestionar compras' },
       { key: PERMISSIONS.FINANCE_VIEW, label: 'Ver finanzas' },
+      { key: PERMISSIONS.FINANCE_MANAGE, label: 'Configurar finanzas' },
       { key: PERMISSIONS.REPORTS_VIEW, label: 'Ver reportes' },
       { key: PERMISSIONS.TAX_MANAGE, label: 'Gestionar impuestos' },
     ],

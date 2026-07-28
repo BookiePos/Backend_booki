@@ -15,6 +15,7 @@ import { EinvoicingModule } from './modules/einvoicing/einvoicing.module';
 import { AttendanceModule } from './modules/attendance/attendance.module';
 import { EmployeesModule } from './modules/employees/employees.module';
 import { PayrollModule } from './modules/payroll/payroll.module';
+import { FinanceModule } from './modules/finance/finance.module';
 
 @Module({
   imports: [
@@ -61,6 +62,7 @@ import { PayrollModule } from './modules/payroll/payroll.module';
     AttendanceModule,
     EmployeesModule,
     PayrollModule,
+    FinanceModule,
   ],
 })
 export class AppModule {}
