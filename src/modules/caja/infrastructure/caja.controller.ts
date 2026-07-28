@@ -27,6 +27,13 @@ export class CajaController {
     return this.caja.current(sedeId, user);
   }
 
+  /** Resumen del día de todas las cajas visibles (panel del ERP). */
+  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @Get('overview')
+  overview(@CurrentUser() user: JwtUser, @Query('date') date?: string) {
+    return this.caja.overview(user, date);
+  }
+
   /** Historial de turnos de la sede. */
   @RequirePermissions(PERMISSIONS.POS_SELL)
   @Get('sessions')

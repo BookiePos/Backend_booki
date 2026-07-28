@@ -17,8 +17,9 @@ import {
 } from '../infrastructure/schemas/caja-movement.schema';
 import { Sale, SaleDocument } from '../../sales/infrastructure/schemas/sale.schema';
 import { Order, OrderDocument } from '../../sales/infrastructure/schemas/order.schema';
+import { Sede, SedeDocument } from '../../sedes/infrastructure/schemas/sede.schema';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
-import { assertSedeAccess } from '../../core-auth/domain/sede-access';
+import { allowedSedeIds, assertSedeAccess } from '../../core-auth/domain/sede-access';
 import { OpenCajaDto } from './dto/open-caja.dto';
 import { CloseCajaDto } from './dto/close-caja.dto';
 import { CajaMovementDto } from './dto/caja-movement.dto';
@@ -34,6 +35,44 @@ export interface CajaTotals {
   expectedCash: number;
 }
 
+/** Resumen del día de la caja de una sede (para el panel del ERP). */
+export interface CajaOverviewRow {
+  sedeId: string;
+  sedeName: string;
+  /** 'none' = sin apertura hoy · 'open' = abierta · 'closed' = ya cerró. */
+  status: 'none' | 'open' | 'closed';
+  sessionId?: string;
+  openingAmount?: number;
+  openedAt?: Date;
+  openedByEmail?: string;
+  closedAt?: Date;
+  closedByEmail?: string;
+  countedAmount?: number;
+  expectedCash?: number;
+  difference?: number;
+  salesCount: number;
+  salesTotal: number;
+  cashSalesTotal: number;
+  movementsIn: number;
+  movementsOut: number;
+}
+
+export interface CajaOverview {
+  date: string;
+  rows: CajaOverviewRow[];
+  totals: {
+    sedes: number;
+    openCount: number;
+    closedCount: number;
+    noneCount: number;
+    openingTotal: number;
+    salesCount: number;
+    salesTotal: number;
+    cashSalesTotal: number;
+    expectedCashTotal: number;
+  };
+}
+
 @Injectable()
 export class CajaService {
   constructor(
@@ -45,7 +84,138 @@ export class CajaService {
     private readonly sales: Model<SaleDocument>,
     @InjectModel(Order.name)
     private readonly orders: Model<OrderDocument>,
+    @InjectModel(Sede.name)
+    private readonly sedes: Model<SedeDocument>,
   ) {}
+
+  /**
+   * Resumen del día de todas las cajas (sedes) que el usuario puede ver:
+   * con cuánto abrieron, si ya cerraron y con cuánto, y las ventas del turno.
+   */
+  async overview(user: JwtUser, date?: string): Promise<CajaOverview> {
+    const todayStr = new Date().toLocaleDateString('en-CA');
+    const dateStr = /^\d{4}-\d{2}-\d{2}$/.test(date ?? '')
+      ? (date as string)
+      : todayStr;
+    const start = new Date(`${dateStr}T00:00:00`);
+    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    const isToday = dateStr === todayStr;
+
+    // Sedes visibles para el usuario (según su alcance).
+    const allowed = allowedSedeIds(user);
+    const sedeFilter: Record<string, unknown> = { active: true };
+    if (allowed) {
+      sedeFilter._id = { $in: allowed.map((id) => new Types.ObjectId(id)) };
+    }
+    const sedes = await this.sedes
+      .find(sedeFilter)
+      .sort({ name: 1 })
+      .select('name')
+      .exec();
+    const sedeIds = sedes.map((s) => s._id);
+
+    // Sesiones del día (abiertas hoy) + cualquiera abierta ahora (turno nocturno).
+    const or: Record<string, unknown>[] = [
+      { openedAt: { $gte: start, $lt: end } },
+    ];
+    if (isToday) or.push({ status: 'open' });
+    const sessions = await this.sessions
+      .find({ sedeId: { $in: sedeIds }, $or: or })
+      .sort({ openedAt: -1 })
+      .exec();
+
+    // Sesión representativa por sede: la abierta; si no, la más reciente del día.
+    const bySede = new Map<string, CajaSessionDocument>();
+    for (const s of sessions) {
+      const key = s.sedeId.toString();
+      const prev = bySede.get(key);
+      if (!prev) {
+        bySede.set(key, s);
+      } else if (prev.status !== 'open' && s.status === 'open') {
+        bySede.set(key, s);
+      }
+    }
+
+    const rows: CajaOverviewRow[] = [];
+    for (const sede of sedes) {
+      const session = bySede.get(sede._id.toString());
+      if (!session) {
+        rows.push({
+          sedeId: sede._id.toString(),
+          sedeName: sede.name,
+          status: 'none',
+          salesCount: 0,
+          salesTotal: 0,
+          cashSalesTotal: 0,
+          movementsIn: 0,
+          movementsOut: 0,
+        });
+        continue;
+      }
+
+      // Abierta: totales en vivo. Cerrada: totales congelados al cierre.
+      let t: CajaTotals;
+      if (session.status === 'open') {
+        t = (await this.summarize(session)).totals;
+      } else {
+        t = {
+          salesCount: session.salesCount ?? 0,
+          salesTotal: session.salesTotal ?? 0,
+          cashSalesTotal: session.cashSalesTotal ?? 0,
+          movementsIn: session.movementsIn ?? 0,
+          movementsOut: session.movementsOut ?? 0,
+          expectedCash: session.expectedCash ?? 0,
+        };
+      }
+
+      rows.push({
+        sedeId: sede._id.toString(),
+        sedeName: sede.name,
+        status: session.status,
+        sessionId: session._id.toString(),
+        openingAmount: session.openingAmount,
+        openedAt: session.openedAt,
+        openedByEmail: session.openedByEmail,
+        closedAt: session.closedAt,
+        closedByEmail: session.closedByEmail,
+        countedAmount: session.countedAmount,
+        expectedCash: t.expectedCash,
+        difference: session.difference,
+        salesCount: t.salesCount,
+        salesTotal: t.salesTotal,
+        cashSalesTotal: t.cashSalesTotal,
+        movementsIn: t.movementsIn,
+        movementsOut: t.movementsOut,
+      });
+    }
+
+    const totals = rows.reduce(
+      (acc, r) => {
+        acc.openCount += r.status === 'open' ? 1 : 0;
+        acc.closedCount += r.status === 'closed' ? 1 : 0;
+        acc.noneCount += r.status === 'none' ? 1 : 0;
+        acc.openingTotal += r.openingAmount ?? 0;
+        acc.salesCount += r.salesCount;
+        acc.salesTotal += r.salesTotal;
+        acc.cashSalesTotal += r.cashSalesTotal;
+        acc.expectedCashTotal += r.expectedCash ?? 0;
+        return acc;
+      },
+      {
+        sedes: sedes.length,
+        openCount: 0,
+        closedCount: 0,
+        noneCount: 0,
+        openingTotal: 0,
+        salesCount: 0,
+        salesTotal: 0,
+        cashSalesTotal: 0,
+        expectedCashTotal: 0,
+      },
+    );
+
+    return { date: dateStr, rows, totals };
+  }
 
   private findOpen(sedeId: string): Promise<CajaSessionDocument | null> {
     return this.sessions
