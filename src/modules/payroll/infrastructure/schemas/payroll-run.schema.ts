@@ -42,6 +42,10 @@ export class PayrollSlip {
   @Prop({ type: MongooseSchema.Types.Mixed, required: true })
   breakdown!: PayrollBreakdown;
 
+  /** Detalle de "otras deducciones" aplicadas (consumos de empleado, etc.). */
+  @Prop({ type: [{ concept: String, amount: Number }], default: [] })
+  otrasDeduccionesDetalle!: { concept: string; amount: number }[];
+
   @Prop({ required: true })
   totalDevengado!: number;
 

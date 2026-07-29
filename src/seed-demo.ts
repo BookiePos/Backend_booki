@@ -14,6 +14,8 @@ import { SalesService } from './modules/sales/application/sales.service';
 import { FinanceService } from './modules/finance/application/finance.service';
 import { PurchasingService } from './modules/purchasing/application/purchasing.service';
 import { RestaurantService } from './modules/restaurant/application/restaurant.service';
+import { CustomersService } from './modules/customers/application/customers.service';
+import { PayrollService } from './modules/payroll/application/payroll.service';
 import { TaxService } from './modules/core-tax/application/tax.service';
 import { ParamsService } from './modules/core-params/application/params.service';
 import { LedgerService } from './modules/core-ledger/application/ledger.service';
@@ -75,6 +77,8 @@ async function seedDemo(): Promise<void> {
     const financeSvc = app.get(FinanceService);
     const purchasingSvc = app.get(PurchasingService);
     const restaurantSvc = app.get(RestaurantService);
+    const customersSvc = app.get(CustomersService);
+    const payrollSvc = app.get(PayrollService);
     const taxSvc = app.get(TaxService);
     const paramsSvc = app.get(ParamsService);
     const ledgerSvc = app.get(LedgerService);
@@ -160,6 +164,30 @@ async function seedDemo(): Promise<void> {
       }
       const all = await suppliersSvc.list(true);
       supplierId = all[0] ? oid(all[0]) : undefined;
+    });
+
+    // ── Clientes (directorio para facturación y CxC) ────────────────────────────
+    const clientes: Record<string, string> = {};
+    async function ensureCustomer(dto: {
+      name: string;
+      docType?: 'CC' | 'NIT' | 'CE' | 'PAS';
+      docNumber: string;
+      phone?: string;
+    }): Promise<string> {
+      try {
+        const c = await customersSvc.create(dto, owner.email);
+        return oid(c);
+      } catch {
+        const found = (await customersSvc.list({ search: dto.docNumber })).find(
+          (x) => x.docNumber === dto.docNumber,
+        );
+        return found ? oid(found) : '';
+      }
+    }
+    await section('Clientes', async () => {
+      clientes.andres = await ensureCustomer({ name: 'Andrés Gómez', docNumber: '1020304050', phone: '3011234567' });
+      clientes.aliado = await ensureCustomer({ name: 'Restaurante Aliado S.A.S.', docType: 'NIT', docNumber: '901112223', phone: '6012223344' });
+      clientes.maria = await ensureCustomer({ name: 'María Fernanda Ruiz', docNumber: '52889900', phone: '3157778899' });
     });
 
     // ── Inventario: insumos + stock (con lotes FEFO) ────────────────────────────
@@ -257,13 +285,18 @@ async function seedDemo(): Promise<void> {
         },
         owner,
       );
-      // Venta 3: crédito (fiado) → genera CxC.
+      // Venta 3: crédito (fiado) a CLIENTE REGISTRADO → genera CxC.
       await salesSvc.create(
         {
           sedeId: centroId,
           lines: [{ productId: menu.hamburguesa!, qty: 3 }],
-          payment: { method: 'credit', dueDate: plusDays(15) },
-          customer: { name: 'Andrés Gómez', idNumber: '1020304050', phone: '3011234567' },
+          payment: {
+            method: 'credit',
+            debtorType: 'customer',
+            customerId: clientes.andres,
+            dueDate: plusDays(15),
+          },
+          customer: { name: 'Andrés Gómez', idNumber: '1020304050' },
         },
         owner,
       );
@@ -312,10 +345,10 @@ async function seedDemo(): Promise<void> {
       await financeSvc.addPayablePayment(
         oid(payable), { date: today(), amount: 500000, method: 'cash' }, owner,
       );
-      // CxC (fiado) directa + abono.
+      // CxC (fiado) directa a cliente registrado + abono.
       const receivable = await financeSvc.createReceivable(
         {
-          sedeId: centroId, customerName: 'Restaurante Aliado', customerDoc: '901112223',
+          sedeId: centroId, customerId: clientes.aliado!,
           docNumber: 'RC-001', issueDate: today(), dueDate: plusDays(20), amount: 300000,
         },
         owner,
@@ -411,13 +444,42 @@ async function seedDemo(): Promise<void> {
       );
     });
 
-    // ── Personal + Nómina (seeder compartido, idempotente) ──────────────────────
+    // ── Personal + Nómina + consumos de empleado ────────────────────────────────
     await section('Empleados + nómina', async () => {
       await seedPayroll(app, {
         sedeId: centroId,
         owner,
         periods: recentPeriods(3),
         logger,
+        // Antes de correr la nómina: un consumo APROBADO (aparecerá en la
+        // colilla del período) y otro PENDIENTE (cola de aprobación).
+        beforeRuns: async ({ employees }) => {
+          const emp = employees[0];
+          if (!emp) return;
+          const aprobado = await payrollSvc.createDeduction(
+            {
+              employeeId: emp.id,
+              concept: 'Consumo cafetería (fiado empleado)',
+              amount: 45000,
+              date: today(),
+              source: 'manual',
+            },
+            owner,
+          );
+          await payrollSvc.approveDeduction(oid(aprobado), owner);
+          // Segundo empleado: un consumo pendiente de aprobar.
+          const emp2 = employees[1] ?? emp;
+          await payrollSvc.createDeduction(
+            {
+              employeeId: emp2.id,
+              concept: 'Consumo almuerzo (por aprobar)',
+              amount: 28000,
+              date: today(),
+              source: 'manual',
+            },
+            owner,
+          );
+        },
       });
     });
 

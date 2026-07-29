@@ -41,6 +41,10 @@ export class FinanceReceivable {
   @Prop({ type: Types.ObjectId, ref: 'Sede', required: true, index: true })
   sedeId!: Types.ObjectId;
 
+  /** Cliente registrado dueño de la cuenta (obligatorio para CxC nuevas). */
+  @Prop({ type: Types.ObjectId, ref: 'Customer', index: true })
+  customerId?: Types.ObjectId;
+
   @Prop({ required: true, trim: true })
   customerName!: string;
 

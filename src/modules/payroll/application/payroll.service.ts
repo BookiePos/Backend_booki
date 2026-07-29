@@ -19,6 +19,11 @@ import {
   EmployeeDocument,
 } from '../../employees/infrastructure/schemas/employee.schema';
 import {
+  PayrollDeduction,
+  PayrollDeductionDocument,
+  DeductionStatus,
+} from '../infrastructure/schemas/payroll-deduction.schema';
+import {
   AttendanceRecord,
   AttendanceRecordDocument,
 } from '../../attendance/infrastructure/schemas/attendance-record.schema';
@@ -45,6 +50,7 @@ import {
 import { UpdatePayrollSettingsDto } from './dto/update-settings.dto';
 import { PreviewPayrollDto } from './dto/preview-payroll.dto';
 import { CreateRunDto } from './dto/create-run.dto';
+import { CreateDeductionDto } from './dto/deduction.dto';
 import { LiquidacionDto } from './dto/liquidacion.dto';
 import {
   computeLiquidacion,
@@ -79,6 +85,8 @@ export class PayrollService {
     private readonly attendance: Model<AttendanceRecordDocument>,
     @InjectModel(Sede.name)
     private readonly sedes: Model<SedeDocument>,
+    @InjectModel(PayrollDeduction.name)
+    private readonly deductions: Model<PayrollDeductionDocument>,
     private readonly mail: MailService,
   ) {}
 
@@ -277,12 +285,33 @@ export class PayrollService {
       );
     }
 
+    // Deducciones aprobadas pendientes de aplicar (consumos de empleado, etc.),
+    // agrupadas por empleado. Entran como "otras deducciones" de la colilla.
+    const approved = await this.deductions
+      .find({
+        employeeId: { $in: emps.map((e) => e.id) },
+        status: 'approved',
+      })
+      .exec();
+    const dedByEmp = new Map<string, PayrollDeductionDocument[]>();
+    for (const d of approved) {
+      const arr = dedByEmp.get(d.employeeId) ?? [];
+      arr.push(d);
+      dedByEmp.set(d.employeeId, arr);
+    }
+
     const slips: PayrollSlip[] = emps.map((e) => {
+      const empDeductions = dedByEmp.get(e.id) ?? [];
+      const otrasDeducciones = empDeductions.reduce(
+        (sum, d) => sum + d.amount,
+        0,
+      );
       const input: PayrollInput = {
         salarioBase: e.salary ?? 0,
         salaryType: (e.salaryType as SalaryType) ?? 'ordinario',
         diasTrabajados: 30,
         arlRiskLevel: e.arlRiskLevel as ArlLevel | undefined,
+        novedades: otrasDeducciones > 0 ? { otrasDeducciones } : undefined,
       };
       const breakdown = computeSlip(input, s);
       return {
@@ -296,6 +325,10 @@ export class PayrollService {
         arlRiskLevel: input.arlRiskLevel,
         diasTrabajados: input.diasTrabajados,
         breakdown,
+        otrasDeduccionesDetalle: empDeductions.map((d) => ({
+          concept: d.concept,
+          amount: d.amount,
+        })),
         totalDevengado: breakdown.devengados.total,
         totalDeducciones: breakdown.deducciones.total,
         netoPagar: breakdown.netoPagar,
@@ -315,7 +348,7 @@ export class PayrollService {
       { devengado: 0, deducciones: 0, neto: 0, aportes: 0, provisiones: 0, costo: 0 },
     );
 
-    return this.runs.create({
+    const run = await this.runs.create({
       period: dto.period,
       label: dto.label,
       coverage,
@@ -325,6 +358,101 @@ export class PayrollService {
       totals,
       createdByEmail: user.email,
     });
+
+    // Marca como aplicadas las deducciones que entraron en esta corrida.
+    if (approved.length > 0) {
+      await this.deductions
+        .updateMany(
+          { _id: { $in: approved.map((d) => d._id) } },
+          {
+            $set: {
+              status: 'applied',
+              appliedRunId: run._id,
+              appliedPeriod: dto.period,
+            },
+          },
+        )
+        .exec();
+    }
+    return run;
+  }
+
+  // ── Deducciones de empleado (consumos, descuentos) ──────────────────────────
+
+  /** Crea una deducción; nace 'pending' (requiere aprobación para descontarse). */
+  async createDeduction(
+    dto: CreateDeductionDto,
+    user: JwtUser,
+  ): Promise<PayrollDeductionDocument> {
+    const emp = await this.employees.findById(dto.employeeId).exec();
+    if (!emp) throw new NotFoundException('Empleado no encontrado');
+    return this.deductions.create({
+      employeeId: emp.id,
+      employeeName: `${emp.firstName} ${emp.lastName}`.trim(),
+      docNumber: emp.docNumber,
+      sedeId: emp.sedeId,
+      concept: dto.concept,
+      amount: Math.round(dto.amount),
+      date: dto.date ?? new Date().toLocaleDateString('en-CA'),
+      status: 'pending',
+      source: dto.source ?? 'manual',
+      sourceId: dto.sourceId,
+      note: dto.note,
+      createdByEmail: user.email,
+    });
+  }
+
+  async listDeductions(query: {
+    employeeId?: string;
+    status?: DeductionStatus;
+  }): Promise<PayrollDeductionDocument[]> {
+    const filter: Record<string, unknown> = {};
+    if (query.employeeId) filter.employeeId = query.employeeId;
+    if (query.status) filter.status = query.status;
+    return this.deductions.find(filter).sort({ createdAt: -1 }).exec();
+  }
+
+  private async deductionOrFail(
+    id: string,
+  ): Promise<PayrollDeductionDocument> {
+    const d = await this.deductions.findById(id).exec();
+    if (!d) throw new NotFoundException('Deducción no encontrada');
+    return d;
+  }
+
+  /** Aprueba una deducción pendiente (entrará en la próxima corrida). */
+  async approveDeduction(
+    id: string,
+    user: JwtUser,
+  ): Promise<PayrollDeductionDocument> {
+    const d = await this.deductionOrFail(id);
+    if (d.status !== 'pending') {
+      throw new BadRequestException(
+        `Solo se aprueban deducciones pendientes (estado actual: ${d.status}).`,
+      );
+    }
+    d.status = 'approved';
+    d.approvedByEmail = user.email;
+    await d.save();
+    return d;
+  }
+
+  /** Rechaza una deducción pendiente (no se descuenta). */
+  async rejectDeduction(
+    id: string,
+    user: JwtUser,
+  ): Promise<PayrollDeductionDocument> {
+    const d = await this.deductionOrFail(id);
+    if (d.status !== 'pending') {
+      throw new BadRequestException(
+        `Solo se rechazan deducciones pendientes (estado actual: ${d.status}).`,
+      );
+    }
+    d.status = 'rejected';
+    d.approvedByEmail = user.email;
+    d.note = d.note ?? undefined;
+    await d.save();
+    return d;
   }
 
   async liquidacion(dto: LiquidacionDto): Promise<{
@@ -420,6 +548,16 @@ export class PayrollService {
 
   async removeRun(id: string): Promise<void> {
     const run = await this.getRun(id);
+    // Devuelve las deducciones aplicadas a 'approved' para poder re-nominarlas.
+    await this.deductions
+      .updateMany(
+        { appliedRunId: run._id },
+        {
+          $set: { status: 'approved' },
+          $unset: { appliedRunId: '', appliedPeriod: '' },
+        },
+      )
+      .exec();
     await run.deleteOne();
   }
 }

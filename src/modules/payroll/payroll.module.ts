@@ -9,6 +9,10 @@ import {
   PayrollRunSchema,
 } from './infrastructure/schemas/payroll-run.schema';
 import {
+  PayrollDeduction,
+  PayrollDeductionSchema,
+} from './infrastructure/schemas/payroll-deduction.schema';
+import {
   Employee,
   EmployeeSchema,
 } from '../employees/infrastructure/schemas/employee.schema';
@@ -30,6 +34,7 @@ import { PayrollController } from './infrastructure/payroll.controller';
     MongooseModule.forFeature([
       { name: PayrollSettings.name, schema: PayrollSettingsSchema },
       { name: PayrollRun.name, schema: PayrollRunSchema },
+      { name: PayrollDeduction.name, schema: PayrollDeductionSchema },
       { name: Employee.name, schema: EmployeeSchema },
       { name: AttendanceRecord.name, schema: AttendanceRecordSchema },
       { name: Sede.name, schema: SedeSchema },

@@ -37,6 +37,8 @@ const MANAGER_PERMISSIONS: Permission[] = [
   PERMISSIONS.FINANCE_VIEW,
   PERMISSIONS.FINANCE_MANAGE,
   PERMISSIONS.REPORTS_VIEW,
+  PERMISSIONS.CUSTOMERS_VIEW,
+  PERMISSIONS.CUSTOMERS_MANAGE,
 ];
 
 /** Permisos de cajero (heredados del rol estático anterior). */
@@ -47,6 +49,9 @@ const CASHIER_PERMISSIONS: Permission[] = [
   PERMISSIONS.CAJA_CLOSE,
   PERMISSIONS.CAJA_MOVEMENT,
   PERMISSIONS.INVENTORY_VIEW,
+  // El cajero registra clientes y consulta el directorio para el fiado.
+  PERMISSIONS.CUSTOMERS_VIEW,
+  PERMISSIONS.CUSTOMERS_MANAGE,
 ];
 
 /**

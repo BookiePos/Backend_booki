@@ -37,6 +37,7 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
 import { CoreAuthModule } from '../core-auth/core-auth.module';
 import { CajaModule } from '../caja/caja.module';
 import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
+import { CustomersModule } from '../customers/customers.module';
 import { FinanceService } from './application/finance.service';
 import { FinanceController } from './infrastructure/finance.controller';
 
@@ -45,6 +46,7 @@ import { FinanceController } from './infrastructure/finance.controller';
     CoreAuthModule,
     CajaModule,
     CoreLedgerModule,
+    CustomersModule,
     MongooseModule.forFeature([
       { name: FinanceCategory.name, schema: FinanceCategorySchema },
       { name: FinanceExpense.name, schema: FinanceExpenseSchema },

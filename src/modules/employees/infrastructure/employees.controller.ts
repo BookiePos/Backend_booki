@@ -23,6 +23,13 @@ export class EmployeesController {
     return this.employees.list();
   }
 
+  // Selector liviano para el POS (fiado/consumo de empleado). Gated pos.sell.
+  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @Get('lookup')
+  lookup() {
+    return this.employees.lookup();
+  }
+
   @RequirePermissions(PERMISSIONS.USERS_MANAGE)
   @Get(':id')
   get(@Param('id') id: string) {

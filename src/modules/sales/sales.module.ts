@@ -27,6 +27,8 @@ import { SedesModule } from '../sedes/sedes.module';
 import { CatalogModule } from '../catalog/catalog.module';
 import { DiscountsModule } from '../discounts/discounts.module';
 import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
+import { CustomersModule } from '../customers/customers.module';
+import { PayrollModule } from '../payroll/payroll.module';
 
 @Module({
   imports: [
@@ -35,6 +37,8 @@ import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
     CatalogModule,
     DiscountsModule,
     CoreLedgerModule,
+    CustomersModule,
+    PayrollModule,
     MongooseModule.forFeature([
       { name: Sale.name, schema: SaleSchema },
       { name: Order.name, schema: OrderSchema },

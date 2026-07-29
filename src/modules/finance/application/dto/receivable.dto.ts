@@ -15,24 +15,16 @@ import {
 
 const YYYYMMDD = /^\d{4}-\d{2}-\d{2}$/;
 
-/** Crea una cuenta por cobrar (fiado) de un cliente. */
+/**
+ * Crea una cuenta por cobrar (fiado). Requiere un cliente REGISTRADO
+ * (`customerId`); el nombre/documento/teléfono se toman del cliente.
+ */
 export class CreateReceivableDto {
   @IsMongoId()
   sedeId!: string;
 
-  @IsString()
-  @MaxLength(200)
-  customerName!: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(40)
-  customerDoc?: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(40)
-  customerPhone?: string;
+  @IsMongoId()
+  customerId!: string;
 
   @IsOptional()
   @IsString()

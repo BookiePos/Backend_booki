@@ -80,7 +80,18 @@ export function recentPeriods(count = 3): string[] {
  */
 export async function seedPayroll(
   app: INestApplicationContext,
-  opts: { sedeId: string; owner: JwtUser; periods?: string[]; logger?: Logger },
+  opts: {
+    sedeId: string;
+    owner: JwtUser;
+    periods?: string[];
+    logger?: Logger;
+    /** Se ejecuta tras crear empleados y ANTES de las corridas (p.ej. sembrar
+     *  consumos/deducciones para que aparezcan en la colilla). */
+    beforeRuns?: (ctx: {
+      app: INestApplicationContext;
+      employees: EmployeeDocument[];
+    }) => Promise<void>;
+  },
 ): Promise<PayrollSeedResult> {
   const logger = opts.logger ?? new Logger('SeedPayroll');
   const positionsSvc = app.get(PositionsService);
@@ -149,6 +160,12 @@ export async function seedPayroll(
       status: 'activo',
     });
     employeesCreated++;
+  }
+
+  // Hook opcional: sembrar consumos/deducciones antes de correr la nómina.
+  if (opts.beforeRuns) {
+    const activos = await employeeModel.find({ status: 'activo' }).exec();
+    await opts.beforeRuns({ app, employees: activos });
   }
 
   // 4) Corridas de nómina por período (idempotente por período + cobertura).

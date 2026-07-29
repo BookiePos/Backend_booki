@@ -58,6 +58,23 @@ export class SalePaymentDto {
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'dueDate debe ser YYYY-MM-DD' })
   dueDate?: string;
+
+  /**
+   * Deudor de una venta a crédito (fiado): un cliente REGISTRADO (→ CxC) o un
+   * empleado (→ deducción de nómina, pendiente de aprobación). Obligatorio
+   * cuando method='credit'.
+   */
+  @IsOptional()
+  @IsIn(['customer', 'employee'])
+  debtorType?: 'customer' | 'employee';
+
+  @IsOptional()
+  @IsMongoId()
+  customerId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  employeeId?: string;
 }
 
 /** Datos del cliente para la factura (todos opcionales). */

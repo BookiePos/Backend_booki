@@ -31,6 +31,8 @@ import { StockService } from '../../inventory/application/stock.service';
 import { ProductsService } from '../../inventory/application/products.service';
 import { SedesService } from '../../sedes/application/sedes.service';
 import { CatalogService } from '../../catalog/application/catalog.service';
+import { CustomersService } from '../../customers/application/customers.service';
+import { PayrollService } from '../../payroll/application/payroll.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
@@ -55,6 +57,8 @@ export class SalesService {
     private readonly products: ProductsService,
     private readonly sedes: SedesService,
     private readonly catalog: CatalogService,
+    private readonly customers: CustomersService,
+    private readonly payroll: PayrollService,
     private readonly ledgerPosting: LedgerPostingService,
   ) {}
 
@@ -101,13 +105,28 @@ export class SalesService {
       );
     }
 
-    // Venta a crédito (fiado): exige el nombre del cliente ANTES de tocar
-    // inventario, para poder crear después la cuenta por cobrar (CxC).
+    // Venta a crédito (fiado): exige un DEUDOR registrado ANTES de tocar
+    // inventario — un cliente de la base (→ CxC) o un empleado (→ deducción de
+    // nómina). El nombre suelto de la factura ya no basta para el fiado.
     const isCredit = dto.payment.method === 'credit';
-    if (isCredit && !dto.customer?.name?.trim()) {
-      throw new BadRequestException(
-        'Una venta a crédito (fiado) requiere el nombre del cliente',
-      );
+    if (isCredit) {
+      if (dto.payment.debtorType === 'customer') {
+        if (!dto.payment.customerId) {
+          throw new BadRequestException(
+            'El fiado requiere seleccionar un cliente registrado',
+          );
+        }
+      } else if (dto.payment.debtorType === 'employee') {
+        if (!dto.payment.employeeId) {
+          throw new BadRequestException(
+            'El consumo a crédito requiere seleccionar un empleado',
+          );
+        }
+      } else {
+        throw new BadRequestException(
+          'Una venta a crédito requiere elegir un cliente registrado o un empleado',
+        );
+      }
     }
 
     // 1. Cargar los productos de catálogo vendidos (precio del servidor).
@@ -329,26 +348,46 @@ export class SalesService {
       orderId,
     });
 
-    // Venta a crédito (fiado): genera la cuenta por cobrar (CxC) enlazada a la
-    // venta. No entra a caja (el arqueo solo cuenta ventas en efectivo).
+    // Venta a crédito (fiado): no entra a caja. Se rutea según el deudor.
     if (isCredit) {
       const today = new Date().toLocaleDateString('en-CA');
-      await this.receivableModel.create({
-        sedeId: new Types.ObjectId(dto.sedeId),
-        customerName: dto.customer!.name!.trim(),
-        customerDoc: dto.customer?.idNumber?.trim() || undefined,
-        customerPhone: dto.customer?.phone?.trim() || undefined,
-        saleId: sale._id,
-        docNumber: saleNumber,
-        issueDate: today,
-        dueDate: dto.payment.dueDate || today,
-        amount: Math.round(total),
-        paidAmount: 0,
-        status: 'open',
-        payments: [],
-        note: 'Venta a crédito (fiado)',
-        createdByEmail: user.email,
-      });
+      if (dto.payment.debtorType === 'employee') {
+        // Empleado → deducción de nómina (pendiente de aprobación). Aparecerá
+        // en la colilla al aprobarse y correr la nómina.
+        await this.payroll.createDeduction(
+          {
+            employeeId: dto.payment.employeeId!,
+            concept: `Consumo POS ${saleNumber}`,
+            amount: Math.round(total),
+            date: today,
+            source: 'sale',
+            sourceId: sale._id.toString(),
+          },
+          user,
+        );
+      } else {
+        // Cliente registrado → cuenta por cobrar (CxC) enlazada a la venta.
+        const customer = await this.customers.getOrFail(
+          dto.payment.customerId!,
+        );
+        await this.receivableModel.create({
+          sedeId: new Types.ObjectId(dto.sedeId),
+          customerId: customer._id,
+          customerName: customer.name,
+          customerDoc: `${customer.docType} ${customer.docNumber}`,
+          customerPhone: customer.phone,
+          saleId: sale._id,
+          docNumber: saleNumber,
+          issueDate: today,
+          dueDate: dto.payment.dueDate || today,
+          amount: Math.round(total),
+          paidAmount: 0,
+          status: 'open',
+          payments: [],
+          note: 'Venta a crédito (fiado)',
+          createdByEmail: user.email,
+        });
+      }
     }
 
     // Asiento contable de la venta (ingreso, IVA y costo). Best-effort.

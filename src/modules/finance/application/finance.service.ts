@@ -44,6 +44,7 @@ import {
   assertSedeAccess,
 } from '../../core-auth/domain/sede-access';
 import { CajaService } from '../../caja/application/caja.service';
+import { CustomersService } from '../../customers/application/customers.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { ACC as LEDGER_ACC } from '../../core-ledger/domain/ledger.constants';
 import {
@@ -225,6 +226,7 @@ export class FinanceService {
     @InjectModel(PayrollRun.name)
     private readonly runs: Model<PayrollRunDocument>,
     private readonly caja: CajaService,
+    private readonly customers: CustomersService,
     private readonly ledgerPosting: LedgerPostingService,
   ) {}
 
@@ -552,11 +554,14 @@ export class FinanceService {
     user: JwtUser,
   ): Promise<FinanceReceivableDocument> {
     assertSedeAccess(user, dto.sedeId);
+    // La CxC exige un cliente registrado; se denormaliza su identidad.
+    const customer = await this.customers.getOrFail(dto.customerId);
     return this.receivables.create({
       sedeId: new Types.ObjectId(dto.sedeId),
-      customerName: dto.customerName,
-      customerDoc: dto.customerDoc,
-      customerPhone: dto.customerPhone,
+      customerId: customer._id,
+      customerName: customer.name,
+      customerDoc: `${customer.docType} ${customer.docNumber}`,
+      customerPhone: customer.phone,
       docNumber: dto.docNumber,
       issueDate: dto.issueDate,
       dueDate: dto.dueDate,

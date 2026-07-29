@@ -23,6 +23,7 @@ import { CoreLedgerModule } from './modules/core-ledger/core-ledger.module';
 import { CoreReportsModule } from './modules/core-reports/core-reports.module';
 import { PurchasingModule } from './modules/purchasing/purchasing.module';
 import { RestaurantModule } from './modules/restaurant/restaurant.module';
+import { CustomersModule } from './modules/customers/customers.module';
 
 @Module({
   imports: [
@@ -76,6 +77,7 @@ import { RestaurantModule } from './modules/restaurant/restaurant.module';
     CoreReportsModule,
     PurchasingModule,
     RestaurantModule,
+    CustomersModule,
     // La auditoría va de último: su interceptor global envuelve al resto.
     CoreAuditModule,
   ],

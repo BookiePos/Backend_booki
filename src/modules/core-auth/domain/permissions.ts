@@ -31,6 +31,9 @@ export const PERMISSIONS = {
   FINANCE_VIEW: 'finance.view',
   FINANCE_MANAGE: 'finance.manage',
   REPORTS_VIEW: 'reports.view',
+  // Clientes (CRM / CxC)
+  CUSTOMERS_VIEW: 'customers.view',
+  CUSTOMERS_MANAGE: 'customers.manage',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -102,6 +105,14 @@ export const PERMISSION_GROUPS: {
       { key: PERMISSIONS.FINANCE_MANAGE, label: 'Configurar finanzas' },
       { key: PERMISSIONS.REPORTS_VIEW, label: 'Ver reportes' },
       { key: PERMISSIONS.TAX_MANAGE, label: 'Gestionar impuestos' },
+    ],
+  },
+  {
+    group: 'customers',
+    label: 'Clientes',
+    items: [
+      { key: PERMISSIONS.CUSTOMERS_VIEW, label: 'Ver clientes' },
+      { key: PERMISSIONS.CUSTOMERS_MANAGE, label: 'Registrar y editar clientes' },
     ],
   },
 ];

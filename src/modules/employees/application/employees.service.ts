@@ -99,6 +99,23 @@ export class EmployeesService {
     return emp;
   }
 
+  /** Listado mínimo de empleados activos (para selectores del POS). */
+  async lookup(): Promise<
+    { _id: string; firstName: string; lastName: string; docNumber: string }[]
+  > {
+    const emps = await this.model
+      .find({ status: 'activo' })
+      .select('firstName lastName docNumber')
+      .sort({ firstName: 1, lastName: 1 })
+      .exec();
+    return emps.map((e) => ({
+      _id: String(e._id),
+      firstName: e.firstName,
+      lastName: e.lastName,
+      docNumber: e.docNumber,
+    }));
+  }
+
   /** Aplica el DTO al documento (crear o actualizar). */
   private async apply(
     emp: EmployeeDocument,
