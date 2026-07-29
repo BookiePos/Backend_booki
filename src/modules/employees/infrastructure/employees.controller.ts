@@ -17,7 +17,7 @@ import { PERMISSIONS } from '../../core-auth/domain/permissions';
 export class EmployeesController {
   constructor(private readonly employees: EmployeesService) {}
 
-  @RequirePermissions(PERMISSIONS.USERS_MANAGE)
+  @RequirePermissions(PERMISSIONS.EMPLOYEES_VIEW)
   @Get()
   list() {
     return this.employees.list();
@@ -30,25 +30,25 @@ export class EmployeesController {
     return this.employees.lookup();
   }
 
-  @RequirePermissions(PERMISSIONS.USERS_MANAGE)
+  @RequirePermissions(PERMISSIONS.EMPLOYEES_VIEW)
   @Get(':id')
   get(@Param('id') id: string) {
     return this.employees.getOrFail(id);
   }
 
-  @RequirePermissions(PERMISSIONS.USERS_MANAGE)
+  @RequirePermissions(PERMISSIONS.EMPLOYEES_MANAGE)
   @Post()
   create(@Body() dto: CreateEmployeeDto) {
     return this.employees.create(dto);
   }
 
-  @RequirePermissions(PERMISSIONS.USERS_MANAGE)
+  @RequirePermissions(PERMISSIONS.EMPLOYEES_MANAGE)
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateEmployeeDto) {
     return this.employees.update(id, dto);
   }
 
-  @RequirePermissions(PERMISSIONS.USERS_MANAGE)
+  @RequirePermissions(PERMISSIONS.EMPLOYEES_MANAGE)
   @Delete(':id')
   async remove(@Param('id') id: string) {
     await this.employees.remove(id);

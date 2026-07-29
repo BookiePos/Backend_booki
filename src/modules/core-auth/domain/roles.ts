@@ -39,6 +39,14 @@ const MANAGER_PERMISSIONS: Permission[] = [
   PERMISSIONS.REPORTS_VIEW,
   PERMISSIONS.CUSTOMERS_VIEW,
   PERMISSIONS.CUSTOMERS_MANAGE,
+  // Restaurante y facturación electrónica (antes cubiertos por pos.sell).
+  PERMISSIONS.RESTAURANT_OPERATE,
+  PERMISSIONS.EINVOICING_ISSUE,
+  PERMISSIONS.EINVOICING_VOID,
+  // RRHH del punto: ve el equipo, controla asistencia y aprueba consumos.
+  PERMISSIONS.EMPLOYEES_VIEW,
+  PERMISSIONS.ATTENDANCE_MANAGE,
+  PERMISSIONS.PAYROLL_DEDUCTION_APPROVE,
 ];
 
 /** Permisos de cajero (heredados del rol estático anterior). */
@@ -52,6 +60,11 @@ const CASHIER_PERMISSIONS: Permission[] = [
   // El cajero registra clientes y consulta el directorio para el fiado.
   PERMISSIONS.CUSTOMERS_VIEW,
   PERMISSIONS.CUSTOMERS_MANAGE,
+  // Surtido operativo antes cubierto por pos.sell: comandas, asistencia y
+  // emisión de factura electrónica desde el POS.
+  PERMISSIONS.RESTAURANT_OPERATE,
+  PERMISSIONS.ATTENDANCE_MANAGE,
+  PERMISSIONS.EINVOICING_ISSUE,
 ];
 
 /**

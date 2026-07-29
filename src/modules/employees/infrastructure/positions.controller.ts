@@ -18,25 +18,25 @@ import { PERMISSIONS } from '../../core-auth/domain/permissions';
 export class PositionsController {
   constructor(private readonly positions: PositionsService) {}
 
-  @RequirePermissions(PERMISSIONS.USERS_MANAGE)
+  @RequirePermissions(PERMISSIONS.EMPLOYEES_VIEW)
   @Get()
   list(@Query('includeInactive') includeInactive?: string) {
     return this.positions.list(includeInactive === 'true');
   }
 
-  @RequirePermissions(PERMISSIONS.USERS_MANAGE)
+  @RequirePermissions(PERMISSIONS.EMPLOYEES_MANAGE)
   @Post()
   create(@Body() dto: CreatePositionDto) {
     return this.positions.create(dto);
   }
 
-  @RequirePermissions(PERMISSIONS.USERS_MANAGE)
+  @RequirePermissions(PERMISSIONS.EMPLOYEES_MANAGE)
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdatePositionDto) {
     return this.positions.update(id, dto);
   }
 
-  @RequirePermissions(PERMISSIONS.USERS_MANAGE)
+  @RequirePermissions(PERMISSIONS.EMPLOYEES_MANAGE)
   @Delete(':id')
   async remove(@Param('id') id: string) {
     await this.positions.remove(id);

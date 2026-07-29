@@ -19,28 +19,28 @@ import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 export class EinvoicingController {
   constructor(private readonly einvoicing: EinvoicingService) {}
 
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
   @Get()
   list(@Query('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
     if (!sedeId) throw new BadRequestException('sedeId es obligatorio');
     return this.einvoicing.list(sedeId, user);
   }
 
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
   @Get(':id')
   get(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.einvoicing.get(id, user);
   }
 
   /** Genera la factura electrónica de una venta. */
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
   @Post('from-sale')
   fromSale(@Body() dto: CreateInvoiceDto, @CurrentUser() user: JwtUser) {
     return this.einvoicing.createFromSale(dto.saleId, user);
   }
 
   /** Genera la nota crédito que anula/corrige una factura. */
-  @RequirePermissions(PERMISSIONS.POS_VOID_AUTHORIZE)
+  @RequirePermissions(PERMISSIONS.EINVOICING_VOID)
   @Post(':id/credit-note')
   creditNote(
     @Param('id') id: string,

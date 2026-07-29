@@ -27,7 +27,7 @@ export class RestaurantController {
   constructor(private readonly restaurant: RestaurantService) {}
 
   // ── Mesas ──────────────────────────────────────────────────────────────────
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.RESTAURANT_OPERATE)
   @Get('tables')
   listTables(@CurrentUser() user: JwtUser, @Query('sedeId') sedeId?: string) {
     return this.restaurant.listTables(user, sedeId);
@@ -56,7 +56,7 @@ export class RestaurantController {
   }
 
   // ── Comandas ────────────────────────────────────────────────────────────────
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.RESTAURANT_OPERATE)
   @Get('orders')
   listOrders(
     @CurrentUser() user: JwtUser,
@@ -66,19 +66,19 @@ export class RestaurantController {
     return this.restaurant.listOrders(user, { sedeId, status });
   }
 
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.RESTAURANT_OPERATE)
   @Get('orders/:id')
   getOrder(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.restaurant.getOrder(id, user);
   }
 
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.RESTAURANT_OPERATE)
   @Post('orders')
   openOrder(@Body() dto: OpenOrderDto, @CurrentUser() user: JwtUser) {
     return this.restaurant.openOrder(dto, user);
   }
 
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.RESTAURANT_OPERATE)
   @Post('orders/:id/items')
   addItems(
     @Param('id') id: string,
@@ -88,7 +88,7 @@ export class RestaurantController {
     return this.restaurant.addItems(id, dto, user);
   }
 
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.RESTAURANT_OPERATE)
   @Delete('orders/:id/items/:itemId')
   removeItem(
     @Param('id') id: string,
@@ -98,19 +98,19 @@ export class RestaurantController {
     return this.restaurant.removeItem(id, itemId, user);
   }
 
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.RESTAURANT_OPERATE)
   @Post('orders/:id/send')
   sendToKitchen(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.restaurant.sendToKitchen(id, user);
   }
 
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.RESTAURANT_OPERATE)
   @Post('orders/:id/bill')
   requestBill(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.restaurant.requestBill(id, user);
   }
 
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.RESTAURANT_OPERATE)
   @Post('orders/:id/tip')
   setTip(
     @Param('id') id: string,
@@ -120,7 +120,7 @@ export class RestaurantController {
     return this.restaurant.setTip(id, dto, user);
   }
 
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.RESTAURANT_OPERATE)
   @Post('orders/:id/close')
   closeOrder(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.restaurant.closeOrder(id, user);

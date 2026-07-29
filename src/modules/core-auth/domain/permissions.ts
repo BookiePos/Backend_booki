@@ -34,6 +34,20 @@ export const PERMISSIONS = {
   // Clientes (CRM / CxC)
   CUSTOMERS_VIEW: 'customers.view',
   CUSTOMERS_MANAGE: 'customers.manage',
+  // Recursos humanos (empleados + cargos)
+  EMPLOYEES_VIEW: 'employees.view',
+  EMPLOYEES_MANAGE: 'employees.manage',
+  // Asistencia (control de horas)
+  ATTENDANCE_MANAGE: 'attendance.manage',
+  // Nómina
+  PAYROLL_VIEW: 'payroll.view',
+  PAYROLL_MANAGE: 'payroll.manage',
+  PAYROLL_DEDUCTION_APPROVE: 'payroll.deduction.approve',
+  // Facturación electrónica (DIAN)
+  EINVOICING_ISSUE: 'einvoicing.issue',
+  EINVOICING_VOID: 'einvoicing.void',
+  // Restaurante (comandas y mesas)
+  RESTAURANT_OPERATE: 'restaurant.operate',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -84,6 +98,15 @@ export const PERMISSION_GROUPS: {
       { key: PERMISSIONS.POS_DISCOUNT_AUTHORIZE, label: 'Autorizar descuentos' },
       { key: PERMISSIONS.POS_VOID_AUTHORIZE, label: 'Autorizar anulaciones' },
       { key: PERMISSIONS.POS_REFUND, label: 'Devoluciones' },
+      { key: PERMISSIONS.RESTAURANT_OPERATE, label: 'Operar comandas y mesas' },
+    ],
+  },
+  {
+    group: 'einvoicing',
+    label: 'Facturación electrónica',
+    items: [
+      { key: PERMISSIONS.EINVOICING_ISSUE, label: 'Emitir factura electrónica' },
+      { key: PERMISSIONS.EINVOICING_VOID, label: 'Emitir nota crédito (anular)' },
     ],
   },
   {
@@ -113,6 +136,27 @@ export const PERMISSION_GROUPS: {
     items: [
       { key: PERMISSIONS.CUSTOMERS_VIEW, label: 'Ver clientes' },
       { key: PERMISSIONS.CUSTOMERS_MANAGE, label: 'Registrar y editar clientes' },
+    ],
+  },
+  {
+    group: 'hr',
+    label: 'Recursos humanos',
+    items: [
+      { key: PERMISSIONS.EMPLOYEES_VIEW, label: 'Ver empleados y cargos' },
+      { key: PERMISSIONS.EMPLOYEES_MANAGE, label: 'Registrar y editar empleados y cargos' },
+      { key: PERMISSIONS.ATTENDANCE_MANAGE, label: 'Registrar y ver asistencia' },
+    ],
+  },
+  {
+    group: 'payroll',
+    label: 'Nómina',
+    items: [
+      { key: PERMISSIONS.PAYROLL_VIEW, label: 'Ver nómina, colillas y liquidaciones' },
+      { key: PERMISSIONS.PAYROLL_MANAGE, label: 'Configurar y correr nómina' },
+      {
+        key: PERMISSIONS.PAYROLL_DEDUCTION_APPROVE,
+        label: 'Aprobar consumos de empleado (deducciones)',
+      },
     ],
   },
 ];

@@ -18,7 +18,7 @@ export class AttendanceController {
   constructor(private readonly attendance: AttendanceService) {}
 
   /** Trabajadores vinculados a la sede. */
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.ATTENDANCE_MANAGE)
   @Get('workers')
   workers(@Query('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
     if (!sedeId) throw new BadRequestException('sedeId es obligatorio');
@@ -29,7 +29,7 @@ export class AttendanceController {
    * Horas trabajadas por trabajador y sede en un rango (YYYY-MM-DD). Sin
    * `sedeId` agrega sobre todas las sedes que el usuario puede ver.
    */
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.ATTENDANCE_MANAGE)
   @Get('summary')
   summary(
     @Query('from') from: string,
@@ -44,7 +44,7 @@ export class AttendanceController {
   }
 
   /** Registros de asistencia de una sede en un día (YYYY-MM-DD). */
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.ATTENDANCE_MANAGE)
   @Get()
   list(
     @Query('sedeId') sedeId: string,
@@ -57,7 +57,7 @@ export class AttendanceController {
   }
 
   /** Registra/actualiza entrada y salida de un trabajador. */
-  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @RequirePermissions(PERMISSIONS.ATTENDANCE_MANAGE)
   @Post()
   upsert(@Body() dto: UpsertAttendanceDto, @CurrentUser() user: JwtUser) {
     return this.attendance.upsert(dto, user);
