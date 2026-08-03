@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   FinanceCategory,
   FinanceCategorySchema,
@@ -47,7 +47,7 @@ import { FinanceController } from './infrastructure/finance.controller';
     CajaModule,
     CoreLedgerModule,
     CustomersModule,
-    MongooseModule.forFeature([
+    TenantMongooseModule.forFeature([
       { name: FinanceCategory.name, schema: FinanceCategorySchema },
       { name: FinanceExpense.name, schema: FinanceExpenseSchema },
       { name: FinancePayable.name, schema: FinancePayableSchema },

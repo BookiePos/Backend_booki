@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import { Sale, SaleSchema } from './infrastructure/schemas/sale.schema';
 import { Order, OrderSchema } from './infrastructure/schemas/order.schema';
 import {
@@ -39,7 +39,7 @@ import { PayrollModule } from '../payroll/payroll.module';
     CoreLedgerModule,
     CustomersModule,
     PayrollModule,
-    MongooseModule.forFeature([
+    TenantMongooseModule.forFeature([
       { name: Sale.name, schema: SaleSchema },
       { name: Order.name, schema: OrderSchema },
       { name: Counter.name, schema: CounterSchema },

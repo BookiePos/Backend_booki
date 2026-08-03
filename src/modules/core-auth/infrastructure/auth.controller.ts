@@ -1,8 +1,10 @@
 import { Body, Controller, Get, HttpCode, Post } from '@nestjs/common';
 import { AuthService } from '../application/auth.service';
 import { UsersService } from '../application/users.service';
+import { RegistrationService } from '../application/registration.service';
 import { LoginDto } from '../application/dto/login.dto';
 import { RefreshDto } from '../application/dto/refresh.dto';
+import { RegisterDto } from '../application/dto/register.dto';
 import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { JwtUser } from './jwt.strategy';
@@ -12,6 +14,7 @@ export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly users: UsersService,
+    private readonly registration: RegistrationService,
   ) {}
 
   @Public()
@@ -19,6 +22,14 @@ export class AuthController {
   @HttpCode(200)
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto.email, dto.password);
+  }
+
+  /** Alta pública de una empresa nueva (tenant) + su dueño. */
+  @Public()
+  @Post('register')
+  @HttpCode(201)
+  register(@Body() dto: RegisterDto) {
+    return this.registration.register(dto);
   }
 
   @Public()

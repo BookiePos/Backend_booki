@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   Customer,
   CustomerSchema,
@@ -11,7 +11,7 @@ import { CustomersController } from './infrastructure/customers.controller';
 @Module({
   imports: [
     CoreAuthModule,
-    MongooseModule.forFeature([{ name: Customer.name, schema: CustomerSchema }]),
+    TenantMongooseModule.forFeature([{ name: Customer.name, schema: CustomerSchema }]),
   ],
   controllers: [CustomersController],
   providers: [CustomersService],

@@ -11,6 +11,8 @@ export interface JwtUser {
   role: string;
   permissions: string[];
   sedeIds: string[];
+  /** Empresa (tenant) del usuario. */
+  businessId?: string;
 }
 
 interface AccessPayload {
@@ -20,6 +22,8 @@ interface AccessPayload {
   role: string;
   permissions: string[];
   sedeIds: string[];
+  /** Empresa (tenant); el middleware lo usa para abrir el contexto de datos. */
+  biz?: string;
 }
 
 @Injectable()
@@ -43,6 +47,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       role: payload.role,
       permissions: payload.permissions ?? [],
       sedeIds: payload.sedeIds ?? [],
+      businessId: payload.biz,
     };
   }
 }

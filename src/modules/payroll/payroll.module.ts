@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   PayrollSettings,
   PayrollSettingsSchema,
@@ -31,7 +31,7 @@ import { PayrollController } from './infrastructure/payroll.controller';
 @Module({
   imports: [
     CoreAuthModule,
-    MongooseModule.forFeature([
+    TenantMongooseModule.forFeature([
       { name: PayrollSettings.name, schema: PayrollSettingsSchema },
       { name: PayrollRun.name, schema: PayrollRunSchema },
       { name: PayrollDeduction.name, schema: PayrollDeductionSchema },

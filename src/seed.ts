@@ -7,6 +7,7 @@ import { RolesService } from './modules/core-auth/application/roles.service';
 import { SedesService } from './modules/sedes/application/sedes.service';
 import { SuppliersService } from './modules/suppliers/application/suppliers.service';
 import { ROLES } from './modules/core-auth/domain/roles';
+import { runInBusiness } from './seed/with-business';
 
 /** Proveedores de ejemplo para arrancar (restaurante colombiano). */
 const SEED_SUPPLIERS = [
@@ -65,6 +66,15 @@ async function seed(): Promise<void> {
     bufferLogs: false,
   });
   try {
+    await runInBusiness(
+      app,
+      {
+        name: 'Negocio (seed)',
+        ownerEmail: process.env.SEED_ADMIN_EMAIL ?? 'admin@sistemapos.local',
+        plan: 'operacion',
+        tipoNegocio: 'restaurante',
+      },
+      async () => {
     const sedes = app.get(SedesService);
     const users = app.get(UsersService);
     const roles = app.get(RolesService);
@@ -120,6 +130,8 @@ async function seed(): Promise<void> {
     }
 
     logger.log('Seed completado.');
+      },
+    );
   } finally {
     await app.close();
   }

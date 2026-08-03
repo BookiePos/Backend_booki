@@ -1,12 +1,12 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import { Sede, SedeSchema } from './infrastructure/schemas/sede.schema';
 import { SedesService } from './application/sedes.service';
 import { SedesController } from './infrastructure/sedes.controller';
 
 @Module({
   imports: [
-    MongooseModule.forFeature([{ name: Sede.name, schema: SedeSchema }]),
+    TenantMongooseModule.forFeature([{ name: Sede.name, schema: SedeSchema }]),
   ],
   controllers: [SedesController],
   providers: [SedesService],

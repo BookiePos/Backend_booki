@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   Discount,
   DiscountSchema,
@@ -9,11 +9,12 @@ import { DiscountsController } from './infrastructure/discounts.controller';
 
 @Module({
   imports: [
-    MongooseModule.forFeature([{ name: Discount.name, schema: DiscountSchema }]),
+    TenantMongooseModule.forFeature([{ name: Discount.name, schema: DiscountSchema }]),
   ],
   controllers: [DiscountsController],
   providers: [DiscountsService],
-  // Exporta MongooseModule para que SalesModule pueda inyectar el modelo Discount.
-  exports: [DiscountsService, MongooseModule],
+  // Reexporta el modelo (proxy multi-empresa) para que SalesModule pueda
+  // inyectar el modelo Discount.
+  exports: [DiscountsService, TenantMongooseModule],
 })
 export class DiscountsModule {}

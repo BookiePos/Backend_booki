@@ -24,6 +24,7 @@ import { ROLES } from './modules/core-auth/domain/roles';
 import { ALL_PERMISSIONS } from './modules/core-auth/domain/permissions';
 import { JwtUser } from './modules/core-auth/infrastructure/jwt.strategy';
 import { seedPayroll, recentPeriods } from './seed/payroll.seed';
+import { runInBusiness } from './seed/with-business';
 
 /**
  * Seeder de DEMOSTRACIÓN: carga un negocio completo y ejercita TODAS las
@@ -65,6 +66,15 @@ async function seedDemo(): Promise<void> {
   }
 
   try {
+    await runInBusiness(
+      app,
+      {
+        name: 'Restaurante Demo',
+        ownerEmail: process.env.SEED_DEMO_EMAIL ?? 'demo@sistemapos.local',
+        plan: 'operacion',
+        tipoNegocio: 'restaurante',
+      },
+      async () => {
     const sedesSvc = app.get(SedesService);
     const usersSvc = app.get(UsersService);
     const rolesSvc = app.get(RolesService);
@@ -502,6 +512,8 @@ async function seedDemo(): Promise<void> {
     });
 
     printCredentials(logger, demoEmail, demoPassword, centro.name, done, failed);
+      },
+    );
   } finally {
     await app.close();
   }

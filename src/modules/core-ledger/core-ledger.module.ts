@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   LedgerAccount,
   LedgerAccountSchema,
@@ -16,7 +16,7 @@ import { LedgerController } from './infrastructure/ledger.controller';
 @Module({
   imports: [
     CoreAuthModule,
-    MongooseModule.forFeature([
+    TenantMongooseModule.forFeature([
       { name: LedgerAccount.name, schema: LedgerAccountSchema },
       { name: JournalEntry.name, schema: JournalEntrySchema },
     ]),

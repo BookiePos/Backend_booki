@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   PurchaseOrder,
   PurchaseOrderSchema,
@@ -21,7 +21,7 @@ import { PurchasingController } from './infrastructure/purchasing.controller';
     CoreTaxModule,
     CoreLedgerModule,
     InventoryModule,
-    MongooseModule.forFeature([
+    TenantMongooseModule.forFeature([
       { name: PurchaseOrder.name, schema: PurchaseOrderSchema },
       { name: FinancePayable.name, schema: FinancePayableSchema },
     ]),

@@ -10,6 +10,11 @@ import {
   RefreshToken,
   RefreshTokenDocument,
 } from '../infrastructure/schemas/refresh-token.schema';
+import {
+  TenantContext,
+  dbNameForBusiness,
+} from '../../../shared/tenancy/tenant-context';
+import { DirectoryService } from '../../control/application/directory.service';
 
 export interface AuthTokens {
   accessToken: string;
@@ -28,6 +33,8 @@ export interface AuthUserView {
 interface RefreshPayload {
   sub: string;
   jti: string;
+  /** Empresa (tenant) del usuario, para reabrir su contexto al refrescar. */
+  biz: string;
 }
 
 @Injectable()
@@ -36,6 +43,7 @@ export class AuthService {
     private readonly users: UsersService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly directory: DirectoryService,
     @InjectModel(RefreshToken.name)
     private readonly refreshModel: Model<RefreshTokenDocument>,
   ) {}
@@ -44,16 +52,27 @@ export class AuthService {
     email: string,
     password: string,
   ): Promise<{ tokens: AuthTokens; user: AuthUserView }> {
-    const user = await this.users.findByEmail(email);
-    if (!user || !user.active) {
+    // El login solo pide el correo: el directorio (control-plane) dice a qué
+    // empresa/base pertenece, y ahí verificamos las credenciales.
+    const entry = await this.directory.findByEmail(email);
+    if (!entry) {
       throw new UnauthorizedException('Credenciales inválidas');
     }
-    const ok = await this.users.verifyPassword(user, password);
-    if (!ok) {
-      throw new UnauthorizedException('Credenciales inválidas');
-    }
-    const tokens = await this.issueTokens(user);
-    return { tokens, user: await this.toView(user) };
+    return TenantContext.run(
+      { businessId: entry.businessId, dbName: entry.dbName },
+      async () => {
+        const user = await this.users.findByEmail(email);
+        if (!user || !user.active) {
+          throw new UnauthorizedException('Credenciales inválidas');
+        }
+        const ok = await this.users.verifyPassword(user, password);
+        if (!ok) {
+          throw new UnauthorizedException('Credenciales inválidas');
+        }
+        const tokens = await this.issueTokens(user);
+        return { tokens, user: await this.toView(user) };
+      },
+    );
   }
 
   async refresh(refreshToken: string): Promise<AuthTokens> {
@@ -65,15 +84,30 @@ export class AuthService {
     } catch {
       throw new UnauthorizedException('Refresh token inválido');
     }
-    const stored = await this.refreshModel.findOne({ jti: payload.jti }).exec();
-    if (!stored || stored.revoked || stored.expiresAt.getTime() < Date.now()) {
-      throw new UnauthorizedException('Refresh token expirado o revocado');
+    if (!payload.biz) {
+      // Tokens emitidos antes del modelo multi-empresa: forzar re-login.
+      throw new UnauthorizedException('Refresh token inválido');
     }
-    // Rotación: el refresh usado se revoca y se emite uno nuevo.
-    stored.revoked = true;
-    await stored.save();
-    const user = await this.users.findById(payload.sub);
-    return this.issueTokens(user);
+    return TenantContext.run(
+      { businessId: payload.biz, dbName: dbNameForBusiness(payload.biz) },
+      async () => {
+        const stored = await this.refreshModel
+          .findOne({ jti: payload.jti })
+          .exec();
+        if (
+          !stored ||
+          stored.revoked ||
+          stored.expiresAt.getTime() < Date.now()
+        ) {
+          throw new UnauthorizedException('Refresh token expirado o revocado');
+        }
+        // Rotación: el refresh usado se revoca y se emite uno nuevo.
+        stored.revoked = true;
+        await stored.save();
+        const user = await this.users.findById(payload.sub);
+        return this.issueTokens(user);
+      },
+    );
   }
 
   async logout(refreshToken: string): Promise<void> {
@@ -105,6 +139,8 @@ export class AuthService {
   private async issueTokens(user: UserDocument): Promise<AuthTokens> {
     const permissions = await this.users.effectivePermissions(user);
     const sedeIds = user.sedeIds.map((s) => s.toString());
+    // La empresa activa viene del contexto (login/registro/refresh la abren).
+    const businessId = TenantContext.currentOrThrow().businessId;
 
     const accessToken = await this.jwt.signAsync({
       sub: user.id,
@@ -113,13 +149,14 @@ export class AuthService {
       role: user.role,
       permissions,
       sedeIds,
+      biz: businessId,
     });
 
     const jti = randomUUID();
     const refreshExpires =
       this.config.get<string>('JWT_REFRESH_EXPIRES') ?? '7d';
     const refreshToken = await this.jwt.signAsync(
-      { sub: user.id, jti } satisfies RefreshPayload,
+      { sub: user.id, jti, biz: businessId } satisfies RefreshPayload,
       {
         secret: this.refreshSecret(),
         expiresIn: refreshExpires,

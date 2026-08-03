@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   Product,
   ProductSchema,
@@ -28,7 +28,7 @@ import { SedesModule } from '../sedes/sedes.module';
 @Module({
   imports: [
     SedesModule,
-    MongooseModule.forFeature([
+    TenantMongooseModule.forFeature([
       { name: Product.name, schema: ProductSchema },
       { name: ProductCategory.name, schema: ProductCategorySchema },
       { name: StockItem.name, schema: StockItemSchema },

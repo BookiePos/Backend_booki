@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { JwtModule, JwtModuleOptions } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import { APP_GUARD } from '@nestjs/core';
 import { User, UserSchema } from './infrastructure/schemas/user.schema';
 import { Role, RoleSchema } from './infrastructure/schemas/role.schema';
@@ -14,9 +14,12 @@ import {
   RefreshToken,
   RefreshTokenSchema,
 } from './infrastructure/schemas/refresh-token.schema';
+import { ControlModule } from '../control/control.module';
+import { SedesModule } from '../sedes/sedes.module';
 import { UsersService } from './application/users.service';
 import { RolesService } from './application/roles.service';
 import { AuthService } from './application/auth.service';
+import { RegistrationService } from './application/registration.service';
 import { MailService } from './application/mail.service';
 import { InvitationsService } from './application/invitations.service';
 import { JwtStrategy } from './infrastructure/jwt.strategy';
@@ -30,7 +33,9 @@ import { PermissionsGuard } from './infrastructure/guards/permissions.guard';
 @Module({
   imports: [
     PassportModule,
-    MongooseModule.forFeature([
+    ControlModule,
+    SedesModule,
+    TenantMongooseModule.forFeature([
       { name: User.name, schema: UserSchema },
       { name: Role.name, schema: RoleSchema },
       { name: Invitation.name, schema: InvitationSchema },
@@ -57,6 +62,7 @@ import { PermissionsGuard } from './infrastructure/guards/permissions.guard';
     UsersService,
     RolesService,
     AuthService,
+    RegistrationService,
     MailService,
     InvitationsService,
     JwtStrategy,

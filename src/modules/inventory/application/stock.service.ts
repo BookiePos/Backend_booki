@@ -4,8 +4,9 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectConnection, InjectModel } from '@nestjs/mongoose';
-import { ClientSession, Connection, Model, Types } from 'mongoose';
+import { InjectModel } from '@nestjs/mongoose';
+import { ClientSession, Model, Types } from 'mongoose';
+import { TenantModelRegistry } from '../../../shared/tenancy/tenant-model.registry';
 import {
   StockItem,
   StockItemDocument,
@@ -59,7 +60,7 @@ export class StockService {
     private readonly lotModel: Model<StockLotDocument>,
     @InjectModel(StockMovement.name)
     private readonly movementModel: Model<StockMovementDocument>,
-    @InjectConnection() private readonly connection: Connection,
+    private readonly tenant: TenantModelRegistry,
     private readonly products: ProductsService,
     private readonly sedes: SedesService,
   ) {}
@@ -72,8 +73,11 @@ export class StockService {
   private async withTransaction<T>(
     fn: (session?: ClientSession) => Promise<T>,
   ): Promise<T> {
+    // Conexión a la base de la empresa activa: la transacción y los modelos
+    // (proxies) operan sobre la MISMA base (useCache reutiliza la conexión).
+    const connection = this.tenant.connectionFor();
     try {
-      return await this.connection.transaction((session) => fn(session));
+      return await connection.transaction((session) => fn(session));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (/replica set|transaction numbers|retryable writes/i.test(message)) {

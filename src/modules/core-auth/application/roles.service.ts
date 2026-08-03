@@ -5,7 +5,6 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  OnModuleInit,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -31,7 +30,7 @@ export interface RoleView {
 const LOCKED_PERMISSION_ROLES: string[] = [ROLES.OWNER, ROLES.ADMIN];
 
 @Injectable()
-export class RolesService implements OnModuleInit {
+export class RolesService {
   private readonly logger = new Logger('RolesService');
 
   constructor(
@@ -39,22 +38,11 @@ export class RolesService implements OnModuleInit {
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
   ) {}
 
-  /**
-   * Al arrancar, re-sincroniza los roles de sistema con su definición en código
-   * (owner/admin/manager/cashier). Así, un permiso nuevo (p.ej. `finance.manage`)
-   * se propaga a los roles existentes sin re-ejecutar el seed. Idempotente y sin
-   * bloquear el arranque si Mongo aún no está disponible.
-   */
-  async onModuleInit(): Promise<void> {
-    try {
-      await this.ensureSystemRoles();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.warn(
-        `No se pudieron sincronizar los roles de sistema al arrancar: ${message}`,
-      );
-    }
-  }
+  // Nota (multi-empresa): antes se sincronizaban los roles al arrancar
+  // (onModuleInit), pero eso apuntaba a una única base. Ahora cada empresa tiene
+  // su propia base, así que `ensureSystemRoles()` se llama al registrar la
+  // empresa (RegistrationService) y en los seeders, dentro del contexto de la
+  // empresa correspondiente.
 
   /** Lista todos los roles con el número de usuarios que los tienen. */
   async list(): Promise<RoleView[]> {

@@ -9,6 +9,7 @@ import { ROLES } from './modules/core-auth/domain/roles';
 import { ALL_PERMISSIONS } from './modules/core-auth/domain/permissions';
 import { JwtUser } from './modules/core-auth/infrastructure/jwt.strategy';
 import { seedPayroll, recentPeriods } from './seed/payroll.seed';
+import { runInBusiness } from './seed/with-business';
 
 /**
  * Seeder STANDALONE de nómina: asegura settings del motor, cargos, un roster de
@@ -26,6 +27,15 @@ async function main(): Promise<void> {
     bufferLogs: false,
   });
   try {
+    await runInBusiness(
+      app,
+      {
+        name: 'Restaurante Demo',
+        ownerEmail: process.env.SEED_DEMO_EMAIL ?? 'demo@sistemapos.local',
+        plan: 'operacion',
+        tipoNegocio: 'restaurante',
+      },
+      async () => {
     const rolesSvc = app.get(RolesService);
     const usersSvc = app.get(UsersService);
     const sedesSvc = app.get(SedesService);
@@ -69,6 +79,8 @@ async function main(): Promise<void> {
     logger.log(` Corridas omitidas:   ${result.runsSkipped.join(', ') || '—'}`);
     logger.log(` Neto última corrida: ${result.lastRunNeto.toLocaleString('es-CO')}`);
     logger.log('════════════════════════════════════════════════');
+      },
+    );
   } finally {
     await app.close();
   }

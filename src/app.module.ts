@@ -2,6 +2,9 @@ import { Module, Logger } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import type { Connection } from 'mongoose';
+import { TenancyModule } from './shared/tenancy/tenancy.module';
+import { CONTROL_CONNECTION } from './modules/control/domain/control.constants';
+import { ControlModule } from './modules/control/control.module';
 import { HealthModule } from './modules/health/health.module';
 import { CoreAuthModule } from './modules/core-auth/core-auth.module';
 import { SedesModule } from './modules/sedes/sedes.module';
@@ -24,6 +27,19 @@ import { CoreReportsModule } from './modules/core-reports/core-reports.module';
 import { PurchasingModule } from './modules/purchasing/purchasing.module';
 import { RestaurantModule } from './modules/restaurant/restaurant.module';
 import { CustomersModule } from './modules/customers/customers.module';
+
+/**
+ * URI de la base de control. Por defecto reusa el mismo servidor de
+ * `MONGODB_URI` cambiando el nombre de la base a `gocheck_control`. Se puede
+ * fijar aparte con `CONTROL_MONGODB_URI`.
+ */
+function controlUri(): string {
+  const explicit = process.env.CONTROL_MONGODB_URI;
+  if (explicit) return explicit;
+  const uri = process.env.MONGODB_URI ?? 'mongodb://localhost:27017/ert';
+  // Reemplaza el nombre de base (entre el último '/' y el '?' o el final).
+  return uri.replace(/\/[^/?]*(\?|$)/, '/gocheck_control$1');
+}
 
 @Module({
   imports: [
@@ -57,6 +73,20 @@ import { CustomersModule } from './modules/customers/customers.module';
         };
       },
     }),
+    // Conexión al control-plane (registro de empresas): otra base en el mismo
+    // Mongo. Los datos operativos de cada empresa NO viven aquí, sino en su
+    // propia base `biz_<id>` a la que se apunta con useDb().
+    MongooseModule.forRootAsync({
+      connectionName: CONTROL_CONNECTION,
+      useFactory: () => ({
+        uri: controlUri(),
+        serverSelectionTimeoutMS: 3000,
+        lazyConnection: true,
+      }),
+    }),
+    // Infraestructura multi-empresa (registry + middleware de contexto).
+    TenancyModule,
+    ControlModule,
     HealthModule,
     CoreAuthModule,
     SedesModule,

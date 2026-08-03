@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   RestaurantTable,
   RestaurantTableSchema,
@@ -15,7 +15,7 @@ import { RestaurantController } from './infrastructure/restaurant.controller';
 @Module({
   imports: [
     CoreAuthModule,
-    MongooseModule.forFeature([
+    TenantMongooseModule.forFeature([
       { name: RestaurantTable.name, schema: RestaurantTableSchema },
       { name: RestaurantOrder.name, schema: RestaurantOrderSchema },
     ]),

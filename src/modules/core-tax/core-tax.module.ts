@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   TaxRate,
   TaxRateSchema,
@@ -11,7 +11,7 @@ import { TaxController } from './infrastructure/tax.controller';
 @Module({
   imports: [
     CoreAuthModule,
-    MongooseModule.forFeature([{ name: TaxRate.name, schema: TaxRateSchema }]),
+    TenantMongooseModule.forFeature([{ name: TaxRate.name, schema: TaxRateSchema }]),
   ],
   controllers: [TaxController],
   providers: [TaxService],

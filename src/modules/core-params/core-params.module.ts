@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   Parameter,
   ParameterSchema,
@@ -11,7 +11,7 @@ import { ParamsController } from './infrastructure/params.controller';
 @Module({
   imports: [
     CoreAuthModule,
-    MongooseModule.forFeature([
+    TenantMongooseModule.forFeature([
       { name: Parameter.name, schema: ParameterSchema },
     ]),
   ],

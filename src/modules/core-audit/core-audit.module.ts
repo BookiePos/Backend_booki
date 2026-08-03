@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   AuditLog,
   AuditLogSchema,
@@ -17,7 +17,7 @@ import { AuditInterceptor } from './infrastructure/audit.interceptor';
 @Module({
   imports: [
     CoreAuthModule,
-    MongooseModule.forFeature([
+    TenantMongooseModule.forFeature([
       { name: AuditLog.name, schema: AuditLogSchema },
     ]),
   ],

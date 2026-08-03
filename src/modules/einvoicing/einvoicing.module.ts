@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   ElectronicDocument,
   ElectronicDocumentSchema,
@@ -15,7 +15,7 @@ import { SedesModule } from '../sedes/sedes.module';
 
 @Module({
   imports: [
-    MongooseModule.forFeature([
+    TenantMongooseModule.forFeature([
       { name: ElectronicDocument.name, schema: ElectronicDocumentSchema },
       { name: Counter.name, schema: CounterSchema },
     ]),

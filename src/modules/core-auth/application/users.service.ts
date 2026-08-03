@@ -11,6 +11,8 @@ import { User, UserDocument } from '../infrastructure/schemas/user.schema';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { RolesService } from './roles.service';
+import { TenantContext } from '../../../shared/tenancy/tenant-context';
+import { DirectoryService } from '../../control/application/directory.service';
 
 const BCRYPT_ROUNDS = 10;
 
@@ -19,12 +21,13 @@ export class UsersService {
   constructor(
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     private readonly roles: RolesService,
+    private readonly directory: DirectoryService,
   ) {}
 
   async create(dto: CreateUserDto): Promise<UserDocument> {
     const email = dto.email.toLowerCase();
-    const existing = await this.userModel.findOne({ email }).exec();
-    if (existing) {
+    // Unicidad global de correos: no puede existir en ninguna otra empresa.
+    if (await this.directory.exists(email)) {
       throw new ConflictException('El email ya está registrado');
     }
     const role = await this.roles.findByKey(dto.role);
@@ -32,7 +35,7 @@ export class UsersService {
       throw new BadRequestException('Rol no válido');
     }
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
-    return this.userModel.create({
+    const created = await this.userModel.create({
       email,
       passwordHash,
       name: dto.name,
@@ -40,6 +43,10 @@ export class UsersService {
       extraPermissions: dto.extraPermissions ?? [],
       sedeIds: (dto.sedeIds ?? []).map((id) => new Types.ObjectId(id)),
     });
+    // Registra el vínculo email → empresa para enrutar el login.
+    const { businessId, dbName } = TenantContext.currentOrThrow();
+    await this.directory.link(email, businessId, dbName);
+    return created;
   }
 
   async update(id: string, dto: UpdateUserDto): Promise<UserDocument> {

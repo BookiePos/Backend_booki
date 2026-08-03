@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   AttendanceRecord,
   AttendanceRecordSchema,
@@ -17,7 +17,7 @@ import { AttendanceController } from './infrastructure/attendance.controller';
 
 @Module({
   imports: [
-    MongooseModule.forFeature([
+    TenantMongooseModule.forFeature([
       { name: AttendanceRecord.name, schema: AttendanceRecordSchema },
       { name: Employee.name, schema: EmployeeSchema },
       { name: Sede.name, schema: SedeSchema },

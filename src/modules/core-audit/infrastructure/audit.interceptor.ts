@@ -9,6 +9,7 @@ import { catchError, tap } from 'rxjs/operators';
 import type { Request, Response } from 'express';
 import { AuditService } from '../application/audit.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
+import { TenantContext } from '../../../shared/tenancy/tenant-context';
 
 /** Verbos que se auditan (las lecturas GET no dejan rastro). */
 const AUDITED_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
@@ -30,6 +31,10 @@ export class AuditInterceptor implements NestInterceptor {
     const method = req.method.toUpperCase();
 
     if (!AUDITED_METHODS.has(method)) return next.handle();
+
+    // Sin contexto de empresa (rutas públicas: login/registro/refresh) no hay
+    // base de datos donde auditar; se omite el registro.
+    if (!TenantContext.current()) return next.handle();
 
     const startedAt = Date.now();
     const base = {

@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
+import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   CajaSession,
   CajaSessionSchema,
@@ -16,7 +16,7 @@ import { CajaController } from './infrastructure/caja.controller';
 
 @Module({
   imports: [
-    MongooseModule.forFeature([
+    TenantMongooseModule.forFeature([
       { name: CajaSession.name, schema: CajaSessionSchema },
       { name: CajaMovement.name, schema: CajaMovementSchema },
       { name: Sale.name, schema: SaleSchema },
