@@ -7,11 +7,12 @@ async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule, { bufferLogs: false });
 
-  // CORS para los frontends: panel admin (:3000) y POS de trabajadores (:3002).
-  // CORS_ORIGIN admite varios orígenes separados por coma.
-  const corsOrigins = (
-    process.env.CORS_ORIGIN ?? 'http://localhost:3000,http://localhost:3002'
-  )
+  // Un solo frontend: la app unificada de GoCheck en :3000 sirve la web
+  // pública, el panel (/panel) y el punto de venta (/pos). Al compartir
+  // origen, ya no hay preflight entre zonas.
+  // CORS_ORIGIN admite varios orígenes separados por coma (útil si se levantan
+  // las apps antiguas en 3002/3003 para comparar).
+  const corsOrigins = (process.env.CORS_ORIGIN ?? 'http://localhost:3000')
     .split(',')
     .map((o) => o.trim())
     .filter(Boolean);
