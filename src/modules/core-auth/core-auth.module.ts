@@ -47,7 +47,7 @@ import { PermissionsGuard } from './infrastructure/guards/permissions.guard';
         ({
           secret: config.get<string>('JWT_SECRET') ?? 'dev-secret',
           signOptions: {
-            expiresIn: config.get<string>('JWT_ACCESS_EXPIRES') ?? '15m',
+            expiresIn: config.get<string>('JWT_ACCESS_EXPIRES') ?? '19h',
           },
         }) as JwtModuleOptions,
     }),
