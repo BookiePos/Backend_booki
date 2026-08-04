@@ -95,7 +95,10 @@ export const PERMISSION_GROUPS: {
     label: 'Punto de venta',
     items: [
       { key: PERMISSIONS.POS_SELL, label: 'Vender en POS' },
-      { key: PERMISSIONS.POS_DISCOUNT_AUTHORIZE, label: 'Autorizar descuentos' },
+      {
+        key: PERMISSIONS.POS_DISCOUNT_AUTHORIZE,
+        label: 'Crear y gestionar descuentos de las sedes',
+      },
       { key: PERMISSIONS.POS_VOID_AUTHORIZE, label: 'Autorizar anulaciones' },
       { key: PERMISSIONS.POS_REFUND, label: 'Devoluciones' },
       { key: PERMISSIONS.RESTAURANT_OPERATE, label: 'Operar comandas y mesas' },
