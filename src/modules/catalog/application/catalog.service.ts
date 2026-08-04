@@ -15,6 +15,8 @@ import { UpdateCatalogProductDto } from './dto/update-catalog-product.dto';
 import { RecipeLineDto } from './dto/recipe-line.dto';
 import { CatalogSourceType } from '../domain/catalog.constants';
 import { ProductsService } from '../../inventory/application/products.service';
+import { Product } from '../../inventory/infrastructure/schemas/product.schema';
+import { ProductCategory } from '../../inventory/infrastructure/schemas/product-category.schema';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 
 const PRODUCT_POPULATE = 'name sku unit';
@@ -36,6 +38,14 @@ export class CatalogService {
   constructor(
     @InjectModel(CatalogProduct.name)
     private readonly model: Model<CatalogProductDocument>,
+    // Modelos referenciados por `populate`. Se pasan EXPLÍCITOS a populate para
+    // que mongoose no dependa de que el modelo por ref ("Product",
+    // "ProductCategory") ya esté compilado en la conexión del tenant activo
+    // (si no lo estaba, lanzaba MissingSchemaError al entrar directo al POS).
+    @InjectModel(Product.name)
+    private readonly productModel: Model<unknown>,
+    @InjectModel(ProductCategory.name)
+    private readonly categoryModel: Model<unknown>,
     private readonly inventory: ProductsService,
   ) {}
 
@@ -43,9 +53,9 @@ export class CatalogService {
     const filter = includeInactive ? {} : { active: true };
     return this.model
       .find(filter)
-      .populate('categoryId', 'name')
-      .populate('inventoryProductId', PRODUCT_POPULATE)
-      .populate('recipe.productId', PRODUCT_POPULATE)
+      .populate({ path: 'categoryId', select: 'name', model: this.categoryModel })
+      .populate({ path: 'inventoryProductId', select: PRODUCT_POPULATE, model: this.productModel })
+      .populate({ path: 'recipe.productId', select: PRODUCT_POPULATE, model: this.productModel })
       .sort({ name: 1 })
       .exec();
   }
@@ -54,9 +64,9 @@ export class CatalogService {
     const doc = Types.ObjectId.isValid(id)
       ? await this.model
           .findById(id)
-          .populate('categoryId', 'name')
-          .populate('inventoryProductId', PRODUCT_POPULATE)
-          .populate('recipe.productId', PRODUCT_POPULATE)
+          .populate({ path: 'categoryId', select: 'name', model: this.categoryModel })
+          .populate({ path: 'inventoryProductId', select: PRODUCT_POPULATE, model: this.productModel })
+          .populate({ path: 'recipe.productId', select: PRODUCT_POPULATE, model: this.productModel })
           .exec()
       : null;
     if (!doc) throw new NotFoundException('Producto no encontrado');
@@ -200,8 +210,8 @@ export class CatalogService {
   listSellable(): Promise<CatalogProductDocument[]> {
     return this.model
       .find({ active: true, salePrice: { $gt: 0 } })
-      .populate('categoryId', 'name')
-      .populate('inventoryProductId', 'sku barcode')
+      .populate({ path: 'categoryId', select: 'name', model: this.categoryModel })
+      .populate({ path: 'inventoryProductId', select: 'sku barcode', model: this.productModel })
       .sort({ name: 1 })
       .exec();
   }
