@@ -546,8 +546,25 @@ export class PayrollService {
     return run;
   }
 
+  /** Cierra una corrida (borrador → cerrada). Queda fija en el historial. */
+  async closeRun(id: string): Promise<PayrollRunDocument> {
+    const run = await this.getRun(id);
+    if (run.status === 'cerrada') {
+      throw new BadRequestException('La nómina ya está cerrada.');
+    }
+    run.status = 'cerrada';
+    run.closedAt = new Date();
+    await run.save();
+    return run;
+  }
+
   async removeRun(id: string): Promise<void> {
     const run = await this.getRun(id);
+    if (run.status === 'cerrada') {
+      throw new BadRequestException(
+        'No se puede eliminar una nómina cerrada. Es el comprobante del período.',
+      );
+    }
     // Devuelve las deducciones aplicadas a 'approved' para poder re-nominarlas.
     await this.deductions
       .updateMany(

@@ -107,6 +107,10 @@ export class PayrollRun {
   @Prop({ required: true, default: 'borrador' })
   status!: string;
 
+  /** Fecha en que se cerró la nómina (queda como comprobante del período). */
+  @Prop()
+  closedAt?: Date;
+
   @Prop({ type: [PayrollSlipSchema], default: [] })
   slips!: PayrollSlip[];
 

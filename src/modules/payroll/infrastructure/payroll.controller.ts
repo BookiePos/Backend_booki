@@ -81,6 +81,12 @@ export class PayrollController {
   }
 
   @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('runs/:id/close')
+  closeRun(@Param('id') id: string) {
+    return this.payroll.closeRun(id);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
   @Delete('runs/:id')
   async removeRun(@Param('id') id: string) {
     await this.payroll.removeRun(id);
