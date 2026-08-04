@@ -25,10 +25,26 @@ export class UsersService {
   ) {}
 
   async create(dto: CreateUserDto): Promise<UserDocument> {
-    const email = dto.email.toLowerCase();
+    const { businessId, dbName } = TenantContext.currentOrThrow();
+    const username = dto.username?.toLowerCase().trim() || undefined;
+
+    if (!dto.email && !username) {
+      throw new BadRequestException('Indica un email o un nombre de usuario');
+    }
+
+    // Con username y sin email, se sintetiza un email interno único por empresa
+    // (`<username>@<businessId>.local`) para reusar el enrutamiento por email.
+    const email = (
+      dto.email ?? `${username}@${businessId}.local`
+    ).toLowerCase();
+
     // Unicidad global de correos: no puede existir en ninguna otra empresa.
     if (await this.directory.exists(email)) {
       throw new ConflictException('El email ya está registrado');
+    }
+    // Unicidad global de username (enrutamiento de login por username).
+    if (username && (await this.directory.usernameExists(username))) {
+      throw new ConflictException('El nombre de usuario ya está en uso');
     }
     const role = await this.roles.findByKey(dto.role);
     if (!role) {
@@ -37,15 +53,15 @@ export class UsersService {
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
     const created = await this.userModel.create({
       email,
+      username,
       passwordHash,
       name: dto.name,
       role: role.key,
       extraPermissions: dto.extraPermissions ?? [],
       sedeIds: (dto.sedeIds ?? []).map((id) => new Types.ObjectId(id)),
     });
-    // Registra el vínculo email → empresa para enrutar el login.
-    const { businessId, dbName } = TenantContext.currentOrThrow();
-    await this.directory.link(email, businessId, dbName);
+    // Registra el vínculo email/username → empresa para enrutar el login.
+    await this.directory.link(email, businessId, dbName, username);
     return created;
   }
 
@@ -82,6 +98,12 @@ export class UsersService {
 
   findByEmail(email: string): Promise<UserDocument | null> {
     return this.userModel.findOne({ email: email.toLowerCase() }).exec();
+  }
+
+  findByUsername(username: string): Promise<UserDocument | null> {
+    return this.userModel
+      .findOne({ username: username.toLowerCase() })
+      .exec();
   }
 
   async findById(id: string): Promise<UserDocument> {

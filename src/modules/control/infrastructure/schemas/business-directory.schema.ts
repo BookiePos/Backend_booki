@@ -14,6 +14,14 @@ export class BusinessDirectory {
   @Prop({ required: true, unique: true, lowercase: true, trim: true })
   email!: string;
 
+  /**
+   * Nombre de usuario para enrutar el login por username. Único a nivel de
+   * plataforma (mismo alcance que el email), sparse: solo lo tienen los
+   * usuarios creados con acceso por username.
+   */
+  @Prop({ lowercase: true, trim: true })
+  username?: string;
+
   @Prop({ required: true, trim: true })
   businessId!: string;
 
@@ -23,3 +31,8 @@ export class BusinessDirectory {
 
 export const BusinessDirectorySchema =
   SchemaFactory.createForClass(BusinessDirectory);
+
+BusinessDirectorySchema.index(
+  { username: 1 },
+  { unique: true, sparse: true },
+);

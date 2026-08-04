@@ -9,6 +9,15 @@ export class User {
   @Prop({ required: true, unique: true, lowercase: true, trim: true })
   email!: string;
 
+  /**
+   * Nombre de usuario para iniciar sesión (alternativa al email). Único por
+   * empresa. Cuando se crea un acceso desde un empleado, se genera un email
+   * sintético `<username>@<businessId>.local` para reusar el enrutamiento por
+   * email; la persona inicia sesión con este `username`.
+   */
+  @Prop({ lowercase: true, trim: true })
+  username?: string;
+
   @Prop({ required: true })
   passwordHash!: string;
 
@@ -32,3 +41,6 @@ export class User {
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
+
+// Username único por empresa (sparse: los usuarios sin username no chocan).
+UserSchema.index({ username: 1 }, { unique: true, sparse: true });

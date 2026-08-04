@@ -24,17 +24,41 @@ export class DirectoryService {
     return this.directory.findOne({ email: email.toLowerCase() }).exec();
   }
 
+  /** Empresa a la que pertenece un username, o null si no está registrado. */
+  findByUsername(username: string): Promise<BusinessDirectoryDocument | null> {
+    return this.directory
+      .findOne({ username: username.toLowerCase() })
+      .exec();
+  }
+
   /** ¿El correo ya está usado por alguna empresa? */
   async exists(email: string): Promise<boolean> {
     return (await this.directory.exists({ email: email.toLowerCase() })) != null;
   }
 
-  /** Registra (o reafirma) el vínculo email → empresa. Idempotente. */
-  async link(email: string, businessId: string, dbName: string): Promise<void> {
+  /** ¿El username ya está usado por alguna empresa? */
+  async usernameExists(username: string): Promise<boolean> {
+    return (
+      (await this.directory.exists({ username: username.toLowerCase() })) != null
+    );
+  }
+
+  /**
+   * Registra (o reafirma) el vínculo email → empresa. Idempotente. Si se pasa
+   * `username`, también lo indexa para enrutar el login por username.
+   */
+  async link(
+    email: string,
+    businessId: string,
+    dbName: string,
+    username?: string,
+  ): Promise<void> {
+    const set: Record<string, string> = { businessId, dbName };
+    if (username) set.username = username.toLowerCase();
     await this.directory
       .updateOne(
         { email: email.toLowerCase() },
-        { $set: { businessId, dbName } },
+        { $set: set },
         { upsert: true },
       )
       .exec();

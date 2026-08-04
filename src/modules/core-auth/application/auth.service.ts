@@ -26,6 +26,8 @@ export interface AuthTokens {
 export interface AuthUserView {
   id: string;
   email: string;
+  /** Nombre de usuario para login, si el usuario se creó con uno. */
+  username?: string;
   name: string;
   role: string;
   permissions: string[];
@@ -54,19 +56,25 @@ export class AuthService {
   ) {}
 
   async login(
-    email: string,
+    identifier: string,
     password: string,
   ): Promise<{ tokens: AuthTokens; user: AuthUserView }> {
-    // El login solo pide el correo: el directorio (control-plane) dice a qué
-    // empresa/base pertenece, y ahí verificamos las credenciales.
-    const entry = await this.directory.findByEmail(email);
+    // El login acepta correo o nombre de usuario. El directorio (control-plane)
+    // dice a qué empresa/base pertenece, y ahí verificamos las credenciales.
+    const id = identifier.trim().toLowerCase();
+    const isEmail = id.includes('@');
+    const entry = isEmail
+      ? await this.directory.findByEmail(id)
+      : await this.directory.findByUsername(id);
     if (!entry) {
       throw new UnauthorizedException('Credenciales inválidas');
     }
     return TenantContext.run(
       { businessId: entry.businessId, dbName: entry.dbName },
       async () => {
-        const user = await this.users.findByEmail(email);
+        const user = isEmail
+          ? await this.users.findByEmail(id)
+          : await this.users.findByUsername(id);
         if (!user || !user.active) {
           throw new UnauthorizedException('Credenciales inválidas');
         }
@@ -191,6 +199,7 @@ export class AuthService {
     return {
       id: user.id,
       email: user.email,
+      username: user.username,
       name: user.name,
       role: user.role,
       permissions: await this.users.effectivePermissions(user),
