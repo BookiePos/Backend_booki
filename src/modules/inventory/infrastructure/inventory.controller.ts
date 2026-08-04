@@ -11,6 +11,7 @@ import {
 import { ProductsService } from '../application/products.service';
 import { StockService } from '../application/stock.service';
 import { CreateProductDto } from '../application/dto/create-product.dto';
+import { CreateProductVariantsDto } from '../application/dto/create-product-variants.dto';
 import { UpdateProductDto } from '../application/dto/update-product.dto';
 import { CreateCategoryDto } from '../application/dto/create-category.dto';
 import { StockEntryDto } from '../application/dto/stock-entry.dto';
@@ -44,6 +45,13 @@ export class InventoryController {
   @Post('products')
   createProduct(@Body() dto: CreateProductDto) {
     return this.products.create(dto);
+  }
+
+  /** Crea un producto con variantes (padre + una fila por combinación). */
+  @RequirePermissions(PERMISSIONS.INVENTORY_ADJUST)
+  @Post('products/with-variants')
+  createProductWithVariants(@Body() dto: CreateProductVariantsDto) {
+    return this.products.createWithVariants(dto);
   }
 
   @RequirePermissions(PERMISSIONS.INVENTORY_ADJUST)

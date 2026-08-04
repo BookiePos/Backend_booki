@@ -540,6 +540,7 @@ export class SalesService {
         unit: 'und',
         salePrice: p.salePrice,
         stock: available,
+        barcode: this.catalog.barcodeOf(p),
         categoryId: cat?._id ? cat._id.toString() : null,
         categoryName: cat?.name ?? null,
       };

@@ -75,9 +75,36 @@ export class Product {
 
   @Prop({ default: true })
   active!: boolean;
+
+  // ─── Variantes (retail) ──────────────────────────────────────────────────
+  // Cada variante (talla/color…) es su propia fila Product con SKU, barcode,
+  // precio y stock propios, agrupada bajo un producto "padre" plantilla. Así se
+  // reutiliza toda la maquinaria de inventario/stock/ventas sin cambios.
+
+  /** Producto padre (plantilla) del que esta fila es una variante. */
+  @Prop({ type: Types.ObjectId, ref: 'Product' })
+  variantOf?: Types.ObjectId;
+
+  /** Valores de los ejes para esta variante, p. ej. { Talla: 'M', Color: 'Rojo' }. */
+  @Prop({ type: Object })
+  variantAttrs?: Record<string, string>;
+
+  /** Ejes de variación (solo en el padre): describe Talla/Color para la UI. */
+  @Prop({
+    type: [
+      {
+        _id: false,
+        name: { type: String, required: true },
+        values: { type: [String], default: [] },
+      },
+    ],
+    default: undefined,
+  })
+  variantAxes?: { name: string; values: string[] }[];
 }
 
 export const ProductSchema = SchemaFactory.createForClass(Product);
 
 ProductSchema.index({ name: 'text' });
 ProductSchema.index({ barcode: 1 }, { sparse: true });
+ProductSchema.index({ variantOf: 1 }, { sparse: true });

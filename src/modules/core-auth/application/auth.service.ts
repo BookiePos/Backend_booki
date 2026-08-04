@@ -15,6 +15,8 @@ import {
   dbNameForBusiness,
 } from '../../../shared/tenancy/tenant-context';
 import { DirectoryService } from '../../control/application/directory.service';
+import { BusinessService } from '../../control/application/business.service';
+import type { BusinessType } from '../../control/domain/control.constants';
 
 export interface AuthTokens {
   accessToken: string;
@@ -28,6 +30,8 @@ export interface AuthUserView {
   role: string;
   permissions: string[];
   sedeIds: string[];
+  /** Giro del negocio (restaurante | retail). Diferencia la experiencia. */
+  tipoNegocio?: BusinessType;
 }
 
 interface RefreshPayload {
@@ -44,6 +48,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly directory: DirectoryService,
+    private readonly businesses: BusinessService,
     @InjectModel(RefreshToken.name)
     private readonly refreshModel: Model<RefreshTokenDocument>,
   ) {}
@@ -141,6 +146,7 @@ export class AuthService {
     const sedeIds = user.sedeIds.map((s) => s.toString());
     // La empresa activa viene del contexto (login/registro/refresh la abren).
     const businessId = TenantContext.currentOrThrow().businessId;
+    const tipoNegocio = await this.currentTipoNegocio();
 
     const accessToken = await this.jwt.signAsync({
       sub: user.id,
@@ -150,6 +156,7 @@ export class AuthService {
       permissions,
       sedeIds,
       biz: businessId,
+      biztype: tipoNegocio,
     });
 
     const jti = randomUUID();
@@ -188,7 +195,21 @@ export class AuthService {
       role: user.role,
       permissions: await this.users.effectivePermissions(user),
       sedeIds: user.sedeIds.map((s) => s.toString()),
+      tipoNegocio: await this.currentTipoNegocio(),
     };
+  }
+
+  /**
+   * Giro del negocio activo. Lo trae el contexto (claim `biztype` del token o el
+   * `TenantContext.run` del registro); si aún no está —p. ej. login/refresh, que
+   * abren el contexto solo con la empresa— se resuelve del control-plane.
+   */
+  private async currentTipoNegocio(): Promise<BusinessType | undefined> {
+    const ctx = TenantContext.current();
+    if (!ctx) return undefined;
+    if (ctx.tipoNegocio) return ctx.tipoNegocio;
+    const business = await this.businesses.findById(ctx.businessId);
+    return business?.tipoNegocio;
   }
 
   /** Convierte "7d" / "15m" / "24h" / "3600" a una fecha de expiración. */

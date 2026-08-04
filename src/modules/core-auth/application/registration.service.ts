@@ -50,7 +50,11 @@ export class RegistrationService {
 
     // A partir de aquí todo apunta a la base de la empresa recién creada.
     return TenantContext.run(
-      { businessId: business.id, dbName: business.dbName },
+      {
+        businessId: business.id,
+        dbName: business.dbName,
+        tipoNegocio: business.tipoNegocio,
+      },
       async () => {
         await this.roles.ensureSystemRoles();
 

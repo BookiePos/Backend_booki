@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { BusinessType } from '../../modules/control/domain/control.constants';
 
 /**
  * Contexto de empresa (tenant) activo durante una request.
@@ -12,6 +13,13 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 export interface TenantContextData {
   businessId: string;
   dbName: string;
+  /**
+   * Giro del negocio (restaurante | retail). Viaja en el claim `biztype` del
+   * access token; permite a los servicios del tenant (p. ej. catálogo) aplicar
+   * reglas por tipo sin consultar el control-plane. Opcional: los tokens
+   * emitidos antes de esta feature no lo traen.
+   */
+  tipoNegocio?: BusinessType;
 }
 
 const storage = new AsyncLocalStorage<TenantContextData>();

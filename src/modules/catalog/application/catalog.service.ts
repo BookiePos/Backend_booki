@@ -15,8 +15,21 @@ import { UpdateCatalogProductDto } from './dto/update-catalog-product.dto';
 import { RecipeLineDto } from './dto/recipe-line.dto';
 import { CatalogSourceType } from '../domain/catalog.constants';
 import { ProductsService } from '../../inventory/application/products.service';
+import { TenantContext } from '../../../shared/tenancy/tenant-context';
 
 const PRODUCT_POPULATE = 'name sku unit';
+
+/**
+ * Resuelve el id de una referencia que puede estar poblada (documento con `_id`)
+ * o venir como `ObjectId`/string. Evita `doc.toString()` sobre un documento
+ * poblado, que no devuelve el id.
+ */
+function refId(ref: unknown): string {
+  if (ref && typeof ref === 'object' && '_id' in ref) {
+    return String((ref as { _id: unknown })._id);
+  }
+  return String(ref);
+}
 
 @Injectable()
 export class CatalogService {
@@ -179,11 +192,16 @@ export class CatalogService {
     await product.deleteOne();
   }
 
-  /** Catálogo vendible del POS: activo y con precio de venta. */
+  /**
+   * Catálogo vendible del POS: activo y con precio de venta. Puebla el ítem de
+   * inventario vinculado (sku + barcode) para que el POS pueda emparejar por
+   * código de barras al escanear.
+   */
   listSellable(): Promise<CatalogProductDocument[]> {
     return this.model
       .find({ active: true, salePrice: { $gt: 0 } })
       .populate('categoryId', 'name')
+      .populate('inventoryProductId', 'sku barcode')
       .sort({ name: 1 })
       .exec();
   }
@@ -218,7 +236,9 @@ export class CatalogService {
       if (!product.inventoryProductId) return [];
       return [
         {
-          productId: product.inventoryProductId.toString(),
+          // `inventoryProductId` puede venir poblado (listSellable) o como
+          // ObjectId (loadSellableOrFail): en ambos casos se resuelve el id.
+          productId: refId(product.inventoryProductId),
           qty: (product.qtyPerUnit ?? 1) * qty,
         },
       ];
@@ -227,6 +247,20 @@ export class CatalogService {
       productId: line.productId.toString(),
       qty: line.qty * qty,
     }));
+  }
+
+  /**
+   * Código de barras del ítem de inventario vinculado (solo productos de fuente
+   * inventario y solo si `inventoryProductId` viene poblado, p. ej. desde
+   * `listSellable`). Lo usa el POS para escanear. Las recetas no tienen barcode.
+   */
+  barcodeOf(product: CatalogProductDocument): string | null {
+    if (product.sourceType !== 'inventory') return null;
+    const ref = product.inventoryProductId as unknown as
+      | { barcode?: string }
+      | null
+      | undefined;
+    return ref?.barcode ?? null;
   }
 
   /** Versión que carga el producto por id (para usos puntuales). */
@@ -256,6 +290,15 @@ export class CatalogService {
     /** SKU heredado del ítem de inventario (solo en modo inventario). */
     sku?: string;
   }> {
+    // Un negocio retail no maneja productos con receta (se refuerza aquí, más
+    // allá de la UI, por si la petición llega directo por API). El giro viaja en
+    // el contexto de tenant (claim `biztype` del token).
+    if (sourceType === 'recipe' && TenantContext.current()?.tipoNegocio === 'retail') {
+      throw new BadRequestException(
+        'Un negocio retail no maneja productos con receta',
+      );
+    }
+
     if (sourceType === 'inventory') {
       if (!inventoryProductId) {
         throw new BadRequestException(

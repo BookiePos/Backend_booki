@@ -3,9 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { NextFunction, Request, Response } from 'express';
 import { TenantContext, dbNameForBusiness } from './tenant-context';
+import type { BusinessType } from '../../modules/control/domain/control.constants';
 
 interface AccessClaims {
   biz?: string;
+  biztype?: BusinessType;
 }
 
 /**
@@ -35,7 +37,11 @@ export class TenantMiddleware implements NestMiddleware {
         if (claims?.biz) {
           const businessId = claims.biz;
           TenantContext.run(
-            { businessId, dbName: dbNameForBusiness(businessId) },
+            {
+              businessId,
+              dbName: dbNameForBusiness(businessId),
+              tipoNegocio: claims.biztype,
+            },
             () => next(),
           );
           return;

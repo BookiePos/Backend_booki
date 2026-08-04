@@ -17,6 +17,25 @@ import {
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
+import { CreateProductVariantsDto } from './dto/create-product-variants.dto';
+
+/** Producto cartesiano de varias listas: [[S,M],[Rojo,Azul]] → [[S,Rojo],…]. */
+function cartesian(lists: string[][]): string[][] {
+  return lists.reduce<string[][]>(
+    (acc, list) => acc.flatMap((combo) => list.map((v) => [...combo, v])),
+    [[]],
+  );
+}
+
+/** Normaliza un valor de eje para el SKU: mayúsculas, sin tildes ni símbolos. */
+function slugToken(value: string): string {
+  return value
+    .trim()
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^A-Z0-9]+/g, '');
+}
 
 @Injectable()
 export class ProductsService {
@@ -81,6 +100,104 @@ export class ProductsService {
         ? new Types.ObjectId(dto.supplierId)
         : undefined,
     });
+  }
+
+  /**
+   * Crea un producto retail con variantes: un padre (plantilla, no vendible) y
+   * una fila hija por cada combinación de los ejes (producto cartesiano). Cada
+   * hija es un Product normal con SKU/stock/precio propios, así que el resto del
+   * sistema (stock, catálogo, POS) las trata como cualquier producto.
+   */
+  async createWithVariants(dto: CreateProductVariantsDto): Promise<{
+    parent: ProductDocument;
+    variants: ProductDocument[];
+  }> {
+    const prefix = dto.skuPrefix.trim().toUpperCase();
+    if (!prefix) {
+      throw new BadRequestException('El SKU base es obligatorio');
+    }
+    for (const axis of dto.axes) {
+      const values = axis.values.map((v) => v.trim()).filter(Boolean);
+      if (values.length === 0) {
+        throw new BadRequestException(
+          `El eje "${axis.name}" necesita al menos un valor`,
+        );
+      }
+      axis.values = values;
+    }
+
+    // Combinaciones (producto cartesiano) de los valores de cada eje.
+    const combos = cartesian(dto.axes.map((a) => a.values));
+
+    // SKUs a crear: el del padre + uno por combinación. Se validan todos juntos
+    // (entre sí y contra la base) antes de crear nada, para no dejar a medias.
+    const childSkus = combos.map(
+      (combo) => `${prefix}-${combo.map(slugToken).join('-')}`,
+    );
+    const allSkus = [prefix, ...childSkus];
+    const dupInBatch = allSkus.find((s, i) => allSkus.indexOf(s) !== i);
+    if (dupInBatch) {
+      throw new BadRequestException(
+        `Las combinaciones generan SKUs repetidos (${dupInBatch}); ajusta los valores`,
+      );
+    }
+    const clash = await this.productModel
+      .findOne({ sku: { $in: allSkus } })
+      .exec();
+    if (clash) {
+      throw new ConflictException(`Ya existe un producto con el SKU ${clash.sku}`);
+    }
+
+    const categoryId = dto.categoryId
+      ? new Types.ObjectId(dto.categoryId)
+      : undefined;
+    const supplierId = dto.supplierId
+      ? new Types.ObjectId(dto.supplierId)
+      : undefined;
+
+    // Padre: plantilla que agrupa las variantes. No lleva precio de venta para
+    // no venderse directo; guarda los ejes para la UI.
+    const parent = await this.productModel.create({
+      sku: prefix,
+      itemType: 'product',
+      name: dto.name.trim(),
+      brand: dto.brand,
+      supplier: dto.supplier,
+      supplierId,
+      description: dto.description,
+      categoryId,
+      unit: 'und',
+      minStock: dto.minStock ?? 0,
+      cost: dto.cost ?? 0,
+      variantAxes: dto.axes.map((a) => ({ name: a.name, values: a.values })),
+    });
+
+    const variants = await Promise.all(
+      combos.map((combo, i) => {
+        const attrs: Record<string, string> = {};
+        dto.axes.forEach((axis, idx) => {
+          attrs[axis.name] = combo[idx] ?? '';
+        });
+        return this.productModel.create({
+          sku: childSkus[i],
+          itemType: 'product',
+          name: `${dto.name.trim()} · ${combo.join(' / ')}`,
+          brand: dto.brand,
+          supplier: dto.supplier,
+          supplierId,
+          description: dto.description,
+          categoryId,
+          unit: 'und',
+          minStock: dto.minStock ?? 0,
+          cost: dto.cost ?? 0,
+          salePrice: dto.salePrice,
+          variantOf: parent._id,
+          variantAttrs: attrs,
+        });
+      }),
+    );
+
+    return { parent, variants };
   }
 
   async update(id: string, dto: UpdateProductDto): Promise<ProductDocument> {

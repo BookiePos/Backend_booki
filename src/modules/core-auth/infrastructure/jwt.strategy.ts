@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
+import type { BusinessType } from '../../control/domain/control.constants';
 
 /** Usuario resuelto desde el access token y adjuntado a `request.user`. */
 export interface JwtUser {
@@ -13,6 +14,8 @@ export interface JwtUser {
   sedeIds: string[];
   /** Empresa (tenant) del usuario. */
   businessId?: string;
+  /** Giro del negocio (restaurante | retail). */
+  tipoNegocio?: BusinessType;
 }
 
 interface AccessPayload {
@@ -24,6 +27,8 @@ interface AccessPayload {
   sedeIds: string[];
   /** Empresa (tenant); el middleware lo usa para abrir el contexto de datos. */
   biz?: string;
+  /** Giro del negocio (restaurante | retail). */
+  biztype?: BusinessType;
 }
 
 @Injectable()
@@ -48,6 +53,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       permissions: payload.permissions ?? [],
       sedeIds: payload.sedeIds ?? [],
       businessId: payload.biz,
+      tipoNegocio: payload.biztype,
     };
   }
 }
