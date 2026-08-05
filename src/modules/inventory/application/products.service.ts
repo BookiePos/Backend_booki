@@ -1,11 +1,14 @@
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import { CatalogService } from '../../catalog/application/catalog.service';
 import {
   Product,
   ProductDocument,
@@ -44,7 +47,33 @@ export class ProductsService {
     private readonly productModel: Model<ProductDocument>,
     @InjectModel(ProductCategory.name)
     private readonly categoryModel: Model<ProductCategoryDocument>,
+    // forwardRef: catálogo e inventario se referencian mutuamente. Se usa para
+    // reflejar en el POS (catálogo) los ítems con precio de venta.
+    @Inject(forwardRef(() => CatalogService))
+    private readonly catalog: CatalogService,
   ) {}
+
+  /**
+   * Refleja el ítem en el catálogo vendible del POS (mejor esfuerzo). Un fallo
+   * aquí no debe tumbar la operación de inventario, así que se traga el error;
+   * el ítem queda guardado aunque su vendible no se haya sincronizado.
+   */
+  private async syncCatalog(product: ProductDocument): Promise<void> {
+    try {
+      await this.catalog.syncFromInventory(product);
+    } catch {
+      /* no romper la escritura de inventario si el catálogo falla */
+    }
+  }
+
+  /** Retira del POS el vendible automático de un ítem eliminado (best-effort). */
+  async syncCatalogRemoved(productId: Types.ObjectId | string): Promise<void> {
+    try {
+      await this.catalog.removeForInventory(productId);
+    } catch {
+      /* el ítem ya se borró; un fallo aquí no debe propagarse */
+    }
+  }
 
   // ─── Productos ─────────────────────────────────────────────────────────────
 
@@ -84,7 +113,7 @@ export class ProductsService {
     const itemType = dto.itemType ?? 'product';
     const trackLots =
       perishable || itemType === 'assembly' ? true : (dto.trackLots ?? false);
-    return this.productModel.create({
+    const created = await this.productModel.create({
       ...dto,
       sku,
       itemType,
@@ -100,6 +129,9 @@ export class ProductsService {
         ? new Types.ObjectId(dto.supplierId)
         : undefined,
     });
+    // Si nace con precio de venta, aparece de una vez en el POS.
+    await this.syncCatalog(created);
+    return created;
   }
 
   /**
@@ -197,6 +229,11 @@ export class ProductsService {
       }),
     );
 
+    // Cada variante con precio entra al POS (el padre-plantilla no se vende).
+    for (const v of variants) {
+      await this.syncCatalog(v);
+    }
+
     return { parent, variants };
   }
 
@@ -267,6 +304,9 @@ export class ProductsService {
     if (!product.perishable) product.expiresAt = undefined;
 
     await product.save();
+    // Refleja el cambio en el POS: aparece si ganó precio/activo, desaparece si
+    // lo perdió, y sincroniza nombre/SKU/categoría/precio del vendible.
+    await this.syncCatalog(product);
     return product;
   }
 

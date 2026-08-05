@@ -488,7 +488,7 @@ export class StockService {
    */
   async removeProduct(productId: string) {
     const product = await this.products.getOrFail(productId);
-    return this.withTransaction(async (session) => {
+    const result = await this.withTransaction(async (session) => {
       await this.movementModel
         .deleteMany({ productId: product._id })
         .session(session ?? null)
@@ -504,6 +504,10 @@ export class StockService {
       await product.deleteOne({ session });
       return { ok: true };
     });
+    // Retira también su vendible automático del POS (fuera de la transacción:
+    // el catálogo no participa del arrastre de inventario).
+    await this.products.syncCatalogRemoved(product._id);
+    return result;
   }
 
   // ─── Consultas ─────────────────────────────────────────────────────────────

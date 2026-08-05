@@ -76,6 +76,15 @@ export class CatalogProduct {
 
   @Prop({ default: true })
   active!: boolean;
+
+  /**
+   * Creado y mantenido automáticamente a partir de un ítem de inventario con
+   * precio de venta (no lo editó el usuario en /productos). El inventario es su
+   * fuente de verdad: se sincroniza al cambiar el ítem y se borra si deja de ser
+   * vendible. Los vendibles creados a mano llevan `false` y nunca se tocan.
+   */
+  @Prop({ default: false })
+  autoFromInventory!: boolean;
 }
 
 export const CatalogProductSchema =

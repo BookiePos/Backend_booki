@@ -1,11 +1,14 @@
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import { ProductDocument } from '../../inventory/infrastructure/schemas/product.schema';
 import {
   CatalogProduct,
   CatalogProductDocument,
@@ -46,6 +49,9 @@ export class CatalogService {
     private readonly productModel: Model<unknown>,
     @InjectModel(ProductCategory.name)
     private readonly categoryModel: Model<unknown>,
+    // forwardRef: inventario y catálogo se referencian mutuamente (el inventario
+    // llama a `syncFromInventory` al guardar un ítem con precio).
+    @Inject(forwardRef(() => ProductsService))
     private readonly inventory: ProductsService,
   ) {}
 
@@ -364,6 +370,93 @@ export class CatalogService {
         `El SKU ${sku} ya pertenece a un ítem de inventario`,
       );
     }
+  }
+
+  /**
+   * Sincroniza el vendible del POS que corresponde a un ítem de inventario.
+   *
+   * Un ítem de inventario **vendible** (itemType `product`, activo, con
+   * `salePrice > 0` y que no sea el padre-plantilla de variantes) aparece solo
+   * en el POS: aquí se crea/actualiza su producto de catálogo "automático"
+   * (fuente inventario, 1 unidad de stock por venta). Si deja de ser vendible
+   * (sin precio, inactivo o pasa a ingrediente), se elimina.
+   *
+   * Solo toca los vendibles automáticos (`autoFromInventory: true`): los que el
+   * usuario creó a mano en /productos (precio, receta o IVA propios) no se
+   * pisan, y si ya existe uno manual para este ítem, no se duplica.
+   */
+  async syncFromInventory(product: ProductDocument): Promise<void> {
+    const productId = product._id as Types.ObjectId;
+    const price = product.salePrice ?? 0;
+    const isParent = Boolean(
+      product.variantAxes && product.variantAxes.length > 0,
+    );
+    const sellable =
+      product.itemType === 'product' && product.active && price > 0 && !isParent;
+
+    const existingAuto = await this.model
+      .findOne({ inventoryProductId: productId, autoFromInventory: true })
+      .exec();
+
+    if (!sellable) {
+      // Dejó de ser vendible: se retira del POS (las ventas ya guardan su propio
+      // snapshot, así que borrar el vendible no afecta el histórico).
+      if (existingAuto) await existingAuto.deleteOne();
+      return;
+    }
+
+    const sku = product.sku.trim().toUpperCase();
+
+    if (existingAuto) {
+      existingAuto.sku = sku;
+      existingAuto.name = product.name;
+      existingAuto.categoryId = product.categoryId;
+      existingAuto.salePrice = price;
+      existingAuto.sourceType = 'inventory';
+      existingAuto.inventoryProductId = productId;
+      existingAuto.qtyPerUnit = 1;
+      existingAuto.active = true;
+      await existingAuto.save();
+      return;
+    }
+
+    // No dupliques un vendible que el usuario ya creó a mano para este ítem o
+    // que ya usa este SKU (el índice de SKU es único, además).
+    const manual = await this.model
+      .findOne({
+        autoFromInventory: { $ne: true },
+        $or: [{ inventoryProductId: productId }, { sku }],
+      })
+      .exec();
+    if (manual) return;
+
+    await this.model.create({
+      sku,
+      name: product.name,
+      categoryId: product.categoryId,
+      salePrice: price,
+      ivaRate: 19,
+      ivaType: 'gravado',
+      sourceType: 'inventory',
+      inventoryProductId: productId,
+      qtyPerUnit: 1,
+      recipe: [],
+      active: true,
+      autoFromInventory: true,
+    });
+  }
+
+  /**
+   * Retira del POS el vendible automático de un ítem de inventario que se
+   * eliminó. Solo borra el automático; un vendible manual (o una receta que use
+   * el ítem) es responsabilidad del usuario.
+   */
+  async removeForInventory(productId: Types.ObjectId | string): Promise<void> {
+    const id =
+      typeof productId === 'string' ? new Types.ObjectId(productId) : productId;
+    await this.model
+      .deleteMany({ inventoryProductId: id, autoFromInventory: true })
+      .exec();
   }
 
   /** Carga el ítem de inventario (para heredar su SKU) o lanza 400 claro. */

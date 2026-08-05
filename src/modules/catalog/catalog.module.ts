@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import {
   CatalogProduct,
@@ -18,7 +18,7 @@ import { InventoryModule } from '../inventory/inventory.module';
 
 @Module({
   imports: [
-    InventoryModule,
+    forwardRef(() => InventoryModule),
     // Se registran también los modelos referenciados por `populate` (mismo token
     // que en InventoryModule → misma instancia cacheada por tenant), para poder
     // inyectarlos y pasarlos explícitos a populate.

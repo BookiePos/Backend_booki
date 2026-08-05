@@ -1,5 +1,6 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
+import { CatalogModule } from '../catalog/catalog.module';
 import {
   Product,
   ProductSchema,
@@ -28,6 +29,10 @@ import { SedesModule } from '../sedes/sedes.module';
 @Module({
   imports: [
     SedesModule,
+    // forwardRef: el catálogo importa a su vez el inventario (ciclo controlado).
+    // ProductsService usa CatalogService para reflejar en el POS los ítems con
+    // precio de venta.
+    forwardRef(() => CatalogModule),
     TenantMongooseModule.forFeature([
       { name: Product.name, schema: ProductSchema },
       { name: ProductCategory.name, schema: ProductCategorySchema },
