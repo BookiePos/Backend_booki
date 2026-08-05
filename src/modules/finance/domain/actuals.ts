@@ -84,19 +84,32 @@ async function cogsActual(
  * (sedeIds no nulo), solo cuenta runs con coverage 'sede' de esas sedes; si es
  * consolidado (sedeIds null), suma todas las corridas del período.
  */
+/** ¿La corrida `a` es la que debe contar frente a `b` (mismo período+sede)? */
+function betterRun(a: PayrollRunDocument, b: PayrollRunDocument): boolean {
+  // Preferir la cerrada sobre el borrador; a igualdad, la más reciente.
+  const closedA = a.status === 'cerrada';
+  const closedB = b.status === 'cerrada';
+  if (closedA !== closedB) return closedA;
+  const ta = (a as unknown as { createdAt?: Date }).createdAt?.getTime() ?? 0;
+  const tb = (b as unknown as { createdAt?: Date }).createdAt?.getTime() ?? 0;
+  return ta > tb;
+}
+
 async function payrollActual(
   models: ActualsModels,
   range: DateRange,
   sedeIds: string[] | null,
 ): Promise<number> {
-  // No se filtra por estado de la corrida: el contrato define el "Real" de
-  // nómina como Σ totals.costo de las corridas cuyo período cae en el rango.
   const runs = await models.runs
     .find({})
-    .select('period sedeId coverage totals.costo')
+    .select('period sedeId coverage status createdAt totals.costo')
     .exec();
-  let total = 0;
   const allowed = sedeIds ? new Set(sedeIds) : null;
+
+  // Puede haber varias corridas del mismo período (p. ej. al regenerar sin
+  // borrar la anterior). Se cuenta UNA sola por período+cobertura+sede (la
+  // cerrada; si no, la más reciente), para no duplicar el costo de nómina.
+  const chosen = new Map<string, PayrollRunDocument>();
   for (const r of runs) {
     if (!periodInRange(r.period, range)) continue;
     if (allowed) {
@@ -104,8 +117,13 @@ async function payrollActual(
       if (r.coverage !== 'sede') continue;
       if (!r.sedeId || !allowed.has(r.sedeId.toString())) continue;
     }
-    total += r.totals?.costo || 0;
+    const key = `${r.period}|${r.coverage}|${r.sedeId ? r.sedeId.toString() : ''}`;
+    const prev = chosen.get(key);
+    if (!prev || betterRun(r, prev)) chosen.set(key, r);
   }
+
+  let total = 0;
+  for (const r of chosen.values()) total += r.totals?.costo || 0;
   return cop(total);
 }
 

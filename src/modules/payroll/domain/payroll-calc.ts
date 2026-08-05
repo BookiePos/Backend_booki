@@ -148,7 +148,9 @@ export function computeSlip(
   input: PayrollInput,
   s: PayrollSettingsData,
 ): PayrollBreakdown {
-  const dias = Math.max(0, Math.min(input.diasTrabajados || DIAS_MES, DIAS_MES));
+  // `?? DIAS_MES` (no `|| DIAS_MES`): 0 días trabajados es un valor válido (no
+  // se paga), y solo se cae al mes completo cuando el dato no viene (undefined).
+  const dias = Math.max(0, Math.min(input.diasTrabajados ?? DIAS_MES, DIAS_MES));
   const factorDias = dias / DIAS_MES;
   const nov = input.novedades ?? {};
   const integral = input.salaryType === 'integral';

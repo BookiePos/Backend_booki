@@ -285,7 +285,11 @@ export class PayrollService {
       );
     }
 
-    const { slips, totals, approvedIds } = await this.buildRunSlips(emps, s);
+    const { slips, totals, approvedIds } = await this.buildRunSlips(
+      emps,
+      s,
+      dto.period,
+    );
 
     const run = await this.runs.create({
       period: dto.period,
@@ -338,7 +342,11 @@ export class PayrollService {
       .sort({ lastName: 1, firstName: 1 })
       .exec();
 
-    const { slips, totals, approvedIds } = await this.buildRunSlips(emps, s);
+    const { slips, totals, approvedIds } = await this.buildRunSlips(
+      emps,
+      s,
+      run.period,
+    );
     run.slips = slips;
     run.totals = totals;
     await run.save();
@@ -356,6 +364,7 @@ export class PayrollService {
   private async buildRunSlips(
     emps: EmployeeDocument[],
     s: PayrollSettingsData,
+    period: string,
   ): Promise<{
     slips: PayrollSlip[];
     totals: {
@@ -378,13 +387,41 @@ export class PayrollService {
       dedByEmp.set(d.employeeId, arr);
     }
 
+    // Días trabajados por empleado, tomados de Turnos (asistencia) del período.
+    // El salario se prorratea por estos días (X/30). Estricto: sin registros de
+    // horas ⇒ 0 días ⇒ no se paga ese mes (lo alimenta el control de horas).
+    const y = Number(period.slice(0, 4));
+    const mo = Number(period.slice(5, 7));
+    const from = `${period}-01`;
+    const lastDay = new Date(y, mo, 0).getDate();
+    const to = `${period}-${String(lastDay).padStart(2, '0')}`;
+    const recs = await this.attendance
+      .find({
+        employeeId: { $in: emps.map((e) => e.id) },
+        workDate: { $gte: from, $lte: to },
+      })
+      .select('employeeId workDate checkIn checkOut')
+      .exec();
+    const recsByEmp = new Map<
+      string,
+      { workDate: string; checkIn?: string; checkOut?: string }[]
+    >();
+    for (const r of recs) {
+      const arr = recsByEmp.get(r.employeeId) ?? [];
+      arr.push({ workDate: r.workDate, checkIn: r.checkIn, checkOut: r.checkOut });
+      recsByEmp.set(r.employeeId, arr);
+    }
+
     const slips: PayrollSlip[] = emps.map((e) => {
       const empDeductions = dedByEmp.get(e.id) ?? [];
       const otrasDeducciones = empDeductions.reduce((sum, d) => sum + d.amount, 0);
+      const diasTrabajados = classifyTurnos(
+        recsByEmp.get(e.id) ?? [],
+      ).diasTrabajados;
       const input: PayrollInput = {
         salarioBase: e.salary ?? 0,
         salaryType: (e.salaryType as SalaryType) ?? 'ordinario',
-        diasTrabajados: 30,
+        diasTrabajados,
         arlRiskLevel: e.arlRiskLevel as ArlLevel | undefined,
         novedades: otrasDeducciones > 0 ? { otrasDeducciones } : undefined,
       };
