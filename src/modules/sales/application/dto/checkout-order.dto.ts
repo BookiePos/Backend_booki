@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsOptional, ValidateNested } from 'class-validator';
+import { IsNumber, IsOptional, Min, ValidateNested } from 'class-validator';
 import {
   SaleCustomerDto,
   SaleDiscountDto,
@@ -16,6 +16,12 @@ export class CheckoutOrderDto {
   @ValidateNested()
   @Type(() => SaleDiscountDto)
   discount?: SaleDiscountDto;
+
+  /** Propina voluntaria (restaurante): se cobra encima del total. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  tip?: number;
 
   @IsOptional()
   @ValidateNested()

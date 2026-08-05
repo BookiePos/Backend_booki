@@ -185,6 +185,7 @@ export class OrdersService {
         payment: dto.payment,
         discount: dto.discount,
         customer: dto.customer,
+        tip: dto.tip,
       },
       user,
       order._id as Types.ObjectId,

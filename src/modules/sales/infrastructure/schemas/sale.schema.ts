@@ -210,6 +210,13 @@ export class Sale {
   @Prop({ required: true, min: 0 })
   total!: number;
 
+  /**
+   * Propina (voluntaria, restaurante). NO es venta ni base gravable: se cobra
+   * encima del total y se entrega al personal. El monto a pagar = total + tip.
+   */
+  @Prop({ default: 0, min: 0 })
+  tip!: number;
+
   @Prop({ type: SalePaymentSchema, required: true })
   payment!: SalePayment;
 

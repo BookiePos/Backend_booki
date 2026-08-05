@@ -241,16 +241,21 @@ export class SalesService {
     // El IVA está incluido en los precios: el total NO lo vuelve a sumar.
     const total = subtotal - discountTotal;
 
+    // Propina voluntaria (restaurante): se cobra ENCIMA del total. No es venta
+    // ni base gravable; el monto a pagar por el cliente es total + tip.
+    const tip = Math.max(0, Math.round((dto.tip ?? 0) * 100) / 100);
+    const grandTotal = Math.round((total + tip) * 100) / 100;
+
     let received: number | undefined;
     let change: number | undefined;
     if (dto.payment.method === 'cash' && dto.payment.received !== undefined) {
       received = dto.payment.received;
-      if (received < total) {
+      if (received < grandTotal) {
         throw new BadRequestException(
-          'El monto recibido es menor que el total de la venta',
+          'El monto recibido es menor que el total a pagar (incluye la propina)',
         );
       }
-      change = received - total;
+      change = received - grandTotal;
     }
 
     // 2. Explotar cada línea a su consumo de inventario y agregar por ítem.
@@ -343,6 +348,7 @@ export class SalesService {
       taxableBase,
       taxTotal,
       total,
+      tip,
       payment: { method: dto.payment.method, received, change },
       customer: this.cleanCustomer(dto.customer),
       orderId,

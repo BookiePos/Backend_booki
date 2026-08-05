@@ -121,6 +121,12 @@ export class CreateSaleDto {
   @Type(() => SaleDiscountDto)
   discount?: SaleDiscountDto;
 
+  /** Propina voluntaria (restaurante): se cobra encima del total. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  tip?: number;
+
   /** Datos del cliente para la factura (opcional). */
   @IsOptional()
   @ValidateNested()

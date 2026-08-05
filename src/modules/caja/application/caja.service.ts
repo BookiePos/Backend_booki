@@ -353,9 +353,11 @@ export class CajaService {
         .exec(),
     ]);
     const salesTotal = sales.reduce((a, s) => a + s.total, 0);
+    // El efectivo del cajón incluye la propina cobrada en efectivo (se paga
+    // encima del total), por eso se suma `tip` para que el arqueo cuadre.
     const cashSalesTotal = sales
       .filter((s) => s.payment.method === 'cash')
-      .reduce((a, s) => a + s.total, 0);
+      .reduce((a, s) => a + s.total + (s.tip ?? 0), 0);
     const movementsIn = movements
       .filter((m) => m.type === 'in')
       .reduce((a, m) => a + m.amount, 0);
