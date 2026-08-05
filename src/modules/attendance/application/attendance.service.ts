@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import {
@@ -6,11 +10,21 @@ import {
   AttendanceRecordDocument,
 } from '../infrastructure/schemas/attendance-record.schema';
 import {
+  AttendanceEditRequest,
+  AttendanceEditRequestDocument,
+  EditRequestStatus,
+} from '../infrastructure/schemas/attendance-edit-request.schema';
+import {
   Employee,
   EmployeeDocument,
 } from '../../employees/infrastructure/schemas/employee.schema';
 import { Sede, SedeDocument } from '../../sedes/infrastructure/schemas/sede.schema';
 import { UpsertAttendanceDto } from './dto/upsert-attendance.dto';
+import { AdminSetAttendanceDto } from './dto/admin-set-attendance.dto';
+import {
+  CreateEditRequestDto,
+  ResolveEditRequestDto,
+} from './dto/edit-request.dto';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import {
   assertSedeAccess,
@@ -60,11 +74,27 @@ export class AttendanceService {
   constructor(
     @InjectModel(AttendanceRecord.name)
     private readonly model: Model<AttendanceRecordDocument>,
+    @InjectModel(AttendanceEditRequest.name)
+    private readonly editRequests: Model<AttendanceEditRequestDocument>,
     @InjectModel(Employee.name)
     private readonly employees: Model<EmployeeDocument>,
     @InjectModel(Sede.name)
     private readonly sedes: Model<SedeDocument>,
   ) {}
+
+  /** Nombre del empleado (expediente) o el snapshot previo si no se encuentra. */
+  private async employeeName(
+    employeeId: string,
+    fallback = 'Empleado',
+  ): Promise<string> {
+    const e = Types.ObjectId.isValid(employeeId)
+      ? await this.employees
+          .findById(employeeId)
+          .select('firstName lastName')
+          .exec()
+      : null;
+    return e ? `${e.firstName} ${e.lastName}`.trim() : fallback;
+  }
 
   /** Empleados (activos) asignados a la sede — del expediente de RRHH. */
   async workers(sedeId: string, user: JwtUser): Promise<WorkerView[]> {
@@ -207,5 +237,179 @@ export class AttendanceService {
       )
       .exec();
     return record;
+  }
+
+  /**
+   * Fija las horas de un empleado en un día desde Operación (sin la regla
+   * write-once del POS): un administrador puede corregir o limpiar lo ya
+   * registrado. Enviar cadena vacía en checkIn/checkOut limpia esa hora.
+   */
+  async adminSet(
+    dto: AdminSetAttendanceDto,
+    user: JwtUser,
+  ): Promise<AttendanceRecordDocument> {
+    assertSedeAccess(user, dto.sedeId);
+    const sedeId = new Types.ObjectId(dto.sedeId);
+    const existing = await this.model
+      .findOne({ sedeId, employeeId: dto.employeeId, workDate: dto.workDate })
+      .exec();
+
+    // undefined = no tocar; "" = limpiar; "HH:MM" = fijar.
+    const checkIn =
+      dto.checkIn === undefined ? existing?.checkIn : dto.checkIn || undefined;
+    const checkOut =
+      dto.checkOut === undefined ? existing?.checkOut : dto.checkOut || undefined;
+    const employeeName = await this.employeeName(
+      dto.employeeId,
+      existing?.employeeName ?? 'Empleado',
+    );
+    return this.model
+      .findOneAndUpdate(
+        { sedeId, employeeId: dto.employeeId, workDate: dto.workDate },
+        {
+          $set: {
+            checkIn,
+            checkOut,
+            hours: computeHours(checkIn, checkOut),
+            employeeName,
+            note: dto.note ?? existing?.note,
+            registeredByEmail: user.email,
+          },
+        },
+        { upsert: true, new: true },
+      )
+      .exec();
+  }
+
+  // ── Solicitudes de edición (trabajador → aprobación en Operación) ────────────
+
+  /**
+   * Un trabajador solicita corregir sus horas ya registradas de un día. Queda
+   * pendiente hasta que en Operación la aprueban o rechazan. Solo se permite una
+   * solicitud pendiente por empleado+sede+día a la vez.
+   */
+  async requestEdit(
+    dto: CreateEditRequestDto,
+    user: JwtUser,
+  ): Promise<AttendanceEditRequestDocument> {
+    assertSedeAccess(user, dto.sedeId);
+    if (!dto.proposedCheckIn && !dto.proposedCheckOut) {
+      throw new BadRequestException(
+        'Indica la hora de entrada o de salida que quieres corregir.',
+      );
+    }
+    const sedeId = new Types.ObjectId(dto.sedeId);
+    const record = await this.model
+      .findOne({ sedeId, employeeId: dto.employeeId, workDate: dto.workDate })
+      .exec();
+
+    const dup = await this.editRequests
+      .findOne({
+        sedeId,
+        employeeId: dto.employeeId,
+        workDate: dto.workDate,
+        status: 'pending',
+      })
+      .exec();
+    if (dup) {
+      throw new BadRequestException(
+        'Ya hay una solicitud pendiente para ese día; espera a que la revisen.',
+      );
+    }
+
+    const employeeName = await this.employeeName(
+      dto.employeeId,
+      record?.employeeName,
+    );
+    return this.editRequests.create({
+      sedeId,
+      employeeId: dto.employeeId,
+      employeeName,
+      workDate: dto.workDate,
+      currentCheckIn: record?.checkIn,
+      currentCheckOut: record?.checkOut,
+      proposedCheckIn: dto.proposedCheckIn || undefined,
+      proposedCheckOut: dto.proposedCheckOut || undefined,
+      reason: dto.reason.trim(),
+      status: 'pending',
+      requestedByEmail: user.email,
+    });
+  }
+
+  /** Solicitudes de edición del alcance del usuario (Operación). */
+  async listRequests(
+    query: { status?: EditRequestStatus; sedeId?: string },
+    user: JwtUser,
+  ): Promise<AttendanceEditRequestDocument[]> {
+    const filter: Record<string, unknown> = {};
+    if (query.sedeId) {
+      assertSedeAccess(user, query.sedeId);
+      filter.sedeId = new Types.ObjectId(query.sedeId);
+    } else {
+      const allowed = allowedSedeIds(user);
+      if (allowed) {
+        filter.sedeId = { $in: allowed.map((id) => new Types.ObjectId(id)) };
+      }
+    }
+    if (query.status) filter.status = query.status;
+    return this.editRequests.find(filter).sort({ createdAt: -1 }).exec();
+  }
+
+  /**
+   * Aprueba (aplica las horas propuestas al registro, sin la regla write-once)
+   * o rechaza una solicitud de edición.
+   */
+  async resolveRequest(
+    id: string,
+    dto: ResolveEditRequestDto,
+    user: JwtUser,
+  ): Promise<AttendanceEditRequestDocument> {
+    const req = Types.ObjectId.isValid(id)
+      ? await this.editRequests.findById(id).exec()
+      : null;
+    if (!req) throw new NotFoundException('Solicitud no encontrada');
+    assertSedeAccess(user, req.sedeId.toString());
+    if (req.status !== 'pending') {
+      throw new BadRequestException('La solicitud ya fue resuelta.');
+    }
+
+    if (dto.approve) {
+      const existing = await this.model
+        .findOne({
+          sedeId: req.sedeId,
+          employeeId: req.employeeId,
+          workDate: req.workDate,
+        })
+        .exec();
+      // Solo se reemplazan las horas que la solicitud propone; la otra se
+      // conserva tal cual estaba.
+      const checkIn = req.proposedCheckIn ?? existing?.checkIn;
+      const checkOut = req.proposedCheckOut ?? existing?.checkOut;
+      await this.model
+        .findOneAndUpdate(
+          {
+            sedeId: req.sedeId,
+            employeeId: req.employeeId,
+            workDate: req.workDate,
+          },
+          {
+            $set: {
+              checkIn,
+              checkOut,
+              hours: computeHours(checkIn, checkOut),
+              employeeName: req.employeeName,
+              registeredByEmail: user.email,
+            },
+          },
+          { upsert: true, new: true },
+        )
+        .exec();
+    }
+
+    req.status = dto.approve ? 'approved' : 'rejected';
+    req.resolvedByEmail = user.email;
+    req.resolutionNote = dto.note?.trim();
+    await req.save();
+    return req;
   }
 }

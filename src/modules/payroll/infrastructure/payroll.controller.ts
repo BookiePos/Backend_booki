@@ -81,6 +81,12 @@ export class PayrollController {
   }
 
   @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('runs/:id/recalc')
+  recalcRun(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.payroll.recalcRun(id, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
   @Post('runs/:id/close')
   closeRun(@Param('id') id: string) {
     return this.payroll.closeRun(id);

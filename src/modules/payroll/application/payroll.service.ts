@@ -285,13 +285,91 @@ export class PayrollService {
       );
     }
 
-    // Deducciones aprobadas pendientes de aplicar (consumos de empleado, etc.),
-    // agrupadas por empleado. Entran como "otras deducciones" de la colilla.
+    const { slips, totals, approvedIds } = await this.buildRunSlips(emps, s);
+
+    const run = await this.runs.create({
+      period: dto.period,
+      label: dto.label,
+      coverage,
+      sedeId: dto.sedeId ? new Types.ObjectId(dto.sedeId) : undefined,
+      status: 'borrador',
+      slips,
+      totals,
+      createdByEmail: user.email,
+    });
+
+    await this.applyDeductionsToRun(approvedIds, run._id, dto.period);
+    return run;
+  }
+
+  /**
+   * Recalcula una corrida en **borrador**: vuelve a leer los consumos aprobados
+   * y las horas, y actualiza colillas y totales. Sirve cuando se aprobó un
+   * consumo (u otro cambio) después de haber generado la corrida. Las corridas
+   * cerradas no se pueden recalcular.
+   */
+  async recalcRun(id: string, user: JwtUser): Promise<PayrollRunDocument> {
+    const run = Types.ObjectId.isValid(id)
+      ? await this.runs.findById(id).exec()
+      : null;
+    if (!run) throw new NotFoundException('Corrida no encontrada');
+    if (run.status !== 'borrador') {
+      throw new BadRequestException(
+        'Solo se puede recalcular una corrida en borrador.',
+      );
+    }
+
+    // Devuelve a "approved" las deducciones que esta corrida había aplicado,
+    // para volver a considerarlas (junto con las aprobadas desde entonces).
+    await this.deductions
+      .updateMany(
+        { appliedRunId: run._id },
+        { $set: { status: 'approved' }, $unset: { appliedRunId: '', appliedPeriod: '' } },
+      )
+      .exec();
+
+    const s = await this.settingsData();
+    const filter: Record<string, unknown> = { status: 'activo', salary: { $gt: 0 } };
+    if (run.coverage === 'sede' && run.sedeId) {
+      filter.sedeId = run.sedeId;
+    }
+    const emps = await this.employees
+      .find(filter)
+      .sort({ lastName: 1, firstName: 1 })
+      .exec();
+
+    const { slips, totals, approvedIds } = await this.buildRunSlips(emps, s);
+    run.slips = slips;
+    run.totals = totals;
+    await run.save();
+
+    await this.applyDeductionsToRun(approvedIds, run._id, run.period);
+    return run;
+  }
+
+  /**
+   * Construye las colillas y totales de una corrida a partir de los empleados y
+   * los parámetros, incorporando los consumos aprobados como "otras
+   * deducciones". Devuelve también los ids de esos consumos para marcarlos como
+   * aplicados. Reutilizado por crear y recalcular.
+   */
+  private async buildRunSlips(
+    emps: EmployeeDocument[],
+    s: PayrollSettingsData,
+  ): Promise<{
+    slips: PayrollSlip[];
+    totals: {
+      devengado: number;
+      deducciones: number;
+      neto: number;
+      aportes: number;
+      provisiones: number;
+      costo: number;
+    };
+    approvedIds: Types.ObjectId[];
+  }> {
     const approved = await this.deductions
-      .find({
-        employeeId: { $in: emps.map((e) => e.id) },
-        status: 'approved',
-      })
+      .find({ employeeId: { $in: emps.map((e) => e.id) }, status: 'approved' })
       .exec();
     const dedByEmp = new Map<string, PayrollDeductionDocument[]>();
     for (const d of approved) {
@@ -302,10 +380,7 @@ export class PayrollService {
 
     const slips: PayrollSlip[] = emps.map((e) => {
       const empDeductions = dedByEmp.get(e.id) ?? [];
-      const otrasDeducciones = empDeductions.reduce(
-        (sum, d) => sum + d.amount,
-        0,
-      );
+      const otrasDeducciones = empDeductions.reduce((sum, d) => sum + d.amount, 0);
       const input: PayrollInput = {
         salarioBase: e.salary ?? 0,
         salaryType: (e.salaryType as SalaryType) ?? 'ordinario',
@@ -348,33 +423,22 @@ export class PayrollService {
       { devengado: 0, deducciones: 0, neto: 0, aportes: 0, provisiones: 0, costo: 0 },
     );
 
-    const run = await this.runs.create({
-      period: dto.period,
-      label: dto.label,
-      coverage,
-      sedeId: dto.sedeId ? new Types.ObjectId(dto.sedeId) : undefined,
-      status: 'borrador',
-      slips,
-      totals,
-      createdByEmail: user.email,
-    });
+    return { slips, totals, approvedIds: approved.map((d) => d._id) };
+  }
 
-    // Marca como aplicadas las deducciones que entraron en esta corrida.
-    if (approved.length > 0) {
-      await this.deductions
-        .updateMany(
-          { _id: { $in: approved.map((d) => d._id) } },
-          {
-            $set: {
-              status: 'applied',
-              appliedRunId: run._id,
-              appliedPeriod: dto.period,
-            },
-          },
-        )
-        .exec();
-    }
-    return run;
+  /** Marca los consumos que entraron en una corrida como "applied". */
+  private async applyDeductionsToRun(
+    ids: Types.ObjectId[],
+    runId: Types.ObjectId,
+    period: string,
+  ): Promise<void> {
+    if (ids.length === 0) return;
+    await this.deductions
+      .updateMany(
+        { _id: { $in: ids } },
+        { $set: { status: 'applied', appliedRunId: runId, appliedPeriod: period } },
+      )
+      .exec();
   }
 
   // ── Deducciones de empleado (consumos, descuentos) ──────────────────────────

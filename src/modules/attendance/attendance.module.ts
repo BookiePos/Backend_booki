@@ -5,6 +5,10 @@ import {
   AttendanceRecordSchema,
 } from './infrastructure/schemas/attendance-record.schema';
 import {
+  AttendanceEditRequest,
+  AttendanceEditRequestSchema,
+} from './infrastructure/schemas/attendance-edit-request.schema';
+import {
   Employee,
   EmployeeSchema,
 } from '../employees/infrastructure/schemas/employee.schema';
@@ -19,6 +23,10 @@ import { AttendanceController } from './infrastructure/attendance.controller';
   imports: [
     TenantMongooseModule.forFeature([
       { name: AttendanceRecord.name, schema: AttendanceRecordSchema },
+      {
+        name: AttendanceEditRequest.name,
+        schema: AttendanceEditRequestSchema,
+      },
       { name: Employee.name, schema: EmployeeSchema },
       { name: Sede.name, schema: SedeSchema },
     ]),
