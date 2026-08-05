@@ -30,6 +30,10 @@ import {
 } from './infrastructure/schemas/finance-budget.schema';
 import { Sale, SaleSchema } from '../sales/infrastructure/schemas/sale.schema';
 import {
+  Product,
+  ProductSchema,
+} from '../inventory/infrastructure/schemas/product.schema';
+import {
   PayrollRun,
   PayrollRunSchema,
 } from '../payroll/infrastructure/schemas/payroll-run.schema';
@@ -56,6 +60,7 @@ import { FinanceController } from './infrastructure/finance.controller';
       { name: FinanceMovement.name, schema: FinanceMovementSchema },
       { name: FinanceBudget.name, schema: FinanceBudgetSchema },
       { name: Sale.name, schema: SaleSchema },
+      { name: Product.name, schema: ProductSchema },
       { name: PayrollRun.name, schema: PayrollRunSchema },
       { name: Sede.name, schema: SedeSchema },
     ]),

@@ -35,6 +35,10 @@ import {
 } from '../infrastructure/schemas/finance-budget.schema';
 import { Sale, SaleDocument } from '../../sales/infrastructure/schemas/sale.schema';
 import {
+  Product,
+  ProductDocument,
+} from '../../inventory/infrastructure/schemas/product.schema';
+import {
   PayrollRun,
   PayrollRunDocument,
 } from '../../payroll/infrastructure/schemas/payroll-run.schema';
@@ -57,6 +61,7 @@ import {
 import { clampNonNegative, cop } from '../domain/money.util';
 import {
   actualForCategory,
+  actualsRange,
   ActualsModels,
   DateRange,
 } from '../domain/actuals';
@@ -223,6 +228,8 @@ export class FinanceService {
     private readonly budgets: Model<FinanceBudgetDocument>,
     @InjectModel(Sale.name)
     private readonly sales: Model<SaleDocument>,
+    @InjectModel(Product.name)
+    private readonly products: Model<ProductDocument>,
     @InjectModel(PayrollRun.name)
     private readonly runs: Model<PayrollRunDocument>,
     private readonly caja: CajaService,
@@ -1071,14 +1078,73 @@ export class FinanceService {
     return cop(expenses.reduce((a, e) => a + (e.taxAmount || 0), 0));
   }
 
+  /**
+   * Ventas brutas (lo que se cobró, con IVA) y costo de venta del rango+sede,
+   * para los KPIs del panel. Ventas del mes = Σ `sale.total`. El COGS usa el
+   * costo real (FEFO) guardado en la venta; si una línea no capturó costo de
+   * lote (queda en 0), cae al costo estándar del producto (`product.cost`) como
+   * "valor de compra", para que la utilidad refleje la ganancia real.
+   */
+  private async grossSalesAndCogs(
+    range: DateRange,
+    scope: string[] | null,
+  ): Promise<{ grossSales: number; cogs: number }> {
+    const filter: Record<string, unknown> = {
+      status: 'completed',
+      createdAt: {
+        $gte: actualsRange.startOfDay(range.from),
+        $lt: actualsRange.endExclusive(range.to),
+      },
+    };
+    if (scope) {
+      filter.sedeId = { $in: scope.map((id) => new Types.ObjectId(id)) };
+    }
+    const sales = await this.sales
+      .find(filter)
+      .select('total components.productId components.qty components.cost')
+      .exec();
+
+    const grossSales = sales.reduce((a, s) => a + (s.total || 0), 0);
+
+    // Ítems cuyo costo de lote no se capturó (0): se completan con product.cost.
+    const missing = new Set<string>();
+    for (const s of sales) {
+      for (const c of s.components ?? []) {
+        if (!(c.cost > 0)) missing.add(c.productId.toString());
+      }
+    }
+    const costById = new Map<string, number>();
+    if (missing.size > 0) {
+      const prods = await this.products
+        .find({ _id: { $in: [...missing].map((id) => new Types.ObjectId(id)) } })
+        .select('cost')
+        .exec();
+      for (const p of prods) {
+        costById.set(p._id.toString(), p.cost || 0);
+      }
+    }
+
+    let cogs = 0;
+    for (const s of sales) {
+      for (const c of s.components ?? []) {
+        cogs +=
+          c.cost > 0
+            ? c.cost
+            : (c.qty || 0) * (costById.get(c.productId.toString()) ?? 0);
+      }
+    }
+    return { grossSales: cop(grossSales), cogs: cop(cogs) };
+  }
+
   async overview(user: JwtUser, sedeId?: string): Promise<FinanceOverview> {
     const scope = this.resolveSedeScope(user, sedeId);
     const range = this.currentMonthRange();
-    const models = this.actualsModels();
 
-    const salesMonth = await actualForCategory(models, 'income', null, range, scope);
-    const cogs = await actualForCategory(models, 'cogs', null, range, scope);
-    const nomina = await actualForCategory(models, 'payroll', null, range, scope);
+    // Ventas del mes = total cobrado (con IVA); utilidad = ventas − costo de
+    // compra (margen bruto). Nómina y gastos NO entran en esta utilidad: se ven
+    // aparte (Gastos del mes) y en el P&L de Finanzas (utilidad operativa).
+    const { grossSales, cogs } = await this.grossSalesAndCogs(range, scope);
+    const salesMonth = grossSales;
 
     // Gastos del mes: Σ de todos los gastos del rango+sede.
     const expenseFilter: Record<string, unknown> = {
@@ -1139,7 +1205,8 @@ export class FinanceService {
     // Efectivo del día: del módulo de Caja (suma de efectivo esperado hoy).
     const cashToday = await this.cashTodayFromCaja(user, sedeId);
 
-    const utilidadMonth = cop(salesMonth - cogs - nomina - expensesMonth);
+    // Utilidad del mes = ventas − costo de compra de lo vendido (margen bruto).
+    const utilidadMonth = cop(salesMonth - cogs);
 
     return {
       sedeId: sedeId ?? null,
