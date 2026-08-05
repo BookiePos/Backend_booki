@@ -36,6 +36,25 @@ export type FinancePaymentMethod = (typeof PAYMENT_METHODS)[number];
 export const PAYABLE_STATUSES = ['open', 'partial', 'paid', 'void'] as const;
 export type PayableStatus = (typeof PAYABLE_STATUSES)[number];
 
+/** Frecuencia de un gasto recurrente (plantilla). */
+export const RECURRENCE_FREQUENCIES = [
+  'weekly',
+  'monthly',
+  'quarterly',
+  'yearly',
+] as const;
+export type RecurrenceFrequency = (typeof RECURRENCE_FREQUENCIES)[number];
+
+/** Cada frecuencia equivale a N meses de paso (weekly se maneja aparte). */
+export const FREQUENCY_MONTHS: Record<
+  Exclude<RecurrenceFrequency, 'weekly'>,
+  number
+> = {
+  monthly: 1,
+  quarterly: 3,
+  yearly: 12,
+};
+
 /** Estado de una cuenta por cobrar (fiado). Mismo ciclo que las CxP. */
 export const RECEIVABLE_STATUSES = ['open', 'partial', 'paid', 'void'] as const;
 export type ReceivableStatus = (typeof RECEIVABLE_STATUSES)[number];

@@ -53,6 +53,17 @@ export class BusinessService {
     return this.businesses.findById(id).exec();
   }
 
+  /**
+   * Empresas operativas (trial o activas) con su base de datos. Lo usan los
+   * procesos programados para iterar tenant por tenant abriendo su contexto.
+   */
+  listActive(): Promise<BusinessDocument[]> {
+    return this.businesses
+      .find({ status: { $in: ['trial', 'active'] } })
+      .select('_id dbName tipoNegocio status')
+      .exec();
+  }
+
   /** ¿Ya existe una empresa con este NIT? (unicidad a nivel plataforma). */
   async nitExists(nit: string): Promise<boolean> {
     const clean = nit.trim();

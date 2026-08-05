@@ -22,6 +22,10 @@ import {
   CreatePayablePaymentDto,
 } from '../application/dto/payable.dto';
 import {
+  CreateRecurringExpenseDto,
+  UpdateRecurringExpenseDto,
+} from '../application/dto/recurring-expense.dto';
+import {
   CreateReceivableDto,
   CreateReceivablePaymentDto,
 } from '../application/dto/receivable.dto';
@@ -100,6 +104,51 @@ export class FinanceController {
   @Delete('expenses/:id')
   deleteExpense(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.finance.deleteExpense(id, user);
+  }
+
+  // ── Gastos recurrentes (plantillas) ─────────────────────────────────────────
+  @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @Get('recurring')
+  listRecurring(
+    @CurrentUser() user: JwtUser,
+    @Query('sedeId') sedeId?: string,
+    @Query('active') active?: string,
+  ) {
+    return this.finance.listRecurring(user, {
+      sedeId,
+      active: active === undefined ? undefined : active !== 'false',
+    });
+  }
+
+  @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
+  @Post('recurring')
+  createRecurring(
+    @Body() dto: CreateRecurringExpenseDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.finance.createRecurring(dto, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
+  @Post('recurring/run')
+  runRecurring(@CurrentUser() user: JwtUser) {
+    return this.finance.runRecurring({ user });
+  }
+
+  @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
+  @Patch('recurring/:id')
+  updateRecurring(
+    @Param('id') id: string,
+    @Body() dto: UpdateRecurringExpenseDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.finance.updateRecurring(id, dto, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
+  @Delete('recurring/:id')
+  deleteRecurring(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.finance.deleteRecurring(id, user);
   }
 
   // ── Cuentas por pagar ───────────────────────────────────────────────────────

@@ -18,6 +18,10 @@ import {
   FinancePayableDocument,
 } from '../infrastructure/schemas/finance-payable.schema';
 import {
+  FinanceRecurringExpense,
+  FinanceRecurringExpenseDocument,
+} from '../infrastructure/schemas/finance-recurring-expense.schema';
+import {
   FinanceReceivable,
   FinanceReceivableDocument,
 } from '../infrastructure/schemas/finance-receivable.schema';
@@ -65,8 +69,13 @@ import {
   ActualsModels,
   DateRange,
 } from '../domain/actuals';
+import { occurrencesUpTo } from '../domain/recurrence';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/category.dto';
 import { CreateExpenseDto, UpdateExpenseDto } from './dto/expense.dto';
+import {
+  CreateRecurringExpenseDto,
+  UpdateRecurringExpenseDto,
+} from './dto/recurring-expense.dto';
 import {
   CreatePayableDto,
   CreatePayablePaymentDto,
@@ -81,6 +90,15 @@ import {
   ReconcileAccountDto,
 } from './dto/account.dto';
 import { CreateBudgetDto, UpdateBudgetDto } from './dto/budget.dto';
+
+/** ¿El error es un duplicado por índice único de Mongo (E11000)? */
+function isDuplicateKeyError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { code?: number }).code === 11000
+  );
+}
 
 /** Fila del P&L (una línea de gasto por categoría). */
 export interface PLRow {
@@ -218,6 +236,8 @@ export class FinanceService {
     private readonly expenses: Model<FinanceExpenseDocument>,
     @InjectModel(FinancePayable.name)
     private readonly payables: Model<FinancePayableDocument>,
+    @InjectModel(FinanceRecurringExpense.name)
+    private readonly recurring: Model<FinanceRecurringExpenseDocument>,
     @InjectModel(FinanceReceivable.name)
     private readonly receivables: Model<FinanceReceivableDocument>,
     @InjectModel(FinanceAccount.name)
@@ -445,6 +465,209 @@ export class FinanceService {
     assertSedeAccess(user, exp.sedeId.toString());
     await exp.deleteOne();
     return { deleted: true };
+  }
+
+  // ── Gastos recurrentes (plantillas) ─────────────────────────────────────────
+
+  async listRecurring(
+    user: JwtUser,
+    query: { sedeId?: string; active?: boolean } = {},
+  ): Promise<FinanceRecurringExpenseDocument[]> {
+    const scope = this.resolveSedeScope(user, query.sedeId);
+    const filter: Record<string, unknown> = {};
+    if (scope) {
+      filter.sedeId = { $in: scope.map((id) => new Types.ObjectId(id)) };
+    }
+    if (query.active !== undefined) filter.active = query.active;
+    return this.recurring.find(filter).sort({ active: -1, concept: 1 }).exec();
+  }
+
+  async createRecurring(
+    dto: CreateRecurringExpenseDto,
+    user: JwtUser,
+  ): Promise<FinanceRecurringExpenseDocument> {
+    assertSedeAccess(user, dto.sedeId);
+    const cat = await this.categoryOrThrow(dto.categoryId);
+    if (dto.endDate && dto.endDate < dto.startDate) {
+      throw new BadRequestException(
+        'La fecha de fin no puede ser anterior al inicio.',
+      );
+    }
+    return this.recurring.create({
+      sedeId: new Types.ObjectId(dto.sedeId),
+      categoryId: cat._id,
+      categoryName: cat.name,
+      concept: dto.concept,
+      amount: cop(dto.amount),
+      taxAmount: cop(dto.taxAmount ?? 0),
+      frequency: dto.frequency,
+      dayOfMonth: dto.dayOfMonth ?? 1,
+      startDate: dto.startDate,
+      endDate: dto.endDate ?? null,
+      defaultStatus: dto.defaultStatus ?? 'payable',
+      paymentMethod: dto.paymentMethod,
+      supplierId: dto.supplierId
+        ? new Types.ObjectId(dto.supplierId)
+        : undefined,
+      supplierName: dto.supplierName,
+      note: dto.note,
+      active: dto.active ?? true,
+      autoGenerate: dto.autoGenerate ?? true,
+      lastGeneratedDate: null,
+      createdByEmail: user.email,
+    });
+  }
+
+  async updateRecurring(
+    id: string,
+    dto: UpdateRecurringExpenseDto,
+    user: JwtUser,
+  ): Promise<FinanceRecurringExpenseDocument> {
+    const tpl = await this.recurring.findById(id).exec();
+    if (!tpl) throw new NotFoundException('Plantilla no encontrada');
+    assertSedeAccess(user, tpl.sedeId.toString());
+    if (dto.categoryId !== undefined) {
+      const cat = await this.categoryOrThrow(dto.categoryId);
+      tpl.categoryId = cat._id;
+      tpl.categoryName = cat.name;
+    }
+    if (dto.concept !== undefined) tpl.concept = dto.concept;
+    if (dto.amount !== undefined) tpl.amount = cop(dto.amount);
+    if (dto.taxAmount !== undefined) tpl.taxAmount = cop(dto.taxAmount);
+    if (dto.frequency !== undefined) tpl.frequency = dto.frequency;
+    if (dto.dayOfMonth !== undefined) tpl.dayOfMonth = dto.dayOfMonth;
+    if (dto.startDate !== undefined) tpl.startDate = dto.startDate;
+    if (dto.endDate !== undefined) tpl.endDate = dto.endDate ?? null;
+    if (dto.defaultStatus !== undefined) tpl.defaultStatus = dto.defaultStatus;
+    if (dto.paymentMethod !== undefined) tpl.paymentMethod = dto.paymentMethod;
+    if (dto.supplierId !== undefined) {
+      tpl.supplierId = dto.supplierId
+        ? new Types.ObjectId(dto.supplierId)
+        : undefined;
+    }
+    if (dto.supplierName !== undefined) tpl.supplierName = dto.supplierName;
+    if (dto.note !== undefined) tpl.note = dto.note;
+    if (dto.active !== undefined) tpl.active = dto.active;
+    if (dto.autoGenerate !== undefined) tpl.autoGenerate = dto.autoGenerate;
+    if (tpl.endDate && tpl.endDate < tpl.startDate) {
+      throw new BadRequestException(
+        'La fecha de fin no puede ser anterior al inicio.',
+      );
+    }
+    await tpl.save();
+    return tpl;
+  }
+
+  async deleteRecurring(
+    id: string,
+    user: JwtUser,
+  ): Promise<{ deleted: boolean }> {
+    const tpl = await this.recurring.findById(id).exec();
+    if (!tpl) throw new NotFoundException('Plantilla no encontrada');
+    assertSedeAccess(user, tpl.sedeId.toString());
+    await tpl.deleteOne();
+    return { deleted: true };
+  }
+
+  /**
+   * Genera los gastos pendientes de una plantilla (una por cada ocurrencia
+   * vencida no generada). Idempotente: se apoya en `lastGeneratedDate` y en el
+   * índice único (recurringTemplateId, recurringPeriod). Devuelve cuántos gastos
+   * creó.
+   */
+  private async generateForTemplate(
+    tpl: FinanceRecurringExpenseDocument,
+    today: string,
+  ): Promise<number> {
+    const dates = occurrencesUpTo(
+      {
+        frequency: tpl.frequency,
+        dayOfMonth: tpl.dayOfMonth,
+        startDate: tpl.startDate,
+        endDate: tpl.endDate,
+      },
+      today,
+      tpl.lastGeneratedDate,
+    );
+    if (dates.length === 0) return 0;
+
+    // Refresca el snapshot de la categoría y su cuenta contable.
+    const cat = await this.categories.findById(tpl.categoryId).exec();
+    const categoryName = cat?.name ?? tpl.categoryName;
+    const expenseAccount = cat ? this.expenseAccountFor(cat.kind) : undefined;
+
+    let created = 0;
+    let lastDone = tpl.lastGeneratedDate ?? '';
+    for (const date of dates) {
+      try {
+        const expense = await this.expenses.create({
+          sedeId: tpl.sedeId,
+          categoryId: tpl.categoryId,
+          categoryName,
+          concept: tpl.concept,
+          amount: tpl.amount,
+          taxAmount: tpl.taxAmount,
+          date,
+          status: tpl.defaultStatus,
+          paymentMethod:
+            tpl.defaultStatus === 'paid' ? tpl.paymentMethod : undefined,
+          supplierId: tpl.supplierId,
+          supplierName: tpl.supplierName,
+          recurring: true,
+          recurringTemplateId: tpl._id,
+          recurringPeriod: date,
+          note: tpl.note,
+          createdByEmail: tpl.createdByEmail,
+        });
+        created += 1;
+        await this.ledgerPosting.postExpense({
+          expenseId: expense._id.toString(),
+          date: expense.date,
+          sedeId: tpl.sedeId.toString(),
+          amount: expense.amount,
+          tax: expense.taxAmount,
+          status: expense.status,
+          paymentMethod: expense.paymentMethod,
+          expenseAccount,
+          concept: expense.concept,
+          userEmail: tpl.createdByEmail,
+        });
+      } catch (err) {
+        // E11000 (duplicado por índice único) = ya existía; se ignora.
+        if (!isDuplicateKeyError(err)) throw err;
+      }
+      if (date > lastDone) lastDone = date;
+    }
+    if (lastDone && lastDone !== tpl.lastGeneratedDate) {
+      tpl.lastGeneratedDate = lastDone;
+      await tpl.save();
+    }
+    return created;
+  }
+
+  /**
+   * Corre la generación recurrente del tenant activo. `onlyAuto` limita a las
+   * plantillas con `autoGenerate` (lo usa el job programado); la ejecución
+   * manual desde el panel las corre todas dentro del alcance del usuario.
+   */
+  async runRecurring(
+    opts: { onlyAuto?: boolean; user?: JwtUser } = {},
+  ): Promise<{ generated: number; templates: number }> {
+    const filter: Record<string, unknown> = { active: true };
+    if (opts.onlyAuto) filter.autoGenerate = true;
+    if (opts.user) {
+      const scope = this.resolveSedeScope(opts.user);
+      if (scope) {
+        filter.sedeId = { $in: scope.map((id) => new Types.ObjectId(id)) };
+      }
+    }
+    const templates = await this.recurring.find(filter).exec();
+    const today = this.todayStr();
+    let generated = 0;
+    for (const tpl of templates) {
+      generated += await this.generateForTemplate(tpl, today);
+    }
+    return { generated, templates: templates.length };
   }
 
   // ── Cuentas por pagar ───────────────────────────────────────────────────────

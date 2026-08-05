@@ -55,6 +55,14 @@ export class FinanceExpense {
   @Prop({ default: false })
   recurring!: boolean;
 
+  /** Plantilla recurrente que lo generó (si nació de una). */
+  @Prop({ type: Types.ObjectId, ref: 'FinanceRecurringExpense', default: null })
+  recurringTemplateId?: Types.ObjectId | null;
+
+  /** Fecha-ocurrencia YYYY-MM-DD que cubre este gasto (guarda anti-duplicado). */
+  @Prop({ type: String, default: null })
+  recurringPeriod?: string | null;
+
   @Prop({ trim: true })
   note?: string;
 
@@ -68,3 +76,11 @@ export const FinanceExpenseSchema =
 FinanceExpenseSchema.index({ sedeId: 1, date: -1 });
 FinanceExpenseSchema.index({ categoryId: 1, date: -1 });
 FinanceExpenseSchema.index({ status: 1 });
+// Anti-duplicado de la generación recurrente: 1 gasto por plantilla+ocurrencia.
+FinanceExpenseSchema.index(
+  { recurringTemplateId: 1, recurringPeriod: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { recurringTemplateId: { $type: 'objectId' } },
+  },
+);

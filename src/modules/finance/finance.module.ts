@@ -13,6 +13,10 @@ import {
   FinancePayableSchema,
 } from './infrastructure/schemas/finance-payable.schema';
 import {
+  FinanceRecurringExpense,
+  FinanceRecurringExpenseSchema,
+} from './infrastructure/schemas/finance-recurring-expense.schema';
+import {
   FinanceReceivable,
   FinanceReceivableSchema,
 } from './infrastructure/schemas/finance-receivable.schema';
@@ -42,7 +46,9 @@ import { CoreAuthModule } from '../core-auth/core-auth.module';
 import { CajaModule } from '../caja/caja.module';
 import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
 import { CustomersModule } from '../customers/customers.module';
+import { ControlModule } from '../control/control.module';
 import { FinanceService } from './application/finance.service';
+import { RecurringExpenseScheduler } from './application/recurring-expense.scheduler';
 import { FinanceController } from './infrastructure/finance.controller';
 
 @Module({
@@ -51,10 +57,15 @@ import { FinanceController } from './infrastructure/finance.controller';
     CajaModule,
     CoreLedgerModule,
     CustomersModule,
+    ControlModule,
     TenantMongooseModule.forFeature([
       { name: FinanceCategory.name, schema: FinanceCategorySchema },
       { name: FinanceExpense.name, schema: FinanceExpenseSchema },
       { name: FinancePayable.name, schema: FinancePayableSchema },
+      {
+        name: FinanceRecurringExpense.name,
+        schema: FinanceRecurringExpenseSchema,
+      },
       { name: FinanceReceivable.name, schema: FinanceReceivableSchema },
       { name: FinanceAccount.name, schema: FinanceAccountSchema },
       { name: FinanceMovement.name, schema: FinanceMovementSchema },
@@ -66,6 +77,6 @@ import { FinanceController } from './infrastructure/finance.controller';
     ]),
   ],
   controllers: [FinanceController],
-  providers: [FinanceService],
+  providers: [FinanceService, RecurringExpenseScheduler],
 })
 export class FinanceModule {}
