@@ -333,6 +333,20 @@ export class FinanceController {
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @Get('pl-monthly')
+  profitAndLossMonthly(
+    @CurrentUser() user: JwtUser,
+    @Query('year') year: string,
+    @Query('sedeId') sedeId?: string,
+  ) {
+    return this.finance.profitAndLossMonthly(
+      user,
+      Number.parseInt(year, 10) || new Date().getFullYear(),
+      sedeId,
+    );
+  }
+
+  @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
   @Get('overview')
   overview(@CurrentUser() user: JwtUser, @Query('sedeId') sedeId?: string) {
     return this.finance.overview(user, sedeId);

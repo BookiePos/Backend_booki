@@ -126,6 +126,25 @@ export interface PLReport {
   ivaPorPagar: number;
 }
 
+/** Fila del P&L de un mes (o el total del año si month = -1). */
+export interface PLMonthRow {
+  month: number; // 0..11 (o -1 para el total)
+  ingresos: number;
+  cogs: number;
+  margenBruto: number;
+  nomina: number;
+  gastos: number;
+  utilidad: number;
+}
+
+/** P&L mes a mes de un año fiscal. */
+export interface PLMonthlyReport {
+  year: number;
+  sedeId?: string | null;
+  months: PLMonthRow[];
+  totals: PLMonthRow;
+}
+
 /** KPIs del panel de finanzas. */
 export interface FinanceOverview {
   sedeId?: string | null;
@@ -1421,6 +1440,65 @@ export class FinanceService {
       ivaDescontable,
       ivaPorPagar: cop(ivaGenerado - ivaDescontable),
     };
+  }
+
+  /**
+   * P&L mes a mes de un año fiscal: 12 filas con ingresos, costo, margen,
+   * nómina, gastos y utilidad operativa por mes, más el total del año. Mismas
+   * fuentes que el P&L de período (ventas/nómina/gastos reales).
+   */
+  async profitAndLossMonthly(
+    user: JwtUser,
+    year: number,
+    sedeId?: string,
+  ): Promise<PLMonthlyReport> {
+    const scope = this.resolveSedeScope(user, sedeId);
+    const models = this.actualsModels();
+
+    // Gastos del año agrupados por mes (una sola consulta).
+    const expFilter: Record<string, unknown> = {
+      date: { $gte: `${year}-01-01`, $lte: `${year}-12-31` },
+    };
+    if (scope) {
+      expFilter.sedeId = { $in: scope.map((id) => new Types.ObjectId(id)) };
+    }
+    const exps = await this.expenses.find(expFilter).select('date amount').exec();
+    const gastosByMonth = new Array<number>(12).fill(0);
+    for (const e of exps) {
+      const m = Number.parseInt(e.date.slice(5, 7), 10) - 1;
+      if (m >= 0 && m < 12) {
+        gastosByMonth[m] = (gastosByMonth[m] ?? 0) + (e.amount || 0);
+      }
+    }
+
+    const months: PLMonthRow[] = [];
+    for (let m = 0; m < 12; m++) {
+      const range = this.monthRange(year, m);
+      const [ingresos, cogs, nomina] = await Promise.all([
+        actualForCategory(models, 'income', null, range, scope),
+        actualForCategory(models, 'cogs', null, range, scope),
+        actualForCategory(models, 'payroll', null, range, scope),
+      ]);
+      const gastos = cop(gastosByMonth[m] ?? 0);
+      const margenBruto = cop(ingresos - cogs);
+      const utilidad = cop(margenBruto - nomina - gastos);
+      months.push({ month: m, ingresos, cogs, margenBruto, nomina, gastos, utilidad });
+    }
+
+    const totals = months.reduce<PLMonthRow>(
+      (a, mo) => ({
+        month: -1,
+        ingresos: a.ingresos + mo.ingresos,
+        cogs: a.cogs + mo.cogs,
+        margenBruto: a.margenBruto + mo.margenBruto,
+        nomina: a.nomina + mo.nomina,
+        gastos: a.gastos + mo.gastos,
+        utilidad: a.utilidad + mo.utilidad,
+      }),
+      { month: -1, ingresos: 0, cogs: 0, margenBruto: 0, nomina: 0, gastos: 0, utilidad: 0 },
+    );
+
+    return { year, sedeId: sedeId ?? null, months, totals };
   }
 
   private async ivaGenerado(
