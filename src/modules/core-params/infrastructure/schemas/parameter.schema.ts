@@ -39,7 +39,7 @@ export class Parameter {
    * prefiere la versión de la sede y, si no hay, cae a la global. Así una sede
    * puede tener, p. ej., su propio redondeo o tolerancia de caja.
    */
-  @Prop({ trim: true, default: null })
+  @Prop({ type: String, trim: true, default: null })
   sedeId?: string | null;
 
   @Prop({ trim: true })
