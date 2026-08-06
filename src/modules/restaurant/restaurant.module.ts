@@ -9,12 +9,16 @@ import {
   RestaurantOrderSchema,
 } from './infrastructure/schemas/restaurant-order.schema';
 import { CoreAuthModule } from '../core-auth/core-auth.module';
+import { CoreParamsModule } from '../core-params/core-params.module';
+import { CoreTaxModule } from '../core-tax/core-tax.module';
 import { RestaurantService } from './application/restaurant.service';
 import { RestaurantController } from './infrastructure/restaurant.controller';
 
 @Module({
   imports: [
     CoreAuthModule,
+    CoreParamsModule,
+    CoreTaxModule,
     TenantMongooseModule.forFeature([
       { name: RestaurantTable.name, schema: RestaurantTableSchema },
       { name: RestaurantOrder.name, schema: RestaurantOrderSchema },

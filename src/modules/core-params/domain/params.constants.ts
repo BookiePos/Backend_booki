@@ -15,14 +15,41 @@ export const PARAM_VALUE_TYPES = [
 ] as const;
 export type ParamValueType = (typeof PARAM_VALUE_TYPES)[number];
 
+/**
+ * Catálogo de grupos de parámetros. Es EXTENSIBLE: para abrir una categoría
+ * nueva basta con añadirla a esta lista (más las etiquetas en
+ * `PARAM_GROUP_LABELS`). La validación (schema + DTO) se apoya en esta misma
+ * constante, así que no hay enums duplicados regados por el código.
+ */
 export const PARAM_GROUPS = [
   'caja',
   'nomina',
   'propina',
   'recargos',
   'operacion',
+  'fiscal',
+  'pos',
+  'inventario',
+  'finanzas',
+  'facturacion',
+  'sistema',
 ] as const;
 export type ParamGroup = (typeof PARAM_GROUPS)[number];
+
+/** Etiquetas legibles de cada grupo (para UI / agrupaciones). */
+export const PARAM_GROUP_LABELS: Record<ParamGroup, string> = {
+  caja: 'Caja',
+  nomina: 'Nómina',
+  propina: 'Propina',
+  recargos: 'Recargos',
+  operacion: 'Operación',
+  fiscal: 'Fiscal / Retenciones',
+  pos: 'Punto de venta',
+  inventario: 'Inventario',
+  finanzas: 'Finanzas',
+  facturacion: 'Facturación / DIAN',
+  sistema: 'Sistema',
+};
 
 export interface SeedParam {
   key: string;
@@ -74,8 +101,9 @@ export const SEED_PARAMS: SeedParam[] = [
     label: 'Recargo dominical/festivo',
     group: 'recargos',
     valueType: 'percent',
-    value: 75,
+    value: 90,
     unit: '%',
+    note: 'Ley 2466/2025: 90% desde el 2º semestre 2026.',
   },
   {
     key: 'recargo.hora_extra_diurna',
@@ -99,16 +127,18 @@ export const SEED_PARAMS: SeedParam[] = [
     label: 'Salario mínimo mensual (SMMLV)',
     group: 'nomina',
     valueType: 'money',
-    value: 1623500,
+    value: 1750905,
     unit: 'COP',
+    note: 'SMMLV Colombia 2026 (Decreto 1469/2025).',
   },
   {
     key: 'nomina.auxilio_transporte',
     label: 'Auxilio de transporte',
     group: 'nomina',
     valueType: 'money',
-    value: 200000,
+    value: 249095,
     unit: 'COP',
+    note: 'Auxilio de transporte Colombia 2026 (Decreto 1470/2025).',
   },
   // Operación
   {
@@ -118,5 +148,186 @@ export const SEED_PARAMS: SeedParam[] = [
     valueType: 'number',
     value: 7,
     unit: 'días',
+  },
+
+  // ── Fiscal / Retenciones (Colombia 2026) ────────────────────────────────────
+  {
+    key: 'fiscal.retefuente_compras_pct',
+    label: 'Retención en la fuente por compras',
+    group: 'fiscal',
+    valueType: 'percent',
+    value: 2.5,
+    unit: '%',
+    note: 'Tarifa general de retefuente por compras (declarantes).',
+  },
+  {
+    key: 'fiscal.reteiva_pct',
+    label: 'Retención de IVA (ReteIVA)',
+    group: 'fiscal',
+    valueType: 'percent',
+    value: 15,
+    unit: '%',
+    note: 'Porcentaje de retención sobre el IVA facturado.',
+  },
+  {
+    key: 'fiscal.uvt',
+    label: 'UVT (Unidad de Valor Tributario)',
+    group: 'fiscal',
+    valueType: 'money',
+    value: 52374,
+    unit: 'COP',
+    note: 'UVT 2026 (Resolución DIAN 000238/2025).',
+  },
+  {
+    key: 'fiscal.responsable_iva',
+    label: 'Responsable de IVA',
+    group: 'fiscal',
+    valueType: 'boolean',
+    value: true,
+    note: 'La empresa es responsable de IVA (antes régimen común).',
+  },
+
+  // ── Punto de venta (POS) ────────────────────────────────────────────────────
+  {
+    key: 'pos.redondeo_efectivo',
+    label: 'Redondeo de efectivo',
+    group: 'pos',
+    valueType: 'money',
+    value: 50,
+    unit: 'COP',
+    note: 'Múltiplo al que se redondean los pagos en efectivo.',
+  },
+  {
+    key: 'pos.propina_sugerida',
+    label: 'Propina sugerida (POS)',
+    group: 'pos',
+    valueType: 'percent',
+    value: 10,
+    unit: '%',
+    note: 'Propina sugerida por defecto en el POS (editable/rechazable).',
+  },
+  {
+    key: 'pos.propina_editable',
+    label: 'Propina editable',
+    group: 'pos',
+    valueType: 'boolean',
+    value: true,
+    note: 'Permite al cajero modificar/rechazar la propina.',
+  },
+  {
+    key: 'pos.descuento_max_sin_aprobacion_pct',
+    label: 'Descuento máximo sin aprobación',
+    group: 'pos',
+    valueType: 'percent',
+    value: 10,
+    unit: '%',
+    note: 'Tope de descuento que el cajero aplica sin aprobación.',
+  },
+
+  // ── Inventario ──────────────────────────────────────────────────────────────
+  {
+    key: 'inventario.metodo_costeo',
+    label: 'Método de costeo',
+    group: 'inventario',
+    valueType: 'text',
+    value: 'promedio',
+    note: 'Método de costeo de inventario (promedio, fifo, etc.).',
+  },
+  {
+    key: 'inventario.permite_stock_negativo',
+    label: 'Permite stock negativo',
+    group: 'inventario',
+    valueType: 'boolean',
+    value: false,
+    note: 'Permite vender por debajo de la existencia disponible.',
+  },
+  {
+    key: 'inventario.dias_reorden',
+    label: 'Días de reorden',
+    group: 'inventario',
+    valueType: 'number',
+    value: 15,
+    unit: 'días',
+    note: 'Cobertura objetivo para sugerir reposición.',
+  },
+
+  // ── Finanzas ────────────────────────────────────────────────────────────────
+  {
+    key: 'finanzas.moneda',
+    label: 'Moneda',
+    group: 'finanzas',
+    valueType: 'text',
+    value: 'COP',
+    note: 'Moneda funcional del sistema.',
+  },
+  {
+    key: 'finanzas.decimales_moneda',
+    label: 'Decimales de moneda',
+    group: 'finanzas',
+    valueType: 'number',
+    value: 0,
+    note: 'Cantidad de decimales al mostrar montos (COP = 0).',
+  },
+  {
+    key: 'finanzas.dias_gracia_cxc',
+    label: 'Días de gracia CxC',
+    group: 'finanzas',
+    valueType: 'number',
+    value: 30,
+    unit: 'días',
+    note: 'Plazo por defecto de las cuentas por cobrar (fiado).',
+  },
+  {
+    key: 'finanzas.dias_credito_cxp',
+    label: 'Días de crédito CxP',
+    group: 'finanzas',
+    valueType: 'number',
+    value: 30,
+    unit: 'días',
+    note: 'Plazo por defecto de las cuentas por pagar.',
+  },
+
+  // ── Facturación / DIAN ──────────────────────────────────────────────────────
+  {
+    key: 'dian.ambiente',
+    label: 'Ambiente DIAN',
+    group: 'facturacion',
+    valueType: 'text',
+    value: 'habilitacion',
+    note: 'Ambiente de facturación electrónica (habilitacion | produccion).',
+  },
+  {
+    key: 'dian.regimen',
+    label: 'Régimen',
+    group: 'facturacion',
+    valueType: 'text',
+    value: 'comun',
+    note: 'Régimen tributario (comun | simplificado | simple).',
+  },
+  {
+    key: 'dian.prefijo_pos',
+    label: 'Prefijo POS',
+    group: 'facturacion',
+    valueType: 'text',
+    value: 'POS',
+    note: 'Prefijo de numeración para documentos POS.',
+  },
+
+  // ── Sistema ─────────────────────────────────────────────────────────────────
+  {
+    key: 'sistema.zona_horaria',
+    label: 'Zona horaria',
+    group: 'sistema',
+    valueType: 'text',
+    value: 'America/Bogota',
+    note: 'Zona horaria para fechas de vigencia y reportes.',
+  },
+  {
+    key: 'sistema.consecutivo_por_sede',
+    label: 'Consecutivo por sede',
+    group: 'sistema',
+    valueType: 'boolean',
+    value: true,
+    note: 'La numeración de documentos es independiente por sede.',
   },
 ];

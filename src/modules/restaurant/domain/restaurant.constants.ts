@@ -3,8 +3,10 @@
  *
  * Tarifas por defecto (Colombia). El INC (8%) refleja el impuesto `INC_8` del
  * motor core-tax; la propina sugerida (10%) refleja el parámetro
- * `propina.sugerida` de core-params. Se dejan como constantes para mantener el
- * módulo autónomo, pero pueden centralizarse en esos motores más adelante.
+ * `propina.sugerida` de core-params. A partir de ahora `RestaurantService`
+ * resuelve ambas tarifas EN CALIENTE desde esos motores al abrir la comanda;
+ * estas constantes quedan solo como FALLBACK si la resolución falla (motores
+ * sin sembrar, error de BD, etc.), para no romper el flujo de apertura.
  */
 export const DEFAULT_INC_RATE = 8;
 export const DEFAULT_TIP_RATE = 10;

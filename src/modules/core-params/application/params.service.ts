@@ -44,8 +44,14 @@ export class ParamsService {
     private readonly params: Model<ParameterDocument>,
   ) {}
 
+  /**
+   * Fecha "hoy" (YYYY-MM-DD) fijada en la zona horaria de Colombia. Sin la zona,
+   * un servidor en UTC resolvería mal las vigencias cerca de la medianoche local.
+   */
   private today(): string {
-    return new Date().toLocaleDateString('en-CA');
+    return new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/Bogota',
+    });
   }
 
   /** Siembra la primera versión de cada parámetro base (idempotente). */

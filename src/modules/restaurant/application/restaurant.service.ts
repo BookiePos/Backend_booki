@@ -22,6 +22,8 @@ import {
   DEFAULT_INC_RATE,
   DEFAULT_TIP_RATE,
 } from '../domain/restaurant.constants';
+import { ParamsService } from '../../core-params/application/params.service';
+import { TaxService } from '../../core-tax/application/tax.service';
 import {
   AddItemsDto,
   CancelOrderDto,
@@ -44,7 +46,33 @@ export class RestaurantService {
     private readonly tables: Model<RestaurantTableDocument>,
     @InjectModel(RestaurantOrder.name)
     private readonly orders: Model<RestaurantOrderDocument>,
+    private readonly params: ParamsService,
+    private readonly tax: TaxService,
   ) {}
+
+  /**
+   * Resuelve las tarifas de INC y propina desde los motores centrales
+   * (core-tax `INC_8` y core-params `propina.sugerida`). Si por cualquier razón
+   * no se pueden resolver (aún no sembradas, error de BD, etc.) cae a los
+   * defaults del módulo para NO romper el flujo de apertura de comanda.
+   */
+  private async resolveRates(): Promise<{ incRate: number; tipRate: number }> {
+    let incRate = DEFAULT_INC_RATE;
+    let tipRate = DEFAULT_TIP_RATE;
+    try {
+      const inc = await this.tax.resolveRate('INC_8');
+      if (typeof inc.rate === 'number') incRate = inc.rate;
+    } catch {
+      // fallback al default del módulo
+    }
+    try {
+      const tip = await this.params.resolve('propina.sugerida');
+      if (typeof tip.value === 'number') tipRate = tip.value;
+    } catch {
+      // fallback al default del módulo
+    }
+    return { incRate, tipRate };
+  }
 
   // ── Mesas ──────────────────────────────────────────────────────────────────
 
@@ -128,6 +156,7 @@ export class RestaurantService {
     if (table.status !== 'free' || table.currentOrderId) {
       throw new BadRequestException('La mesa ya tiene una comanda abierta');
     }
+    const { incRate, tipRate } = await this.resolveRates();
     const order = await this.orders.create({
       number: await this.nextNumber(),
       sedeId: table.sedeId,
@@ -138,9 +167,9 @@ export class RestaurantService {
       status: 'open',
       items: [],
       subtotal: 0,
-      incRate: DEFAULT_INC_RATE,
+      incRate,
       incAmount: 0,
-      tipRate: DEFAULT_TIP_RATE,
+      tipRate,
       tipAccepted: true,
       tipAmount: 0,
       total: 0,
