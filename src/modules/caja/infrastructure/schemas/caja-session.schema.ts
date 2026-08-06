@@ -70,6 +70,14 @@ export class CajaSession {
   @Prop()
   difference?: number;
 
+  /** Tolerancia de descuadre vigente aplicada al cerrar (parámetro de caja). */
+  @Prop()
+  toleranceApplied?: number;
+
+  /** |diferencia| dentro de la tolerancia al cierre (arqueo cuadrado). */
+  @Prop()
+  withinTolerance?: boolean;
+
   // ── Totales congelados al cierre (para el historial) ────────────────────────
   @Prop()
   salesCount?: number;

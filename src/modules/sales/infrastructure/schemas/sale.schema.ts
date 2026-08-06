@@ -137,6 +137,14 @@ class SalePayment {
 
   @Prop({ min: 0 })
   change?: number;
+
+  /**
+   * Ajuste por redondeo de efectivo: (monto a pagar redondeado − total exacto).
+   * Solo aplica a pagos en efectivo; el total de la venta NO se altera (el
+   * redondeo afecta únicamente el efectivo intercambiado y su vuelto).
+   */
+  @Prop({ default: 0 })
+  rounding?: number;
 }
 const SalePaymentSchema = SchemaFactory.createForClass(SalePayment);
 

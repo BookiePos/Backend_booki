@@ -11,11 +11,13 @@ import {
 import { Sale, SaleSchema } from '../sales/infrastructure/schemas/sale.schema';
 import { Order, OrderSchema } from '../sales/infrastructure/schemas/order.schema';
 import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
+import { CoreParamsModule } from '../core-params/core-params.module';
 import { CajaService } from './application/caja.service';
 import { CajaController } from './infrastructure/caja.controller';
 
 @Module({
   imports: [
+    CoreParamsModule,
     TenantMongooseModule.forFeature([
       { name: CajaSession.name, schema: CajaSessionSchema },
       { name: CajaMovement.name, schema: CajaMovementSchema },

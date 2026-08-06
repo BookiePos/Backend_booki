@@ -25,12 +25,14 @@ import {
   SedeSchema,
 } from '../sedes/infrastructure/schemas/sede.schema';
 import { CoreAuthModule } from '../core-auth/core-auth.module';
+import { CoreParamsModule } from '../core-params/core-params.module';
 import { PayrollService } from './application/payroll.service';
 import { PayrollController } from './infrastructure/payroll.controller';
 
 @Module({
   imports: [
     CoreAuthModule,
+    CoreParamsModule,
     TenantMongooseModule.forFeature([
       { name: PayrollSettings.name, schema: PayrollSettingsSchema },
       { name: PayrollRun.name, schema: PayrollRunSchema },

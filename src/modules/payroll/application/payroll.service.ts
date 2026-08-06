@@ -59,6 +59,7 @@ import {
   MotivoRetiro,
 } from '../domain/liquidacion-calc';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
+import { ParamsService } from '../../core-params/application/params.service';
 
 export interface PreviewResult {
   input: {
@@ -88,6 +89,7 @@ export class PayrollService {
     @InjectModel(PayrollDeduction.name)
     private readonly deductions: Model<PayrollDeductionDocument>,
     private readonly mail: MailService,
+    private readonly params: ParamsService,
   ) {}
 
   /** Genera el comprobante (PDF) de un desprendible y lo envía al correo del empleado. */
@@ -199,7 +201,43 @@ export class PayrollService {
 
   private async settingsData(): Promise<PayrollSettingsData> {
     const doc = await this.getSettings();
-    return doc.toObject() as unknown as PayrollSettingsData;
+    const data = doc.toObject() as unknown as PayrollSettingsData;
+
+    // Parámetros compartidos con el resto del ERP: la fuente de verdad es
+    // core-params (SMMLV, auxilio, UVT y recargos se editan en una sola
+    // pantalla de Parámetros). Se superponen sobre el expediente de nómina;
+    // si un parámetro no está sembrado, se conserva el valor de nómina. Los
+    // recargos en params están en % (35) y aquí se usan como factor (0.35).
+    data.smmlv = await this.params.number('nomina.salario_minimo', data.smmlv);
+    data.auxilioTransporte = await this.params.number(
+      'nomina.auxilio_transporte',
+      data.auxilioTransporte,
+    );
+    data.uvt = await this.params.number('fiscal.uvt', data.uvt);
+
+    const factor = async (key: string, fallbackFactor: number): Promise<number> =>
+      (await this.params.number(key, fallbackFactor * 100)) / 100;
+    data.recargos = {
+      ...data.recargos,
+      recargoNocturno: await factor(
+        'recargo.nocturno',
+        data.recargos.recargoNocturno,
+      ),
+      dominical: await factor(
+        'recargo.dominical_festivo',
+        data.recargos.dominical,
+      ),
+      extraDiurna: await factor(
+        'recargo.hora_extra_diurna',
+        data.recargos.extraDiurna,
+      ),
+      extraNocturna: await factor(
+        'recargo.hora_extra_nocturna',
+        data.recargos.extraNocturna,
+      ),
+    };
+
+    return data;
   }
 
   async updateSettings(

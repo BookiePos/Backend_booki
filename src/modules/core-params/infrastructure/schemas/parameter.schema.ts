@@ -33,6 +33,15 @@ export class Parameter {
   @Prop({ type: Object, required: true })
   value!: number | string | boolean;
 
+  /**
+   * Override por sede (opcional). Si está vacío, el parámetro es GLOBAL de la
+   * empresa. Si trae una sede, es una excepción para esa sede: `resolve()`
+   * prefiere la versión de la sede y, si no hay, cae a la global. Así una sede
+   * puede tener, p. ej., su propio redondeo o tolerancia de caja.
+   */
+  @Prop({ trim: true, default: null })
+  sedeId?: string | null;
+
   @Prop({ trim: true })
   unit?: string;
 
@@ -53,6 +62,12 @@ export class Parameter {
 
 export const ParameterSchema = SchemaFactory.createForClass(Parameter);
 
-// Una sola versión por clave y fecha de vigencia.
-ParameterSchema.index({ key: 1, effectiveFrom: 1 }, { unique: true });
+// Una sola versión por clave, alcance (sede/global) y fecha de vigencia. El
+// `sedeId` en la llave permite que una sede tenga su propio override sin chocar
+// con la versión global (sedeId null). El índice legacy `key_1_effectiveFrom_1`
+// se descarta en `ParamsService.ensureSchema()`.
+ParameterSchema.index(
+  { key: 1, sedeId: 1, effectiveFrom: 1 },
+  { unique: true },
+);
 ParameterSchema.index({ group: 1 });

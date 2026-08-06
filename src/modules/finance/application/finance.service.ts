@@ -55,6 +55,7 @@ import { CajaService } from '../../caja/application/caja.service';
 import { CustomersService } from '../../customers/application/customers.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { TreasuryPostingService } from '../treasury/treasury-posting.service';
+import { ParamsService } from '../../core-params/application/params.service';
 import { ACC as LEDGER_ACC } from '../../core-ledger/domain/ledger.constants';
 import {
   CategoryKind,
@@ -303,6 +304,7 @@ export class FinanceService {
     private readonly customers: CustomersService,
     private readonly ledgerPosting: LedgerPostingService,
     private readonly treasuryPosting: TreasuryPostingService,
+    private readonly params: ParamsService,
   ) {}
 
   private actualsModels(): ActualsModels {
@@ -340,6 +342,13 @@ export class FinanceService {
 
   private todayStr(): string {
     return new Date().toLocaleDateString('en-CA');
+  }
+
+  /** Suma `days` días a una fecha YYYY-MM-DD y devuelve otra YYYY-MM-DD. */
+  private addDays(dateStr: string, days: number): string {
+    const d = new Date(`${dateStr}T00:00:00`);
+    d.setDate(d.getDate() + days);
+    return this.toDateStr(d);
   }
 
   // ── Categorías ─────────────────────────────────────────────────────────────
@@ -772,6 +781,15 @@ export class FinanceService {
   ): Promise<FinancePayableDocument> {
     assertSedeAccess(user, dto.sedeId);
     if (dto.categoryId) await this.categoryOrThrow(dto.categoryId);
+    // Vencimiento por defecto: emisión + plazo de crédito a proveedores.
+    const dueDate =
+      dto.dueDate ||
+      this.addDays(
+        dto.issueDate,
+        await this.params.number('finanzas.dias_credito_cxp', 30, {
+          sedeId: dto.sedeId,
+        }),
+      );
     return this.payables.create({
       sedeId: new Types.ObjectId(dto.sedeId),
       supplierId: dto.supplierId
@@ -783,7 +801,7 @@ export class FinanceService {
         : undefined,
       docNumber: dto.docNumber,
       issueDate: dto.issueDate,
-      dueDate: dto.dueDate,
+      dueDate,
       amount: cop(dto.amount),
       paidAmount: 0,
       status: 'open',
@@ -882,6 +900,15 @@ export class FinanceService {
     assertSedeAccess(user, dto.sedeId);
     // La CxC exige un cliente registrado; se denormaliza su identidad.
     const customer = await this.customers.getOrFail(dto.customerId);
+    // Vencimiento por defecto: emisión + días de gracia del fiado.
+    const dueDate =
+      dto.dueDate ||
+      this.addDays(
+        dto.issueDate,
+        await this.params.number('finanzas.dias_gracia_cxc', 30, {
+          sedeId: dto.sedeId,
+        }),
+      );
     return this.receivables.create({
       sedeId: new Types.ObjectId(dto.sedeId),
       customerId: customer._id,
@@ -890,7 +917,7 @@ export class FinanceService {
       customerPhone: customer.phone,
       docNumber: dto.docNumber,
       issueDate: dto.issueDate,
-      dueDate: dto.dueDate,
+      dueDate,
       amount: cop(dto.amount),
       paidAmount: 0,
       status: 'open',

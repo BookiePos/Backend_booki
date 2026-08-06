@@ -40,8 +40,10 @@ export class CreatePayableDto {
   @Matches(YYYYMMDD, { message: 'issueDate debe ser YYYY-MM-DD' })
   issueDate!: string;
 
+  /** Vencimiento. Si se omite, se toma issueDate + `finanzas.dias_credito_cxp`. */
+  @IsOptional()
   @Matches(YYYYMMDD, { message: 'dueDate debe ser YYYY-MM-DD' })
-  dueDate!: string;
+  dueDate?: string;
 
   @IsNumber()
   @Min(0)

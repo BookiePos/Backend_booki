@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -7,6 +8,7 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
+import { ParamsService } from '../../core-params/application/params.service';
 import {
   CajaSession,
   CajaSessionDocument,
@@ -90,6 +92,9 @@ export interface CajaClosingRow {
   expectedCash: number;
   countedAmount: number;
   difference: number;
+  /** Tolerancia aplicada al cierre y si el descuadre quedó dentro de ella. */
+  toleranceApplied?: number;
+  withinTolerance?: boolean;
 }
 
 export interface CajaClosingsReport {
@@ -135,6 +140,7 @@ export class CajaService {
     private readonly orders: Model<OrderDocument>,
     @InjectModel(Sede.name)
     private readonly sedes: Model<SedeDocument>,
+    private readonly params: ParamsService,
   ) {}
 
   /**
@@ -371,6 +377,8 @@ export class CajaService {
       expectedCash: s.expectedCash ?? 0,
       countedAmount: s.countedAmount ?? 0,
       difference: s.difference ?? 0,
+      toleranceApplied: s.toleranceApplied,
+      withinTolerance: s.withinTolerance,
     }));
 
     const totals = rows.reduce(
@@ -452,6 +460,25 @@ export class CajaService {
       );
     }
     const { totals } = await this.summarize(session);
+    const difference =
+      Math.round((dto.countedAmount - totals.expectedCash) * 100) / 100;
+
+    // Tolerancia de descuadre (parámetro, override por sede si existe). Si el
+    // descuadre la supera, se exige una nota que justifique el faltante/sobrante
+    // antes de poder cerrar; dentro de la tolerancia el cierre pasa sin nota.
+    const tolerance = await this.params.number(
+      'caja.tolerancia_descuadre',
+      2000,
+      { sedeId: dto.sedeId },
+    );
+    const withinTolerance = Math.abs(difference) <= tolerance;
+    if (!withinTolerance && !dto.note?.trim()) {
+      throw new BadRequestException(
+        `El descuadre de ${difference} supera la tolerancia de ${tolerance}. ` +
+          'Escribe una nota que justifique la diferencia para cerrar la caja.',
+      );
+    }
+
     session.status = 'closed';
     session.closedAt = new Date();
     session.closedById = user.userId;
@@ -460,8 +487,9 @@ export class CajaService {
     session.countedBills = dto.countedBills;
     session.countedCoins = dto.countedCoins;
     session.expectedCash = totals.expectedCash;
-    session.difference =
-      Math.round((dto.countedAmount - totals.expectedCash) * 100) / 100;
+    session.difference = difference;
+    session.toleranceApplied = tolerance;
+    session.withinTolerance = withinTolerance;
     session.salesCount = totals.salesCount;
     session.salesTotal = totals.salesTotal;
     session.cashSalesTotal = totals.cashSalesTotal;

@@ -33,6 +33,7 @@ import { SedesService } from '../../sedes/application/sedes.service';
 import { CatalogService } from '../../catalog/application/catalog.service';
 import { CustomersService } from '../../customers/application/customers.service';
 import { PayrollService } from '../../payroll/application/payroll.service';
+import { ParamsService } from '../../core-params/application/params.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { TreasuryPostingService } from '../../finance/treasury/treasury-posting.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
@@ -60,9 +61,17 @@ export class SalesService {
     private readonly catalog: CatalogService,
     private readonly customers: CustomersService,
     private readonly payroll: PayrollService,
+    private readonly params: ParamsService,
     private readonly ledgerPosting: LedgerPostingService,
     private readonly treasury: TreasuryPostingService,
   ) {}
+
+  /** Suma `days` días a una fecha YYYY-MM-DD y devuelve otra YYYY-MM-DD. */
+  private addDays(dateStr: string, days: number): string {
+    const d = new Date(`${dateStr}T00:00:00`);
+    d.setDate(d.getDate() + days);
+    return d.toLocaleDateString('en-CA');
+  }
 
   /** El cajero solo opera sedes asignadas a su usuario (JWT). */
   private assertSedeAccess(sedeId: string, user: JwtUser): void {
@@ -248,16 +257,29 @@ export class SalesService {
     const tip = Math.max(0, Math.round((dto.tip ?? 0) * 100) / 100);
     const grandTotal = Math.round((total + tip) * 100) / 100;
 
+    // Redondeo de efectivo (Colombia no tiene efectivo < $50): el pago en
+    // efectivo se redondea al múltiplo del parámetro `pos.redondeo_efectivo`.
+    // El total de la venta NO cambia; el redondeo solo ajusta el efectivo a
+    // cobrar y el vuelto, y se guarda como `rounding` para trazabilidad.
     let received: number | undefined;
     let change: number | undefined;
-    if (dto.payment.method === 'cash' && dto.payment.received !== undefined) {
-      received = dto.payment.received;
-      if (received < grandTotal) {
-        throw new BadRequestException(
-          'El monto recibido es menor que el total a pagar (incluye la propina)',
-        );
+    let cashRounding = 0;
+    if (dto.payment.method === 'cash') {
+      const step = await this.params.number('pos.redondeo_efectivo', 50, {
+        sedeId: dto.sedeId,
+      });
+      const payableCash =
+        step > 1 ? Math.round(grandTotal / step) * step : grandTotal;
+      cashRounding = Math.round((payableCash - grandTotal) * 100) / 100;
+      if (dto.payment.received !== undefined) {
+        received = dto.payment.received;
+        if (received < payableCash) {
+          throw new BadRequestException(
+            'El monto recibido es menor que el total a pagar (incluye la propina)',
+          );
+        }
+        change = Math.round((received - payableCash) * 100) / 100;
       }
-      change = received - grandTotal;
     }
 
     // 2. Explotar cada línea a su consumo de inventario y agregar por ítem.
@@ -351,7 +373,7 @@ export class SalesService {
       taxTotal,
       total,
       tip,
-      payment: { method: dto.payment.method, received, change },
+      payment: { method: dto.payment.method, received, change, rounding: cashRounding },
       customer: this.cleanCustomer(dto.customer),
       orderId,
     });
@@ -378,6 +400,12 @@ export class SalesService {
         const customer = await this.customers.getOrFail(
           dto.payment.customerId!,
         );
+        // Vencimiento por defecto: hoy + días de gracia del fiado (parámetro).
+        const diasGracia = await this.params.number(
+          'finanzas.dias_gracia_cxc',
+          30,
+          { sedeId: dto.sedeId },
+        );
         await this.receivableModel.create({
           sedeId: new Types.ObjectId(dto.sedeId),
           customerId: customer._id,
@@ -387,7 +415,7 @@ export class SalesService {
           saleId: sale._id,
           docNumber: saleNumber,
           issueDate: today,
-          dueDate: dto.payment.dueDate || today,
+          dueDate: dto.payment.dueDate || this.addDays(today, diasGracia),
           amount: Math.round(total),
           paidAmount: 0,
           status: 'open',

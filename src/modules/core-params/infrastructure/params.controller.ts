@@ -21,8 +21,12 @@ export class ParamsController {
 
   @RequirePermissions(PERMISSIONS.PARAMS_MANAGE)
   @Get('resolve/:key')
-  resolve(@Param('key') key: string, @Query('date') date?: string) {
-    return this.params.resolve(key, date);
+  resolve(
+    @Param('key') key: string,
+    @Query('date') date?: string,
+    @Query('sedeId') sedeId?: string,
+  ) {
+    return this.params.resolve(key, { date, sedeId });
   }
 
   @RequirePermissions(PERMISSIONS.PARAMS_MANAGE)

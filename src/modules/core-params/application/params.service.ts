@@ -15,6 +15,14 @@ import {
   SetParameterVersionDto,
 } from './dto/parameter.dto';
 
+/** Opciones de resolución de un parámetro (fecha de vigencia y sede). */
+export interface ResolveOpts {
+  /** Fecha (YYYY-MM-DD) a la que resolver la vigencia; por defecto hoy. */
+  date?: string;
+  /** Sede para preferir un override; cae a la global si no existe. */
+  sedeId?: string;
+}
+
 /** Vista de una clave con su valor vigente y su histórico de vigencias. */
 export interface ParameterView {
   key: string;
@@ -54,12 +62,40 @@ export class ParamsService {
     });
   }
 
-  /** Siembra la primera versión de cada parámetro base (idempotente). */
+  /**
+   * Descarta una sola vez el índice único legacy `key_1_effectiveFrom_1` (sin
+   * `sedeId`), que impediría crear overrides por sede. Idempotente y tolerante:
+   * si la colección es nueva o el índice no existe, no hace nada.
+   */
+  private schemaEnsured = false;
+  private async ensureSchema(): Promise<void> {
+    if (this.schemaEnsured) return;
+    this.schemaEnsured = true;
+    try {
+      const indexes = await this.params.collection.indexes();
+      if (indexes.some((i) => i.name === 'key_1_effectiveFrom_1')) {
+        await this.params.collection.dropIndex('key_1_effectiveFrom_1');
+      }
+    } catch {
+      // Colección aún sin crear o índice ausente: nada que migrar.
+    }
+  }
+
+  /**
+   * Siembra los parámetros base que falten (idempotente e incremental): inserta
+   * solo las claves de sistema que aún no existen, sin tocar el histórico ni las
+   * versiones ya publicadas. Así, al añadir parámetros nuevos al catálogo, las
+   * empresas ya sembradas los reciben en la siguiente consulta.
+   */
   private async seed(): Promise<void> {
-    const existing = await this.params.countDocuments({ system: true }).exec();
-    if (existing > 0) return;
+    await this.ensureSchema();
+    const existingKeys = new Set(
+      (await this.params.distinct('key', { system: true })) as string[],
+    );
+    const missing = SEED_PARAMS.filter((p) => !existingKeys.has(p.key));
+    if (missing.length === 0) return;
     await this.params.insertMany(
-      SEED_PARAMS.map((p) => ({
+      missing.map((p) => ({
         key: p.key,
         label: p.label,
         group: p.group,
@@ -68,16 +104,21 @@ export class ParamsService {
         unit: p.unit,
         note: p.note,
         effectiveFrom: '2026-01-01',
+        sedeId: null,
         system: true,
       })),
     );
   }
 
-  /** Agrupa las versiones por clave y resuelve la vigente a hoy. */
+  /**
+   * Agrupa las versiones por clave y resuelve la vigente a hoy. Muestra solo los
+   * parámetros GLOBALES (sin `sedeId`); los overrides por sede se gestionan/
+   * consultan aparte y no ensucian la pantalla de configuración general.
+   */
   async list(): Promise<ParameterView[]> {
     await this.seed();
     const docs = await this.params
-      .find()
+      .find({ $or: [{ sedeId: null }, { sedeId: { $exists: false } }] })
       .sort({ key: 1, effectiveFrom: -1 })
       .exec();
     const today = this.today();
@@ -123,27 +164,81 @@ export class ParamsService {
     );
   }
 
-  /** Resuelve el valor vigente de una clave a una fecha (por defecto hoy). */
+  /**
+   * Resuelve el valor vigente de una clave a una fecha (por defecto hoy). Si se
+   * pasa `sedeId`, prefiere la versión de esa sede y, si no existe, cae a la
+   * global. Lanza si no hay ninguna versión aplicable.
+   */
   async resolve(
     key: string,
-    date?: string,
-  ): Promise<{ key: string; value: number | string | boolean; effectiveFrom: string }> {
+    opts?: ResolveOpts,
+  ): Promise<{
+    key: string;
+    value: number | string | boolean;
+    effectiveFrom: string;
+    sedeId: string | null;
+  }> {
     await this.seed();
-    const at = date ?? this.today();
-    const version = await this.params
-      .findOne({ key, effectiveFrom: { $lte: at } })
-      .sort({ effectiveFrom: -1 })
-      .exec();
-    if (!version) {
-      throw new NotFoundException(
-        `No hay parámetro '${key}' vigente al ${at}`,
-      );
+    const at = opts?.date ?? this.today();
+    // Override por sede primero (si se pidió), luego el global.
+    const scopes: (string | null)[] = opts?.sedeId
+      ? [opts.sedeId, null]
+      : [null];
+    for (const scope of scopes) {
+      const version = await this.params
+        .findOne({
+          key,
+          effectiveFrom: { $lte: at },
+          ...(scope === null
+            ? { $or: [{ sedeId: null }, { sedeId: { $exists: false } }] }
+            : { sedeId: scope }),
+        })
+        .sort({ effectiveFrom: -1 })
+        .exec();
+      if (version) {
+        return {
+          key,
+          value: version.value,
+          effectiveFrom: version.effectiveFrom,
+          sedeId: version.sedeId ?? null,
+        };
+      }
     }
-    return {
-      key,
-      value: version.value,
-      effectiveFrom: version.effectiveFrom,
-    };
+    throw new NotFoundException(`No hay parámetro '${key}' vigente al ${at}`);
+  }
+
+  /**
+   * Igual que `resolve` pero NO lanza: devuelve el valor vigente o `null` si la
+   * clave no existe o aún no está sembrada. Pensado para consumidores que deben
+   * degradar con un valor por defecto en vez de romper el flujo.
+   */
+  async resolveValue(
+    key: string,
+    opts?: ResolveOpts,
+  ): Promise<number | string | boolean | null> {
+    try {
+      return (await this.resolve(key, opts)).value;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Resuelve una clave numérica (number/percent/money) con valor por defecto. */
+  async number(key: string, fallback: number, opts?: ResolveOpts): Promise<number> {
+    const v = await this.resolveValue(key, opts);
+    return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+  }
+
+  /** Resuelve una clave booleana con valor por defecto. */
+  async bool(key: string, fallback: boolean, opts?: ResolveOpts): Promise<boolean> {
+    const v = await this.resolveValue(key, opts);
+    return typeof v === 'boolean' ? v : fallback;
+  }
+
+  /** Resuelve una clave de texto con valor por defecto. */
+  async text(key: string, fallback: string, opts?: ResolveOpts): Promise<string> {
+    const v = await this.resolveValue(key, opts);
+    return typeof v === 'string' && v.length > 0 ? v : fallback;
   }
 
   async create(

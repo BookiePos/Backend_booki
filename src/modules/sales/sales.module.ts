@@ -30,6 +30,7 @@ import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
 import { TreasuryModule } from '../finance/treasury/treasury.module';
 import { CustomersModule } from '../customers/customers.module';
 import { PayrollModule } from '../payroll/payroll.module';
+import { CoreParamsModule } from '../core-params/core-params.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { PayrollModule } from '../payroll/payroll.module';
     TreasuryModule,
     CustomersModule,
     PayrollModule,
+    CoreParamsModule,
     TenantMongooseModule.forFeature([
       { name: Sale.name, schema: SaleSchema },
       { name: Order.name, schema: OrderSchema },
