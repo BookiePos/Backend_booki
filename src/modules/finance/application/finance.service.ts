@@ -54,6 +54,7 @@ import {
 import { CajaService } from '../../caja/application/caja.service';
 import { CustomersService } from '../../customers/application/customers.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
+import { TreasuryPostingService } from '../treasury/treasury-posting.service';
 import { ACC as LEDGER_ACC } from '../../core-ledger/domain/ledger.constants';
 import {
   CategoryKind,
@@ -86,6 +87,7 @@ import {
 } from './dto/receivable.dto';
 import {
   CreateAccountDto,
+  UpdateAccountDto,
   CreateMovementDto,
   ReconcileAccountDto,
 } from './dto/account.dto';
@@ -209,6 +211,27 @@ export type FinanceAccountWithBalance = FinanceAccount & {
   balance: number;
 };
 
+/** Fila de efectivo en vivo por sede (turno abierto del POS). */
+export interface TreasuryCajaRow {
+  sedeId: string;
+  sedeName: string;
+  expectedCash: number;
+  salesTotal: number;
+  openedAt: Date;
+}
+
+/** Resumen de tesorería: efectivo (caja POS) + cuentas de banco/billetera. */
+export interface TreasurySummary {
+  sedeId?: string | null;
+  /** Efectivo en vivo de los turnos abiertos (fuente: caja del POS). */
+  cajaCash: number;
+  cajaRows: TreasuryCajaRow[];
+  /** Σ saldos de las cuentas de banco/billetera. */
+  accountsBalance: number;
+  /** Tesorería total = efectivo + cuentas. */
+  total: number;
+}
+
 /** Resultado del cuadre de una conciliación bancaria. */
 export interface ReconciliationResult {
   accountId: string;
@@ -255,6 +278,7 @@ export class FinanceService {
     private readonly caja: CajaService,
     private readonly customers: CustomersService,
     private readonly ledgerPosting: LedgerPostingService,
+    private readonly treasuryPosting: TreasuryPostingService,
   ) {}
 
   private actualsModels(): ActualsModels {
@@ -418,7 +442,36 @@ export class FinanceService {
       concept: expense.concept,
       userEmail: user.email,
     });
+    // Auto-posteo a tesorería si se pagó por transferencia/tarjeta (salida).
+    await this.postExpenseTreasury(expense);
     return expense;
+  }
+
+  /** Postea (o reversa) el gasto en tesorería según su estado/medio de pago. */
+  private async postExpenseTreasury(
+    expense: FinanceExpenseDocument,
+  ): Promise<void> {
+    const total = expense.amount + expense.taxAmount;
+    if (
+      expense.status === 'paid' &&
+      expense.paymentMethod &&
+      expense.paymentMethod !== 'cash'
+    ) {
+      await this.treasuryPosting.post({
+        sourceType: 'expense',
+        sourceId: expense._id.toString(),
+        sedeId: expense.sedeId.toString(),
+        method: expense.paymentMethod,
+        direction: 'out',
+        amount: total,
+        date: expense.date,
+        concept: `Gasto: ${expense.concept}`,
+        categoryId: expense.categoryId.toString(),
+      });
+    } else {
+      // Ya no aplica (cambió a por-pagar o a efectivo): quita el auto si existía.
+      await this.treasuryPosting.reverse('expense', expense._id.toString());
+    }
   }
 
   /** Mapea la naturaleza de la categoría a una cuenta de gasto del PUC. */
@@ -456,6 +509,9 @@ export class FinanceService {
     if (dto.recurring !== undefined) exp.recurring = dto.recurring;
     if (dto.note !== undefined) exp.note = dto.note;
     await exp.save();
+    // Reconcilia el auto-posteo a tesorería con el nuevo estado/medio/monto.
+    await this.treasuryPosting.reverse('expense', exp._id.toString());
+    await this.postExpenseTreasury(exp);
     return exp;
   }
 
@@ -464,6 +520,7 @@ export class FinanceService {
     if (!exp) throw new NotFoundException('Gasto no encontrado');
     assertSedeAccess(user, exp.sedeId.toString());
     await exp.deleteOne();
+    await this.treasuryPosting.reverse('expense', exp._id.toString());
     return { deleted: true };
   }
 
@@ -745,8 +802,9 @@ export class FinanceService {
     await payable.save();
     // Asiento del pago a proveedor (best-effort). El id del abono es único por
     // índice dentro de la CxP.
+    const paymentId = `${payable._id.toString()}:${payable.payments.length - 1}`;
     await this.ledgerPosting.postPayablePayment({
-      paymentId: `${payable._id.toString()}:${payable.payments.length - 1}`,
+      paymentId,
       date: dto.date,
       sedeId: payable.sedeId.toString(),
       amount,
@@ -754,6 +812,20 @@ export class FinanceService {
       docNumber: payable.docNumber,
       userEmail: user.email,
     });
+    // Auto-posteo a tesorería si el abono fue por transferencia/tarjeta (salida).
+    if (dto.method && dto.method !== 'cash') {
+      await this.treasuryPosting.post({
+        sourceType: 'payable_payment',
+        sourceId: paymentId,
+        sedeId: payable.sedeId.toString(),
+        method: dto.method,
+        direction: 'out',
+        amount,
+        date: dto.date,
+        concept: `Pago CxP: ${payable.supplierName}`,
+        categoryId: payable.categoryId?.toString() ?? null,
+      });
+    }
     return payable;
   }
 
@@ -838,8 +910,9 @@ export class FinanceService {
     receivable.status = this.receivableStatus(receivable.amount, newPaid);
     await receivable.save();
     // Asiento del cobro a cliente (best-effort).
+    const paymentId = `${receivable._id.toString()}:${receivable.payments.length - 1}`;
     await this.ledgerPosting.postReceivablePayment({
-      paymentId: `${receivable._id.toString()}:${receivable.payments.length - 1}`,
+      paymentId,
       date: dto.date,
       sedeId: receivable.sedeId.toString(),
       amount,
@@ -847,6 +920,19 @@ export class FinanceService {
       docNumber: receivable.docNumber,
       userEmail: user.email,
     });
+    // Auto-posteo a tesorería si el cobro fue por transferencia/tarjeta (entrada).
+    if (dto.method && dto.method !== 'cash') {
+      await this.treasuryPosting.post({
+        sourceType: 'receivable_payment',
+        sourceId: paymentId,
+        sedeId: receivable.sedeId.toString(),
+        method: dto.method,
+        direction: 'in',
+        amount,
+        date: dto.date,
+        concept: `Cobro CxC: ${receivable.customerName}`,
+      });
+    }
     return receivable;
   }
 
@@ -879,6 +965,40 @@ export class FinanceService {
     return result;
   }
 
+  /**
+   * Resumen de tesorería: efectivo real (caja del POS, en vivo por sede) +
+   * cuentas de banco/billetera con su saldo. `total` = efectivo + Σ cuentas.
+   */
+  async treasury(user: JwtUser, sedeId?: string): Promise<TreasurySummary> {
+    if (sedeId) assertSedeAccess(user, sedeId);
+    const [accounts, live] = await Promise.all([
+      this.listAccounts(user),
+      this.caja.liveCash(user, sedeId),
+    ]);
+    const scoped = sedeId
+      ? accounts.filter(
+          (a) => !a.sedeId || a.sedeId.toString() === sedeId,
+        )
+      : accounts;
+    const accountsBalance = cop(
+      scoped.reduce((s, a) => s + (a.balance ?? a.openingBalance), 0),
+    );
+    const cajaCash = cop(live.total);
+    return {
+      sedeId: sedeId ?? null,
+      cajaCash,
+      cajaRows: live.rows.map((r) => ({
+        sedeId: r.sedeId,
+        sedeName: r.sedeName,
+        expectedCash: cop(r.expectedCash),
+        salesTotal: cop(r.salesTotal),
+        openedAt: r.openedAt,
+      })),
+      accountsBalance,
+      total: cop(cajaCash + accountsBalance),
+    };
+  }
+
   /** Saldo = apertura + Σ entradas − Σ salidas. */
   private async accountBalance(acc: FinanceAccountDocument): Promise<number> {
     const movements = await this.movements
@@ -903,8 +1023,23 @@ export class FinanceService {
       type: dto.type,
       openingBalance: cop(dto.openingBalance ?? 0),
       active: true,
+      autoMethods: dto.autoMethods ?? [],
       note: dto.note,
     });
+  }
+
+  async updateAccount(
+    id: string,
+    dto: UpdateAccountDto,
+    user: JwtUser,
+  ): Promise<FinanceAccountDocument> {
+    const acc = await this.accountOrThrow(id, user);
+    if (dto.name !== undefined) acc.name = dto.name;
+    if (dto.autoMethods !== undefined) acc.autoMethods = dto.autoMethods;
+    if (dto.active !== undefined) acc.active = dto.active;
+    if (dto.note !== undefined) acc.note = dto.note;
+    await acc.save();
+    return acc;
   }
 
   private async accountOrThrow(
@@ -1489,7 +1624,9 @@ export class FinanceService {
     const accounts = await this.accounts.find(acctFilter).exec();
     let openingBalance = 0;
     for (const acc of accounts) openingBalance += await this.accountBalance(acc);
-    openingBalance = cop(openingBalance);
+    // + efectivo real en caja (turnos abiertos del POS): es tesorería disponible.
+    const liveCash = await this.caja.liveCash(user, opts.sedeId);
+    openingBalance = cop(openingBalance + liveCash.total);
 
     // CxC y CxP vivas del alcance (abiertas o con abono parcial).
     const liveFilter = (): Record<string, unknown> => {

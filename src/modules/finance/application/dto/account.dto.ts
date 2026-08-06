@@ -17,6 +17,8 @@ import {
   AccountType,
   MOVEMENT_DIRECTIONS,
   MovementDirection,
+  PAYMENT_METHODS,
+  FinancePaymentMethod,
 } from '../../domain/finance.constants';
 
 const YYYYMMDD = /^\d{4}-\d{2}-\d{2}$/;
@@ -37,6 +39,34 @@ export class CreateAccountDto {
   @IsOptional()
   @IsNumber()
   openingBalance?: number;
+
+  /** Métodos que alimentan la cuenta automáticamente (transfer/card). */
+  @IsOptional()
+  @IsArray()
+  @IsIn(PAYMENT_METHODS as readonly string[], { each: true })
+  autoMethods?: FinancePaymentMethod[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
+/** Actualiza una cuenta de tesorería (merge parcial). */
+export class UpdateAccountDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  name?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsIn(PAYMENT_METHODS as readonly string[], { each: true })
+  autoMethods?: FinancePaymentMethod[];
+
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean;
 
   @IsOptional()
   @IsString()

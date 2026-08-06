@@ -57,6 +57,22 @@ export interface CajaOverviewRow {
   movementsOut: number;
 }
 
+/** Fila de efectivo en vivo de un turno abierto (tesorería). */
+export interface CajaLiveCashRow {
+  sedeId: string;
+  sedeName: string;
+  sessionId: string;
+  openingAmount: number;
+  openedAt: Date;
+  expectedCash: number;
+  salesTotal: number;
+}
+
+export interface CajaLiveCash {
+  rows: CajaLiveCashRow[];
+  total: number;
+}
+
 export interface CajaOverview {
   date: string;
   rows: CajaOverviewRow[];
@@ -215,6 +231,54 @@ export class CajaService {
     );
 
     return { date: dateStr, rows, totals };
+  }
+
+  /**
+   * Efectivo en vivo de los turnos ABIERTOS del alcance (sin límite de día;
+   * incluye turnos nocturnos). Es la fuente de verdad del efectivo para la
+   * tesorería de Finanzas: `expectedCash` = lo que debería haber en cada cajón
+   * ahora. No cuenta turnos cerrados (su efectivo se cuadra al cerrar).
+   */
+  async liveCash(user: JwtUser, sedeId?: string): Promise<CajaLiveCash> {
+    const allowed = allowedSedeIds(user);
+    const filter: Record<string, unknown> = { status: 'open' };
+    if (sedeId) {
+      assertSedeAccess(user, sedeId);
+      filter.sedeId = new Types.ObjectId(sedeId);
+    } else if (allowed) {
+      filter.sedeId = { $in: allowed.map((id) => new Types.ObjectId(id)) };
+    }
+    const sessions = await this.sessions
+      .find(filter)
+      .sort({ openedAt: 1 })
+      .exec();
+    if (sessions.length === 0) return { rows: [], total: 0 };
+
+    const sedeObjIds = [
+      ...new Set(sessions.map((s) => s.sedeId.toString())),
+    ].map((id) => new Types.ObjectId(id));
+    const sedeDocs = await this.sedes
+      .find({ _id: { $in: sedeObjIds } })
+      .select('name')
+      .exec();
+    const nameOf = new Map(sedeDocs.map((s) => [s._id.toString(), s.name]));
+
+    const rows: CajaLiveCashRow[] = [];
+    let total = 0;
+    for (const s of sessions) {
+      const { totals } = await this.summarize(s);
+      rows.push({
+        sedeId: s.sedeId.toString(),
+        sedeName: nameOf.get(s.sedeId.toString()) ?? '—',
+        sessionId: s._id.toString(),
+        openingAmount: s.openingAmount,
+        openedAt: s.openedAt,
+        expectedCash: totals.expectedCash,
+        salesTotal: totals.salesTotal,
+      });
+      total += totals.expectedCash;
+    }
+    return { rows, total: Math.round(total) };
   }
 
   private findOpen(sedeId: string): Promise<CajaSessionDocument | null> {

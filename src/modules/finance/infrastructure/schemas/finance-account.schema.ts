@@ -1,6 +1,11 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
-import { ACCOUNT_TYPES, AccountType } from '../../domain/finance.constants';
+import {
+  ACCOUNT_TYPES,
+  AccountType,
+  PAYMENT_METHODS,
+  FinancePaymentMethod,
+} from '../../domain/finance.constants';
 
 export type FinanceAccountDocument = HydratedDocument<FinanceAccount>;
 
@@ -25,6 +30,13 @@ export class FinanceAccount {
 
   @Prop({ default: true })
   active!: boolean;
+
+  /**
+   * Métodos de pago que alimentan esta cuenta automáticamente (ventas con
+   * tarjeta/transferencia, pagos/cobros por esos medios). Vacío = solo manual.
+   */
+  @Prop({ type: [String], enum: PAYMENT_METHODS, default: [] })
+  autoMethods!: FinancePaymentMethod[];
 
   @Prop({ trim: true })
   note?: string;

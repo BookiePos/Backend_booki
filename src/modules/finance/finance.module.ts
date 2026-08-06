@@ -47,6 +47,7 @@ import { CajaModule } from '../caja/caja.module';
 import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
 import { CustomersModule } from '../customers/customers.module';
 import { ControlModule } from '../control/control.module';
+import { TreasuryModule } from './treasury/treasury.module';
 import { FinanceService } from './application/finance.service';
 import { RecurringExpenseScheduler } from './application/recurring-expense.scheduler';
 import { FinanceController } from './infrastructure/finance.controller';
@@ -58,6 +59,7 @@ import { FinanceController } from './infrastructure/finance.controller';
     CoreLedgerModule,
     CustomersModule,
     ControlModule,
+    TreasuryModule,
     TenantMongooseModule.forFeature([
       { name: FinanceCategory.name, schema: FinanceCategorySchema },
       { name: FinanceExpense.name, schema: FinanceExpenseSchema },

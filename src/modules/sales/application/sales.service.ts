@@ -34,6 +34,7 @@ import { CatalogService } from '../../catalog/application/catalog.service';
 import { CustomersService } from '../../customers/application/customers.service';
 import { PayrollService } from '../../payroll/application/payroll.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
+import { TreasuryPostingService } from '../../finance/treasury/treasury-posting.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { CreateSaleDto } from './dto/create-sale.dto';
@@ -60,6 +61,7 @@ export class SalesService {
     private readonly customers: CustomersService,
     private readonly payroll: PayrollService,
     private readonly ledgerPosting: LedgerPostingService,
+    private readonly treasury: TreasuryPostingService,
   ) {}
 
   /** El cajero solo opera sedes asignadas a su usuario (JWT). */
@@ -411,6 +413,22 @@ export class SalesService {
       userEmail: user.email,
     });
 
+    // Auto-posteo a tesorería: ventas con tarjeta/transferencia entran a la
+    // cuenta bancaria mapeada de la sede. El efectivo NO (vive en la caja del
+    // POS) y el fiado tampoco (crea CxC). Best-effort.
+    if (dto.payment.method === 'card' || dto.payment.method === 'transfer') {
+      await this.treasury.post({
+        sourceType: 'sale',
+        sourceId: sale._id.toString(),
+        sedeId: dto.sedeId,
+        method: dto.payment.method,
+        direction: 'in',
+        amount: Math.round(total) + Math.round(sale.tip ?? 0),
+        date: new Date().toLocaleDateString('en-CA'),
+        concept: `Venta #${saleNumber}`,
+      });
+    }
+
     return sale;
   }
 
@@ -455,6 +473,8 @@ export class SalesService {
     await sale.save();
     // Reversa contable de la venta (contra-asiento).
     await this.ledgerPosting.reverseSale(sale._id.toString(), user.email);
+    // Reversa del auto-posteo a tesorería (si la venta fue tarjeta/transferencia).
+    await this.treasury.reverse('sale', sale._id.toString());
     return this.getOrFail(sale.id);
   }
 

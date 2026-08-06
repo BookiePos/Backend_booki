@@ -67,6 +67,24 @@ export type AccountType = (typeof ACCOUNT_TYPES)[number];
 export const MOVEMENT_DIRECTIONS = ['in', 'out'] as const;
 export type MovementDirection = (typeof MOVEMENT_DIRECTIONS)[number];
 
+/** Origen de un movimiento de tesorería (para auto-posteo + trazabilidad). */
+export const MOVEMENT_SOURCES = [
+  'manual',
+  'sale',
+  'expense',
+  'payable_payment',
+  'receivable_payment',
+  'reconcile',
+] as const;
+export type MovementSource = (typeof MOVEMENT_SOURCES)[number];
+
+/**
+ * Métodos de pago que pueden enrutarse a una cuenta bancaria/billetera para
+ * alimentar la tesorería automáticamente. El efectivo (`cash`) NO entra aquí: su
+ * fuente de verdad es la caja del POS (turnos), no una cuenta manual.
+ */
+export const AUTO_POST_METHODS = ['transfer', 'card'] as const;
+
 /** Escenario de un presupuesto. */
 export const BUDGET_SCENARIOS = ['base', 'optimista', 'pesimista'] as const;
 export type BudgetScenario = (typeof BUDGET_SCENARIOS)[number];

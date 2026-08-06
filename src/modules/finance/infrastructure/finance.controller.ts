@@ -31,6 +31,7 @@ import {
 } from '../application/dto/receivable.dto';
 import {
   CreateAccountDto,
+  UpdateAccountDto,
   CreateMovementDto,
   ReconcileAccountDto,
 } from '../application/dto/account.dto';
@@ -210,6 +211,12 @@ export class FinanceController {
 
   // ── Cuentas de tesorería y movimientos ──────────────────────────────────────
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @Get('treasury')
+  treasury(@CurrentUser() user: JwtUser, @Query('sedeId') sedeId?: string) {
+    return this.finance.treasury(user, sedeId);
+  }
+
+  @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
   @Get('accounts')
   listAccounts(@CurrentUser() user: JwtUser) {
     return this.finance.listAccounts(user);
@@ -219,6 +226,16 @@ export class FinanceController {
   @Post('accounts')
   createAccount(@Body() dto: CreateAccountDto, @CurrentUser() user: JwtUser) {
     return this.finance.createAccount(dto, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.FINANCE_MANAGE)
+  @Patch('accounts/:id')
+  updateAccount(
+    @Param('id') id: string,
+    @Body() dto: UpdateAccountDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.finance.updateAccount(id, dto, user);
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
