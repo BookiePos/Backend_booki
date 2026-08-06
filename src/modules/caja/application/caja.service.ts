@@ -73,6 +73,39 @@ export interface CajaLiveCash {
   total: number;
 }
 
+/** Fila de un cierre de caja (turno cerrado) para el cuadro de arqueos. */
+export interface CajaClosingRow {
+  sessionId: string;
+  sedeId: string;
+  sedeName: string;
+  openedAt: Date;
+  closedAt?: Date;
+  closedByEmail?: string;
+  openingAmount: number;
+  salesCount: number;
+  salesTotal: number;
+  cashSalesTotal: number;
+  movementsIn: number;
+  movementsOut: number;
+  expectedCash: number;
+  countedAmount: number;
+  difference: number;
+}
+
+export interface CajaClosingsReport {
+  from: string;
+  to: string;
+  rows: CajaClosingRow[];
+  totals: {
+    count: number;
+    openingTotal: number;
+    salesTotal: number;
+    expectedCash: number;
+    countedAmount: number;
+    difference: number;
+  };
+}
+
 export interface CajaOverview {
   date: string;
   rows: CajaOverviewRow[];
@@ -279,6 +312,87 @@ export class CajaService {
       total += totals.expectedCash;
     }
     return { rows, total: Math.round(total) };
+  }
+
+  /**
+   * Cierres de caja (turnos cerrados) en un rango de fechas, por sede visible.
+   * Cada fila usa los totales congelados al cierre → sirve como cuadro de
+   * arqueos que "se queda viendo" cuánto dinero había en cada caja al cerrar.
+   */
+  async closings(
+    user: JwtUser,
+    query: { from?: string; to?: string },
+  ): Promise<CajaClosingsReport> {
+    const today = new Date().toLocaleDateString('en-CA');
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(query.from ?? '')
+      ? (query.from as string)
+      : today;
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(query.to ?? '')
+      ? (query.to as string)
+      : from;
+    const start = new Date(`${from}T00:00:00`);
+    const end = new Date(`${to}T23:59:59.999`);
+
+    const allowed = allowedSedeIds(user);
+    const filter: Record<string, unknown> = {
+      status: 'closed',
+      closedAt: { $gte: start, $lte: end },
+    };
+    if (allowed) {
+      filter.sedeId = { $in: allowed.map((id) => new Types.ObjectId(id)) };
+    }
+    const sessions = await this.sessions
+      .find(filter)
+      .sort({ closedAt: -1 })
+      .exec();
+
+    const sedeObjIds = [
+      ...new Set(sessions.map((s) => s.sedeId.toString())),
+    ].map((id) => new Types.ObjectId(id));
+    const sedeDocs = await this.sedes
+      .find({ _id: { $in: sedeObjIds } })
+      .select('name')
+      .exec();
+    const nameOf = new Map(sedeDocs.map((s) => [s._id.toString(), s.name]));
+
+    const rows: CajaClosingRow[] = sessions.map((s) => ({
+      sessionId: s._id.toString(),
+      sedeId: s.sedeId.toString(),
+      sedeName: nameOf.get(s.sedeId.toString()) ?? '—',
+      openedAt: s.openedAt,
+      closedAt: s.closedAt,
+      closedByEmail: s.closedByEmail,
+      openingAmount: s.openingAmount,
+      salesCount: s.salesCount ?? 0,
+      salesTotal: s.salesTotal ?? 0,
+      cashSalesTotal: s.cashSalesTotal ?? 0,
+      movementsIn: s.movementsIn ?? 0,
+      movementsOut: s.movementsOut ?? 0,
+      expectedCash: s.expectedCash ?? 0,
+      countedAmount: s.countedAmount ?? 0,
+      difference: s.difference ?? 0,
+    }));
+
+    const totals = rows.reduce(
+      (a, r) => ({
+        count: a.count + 1,
+        openingTotal: a.openingTotal + r.openingAmount,
+        salesTotal: a.salesTotal + r.salesTotal,
+        expectedCash: a.expectedCash + r.expectedCash,
+        countedAmount: a.countedAmount + r.countedAmount,
+        difference: a.difference + r.difference,
+      }),
+      {
+        count: 0,
+        openingTotal: 0,
+        salesTotal: 0,
+        expectedCash: 0,
+        countedAmount: 0,
+        difference: 0,
+      },
+    );
+
+    return { from, to, rows, totals };
   }
 
   private findOpen(sedeId: string): Promise<CajaSessionDocument | null> {

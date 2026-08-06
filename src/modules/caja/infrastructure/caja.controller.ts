@@ -34,6 +34,17 @@ export class CajaController {
     return this.caja.overview(user, date);
   }
 
+  /** Cierres de caja (arqueos) de las sedes visibles en un rango de fechas. */
+  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @Get('closings')
+  closings(
+    @CurrentUser() user: JwtUser,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.caja.closings(user, { from, to });
+  }
+
   /** Historial de turnos de la sede. */
   @RequirePermissions(PERMISSIONS.POS_SELL)
   @Get('sessions')

@@ -114,45 +114,121 @@ export class ReportsService {
       if (query.to) range.$lte = new Date(`${query.to}T23:59:59.999`);
       match.createdAt = range;
     }
-    const rows = (await this.sales
+    // Un solo agregado con $facet: por día, por medio de pago, por sede y top
+    // productos. Enriquece el reporte de ventas sin varias consultas.
+    const [facet] = (await this.sales
       .aggregate([
         { $match: match },
         {
-          $group: {
-            _id: {
-              $dateToString: { format: '%Y-%m-%d', date: '$createdAt' },
-            },
-            revenue: { $sum: '$total' },
-            tax: { $sum: '$taxTotal' },
-            tickets: { $sum: 1 },
+          $facet: {
+            days: [
+              {
+                $group: {
+                  _id: {
+                    $dateToString: { format: '%Y-%m-%d', date: '$createdAt' },
+                  },
+                  revenue: { $sum: '$total' },
+                  tax: { $sum: '$taxTotal' },
+                  tickets: { $sum: 1 },
+                },
+              },
+              { $sort: { _id: 1 } },
+            ],
+            byMethod: [
+              {
+                $group: {
+                  _id: '$payment.method',
+                  revenue: { $sum: '$total' },
+                  tickets: { $sum: 1 },
+                },
+              },
+              { $sort: { revenue: -1 } },
+            ],
+            bySede: [
+              {
+                $group: {
+                  _id: '$sedeId',
+                  revenue: { $sum: '$total' },
+                  tickets: { $sum: 1 },
+                },
+              },
+              { $sort: { revenue: -1 } },
+            ],
+            topProducts: [
+              { $unwind: '$lines' },
+              {
+                $group: {
+                  _id: '$lines.productId',
+                  name: { $first: '$lines.name' },
+                  qty: { $sum: '$lines.qty' },
+                  revenue: { $sum: '$lines.lineTotal' },
+                },
+              },
+              { $sort: { revenue: -1 } },
+              { $limit: 10 },
+            ],
+            totals: [
+              {
+                $group: {
+                  _id: null,
+                  revenue: { $sum: '$total' },
+                  tax: { $sum: '$taxTotal' },
+                  tickets: { $sum: 1 },
+                },
+              },
+            ],
           },
         },
-        { $sort: { _id: 1 } },
       ])
       .exec()) as {
-      _id: string;
-      revenue: number;
-      tax: number;
-      tickets: number;
+      days: { _id: string; revenue: number; tax: number; tickets: number }[];
+      byMethod: { _id: string; revenue: number; tickets: number }[];
+      bySede: { _id: Types.ObjectId; revenue: number; tickets: number }[];
+      topProducts: {
+        _id: Types.ObjectId;
+        name: string;
+        qty: number;
+        revenue: number;
+      }[];
+      totals: { revenue: number; tax: number; tickets: number }[];
     }[];
 
-    const days = rows.map((r) => ({
+    const days = (facet?.days ?? []).map((r) => ({
       date: r._id,
       revenue: r.revenue,
       tax: r.tax,
       tickets: r.tickets,
       avgTicket: r.tickets ? Math.round(r.revenue / r.tickets) : 0,
     }));
-    const totalRevenue = days.reduce((a, d) => a + d.revenue, 0);
-    const totalTickets = days.reduce((a, d) => a + d.tickets, 0);
+    const byMethod = (facet?.byMethod ?? []).map((r) => ({
+      method: r._id ?? 'desconocido',
+      revenue: r.revenue,
+      tickets: r.tickets,
+    }));
+    const bySede = (facet?.bySede ?? []).map((r) => ({
+      sedeId: r._id ? r._id.toString() : null,
+      revenue: r.revenue,
+      tickets: r.tickets,
+    }));
+    const topProducts = (facet?.topProducts ?? []).map((r) => ({
+      productId: r._id ? r._id.toString() : null,
+      name: r.name,
+      qty: r.qty,
+      revenue: r.revenue,
+    }));
+    const t = facet?.totals?.[0] ?? { revenue: 0, tax: 0, tickets: 0 };
     return {
       from: query.from,
       to: query.to,
       sedeId: query.sedeId ?? null,
       days,
-      totalRevenue,
-      totalTickets,
-      avgTicket: totalTickets ? Math.round(totalRevenue / totalTickets) : 0,
+      byMethod,
+      bySede,
+      topProducts,
+      totalRevenue: t.revenue,
+      totalTax: t.tax,
+      totalTickets: t.tickets,
+      avgTicket: t.tickets ? Math.round(t.revenue / t.tickets) : 0,
     };
   }
 
