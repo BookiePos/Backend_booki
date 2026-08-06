@@ -1360,22 +1360,38 @@ export class FinanceService {
     const cogs = await actualForCategory(models, 'cogs', null, range, scope);
     const nomina = await actualForCategory(models, 'payroll', null, range, scope);
 
-    // Gastos por categoría (kind='expense'), una fila por categoría con monto > 0.
-    const expenseCats = await this.categories.find({ kind: 'expense' }).exec();
+    // Gastos del período: se leen los `finance_expenses` REALES del rango+sede y
+    // se agrupan por categoría (usando el nombre snapshot del gasto). No se
+    // depende del `kind` de la categoría, así ningún gasto registrado se queda
+    // fuera del P&L aunque su categoría no esté marcada como 'expense'.
+    const expenseFilter: Record<string, unknown> = {
+      date: { $gte: from, $lte: to },
+    };
+    if (scope) {
+      expenseFilter.sedeId = { $in: scope.map((id) => new Types.ObjectId(id)) };
+    }
+    const expenseDocs = await this.expenses
+      .find(expenseFilter)
+      .select('categoryId categoryName amount')
+      .exec();
+    const gastosMap = new Map<string, { label: string; amount: number }>();
+    for (const e of expenseDocs) {
+      const key = e.categoryId ? e.categoryId.toString() : 'sin-categoria';
+      const prev = gastosMap.get(key) ?? {
+        label: e.categoryName || 'Sin categoría',
+        amount: 0,
+      };
+      prev.amount += e.amount || 0;
+      gastosMap.set(key, prev);
+    }
     const gastos: PLRow[] = [];
     let gastosTotal = 0;
-    for (const cat of expenseCats) {
-      const amount = await actualForCategory(
-        models,
-        'expense',
-        cat._id.toString(),
-        range,
-        scope,
-      );
+    for (const [categoryId, g] of gastosMap) {
+      const amount = cop(g.amount);
       if (amount > 0) {
         gastos.push({
-          categoryId: cat._id.toString(),
-          label: cat.name,
+          categoryId: categoryId === 'sin-categoria' ? undefined : categoryId,
+          label: g.label,
           amount,
         });
         gastosTotal += amount;
