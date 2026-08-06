@@ -189,15 +189,6 @@ export const SEED_PARAMS: SeedParam[] = [
 
   // ── Punto de venta (POS) ────────────────────────────────────────────────────
   {
-    key: 'pos.redondeo_efectivo',
-    label: 'Redondeo de efectivo',
-    group: 'pos',
-    valueType: 'money',
-    value: 50,
-    unit: 'COP',
-    note: 'Múltiplo al que se redondean los pagos en efectivo.',
-  },
-  {
     key: 'pos.propina_sugerida',
     label: 'Propina sugerida (POS)',
     group: 'pos',

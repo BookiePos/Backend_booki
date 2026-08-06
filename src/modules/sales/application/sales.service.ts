@@ -257,29 +257,16 @@ export class SalesService {
     const tip = Math.max(0, Math.round((dto.tip ?? 0) * 100) / 100);
     const grandTotal = Math.round((total + tip) * 100) / 100;
 
-    // Redondeo de efectivo (Colombia no tiene efectivo < $50): el pago en
-    // efectivo se redondea al múltiplo del parámetro `pos.redondeo_efectivo`.
-    // El total de la venta NO cambia; el redondeo solo ajusta el efectivo a
-    // cobrar y el vuelto, y se guarda como `rounding` para trazabilidad.
     let received: number | undefined;
     let change: number | undefined;
-    let cashRounding = 0;
-    if (dto.payment.method === 'cash') {
-      const step = await this.params.number('pos.redondeo_efectivo', 50, {
-        sedeId: dto.sedeId,
-      });
-      const payableCash =
-        step > 1 ? Math.round(grandTotal / step) * step : grandTotal;
-      cashRounding = Math.round((payableCash - grandTotal) * 100) / 100;
-      if (dto.payment.received !== undefined) {
-        received = dto.payment.received;
-        if (received < payableCash) {
-          throw new BadRequestException(
-            'El monto recibido es menor que el total a pagar (incluye la propina)',
-          );
-        }
-        change = Math.round((received - payableCash) * 100) / 100;
+    if (dto.payment.method === 'cash' && dto.payment.received !== undefined) {
+      received = dto.payment.received;
+      if (received < grandTotal) {
+        throw new BadRequestException(
+          'El monto recibido es menor que el total a pagar (incluye la propina)',
+        );
       }
+      change = received - grandTotal;
     }
 
     // 2. Explotar cada línea a su consumo de inventario y agregar por ítem.
@@ -373,7 +360,7 @@ export class SalesService {
       taxTotal,
       total,
       tip,
-      payment: { method: dto.payment.method, received, change, rounding: cashRounding },
+      payment: { method: dto.payment.method, received, change },
       customer: this.cleanCustomer(dto.customer),
       orderId,
     });
