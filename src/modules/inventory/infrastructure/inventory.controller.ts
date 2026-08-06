@@ -14,6 +14,7 @@ import { CreateProductDto } from '../application/dto/create-product.dto';
 import { CreateProductVariantsDto } from '../application/dto/create-product-variants.dto';
 import { UpdateProductDto } from '../application/dto/update-product.dto';
 import { CreateCategoryDto } from '../application/dto/create-category.dto';
+import { ImportProductsDto } from '../application/dto/import-products.dto';
 import { StockEntryDto } from '../application/dto/stock-entry.dto';
 import { StockAdjustDto } from '../application/dto/stock-adjust.dto';
 import { StockTransferDto } from '../application/dto/stock-transfer.dto';
@@ -52,6 +53,13 @@ export class InventoryController {
   @Post('products/with-variants')
   createProductWithVariants(@Body() dto: CreateProductVariantsDto) {
     return this.products.createWithVariants(dto);
+  }
+
+  /** Importación masiva (upsert por SKU) desde filas de un CSV. */
+  @RequirePermissions(PERMISSIONS.INVENTORY_ADJUST)
+  @Post('products/import')
+  importProducts(@Body() dto: ImportProductsDto) {
+    return this.products.importProducts(dto.rows);
   }
 
   @RequirePermissions(PERMISSIONS.INVENTORY_ADJUST)

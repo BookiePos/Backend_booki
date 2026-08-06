@@ -21,6 +21,10 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { CreateProductVariantsDto } from './dto/create-product-variants.dto';
+import {
+  ImportProductRow,
+  ImportProductsResult,
+} from './dto/import-products.dto';
 
 /** Producto cartesiano de varias listas: [[S,M],[Rojo,Azul]] → [[S,Rojo],…]. */
 function cartesian(lists: string[][]): string[][] {
@@ -308,6 +312,125 @@ export class ProductsService {
     // lo perdió, y sincroniza nombre/SKU/categoría/precio del vendible.
     await this.syncCatalog(product);
     return product;
+  }
+
+  /**
+   * Importa (upsert) un lote de productos desde filas de CSV. Hace match por
+   * SKU: si existe lo actualiza con los campos provistos, si no lo crea. La
+   * categoría llega por NOMBRE y se resuelve o se crea al vuelo. Cada fila se
+   * procesa de forma independiente: un error en una no aborta el resto, se
+   * acumula en `errors` con el número de fila (2 = primera fila de datos).
+   */
+  async importProducts(
+    rows: ImportProductRow[],
+  ): Promise<ImportProductsResult> {
+    const result: ImportProductsResult = {
+      total: rows.length,
+      created: 0,
+      updated: 0,
+      errors: [],
+    };
+
+    // Índice de categorías por nombre normalizado (se amplía si se crean nuevas).
+    const categories = await this.categoryModel.find().exec();
+    const catByName = new Map<string, Types.ObjectId>(
+      categories.map((c) => [c.name.trim().toLowerCase(), c._id]),
+    );
+
+    const resolveCategory = async (
+      name?: string,
+    ): Promise<Types.ObjectId | undefined> => {
+      const clean = name?.trim();
+      if (!clean) return undefined;
+      const key = clean.toLowerCase();
+      const found = catByName.get(key);
+      if (found) return found;
+      const created = await this.categoryModel.create({ name: clean });
+      catByName.set(key, created._id);
+      return created._id;
+    };
+
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i];
+      if (!row) continue;
+      const line = i + 2; // fila 1 = encabezado del CSV
+      try {
+        const sku = row.sku?.trim().toUpperCase();
+        if (!sku) throw new Error('Falta el SKU');
+        const name = row.name?.trim();
+
+        const categoryId = await resolveCategory(row.category);
+        const existing = await this.productModel.findOne({ sku }).exec();
+
+        if (existing) {
+          if (name) existing.name = name;
+          if (row.itemType !== undefined) existing.itemType = row.itemType;
+          if (row.brand !== undefined) existing.brand = row.brand || undefined;
+          if (row.supplier !== undefined)
+            existing.supplier = row.supplier || undefined;
+          if (row.description !== undefined)
+            existing.description = row.description || undefined;
+          if (categoryId !== undefined) existing.categoryId = categoryId;
+          if (row.unit !== undefined && row.unit.trim())
+            existing.unit = row.unit.trim();
+          if (row.barcode !== undefined)
+            existing.barcode = row.barcode || undefined;
+          if (row.weight !== undefined) existing.weight = row.weight;
+          if (row.perishable !== undefined) existing.perishable = row.perishable;
+          if (row.trackLots !== undefined) existing.trackLots = row.trackLots;
+          if (row.shelfLifeDays !== undefined)
+            existing.shelfLifeDays = row.shelfLifeDays;
+          if (row.minStock !== undefined) existing.minStock = row.minStock;
+          if (row.cost !== undefined) existing.cost = row.cost;
+          if (row.salePrice !== undefined) existing.salePrice = row.salePrice;
+          if (row.active !== undefined) existing.active = row.active;
+          // Invariantes: perecedero/montaje ⇒ lotes; sin perecedero ⇒ sin venc.
+          if (existing.perishable || existing.itemType === 'assembly')
+            existing.trackLots = true;
+          if (!existing.perishable) existing.expiresAt = undefined;
+          await existing.save();
+          await this.syncCatalog(existing);
+          result.updated += 1;
+        } else {
+          if (!name) throw new Error('Falta el nombre para crear el producto');
+          const perishable = row.perishable ?? false;
+          const itemType = row.itemType ?? 'product';
+          const trackLots =
+            perishable || itemType === 'assembly'
+              ? true
+              : (row.trackLots ?? false);
+          const created = await this.productModel.create({
+            sku,
+            itemType,
+            name,
+            brand: row.brand || undefined,
+            supplier: row.supplier || undefined,
+            description: row.description || undefined,
+            categoryId,
+            unit: row.unit?.trim() || 'und',
+            barcode: row.barcode || undefined,
+            weight: row.weight,
+            perishable,
+            trackLots,
+            shelfLifeDays: row.shelfLifeDays,
+            minStock: row.minStock ?? 0,
+            cost: row.cost ?? 0,
+            salePrice: row.salePrice,
+            active: row.active ?? true,
+          });
+          await this.syncCatalog(created);
+          result.created += 1;
+        }
+      } catch (err) {
+        result.errors.push({
+          row: line,
+          sku: row.sku?.trim().toUpperCase() ?? '',
+          message: err instanceof Error ? err.message : 'Error desconocido',
+        });
+      }
+    }
+
+    return result;
   }
 
   // ─── Categorías ────────────────────────────────────────────────────────────
