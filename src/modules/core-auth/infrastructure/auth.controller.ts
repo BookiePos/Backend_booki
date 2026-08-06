@@ -6,6 +6,7 @@ import { LoginDto } from '../application/dto/login.dto';
 import { RefreshDto } from '../application/dto/refresh.dto';
 import { RegisterDto } from '../application/dto/register.dto';
 import { Public } from './decorators/public.decorator';
+import { NoPermissionRequired } from './decorators/no-permission-required.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { JwtUser } from './jwt.strategy';
 
@@ -39,12 +40,16 @@ export class AuthController {
     return this.auth.refresh(dto.refreshToken);
   }
 
+  // Cierra la sesión del propio usuario: solo requiere estar autenticado.
+  @NoPermissionRequired()
   @Post('logout')
   @HttpCode(204)
   async logout(@Body() dto: RefreshDto): Promise<void> {
     await this.auth.logout(dto.refreshToken);
   }
 
+  // Perfil del propio usuario: solo requiere estar autenticado.
+  @NoPermissionRequired()
   @Get('me')
   async me(@CurrentUser() current: JwtUser) {
     const user = await this.users.findById(current.userId);
