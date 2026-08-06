@@ -132,10 +132,15 @@ export interface FinanceOverview {
   cashToday: number;
   salesMonth: number;
   expensesMonth: number;
+  /** Costo de nómina del mes (misma fuente que el P&L). */
+  nomina: number;
+  /** Ventas − costo de ventas. */
+  margenBruto: number;
   payablesOpen: number;
   payablesOverdue: number;
   receivablesOpen: number;
   receivablesOverdue: number;
+  /** Utilidad operativa del mes = margen bruto − nómina − gastos. */
   utilidadMonth: number;
 }
 
@@ -1498,11 +1503,18 @@ export class FinanceService {
     const scope = this.resolveSedeScope(user, sedeId);
     const range = this.currentMonthRange();
 
-    // Ventas del mes = total cobrado (con IVA); utilidad = ventas − costo de
-    // compra (margen bruto). Nómina y gastos NO entran en esta utilidad: se ven
-    // aparte (Gastos del mes) y en el P&L de Finanzas (utilidad operativa).
+    // Ventas del mes = total cobrado (con IVA). La utilidad del mes es operativa
+    // (ventas − costo − nómina − gastos), igual que el P&L, para que los gastos y
+    // la nómina SÍ se reflejen en lo que "queda".
     const { grossSales, cogs } = await this.grossSalesAndCogs(range, scope);
     const salesMonth = grossSales;
+    const nomina = await actualForCategory(
+      this.actualsModels(),
+      'payroll',
+      null,
+      range,
+      scope,
+    );
 
     // Gastos del mes: Σ de todos los gastos del rango+sede.
     const expenseFilter: Record<string, unknown> = {
@@ -1563,14 +1575,18 @@ export class FinanceService {
     // Efectivo del día: del módulo de Caja (suma de efectivo esperado hoy).
     const cashToday = await this.cashTodayFromCaja(user, sedeId);
 
-    // Utilidad del mes = ventas − costo de compra de lo vendido (margen bruto).
-    const utilidadMonth = cop(salesMonth - cogs);
+    // Margen bruto = ventas − costo. Utilidad operativa = margen − nómina − gastos
+    // (los gastos y la nómina ya se descuentan, coherente con el P&L).
+    const margenBruto = cop(salesMonth - cogs);
+    const utilidadMonth = cop(margenBruto - nomina - expensesMonth);
 
     return {
       sedeId: sedeId ?? null,
       cashToday,
       salesMonth,
       expensesMonth,
+      nomina: cop(nomina),
+      margenBruto,
       payablesOpen: cop(payablesOpen),
       payablesOverdue: cop(payablesOverdue),
       receivablesOpen: cop(receivablesOpen),
