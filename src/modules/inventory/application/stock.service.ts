@@ -26,6 +26,10 @@ import { StockEntryDto } from './dto/stock-entry.dto';
 import { StockAdjustDto } from './dto/stock-adjust.dto';
 import { StockTransferDto } from './dto/stock-transfer.dto';
 import {
+  ImportStockRow,
+  ImportStockResult,
+} from './dto/import-stock.dto';
+import {
   MovementType,
   WASTE_REASONS,
 } from '../domain/inventory.constants';
@@ -258,6 +262,84 @@ export class StockService {
       );
       return { item, movements };
     });
+  }
+
+  /**
+   * Carga masiva de existencias desde filas de CSV: cada fila es una ENTRADA
+   * (suma stock) de un producto (por SKU) en una sede (por nombre o código).
+   * Reutiliza `entry`, así que respeta lotes, costo, vencimiento de perecederos
+   * y el control de acceso por sede del usuario. Procesa fila por fila: un error
+   * en una no aborta el resto (se acumula con su número de fila).
+   */
+  async importStock(
+    rows: ImportStockRow[],
+    user: JwtUser,
+  ): Promise<ImportStockResult> {
+    const result: ImportStockResult = {
+      total: rows.length,
+      imported: 0,
+      errors: [],
+    };
+
+    // Índice de sedes por nombre y por código (normalizados) → id.
+    const norm = (s: string): string =>
+      s
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '');
+    const sedes = await this.sedes.list();
+    const sedeByKey = new Map<string, string>();
+    for (const s of sedes) {
+      sedeByKey.set(norm(s.name), s._id.toString());
+      if (s.code) sedeByKey.set(norm(s.code), s._id.toString());
+    }
+
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i];
+      if (!row) continue;
+      const line = i + 2; // fila 1 = encabezado del CSV
+      const sku = row.sku?.trim().toUpperCase() ?? '';
+      const sedeLabel = row.sede?.trim() ?? '';
+      try {
+        if (!sku) throw new Error('Falta el SKU');
+        const product = await this.products.findBySku(sku);
+        if (!product) throw new Error(`No existe un producto con SKU ${sku}`);
+
+        if (!sedeLabel) throw new Error('Falta la sede');
+        const sedeId = sedeByKey.get(norm(sedeLabel));
+        if (!sedeId) throw new Error(`No existe la sede "${sedeLabel}"`);
+
+        const qty = row.qty;
+        if (qty === undefined || !(qty > 0)) {
+          throw new Error('La cantidad debe ser mayor a 0');
+        }
+
+        await this.entry(
+          {
+            productId: product._id.toString(),
+            sedeId,
+            qty,
+            unitCost: row.unitCost,
+            lotCode: row.lotCode?.trim() || undefined,
+            supplier: row.supplier?.trim() || undefined,
+            expiresAt: row.expiresAt?.trim() || undefined,
+            note: row.note?.trim() || 'Carga CSV de existencias',
+          } as StockEntryDto,
+          user,
+        );
+        result.imported += 1;
+      } catch (err) {
+        result.errors.push({
+          row: line,
+          sku,
+          sede: sedeLabel,
+          message: err instanceof Error ? err.message : 'Error desconocido',
+        });
+      }
+    }
+
+    return result;
   }
 
   // ─── Traslados entre sedes ─────────────────────────────────────────────────

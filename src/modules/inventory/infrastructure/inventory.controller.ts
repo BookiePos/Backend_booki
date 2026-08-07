@@ -15,6 +15,7 @@ import { CreateProductVariantsDto } from '../application/dto/create-product-vari
 import { UpdateProductDto } from '../application/dto/update-product.dto';
 import { CreateCategoryDto } from '../application/dto/create-category.dto';
 import { ImportProductsDto } from '../application/dto/import-products.dto';
+import { ImportStockDto } from '../application/dto/import-stock.dto';
 import { StockEntryDto } from '../application/dto/stock-entry.dto';
 import { StockAdjustDto } from '../application/dto/stock-adjust.dto';
 import { StockTransferDto } from '../application/dto/stock-transfer.dto';
@@ -179,5 +180,12 @@ export class InventoryController {
   @Post('transfers')
   createTransfer(@Body() dto: StockTransferDto, @CurrentUser() user: JwtUser) {
     return this.stock.transfer(dto, user);
+  }
+
+  /** Carga masiva de existencias (una entrada por fila) desde un CSV. */
+  @RequirePermissions(PERMISSIONS.INVENTORY_ADJUST)
+  @Post('stock/import')
+  importStock(@Body() dto: ImportStockDto, @CurrentUser() user: JwtUser) {
+    return this.stock.importStock(dto.rows, user);
   }
 }
