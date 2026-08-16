@@ -190,7 +190,23 @@ export class PurchasingService {
     return po;
   }
 
-  /** Recibe (parcial o total): entra a inventario y actualiza el estado. */
+  /**
+   * Recibe (parcial o total): entra a inventario y actualiza el estado.
+   *
+   * Idempotencia / seguridad ante fallos parciales (Mongo standalone, sin
+   * transacciones): el avance de `qtyReceived` de CADA renglón se persiste de
+   * forma ATÓMICA y CONDICIONAL (`findOneAndUpdate` con guarda
+   * `qtyReceived + qty <= qty`) ANTES de ingresar el stock de ese renglón. Así:
+   *  - Un reintento tras un fallo posterior NO vuelve a ingresar lo ya recibido:
+   *    el guard rechaza la sobre-recepción y el renglón se salta.
+   *  - La recepción parcial existente se conserva (solo avanza lo pendiente).
+   * La CxP no se duplica en reintentos: al saltarse los renglones ya recibidos,
+   * `receivedValue` queda en 0 y la creación de la CxP se omite.
+   * Nota: la única ventana no cubierta es un crash ENTRE reservar el renglón y
+   * el `stock.entry`; en ese caso el renglón queda "reservado" pero sin stock y
+   * requiere ajuste manual (se registra un log). Es preferible a la doble
+   * entrada silenciosa que existía antes.
+   */
   async receive(
     id: string,
     dto: ReceivePurchaseOrderDto,
@@ -217,6 +233,27 @@ export class PurchasingService {
           `El renglón "${line.description}" solo tiene ${remaining} pendiente(s) por recibir`,
         );
       }
+
+      // Reserva ATÓMICA del avance del renglón ANTES de ingresar stock: el
+      // guard `qtyReceived <= qty - rl.qty` evita que un reintento (o dos
+      // recepciones concurrentes) apliquen la misma cantidad dos veces. Si
+      // otro proceso ya lo recibió, findOneAndUpdate no encuentra el doc y se
+      // salta el renglón (sin doble ingreso).
+      const advanced = await this.orders
+        .findOneAndUpdate(
+          {
+            _id: po._id,
+            [`lines.${rl.lineIndex}.qtyReceived`]: { $lte: line.qty - rl.qty },
+          },
+          { $inc: { [`lines.${rl.lineIndex}.qtyReceived`]: rl.qty } },
+          { new: true },
+        )
+        .exec();
+      if (!advanced) {
+        // El renglón ya fue recibido por otra operación/reintento: no re-ingresar.
+        continue;
+      }
+
       // Entra al inventario únicamente si el renglón está mapeado a un producto.
       if (line.productId) {
         await this.stock.entry(
@@ -234,11 +271,17 @@ export class PurchasingService {
           user,
         );
       }
+      // Mantén el documento en memoria sincronizado con el avance persistido.
       line.qtyReceived += rl.qty;
       receivedValue += Math.round(line.unitCost * rl.qty);
     }
 
-    // Genera CxP por el valor recibido, si se pidió.
+    // Genera CxP por el valor efectivamente reservado en ESTA llamada. Como el
+    // avance de qtyReceived se reserva atómicamente arriba, un reintento del
+    // mismo request no vuelve a reservar nada (los renglones se saltan con
+    // `continue`), `receivedValue` queda en 0 y NO se crea una CxP duplicada.
+    // Cada recepción parcial legítima sí genera su propia CxP (comportamiento
+    // esperado), enlazada al receipt vía payableId.
     let payableId: Types.ObjectId | undefined;
     if (dto.generatePayable && receivedValue > 0) {
       const dueDate = dto.dueDate ?? this.addDays(dto.date, 30);
@@ -261,6 +304,12 @@ export class PurchasingService {
       payableId = payable?._id;
     }
 
+    // Si un reintento no reservó nada (todo estaba ya recibido), no dejamos
+    // rastro fantasma: ni receipt, ni asiento contable, ni cambio de estado.
+    if (receivedValue === 0) {
+      return po;
+    }
+
     po.receipts.push({
       date: dto.date,
       lines: dto.lines.map((l) => ({
@@ -275,7 +324,16 @@ export class PurchasingService {
     } as unknown as (typeof po.receipts)[number]);
 
     po.status = this.computeStatus(po);
-    await po.save();
+    // El avance de qtyReceived ya se persistió atómicamente arriba; aquí solo
+    // se guardan los metadatos (receipts, status). Usamos $set explícito para
+    // no re-escribir `lines` (evita pisar el avance persistido si hubo carrera).
+    po.markModified('receipts');
+    await this.orders
+      .updateOne(
+        { _id: po._id },
+        { $set: { receipts: po.receipts, status: po.status } },
+      )
+      .exec();
 
     // Asiento de la recepción: entra a Inventario contra CxP (si se generó) o
     // Caja (pago de contado). Best-effort.

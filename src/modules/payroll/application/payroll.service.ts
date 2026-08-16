@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -313,6 +314,23 @@ export class PayrollService {
       filter.sedeId = new Types.ObjectId(dto.sedeId);
     }
 
+    // Evita corridas duplicadas del mismo período+cobertura(+sede): dos corridas
+    // del mismo período causan doble conteo en el P&L y doble aplicación de
+    // deducciones. Si ya existe una, se rechaza; para re-correr hay que eliminar
+    // (o dejar en borrador y usar recalcRun) la anterior. Un índice único a
+    // nivel de BD respalda esta garantía ante concurrencia.
+    const dupFilter: Record<string, unknown> = { period: dto.period, coverage };
+    dupFilter.sedeId =
+      coverage === 'sede' && dto.sedeId
+        ? new Types.ObjectId(dto.sedeId)
+        : null;
+    const existing = await this.runs.findOne(dupFilter).exec();
+    if (existing) {
+      throw new ConflictException(
+        `Ya existe una corrida de nómina para el período ${dto.period} (${coverage}). Elimínala o recalcúlala en borrador antes de crear otra.`,
+      );
+    }
+
     const emps = await this.employees
       .find(filter)
       .sort({ lastName: 1, firstName: 1 })
@@ -333,7 +351,12 @@ export class PayrollService {
       period: dto.period,
       label: dto.label,
       coverage,
-      sedeId: dto.sedeId ? new Types.ObjectId(dto.sedeId) : undefined,
+      // `null` explícito (no undefined) para cobertura 'all': el índice único
+      // (period, coverage, sedeId) trata las corridas consolidadas de forma
+      // consistente y evita duplicados a nivel de BD.
+      sedeId: (coverage === 'sede' && dto.sedeId
+        ? new Types.ObjectId(dto.sedeId)
+        : null) as unknown as Types.ObjectId | undefined,
       status: 'borrador',
       slips,
       totals,
@@ -501,7 +524,13 @@ export class PayrollService {
     return { slips, totals, approvedIds: approved.map((d) => d._id) };
   }
 
-  /** Marca los consumos que entraron en una corrida como "applied". */
+  /**
+   * Marca como "applied" los consumos que entraron en una corrida. El update es
+   * CONDICIONAL sobre `status: 'approved'` (transición approved→applied), así
+   * es la fuente de verdad: si dos corridas concurrentes intentan aplicar la
+   * misma deducción, solo la primera la transiciona; la segunda no la vuelve a
+   * aplicar (matchedCount = 0), evitando el doble descuento.
+   */
   private async applyDeductionsToRun(
     ids: Types.ObjectId[],
     runId: Types.ObjectId,
@@ -510,7 +539,7 @@ export class PayrollService {
     if (ids.length === 0) return;
     await this.deductions
       .updateMany(
-        { _id: { $in: ids } },
+        { _id: { $in: ids }, status: 'approved' },
         { $set: { status: 'applied', appliedRunId: runId, appliedPeriod: period } },
       )
       .exec();

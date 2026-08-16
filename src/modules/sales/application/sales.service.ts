@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -42,6 +43,8 @@ import { CreateSaleDto } from './dto/create-sale.dto';
 
 @Injectable()
 export class SalesService {
+  private readonly logger = new Logger(SalesService.name);
+
   constructor(
     @InjectModel(Sale.name)
     private readonly saleModel: Model<SaleDocument>,
@@ -329,6 +332,143 @@ export class SalesService {
       };
     });
 
+    // El stock YA está descontado. En Mongo standalone (sin transacciones) no
+    // podemos abortar atómicamente, así que si la CREACIÓN de la venta falla
+    // (o cualquier paso previo a persistirla), compensamos devolviendo al
+    // inventario lo consumido (contra-movimiento 'sale_void') y relanzamos.
+    // Garantía: nunca queda stock descontado sin una venta que lo respalde.
+    // Una vez la venta está persistida, los pasos derivados (CxC/deducción,
+    // asientos, tesorería) ya NO revierten el stock: la venta existe y su
+    // rectificación es una anulación (void), no un rollback silencioso.
+    const holder: { sale?: SaleDocument } = {};
+    try {
+      return await this.finalizeSale(holder, {
+        dto,
+        user,
+        orderId,
+        openCaja,
+        components,
+        linesWithTax,
+        subtotal,
+        discount,
+        discountTotal,
+        taxableBase,
+        taxTotal,
+        total,
+        tip,
+        received,
+        change,
+        isCredit,
+      });
+    } catch (err) {
+      // Solo compensamos si la venta NO alcanzó a persistirse; si ya existe,
+      // el stock queda correctamente respaldado y el error es de un paso
+      // posterior (best-effort) que no debe deshacer el inventario.
+      if (!holder.sale) {
+        await this.rollbackSoldStock(dto.sedeId, components, user);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Devuelve al inventario el stock ya descontado de una venta que no llegó a
+   * persistirse (compensación). Best-effort: cualquier fallo del rollback se
+   * registra en el log para conciliación manual, sin ocultar el error original.
+   */
+  private async rollbackSoldStock(
+    sedeId: string,
+    components: {
+      productId: Types.ObjectId;
+      qty: number;
+      consumedLots: { lotId?: Types.ObjectId; qty: number; unitCost?: number }[];
+    }[],
+    user: JwtUser,
+  ): Promise<void> {
+    try {
+      const units = components.map((c) => ({
+        productId: c.productId.toString(),
+        qty: c.qty,
+        consumedLots: (c.consumedLots ?? []).map((cl) => ({
+          lotId: cl.lotId?.toString(),
+          qty: cl.qty,
+          unitCost: cl.unitCost,
+        })),
+      }));
+      if (units.length > 0) {
+        await this.stock.reverseSale(sedeId, units, user);
+      }
+    } catch (rollbackErr) {
+      this.logger.error(
+        `No se pudo revertir el stock descontado tras fallar la venta en la sede ${sedeId}; requiere conciliación manual`,
+        rollbackErr instanceof Error ? rollbackErr.stack : String(rollbackErr),
+      );
+    }
+  }
+
+  /**
+   * Persiste la venta y los pasos derivados (CxC/deducción, asientos, tesorería)
+   * DESPUÉS de haber descontado el stock. Si algo aquí lanza, el llamador
+   * compensa el stock ya descontado.
+   */
+  private async finalizeSale(
+    holder: { sale?: SaleDocument },
+    ctx: {
+    dto: CreateSaleDto;
+    user: JwtUser;
+    orderId?: Types.ObjectId;
+    openCaja: CajaSessionDocument;
+    components: {
+      productId: Types.ObjectId;
+      sku: string;
+      name: string;
+      unit: string;
+      qty: number;
+      cost: number;
+      consumedLots: { lotId?: Types.ObjectId; qty: number; unitCost: number }[];
+    }[];
+    linesWithTax: {
+      product: { _id: Types.ObjectId; sku: string; name: string };
+      qty: number;
+      unitPrice: number;
+      lineTotal: number;
+      discountAmount: number;
+      discountName?: string;
+      ivaRate: number;
+      taxBase: number;
+      taxAmount: number;
+    }[];
+    subtotal: number;
+    discount?: { type: 'amount' | 'percent'; value: number; amount: number };
+    discountTotal: number;
+    taxableBase: number;
+    taxTotal: number;
+    total: number;
+    tip: number;
+    received?: number;
+    change?: number;
+    isCredit: boolean;
+  },
+  ): Promise<SaleDocument> {
+    const {
+      dto,
+      user,
+      orderId,
+      openCaja,
+      components,
+      linesWithTax,
+      subtotal,
+      discount,
+      discountTotal,
+      taxableBase,
+      taxTotal,
+      total,
+      tip,
+      received,
+      change,
+      isCredit,
+    } = ctx;
+
     const saleNumber = await this.nextSaleNumber(dto.sedeId);
     const sale = await this.saleModel.create({
       saleNumber,
@@ -364,6 +504,9 @@ export class SalesService {
       customer: this.cleanCustomer(dto.customer),
       orderId,
     });
+    // A partir de aquí la venta EXISTE: cierra la ventana de compensación de
+    // stock (los pasos siguientes son best-effort y no revierten inventario).
+    holder.sale = sale;
 
     // Venta a crédito (fiado): no entra a caja. Se rutea según el deudor.
     if (isCredit) {

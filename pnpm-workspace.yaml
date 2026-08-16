@@ -1,3 +1,5 @@
 allowBuilds:
   '@nestjs/core': false
 verifyDepsBeforeRun: false
+overrides:
+  multer: '>=2.1.1'

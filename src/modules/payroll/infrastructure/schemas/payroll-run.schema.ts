@@ -123,3 +123,11 @@ export class PayrollRun {
 
 export const PayrollRunSchema = SchemaFactory.createForClass(PayrollRun);
 PayrollRunSchema.index({ period: 1, createdAt: -1 });
+// Una sola corrida por período+cobertura(+sede). Para 'all', sedeId se guarda
+// como null explícito, por lo que el índice único impide duplicados a nivel de
+// BD (respalda la validación de aplicación en createRun). Re-correr un período
+// exige eliminar la corrida anterior.
+PayrollRunSchema.index(
+  { period: 1, coverage: 1, sedeId: 1 },
+  { unique: true },
+);
