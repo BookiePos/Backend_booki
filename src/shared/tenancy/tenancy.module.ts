@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule, JwtModuleOptions } from '@nestjs/jwt';
+import { jwtSecret } from '../config/jwt-secrets';
 import { TenantModelRegistry } from './tenant-model.registry';
 import { TenantMiddleware } from './tenant.middleware';
 
@@ -24,7 +25,7 @@ import { TenantMiddleware } from './tenant.middleware';
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService): JwtModuleOptions => ({
-        secret: config.get<string>('JWT_SECRET') ?? 'dev-secret',
+        secret: jwtSecret(config),
       }),
     }),
   ],

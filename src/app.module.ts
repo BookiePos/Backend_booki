@@ -1,6 +1,8 @@
 import { Module, Logger } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import type { Connection } from 'mongoose';
 import { TenancyModule } from './shared/tenancy/tenancy.module';
 import { CONTROL_CONNECTION } from './modules/control/domain/control.constants';
@@ -44,6 +46,9 @@ function controlUri(): string {
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    // Rate limiting global: 100 req/min por IP. Los endpoints sensibles de auth
+    // aprietan aún más el límite con @Throttle en su controller.
+    ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 100 }]),
     MongooseModule.forRootAsync({
       useFactory: () => {
         const uri =
@@ -110,6 +115,11 @@ function controlUri(): string {
     CustomersModule,
     // La auditoría va de último: su interceptor global envuelve al resto.
     CoreAuditModule,
+  ],
+  providers: [
+    // Rate limiting global. Se registra aquí para que corra en toda la API,
+    // junto a los guards de auth/permisos que declara CoreAuthModule.
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
 export class AppModule {}

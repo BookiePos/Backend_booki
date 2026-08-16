@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -175,26 +176,57 @@ export class OrdersService {
       throw new BadRequestException('La cuenta no tiene ítems para cobrar');
     }
 
-    const sale = await this.sales.create(
-      {
-        sedeId,
-        lines: order.lines.map((l) => ({
-          productId: l.productId.toString(),
-          qty: l.qty,
-        })),
-        payment: dto.payment,
-        discount: dto.discount,
-        customer: dto.customer,
-        tip: dto.tip,
-      },
-      user,
-      order._id as Types.ObjectId,
-    );
+    // Guarda de concurrencia (Mongo standalone, sin transacciones): "tomamos"
+    // la cuenta de forma atómica ANTES de crear la venta. Solo el proceso que
+    // gana el flip open→closed procede; dos cobros simultáneos ya no pueden
+    // pasar ambos → se evita la doble venta y el doble descuento de stock.
+    const closedAt = new Date();
+    const claimed = await this.orderModel
+      .findOneAndUpdate(
+        { _id: order._id, status: 'open' },
+        { $set: { status: 'closed', closedAt } },
+        { new: true },
+      )
+      .exec();
+    if (!claimed) {
+      throw new ConflictException('La cuenta ya fue cobrada');
+    }
 
-    order.status = 'closed';
-    order.saleId = sale._id as Types.ObjectId;
-    order.closedAt = new Date();
-    await order.save();
+    let sale: Awaited<ReturnType<SalesService['create']>>;
+    try {
+      sale = await this.sales.create(
+        {
+          sedeId,
+          lines: order.lines.map((l) => ({
+            productId: l.productId.toString(),
+            qty: l.qty,
+          })),
+          payment: dto.payment,
+          discount: dto.discount,
+          customer: dto.customer,
+          tip: dto.tip,
+        },
+        user,
+        order._id as Types.ObjectId,
+      );
+    } catch (err) {
+      // La venta falló: liberamos la cuenta para que pueda reintentarse el cobro.
+      await this.orderModel
+        .updateOne(
+          { _id: order._id },
+          { $set: { status: 'open' }, $unset: { closedAt: '' } },
+        )
+        .exec();
+      throw err;
+    }
+
+    // Enlaza la venta a la cuenta ya cerrada.
+    await this.orderModel
+      .updateOne(
+        { _id: order._id },
+        { $set: { saleId: sale._id as Types.ObjectId } },
+      )
+      .exec();
     return sale;
   }
 

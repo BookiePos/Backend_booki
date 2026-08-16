@@ -10,6 +10,10 @@ import {
   PurchaseOrderDocument,
 } from '../infrastructure/schemas/purchase-order.schema';
 import {
+  Counter,
+  CounterDocument,
+} from '../../sales/infrastructure/schemas/counter.schema';
+import {
   FinancePayable,
   FinancePayableDocument,
 } from '../../finance/infrastructure/schemas/finance-payable.schema';
@@ -36,14 +40,27 @@ export class PurchasingService {
     private readonly orders: Model<PurchaseOrderDocument>,
     @InjectModel(FinancePayable.name)
     private readonly payables: Model<FinancePayableDocument>,
+    @InjectModel(Counter.name)
+    private readonly counterModel: Model<CounterDocument>,
     private readonly stock: StockService,
     private readonly tax: TaxService,
     private readonly ledgerPosting: LedgerPostingService,
   ) {}
 
+  /**
+   * Consecutivo de OC vía $inc atómico (no requiere transacciones). Usa la
+   * colección de contadores compartida con la clave `purchase_order`, evitando
+   * el reuso de números al borrar docs o bajo concurrencia (campo unique).
+   */
   private async nextNumber(): Promise<string> {
-    const n = (await this.orders.estimatedDocumentCount().exec()) + 1;
-    return `OC-${String(n).padStart(6, '0')}`;
+    const counter = await this.counterModel
+      .findOneAndUpdate(
+        { _id: 'purchase_order' },
+        { $inc: { seq: 1 } },
+        { upsert: true, new: true },
+      )
+      .exec();
+    return `OC-${String(counter.seq).padStart(6, '0')}`;
   }
 
   /** Calcula subtotal e impuesto de cada renglón (tarifa vigente del código). */

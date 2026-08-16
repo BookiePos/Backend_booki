@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { JwtModule, JwtModuleOptions } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
+import { jwtSecret } from '../../shared/config/jwt-secrets';
 import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import { APP_GUARD } from '@nestjs/core';
 import { User, UserSchema } from './infrastructure/schemas/user.schema';
@@ -45,7 +46,7 @@ import { PermissionsGuard } from './infrastructure/guards/permissions.guard';
       inject: [ConfigService],
       useFactory: (config: ConfigService): JwtModuleOptions =>
         ({
-          secret: config.get<string>('JWT_SECRET') ?? 'dev-secret',
+          secret: jwtSecret(config),
           signOptions: {
             expiresIn: config.get<string>('JWT_ACCESS_EXPIRES') ?? '19h',
           },

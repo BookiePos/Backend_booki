@@ -8,6 +8,10 @@ import {
   FinancePayable,
   FinancePayableSchema,
 } from '../finance/infrastructure/schemas/finance-payable.schema';
+import {
+  Counter,
+  CounterSchema,
+} from '../sales/infrastructure/schemas/counter.schema';
 import { CoreAuthModule } from '../core-auth/core-auth.module';
 import { CoreTaxModule } from '../core-tax/core-tax.module';
 import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
@@ -24,6 +28,7 @@ import { PurchasingController } from './infrastructure/purchasing.controller';
     TenantMongooseModule.forFeature([
       { name: PurchaseOrder.name, schema: PurchaseOrderSchema },
       { name: FinancePayable.name, schema: FinancePayableSchema },
+      { name: Counter.name, schema: CounterSchema },
     ]),
   ],
   controllers: [PurchasingController],

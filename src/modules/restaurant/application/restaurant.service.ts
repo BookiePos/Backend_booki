@@ -13,6 +13,10 @@ import {
   RestaurantOrder,
   RestaurantOrderDocument,
 } from '../infrastructure/schemas/restaurant-order.schema';
+import {
+  Counter,
+  CounterDocument,
+} from '../../sales/infrastructure/schemas/counter.schema';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import {
   allowedSedeIds,
@@ -46,6 +50,8 @@ export class RestaurantService {
     private readonly tables: Model<RestaurantTableDocument>,
     @InjectModel(RestaurantOrder.name)
     private readonly orders: Model<RestaurantOrderDocument>,
+    @InjectModel(Counter.name)
+    private readonly counterModel: Model<CounterDocument>,
     private readonly params: ParamsService,
     private readonly tax: TaxService,
   ) {}
@@ -359,9 +365,20 @@ export class RestaurantService {
       .exec();
   }
 
+  /**
+   * Consecutivo de comanda vía $inc atómico (no requiere transacciones). Usa la
+   * colección de contadores compartida con la clave `restaurant_order`,
+   * evitando el reuso de números al borrar docs o bajo concurrencia (unique).
+   */
   private async nextNumber(): Promise<string> {
-    const n = (await this.orders.estimatedDocumentCount().exec()) + 1;
-    return `CMD-${String(n).padStart(6, '0')}`;
+    const counter = await this.counterModel
+      .findOneAndUpdate(
+        { _id: 'restaurant_order' },
+        { $inc: { seq: 1 } },
+        { upsert: true, new: true },
+      )
+      .exec();
+    return `CMD-${String(counter.seq).padStart(6, '0')}`;
   }
 
   private async tableOrFail(

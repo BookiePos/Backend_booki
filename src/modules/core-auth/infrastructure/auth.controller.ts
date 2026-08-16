@@ -1,4 +1,5 @@
 import { Body, Controller, Get, HttpCode, Post } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from '../application/auth.service';
 import { UsersService } from '../application/users.service';
 import { RegistrationService } from '../application/registration.service';
@@ -18,6 +19,8 @@ export class AuthController {
     private readonly registration: RegistrationService,
   ) {}
 
+  // Anti fuerza-bruta: 5 intentos por 5 minutos por IP.
+  @Throttle({ default: { limit: 5, ttl: 300_000 } })
   @Public()
   @Post('login')
   @HttpCode(200)
@@ -26,6 +29,7 @@ export class AuthController {
   }
 
   /** Alta pública de una empresa nueva (tenant) + su dueño. */
+  @Throttle({ default: { limit: 5, ttl: 300_000 } })
   @Public()
   @Post('register')
   @HttpCode(201)
@@ -33,6 +37,7 @@ export class AuthController {
     return this.registration.register(dto);
   }
 
+  @Throttle({ default: { limit: 10, ttl: 300_000 } })
   @Public()
   @Post('refresh')
   @HttpCode(200)

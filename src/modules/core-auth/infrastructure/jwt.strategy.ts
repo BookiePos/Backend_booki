@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
+import { jwtSecret } from '../../../shared/config/jwt-secrets';
 import type { BusinessType } from '../../control/domain/control.constants';
 
 /** Usuario resuelto desde el access token y adjuntado a `request.user`. */
@@ -37,7 +38,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: config.get<string>('JWT_SECRET') ?? 'dev-secret',
+      secretOrKey: jwtSecret(config),
     });
   }
 

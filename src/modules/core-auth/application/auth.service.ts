@@ -16,6 +16,7 @@ import {
 } from '../../../shared/tenancy/tenant-context';
 import { DirectoryService } from '../../control/application/directory.service';
 import { BusinessService } from '../../control/application/business.service';
+import { jwtRefreshSecret } from '../../../shared/config/jwt-secrets';
 import type { BusinessType } from '../../control/domain/control.constants';
 
 export interface AuthTokens {
@@ -188,11 +189,7 @@ export class AuthService {
   }
 
   private refreshSecret(): string {
-    return (
-      this.config.get<string>('JWT_REFRESH_SECRET') ??
-      this.config.get<string>('JWT_SECRET') ??
-      'dev-refresh-secret'
-    );
+    return jwtRefreshSecret(this.config);
   }
 
   private async toView(user: UserDocument): Promise<AuthUserView> {

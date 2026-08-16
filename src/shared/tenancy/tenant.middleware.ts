@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { NextFunction, Request, Response } from 'express';
 import { TenantContext, dbNameForBusiness } from './tenant-context';
+import { jwtSecret } from '../config/jwt-secrets';
 import type { BusinessType } from '../../modules/control/domain/control.constants';
 
 interface AccessClaims {
@@ -32,7 +33,7 @@ export class TenantMiddleware implements NestMiddleware {
       const token = header.slice(7);
       try {
         const claims = this.jwt.verify<AccessClaims>(token, {
-          secret: this.config.get<string>('JWT_SECRET') ?? 'dev-secret',
+          secret: jwtSecret(this.config),
         });
         if (claims?.biz) {
           const businessId = claims.biz;
