@@ -15,6 +15,7 @@ import {
 import { CoreAuthModule } from '../core-auth/core-auth.module';
 import { CoreParamsModule } from '../core-params/core-params.module';
 import { CoreTaxModule } from '../core-tax/core-tax.module';
+import { SalesModule } from '../sales/sales.module';
 import { RestaurantService } from './application/restaurant.service';
 import { RestaurantController } from './infrastructure/restaurant.controller';
 
@@ -23,6 +24,7 @@ import { RestaurantController } from './infrastructure/restaurant.controller';
     CoreAuthModule,
     CoreParamsModule,
     CoreTaxModule,
+    SalesModule,
     TenantMongooseModule.forFeature([
       { name: RestaurantTable.name, schema: RestaurantTableSchema },
       { name: RestaurantOrder.name, schema: RestaurantOrderSchema },

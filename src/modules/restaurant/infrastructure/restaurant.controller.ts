@@ -121,6 +121,12 @@ export class RestaurantController {
   }
 
   @RequirePermissions(PERMISSIONS.RESTAURANT_OPERATE)
+  @Post('orders/:id/send-to-caja')
+  sendToCaja(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.restaurant.sendToCaja(id, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.RESTAURANT_OPERATE)
   @Post('orders/:id/close')
   closeOrder(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.restaurant.closeOrder(id, user);

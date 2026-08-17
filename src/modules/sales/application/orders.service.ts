@@ -95,7 +95,11 @@ export class OrdersService {
     );
   }
 
-  async open(dto: CreateOrderDto, user: JwtUser): Promise<OrderDocument> {
+  async open(
+    dto: CreateOrderDto,
+    user: JwtUser,
+    restaurantOrderId?: Types.ObjectId,
+  ): Promise<OrderDocument> {
     this.assertSedeAccess(dto.sedeId, user);
     await this.assertCajaOpen(dto.sedeId);
     const sede = await this.sedes.findOrFail(dto.sedeId);
@@ -110,6 +114,7 @@ export class OrdersService {
       lines,
       openedById: user.userId,
       openedByEmail: user.email,
+      restaurantOrderId,
     });
     return this.getOrFail(created.id);
   }

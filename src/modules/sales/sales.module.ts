@@ -54,6 +54,6 @@ import { CoreParamsModule } from '../core-params/core-params.module';
   ],
   controllers: [SalesController, OrdersController],
   providers: [SalesService, OrdersService],
-  exports: [SalesService],
+  exports: [SalesService, OrdersService],
 })
 export class SalesModule {}

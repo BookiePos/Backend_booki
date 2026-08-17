@@ -18,6 +18,7 @@ import {
   Counter,
   CounterDocument,
 } from '../../sales/infrastructure/schemas/counter.schema';
+import { OrdersService } from '../../sales/application/orders.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import {
   allowedSedeIds,
@@ -57,6 +58,7 @@ export class RestaurantService {
     private readonly counterModel: Model<CounterDocument>,
     private readonly params: ParamsService,
     private readonly tax: TaxService,
+    private readonly posOrders: OrdersService,
   ) {}
 
   /**
@@ -156,14 +158,15 @@ export class RestaurantService {
       filter.sedeId = { $in: scope.map((id) => new Types.ObjectId(id)) };
     }
     if (query.status) filter.status = query.status;
-    return this.orders.find(filter).sort({ createdAt: -1 }).exec();
+    const list = await this.orders.find(filter).sort({ createdAt: -1 }).exec();
+    return Promise.all(list.map((o) => this.reconcileFromPos(o)));
   }
 
   async getOrder(id: string, user: JwtUser): Promise<RestaurantOrderDocument> {
     const order = await this.orders.findById(id).exec();
     if (!order) throw new NotFoundException('Comanda no encontrada');
     assertSedeAccess(user, order.sedeId.toString());
-    return order;
+    return this.reconcileFromPos(order);
   }
 
   /** Abre una comanda en una mesa libre y la marca ocupada. */
@@ -337,6 +340,92 @@ export class RestaurantService {
     return order;
   }
 
+  /**
+   * Envía la comanda a caja: crea una CUENTA del POS con sus ítems para que el
+   * cajero la cobre (venta + inventario + caja + ledger). Exige que todos los
+   * ítems sean productos del catálogo. Idempotente: si ya fue enviada, devuelve
+   * la comanda sin duplicar la cuenta.
+   */
+  async sendToCaja(
+    id: string,
+    user: JwtUser,
+  ): Promise<RestaurantOrderDocument> {
+    const order = await this.getOrder(id, user); // reconcilia de paso
+    if (order.status === 'closed' || order.status === 'cancelled') {
+      throw new BadRequestException('La comanda ya está cerrada');
+    }
+    if (order.items.length === 0) {
+      throw new BadRequestException('No se envía a caja una comanda vacía');
+    }
+    // Idempotencia: ya enviada, con cuenta POS abierta pendiente de cobro.
+    if (order.posOrderId) return order;
+
+    // Regla de negocio: solo productos del catálogo (para precio/impuesto/stock).
+    const sinProducto = order.items.filter((i) => !i.productId);
+    if (sinProducto.length > 0) {
+      const nombres = sinProducto.map((i) => i.name).join(', ');
+      throw new BadRequestException(
+        `Estos ítems no son productos del catálogo y no se pueden cobrar en caja: ${nombres}. ` +
+          'Reemplázalos por productos del menú antes de enviar a caja.',
+      );
+    }
+
+    this.recomputeTotals(order);
+    const note =
+      `Restaurante · Mesa ${order.tableName} · Comanda ${order.number}` +
+      (order.tipAmount > 0 ? ` · Propina sugerida $${order.tipAmount}` : '');
+    const posOrder = await this.posOrders.open(
+      {
+        sedeId: order.sedeId.toString(),
+        label: `Mesa ${order.tableName}`,
+        note,
+        lines: order.items.map((i) => ({
+          productId: i.productId!.toString(),
+          qty: i.qty,
+        })),
+      },
+      user,
+      order._id as Types.ObjectId,
+    );
+
+    order.posOrderId = posOrder._id as Types.ObjectId;
+    order.status = 'billed';
+    await order.save();
+    await this.tables
+      .updateOne({ _id: order.tableId }, { status: 'bill_requested' })
+      .exec();
+    return order;
+  }
+
+  /**
+   * Reconcilia una comanda enviada a caja con su cuenta POS: si la cuenta se
+   * cobró (closed) cierra la comanda y libera la mesa; si se anuló (void)
+   * reabre la comanda para poder reenviarla. Best-effort: si la cuenta no
+   * existe o falla la consulta, la comanda queda como está.
+   */
+  private async reconcileFromPos(
+    order: RestaurantOrderDocument,
+  ): Promise<RestaurantOrderDocument> {
+    if (!order.posOrderId || order.status !== 'billed') return order;
+    let pos: Awaited<ReturnType<OrdersService['getOrFail']>>;
+    try {
+      pos = await this.posOrders.getOrFail(order.posOrderId.toString());
+    } catch {
+      return order;
+    }
+    if (pos.status === 'closed') {
+      order.status = 'closed';
+      order.closedAt = pos.closedAt ?? new Date();
+      await order.save();
+      await this.freeTable(order);
+    } else if (pos.status === 'void') {
+      order.set('posOrderId', undefined);
+      order.status = 'open';
+      await order.save();
+    }
+    return order;
+  }
+
   async cancelOrder(
     id: string,
     dto: CancelOrderDto,
@@ -374,6 +463,11 @@ export class RestaurantService {
   private assertEditable(order: RestaurantOrderDocument): void {
     if (order.status === 'closed' || order.status === 'cancelled') {
       throw new BadRequestException('La comanda ya está cerrada');
+    }
+    if (order.posOrderId) {
+      throw new BadRequestException(
+        'La comanda ya fue enviada a caja; anula el cobro en el POS para editarla',
+      );
     }
   }
 

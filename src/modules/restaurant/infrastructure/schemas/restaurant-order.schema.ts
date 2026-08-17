@@ -95,6 +95,14 @@ export class RestaurantOrder {
   @Prop({ required: true, trim: true })
   waiterEmail!: string;
 
+  /**
+   * Cuenta del POS creada al "enviar a caja" (puente restaurante → POS). El
+   * cobro real (venta, inventario, caja, ledger) ocurre sobre esta cuenta; al
+   * cerrarse allí, la comanda se reconcilia a 'closed'.
+   */
+  @Prop({ type: Types.ObjectId, ref: 'Order' })
+  posOrderId?: Types.ObjectId;
+
   @Prop()
   sentAt?: Date;
 

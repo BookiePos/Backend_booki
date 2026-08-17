@@ -68,6 +68,10 @@ export class Order {
   @Prop({ type: Types.ObjectId, ref: 'Sale' })
   saleId?: Types.ObjectId;
 
+  /** Comanda de restaurante que originó esta cuenta (puente restaurante → POS). */
+  @Prop({ type: Types.ObjectId, ref: 'RestaurantOrder' })
+  restaurantOrderId?: Types.ObjectId;
+
   @Prop({ type: Date })
   closedAt?: Date;
 }
