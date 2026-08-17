@@ -6,7 +6,10 @@ import {
   HttpCode,
   Param,
   Post,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
+import { ConfigService } from '@nestjs/config';
 import { InvitationsService } from '../application/invitations.service';
 import { CreateInvitationDto } from '../application/dto/create-invitation.dto';
 import { AcceptInvitationDto } from '../application/dto/accept-invitation.dto';
@@ -15,10 +18,14 @@ import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { JwtUser } from './jwt.strategy';
 import { PERMISSIONS } from '../domain/permissions';
+import { setRefreshCookie } from './auth-cookie';
 
 @Controller('invitations')
 export class InvitationsController {
-  constructor(private readonly invitations: InvitationsService) {}
+  constructor(
+    private readonly invitations: InvitationsService,
+    private readonly config: ConfigService,
+  ) {}
 
   @RequirePermissions(PERMISSIONS.USERS_MANAGE)
   @Get()
@@ -56,10 +63,13 @@ export class InvitationsController {
   @Public()
   @Post('accept/:token')
   @HttpCode(200)
-  accept(
+  async accept(
     @Param('token') token: string,
     @Body() dto: AcceptInvitationDto,
+    @Res({ passthrough: true }) res: Response,
   ) {
-    return this.invitations.accept(token, dto);
+    const result = await this.invitations.accept(token, dto);
+    setRefreshCookie(res, result.tokens.refreshToken, this.config);
+    return result;
   }
 }

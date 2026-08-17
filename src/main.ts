@@ -1,11 +1,16 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
+import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule, { bufferLogs: false });
+
+  // Lee cookies (el refresh token viaja como cookie HttpOnly). Necesario antes
+  // de los controladores que leen req.cookies.
+  app.use(cookieParser());
 
   // Un solo frontend: la app unificada de GoCheck en :3000 sirve la web
   // pública, el panel (/panel) y el punto de venta (/pos). Al compartir
