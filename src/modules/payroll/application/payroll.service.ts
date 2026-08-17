@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -77,6 +78,8 @@ export interface PreviewResult {
 
 @Injectable()
 export class PayrollService {
+  private readonly logger = new Logger(PayrollService.name);
+
   constructor(
     @InjectModel(PayrollSettings.name)
     private readonly settings: Model<PayrollSettingsDocument>,
@@ -510,6 +513,17 @@ export class PayrollService {
         costoEmpleador: breakdown.costoEmpleador,
       };
     });
+
+    // Señal (no cambia la política estricta): empleados que quedaron con 0 días
+    // trabajados por falta de registros de asistencia se liquidan en 0. Sin este
+    // aviso el pago en 0 pasa inadvertido; con él queda visible en el log.
+    const sinDias = slips.filter((sl) => sl.diasTrabajados === 0);
+    if (sinDias.length > 0) {
+      this.logger.warn(
+        `Nómina ${period}: ${sinDias.length} empleado(s) con 0 días trabajados (sin asistencia) ` +
+          `se liquidan en 0: ${sinDias.map((sl) => sl.employeeName || sl.employeeId).join(', ')}.`,
+      );
+    }
 
     const totals = slips.reduce(
       (acc, sl) => ({

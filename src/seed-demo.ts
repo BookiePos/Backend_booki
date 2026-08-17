@@ -127,6 +127,15 @@ async function seedDemo(): Promise<void> {
 
     // ── Usuario Dueño demo ──────────────────────────────────────────────────────
     const demoEmail = process.env.SEED_DEMO_EMAIL ?? 'demo@sistemapos.local';
+    // En producción exigimos SEED_DEMO_PASSWORD: el seed de demostración no debe
+    // crear un usuario con contraseña por defecto conocida en un entorno real.
+    // En desarrollo se conserva el default para no romper el flujo local.
+    const isProd = process.env.NODE_ENV === 'production';
+    if (isProd && !process.env.SEED_DEMO_PASSWORD) {
+      throw new Error(
+        'SEED_DEMO_PASSWORD es obligatorio en producción: define una contraseña segura en el entorno antes de correr el seed de demo.',
+      );
+    }
     const demoPassword = process.env.SEED_DEMO_PASSWORD ?? 'Demo123!';
     let demoUser = await usersSvc.findByEmail(demoEmail);
     const freshUser = !demoUser;
@@ -138,7 +147,8 @@ async function seedDemo(): Promise<void> {
         role: ROLES.OWNER,
         sedeIds: [centroId, norteId],
       });
-      logger.log(`Usuario Dueño demo creado: ${demoEmail} / ${demoPassword}`);
+      // No se registra la contraseña en claro en el log.
+      logger.log(`Usuario Dueño demo creado: ${demoEmail}`);
     }
 
     const owner: JwtUser = {

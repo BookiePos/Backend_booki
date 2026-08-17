@@ -44,9 +44,11 @@ export class AuditInterceptor implements NestInterceptor {
       role: req.user?.role,
       method,
       path: (req.originalUrl || req.url || '').split('?')[0] ?? '/',
-      ip:
-        (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0] ||
-        req.ip,
+      // `req.ip` respeta `trust proxy` (configurado en main.ts): con un reverse
+      // proxy toma la IP real del primer salto confiable; sin proxy, la del
+      // socket. No parseamos X-Forwarded-For a mano porque ese header es
+      // falseable por el cliente cuando no hay proxy que lo sobrescriba.
+      ip: req.ip,
     };
 
     return next.handle().pipe(

@@ -3,6 +3,7 @@ import {
   ArrayNotEmpty,
   IsArray,
   IsIn,
+  IsInt,
   IsMongoId,
   IsNumber,
   IsOptional,
@@ -34,7 +35,10 @@ export class SaleLineDto {
   @IsMongoId()
   productId!: string;
 
-  @IsNumber()
+  // El POS vende por unidad (la línea persiste unit:'und'); no hay venta por
+  // peso/granel en ningún flujo. Las fracciones de receta (p. ej. 0.15 kg) viven
+  // en la definición del producto de catálogo, no en la cantidad vendida.
+  @IsInt()
   @IsPositive()
   qty!: number;
 

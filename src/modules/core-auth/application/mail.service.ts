@@ -137,6 +137,10 @@ export class MailService {
     const inviter = msg.inviterName
       ? `${escapeHtml(msg.inviterName)} te invitó`
       : 'Te invitaron';
+    // La URL de invitación también se escapa: aunque la generamos nosotros,
+    // puede llevar querystring y no debe poder romper el atributo href ni
+    // inyectar HTML si algún día su origen cambia.
+    const inviteUrl = escapeHtml(msg.inviteUrl);
     return `<!doctype html>
 <html lang="es"><body style="margin:0;background:#faf9f7;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#201f1d;">
   <div style="max-width:480px;margin:0 auto;padding:40px 24px;">
@@ -149,12 +153,12 @@ export class MailService {
       <p style="font-size:15px;line-height:1.5;color:#4b4842;margin:0 0 24px;">
         Haz clic en el botón para elegir tu contraseña y activar tu cuenta.
       </p>
-      <a href="${msg.inviteUrl}" style="display:inline-block;background:#3f4a5a;color:#fff;text-decoration:none;font-size:15px;font-weight:500;padding:12px 24px;border-radius:10px;">
+      <a href="${inviteUrl}" style="display:inline-block;background:#3f4a5a;color:#fff;text-decoration:none;font-size:15px;font-weight:500;padding:12px 24px;border-radius:10px;">
         Aceptar invitación
       </a>
       <p style="font-size:13px;line-height:1.5;color:#8a857c;margin:24px 0 0;">
         O copia este enlace en tu navegador:<br>
-        <a href="${msg.inviteUrl}" style="color:#5b7196;word-break:break-all;">${msg.inviteUrl}</a>
+        <a href="${inviteUrl}" style="color:#5b7196;word-break:break-all;">${inviteUrl}</a>
       </p>
       <p style="font-size:13px;color:#8a857c;margin:16px 0 0;">
         Si no esperabas esta invitación, puedes ignorar este correo.

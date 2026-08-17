@@ -96,6 +96,15 @@ async function seed(): Promise<void> {
     }
 
     const adminEmail = process.env.SEED_ADMIN_EMAIL ?? 'admin@sistemapos.local';
+    // En producción exigimos SEED_ADMIN_PASSWORD: no sembramos con una
+    // contraseña por defecto conocida. En desarrollo se conserva el default
+    // para no romper el flujo local.
+    const isProd = process.env.NODE_ENV === 'production';
+    if (isProd && !process.env.SEED_ADMIN_PASSWORD) {
+      throw new Error(
+        'SEED_ADMIN_PASSWORD es obligatorio en producción: define una contraseña segura en el entorno antes de correr el seed.',
+      );
+    }
     const adminPassword = process.env.SEED_ADMIN_PASSWORD ?? 'Admin123!';
     const existing = await users.findByEmail(adminEmail);
     if (!existing) {
@@ -106,7 +115,8 @@ async function seed(): Promise<void> {
         role: ROLES.OWNER,
         sedeIds: [sede.id],
       });
-      logger.log(`Admin (Dueño) creado: ${adminEmail} / ${adminPassword}`);
+      // No se registra la contraseña en claro en el log.
+      logger.log(`Admin (Dueño) creado: ${adminEmail}`);
     } else if (existing.role !== ROLES.OWNER) {
       // Migración idempotente: el admin previo pasa a ser Dueño.
       await users.update(existing.id, { role: ROLES.OWNER });

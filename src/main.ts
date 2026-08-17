@@ -9,6 +9,13 @@ async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule, { bufferLogs: false });
 
+  // Confiamos en UN salto de reverse proxy (Nginx/ingress/etc.) para que
+  // Express derive `req.ip` del primer valor de X-Forwarded-For puesto por el
+  // proxy y no de headers arbitrarios del cliente. Los consumidores (p. ej. la
+  // auditoría) usan `req.ip` en vez de leer el header a mano, evitando IP
+  // falseada. Si no hay proxy, `req.ip` cae a la IP del socket (también segura).
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
+
   // Cabeceras de seguridad HTTP (helmet) antes de cualquier ruta. Es una API
   // JSON (no sirve HTML propio), así que la CSP por defecto no aplica a un
   // frontend externo; se dejan los valores por defecto de helmet.

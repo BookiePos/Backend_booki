@@ -598,15 +598,31 @@ export class SalesService {
    * consumió (componentes de la venta; en ventas antiguas, las líneas).
    */
   async void(id: string, user: JwtUser): Promise<SaleDocument> {
-    const sale = await this.getOrFail(id);
+    // Carga previa solo para validar el acceso por sede (y devolver 404 si no
+    // existe). La anulación real se "toma" con un flip atómico más abajo.
+    const existing = await this.getOrFail(id);
     const sedeId = (
-      sale.sedeId as unknown as { _id: Types.ObjectId }
+      existing.sedeId as unknown as { _id: Types.ObjectId }
     )._id.toString();
     assertSedeAccess(user, sedeId);
-    if (sale.status === 'void') {
+
+    // Guarda de concurrencia (Mongo standalone, sin transacciones): tomamos la
+    // venta con un update condicional `status != 'void'`. Solo un llamador gana
+    // el flip; si `findOneAndUpdate` devuelve null la venta ya estaba anulada,
+    // así dos anulaciones simultáneas NO revierten el stock dos veces. Mismo
+    // patrón atómico usado en otros flujos (checkout/deducciones).
+    const sale = await this.saleModel
+      .findOneAndUpdate(
+        { _id: existing._id, status: { $ne: 'void' } },
+        { $set: { status: 'void' } },
+        { new: true },
+      )
+      .exec();
+    if (!sale) {
       throw new BadRequestException('La venta ya está anulada');
     }
 
+    // A partir de aquí somos los dueños del flip: revertimos stock una sola vez.
     const source = sale.components.length > 0 ? sale.components : sale.lines;
     const units = source.map((x) => ({
       productId: x.productId.toString(),
@@ -621,8 +637,6 @@ export class SalesService {
       await this.stock.reverseSale(sedeId, units, user);
     }
 
-    sale.status = 'void';
-    await sale.save();
     // Reversa contable de la venta (contra-asiento).
     await this.ledgerPosting.reverseSale(sale._id.toString(), user.email);
     // Reversa del auto-posteo a tesorería (si la venta fue tarjeta/transferencia).

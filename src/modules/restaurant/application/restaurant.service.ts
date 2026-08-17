@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -45,6 +46,8 @@ type OrderItemWithId = RestaurantOrderDocument['items'][number] & {
 
 @Injectable()
 export class RestaurantService {
+  private readonly logger = new Logger(RestaurantService.name);
+
   constructor(
     @InjectModel(RestaurantTable.name)
     private readonly tables: Model<RestaurantTableDocument>,
@@ -68,14 +71,25 @@ export class RestaurantService {
     try {
       const inc = await this.tax.resolveRate('INC_8');
       if (typeof inc.rate === 'number') incRate = inc.rate;
-    } catch {
-      // fallback al default del módulo
+    } catch (err) {
+      // fallback al default del módulo, pero visible: la tarifa parametrizada no
+      // se pudo resolver (sin sembrar, error de BD, etc.).
+      this.logger.warn(
+        `No se pudo resolver la tarifa INC_8 parametrizada; se usa el default ${DEFAULT_INC_RATE}. ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
     try {
       const tip = await this.params.resolve('propina.sugerida');
       if (typeof tip.value === 'number') tipRate = tip.value;
-    } catch {
-      // fallback al default del módulo
+    } catch (err) {
+      // fallback al default del módulo, pero visible.
+      this.logger.warn(
+        `No se pudo resolver la propina sugerida parametrizada; se usa el default ${DEFAULT_TIP_RATE}. ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
     return { incRate, tipRate };
   }
