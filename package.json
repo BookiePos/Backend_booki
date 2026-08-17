@@ -10,7 +10,8 @@
     "seed": "tsc -p tsconfig.json && node dist/seed.js",
     "seed:demo": "tsc -p tsconfig.json && node dist/seed-demo.js",
     "seed:payroll": "tsc -p tsconfig.json && node dist/seed-payroll.js",
-    "test": "echo \"TODO: configurar test runner (vitest/jest)\" && exit 0",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "echo \"TODO: eslint\" && exit 0"
   },
   "engines": {
@@ -41,6 +42,7 @@
   "devDependencies": {
     "@nestjs/cli": "^11.0.24",
     "@nestjs/schematics": "^11.1.0",
+    "@swc/core": "^1.16.0",
     "@types/bcryptjs": "^3.0.0",
     "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.6",
@@ -49,6 +51,9 @@
     "@types/pdfkit": "^0.17.6",
     "ts-node-dev": "^2.0.0",
     "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "unplugin-swc": "^1.5.11",
+    "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "^4.1.10"
   }
 }
