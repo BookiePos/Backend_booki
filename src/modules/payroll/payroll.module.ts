@@ -26,6 +26,7 @@ import {
 } from '../sedes/infrastructure/schemas/sede.schema';
 import { CoreAuthModule } from '../core-auth/core-auth.module';
 import { CoreParamsModule } from '../core-params/core-params.module';
+import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
 import { PayrollService } from './application/payroll.service';
 import { PayrollController } from './infrastructure/payroll.controller';
 
@@ -33,6 +34,7 @@ import { PayrollController } from './infrastructure/payroll.controller';
   imports: [
     CoreAuthModule,
     CoreParamsModule,
+    CoreLedgerModule,
     TenantMongooseModule.forFeature([
       { name: PayrollSettings.name, schema: PayrollSettingsSchema },
       { name: PayrollRun.name, schema: PayrollRunSchema },

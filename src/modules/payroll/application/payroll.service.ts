@@ -61,6 +61,7 @@ import {
 } from '../domain/liquidacion-calc';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { ParamsService } from '../../core-params/application/params.service';
+import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 
 export interface PreviewResult {
   input: {
@@ -91,6 +92,7 @@ export class PayrollService {
     private readonly deductions: Model<PayrollDeductionDocument>,
     private readonly mail: MailService,
     private readonly params: ParamsService,
+    private readonly ledgerPosting: LedgerPostingService,
   ) {}
 
   /** Genera el comprobante (PDF) de un desprendible y lo envía al correo del empleado. */
@@ -723,6 +725,22 @@ export class PayrollService {
     run.status = 'cerrada';
     run.closedAt = new Date();
     await run.save();
+
+    // Asiento contable de la nómina causada (gasto de personal / salarios por
+    // pagar). Best-effort e idempotente por (payroll_run, runId): igual que el
+    // posteo de ventas, un fallo del ledger NO tumba el cierre de la corrida (la
+    // corrida es la fuente de verdad y el asiento puede reconstruirse). Se usa
+    // `totals.costo` (costo total empleador: devengados + aportes + provisiones)
+    // como monto del gasto de personal.
+    await this.ledgerPosting.postPayrollRun({
+      runId: run._id.toString(),
+      date: (run.closedAt ?? new Date()).toLocaleDateString('en-CA'),
+      sedeId: run.sedeId ? run.sedeId.toString() : undefined,
+      amount: Math.round(run.totals?.costo ?? 0),
+      period: run.period,
+      userEmail: run.createdByEmail,
+    });
+
     return run;
   }
 

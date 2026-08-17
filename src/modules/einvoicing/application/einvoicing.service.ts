@@ -75,11 +75,22 @@ export class EinvoicingService {
     if (existing) return existing;
 
     const sede = await this.sedes.findOrFail(sedeId);
-    const prefix = sede.resolucionFe?.prefijo ?? '';
+
+    // No quemar folio en un documento inválido: sin clave técnica no se puede
+    // calcular el CUFE (ni el QR), y el consecutivo del rango autorizado por la
+    // DIAN es un recurso escaso. Validamos ANTES de incrementar el contador; si
+    // falta, se aborta sin consumir número.
+    if (!sede.resolucionFe?.claveTecnica) {
+      throw new BadRequestException(
+        'No se puede emitir: falta la clave técnica DIAN de la sede para calcular el CUFE.',
+      );
+    }
+
+    const prefix = sede.resolucionFe.prefijo ?? '';
     const number = await this.nextNumber(
       `fe:${sedeId}:${prefix}`,
-      sede.resolucionFe?.rangoDesde ?? 1,
-      sede.resolucionFe?.rangoHasta,
+      sede.resolucionFe.rangoDesde ?? 1,
+      sede.resolucionFe.rangoHasta,
     );
     const fullNumber = `${prefix}${number}`;
     const { issueDate, issueTime } = this.now();
@@ -104,23 +115,19 @@ export class EinvoicingService {
     const emisor = this.buildEmisor(sede);
     const medioPago = MEDIO_PAGO_BY_METHOD[sale.payment.method] ?? '10';
 
-    // CUFE (Anexo 1.9). Solo se puede calcular con la clave técnica de la sede.
-    let cufe: string | undefined;
-    let qrUrl: string | undefined;
-    if (sede.resolucionFe?.claveTecnica) {
-      cufe = computeCufe({
-        numFac: fullNumber,
-        fecFac: issueDate,
-        horFac: issueTime,
-        valFac: sale.taxableBase ?? 0,
-        valIva: sale.taxTotal ?? 0,
-        valTot: sale.total,
-        nitOFE: (sede.nit ?? '').replace(/\D/g, ''),
-        numAdq: adquiriente.docNumber ?? CONSUMIDOR_FINAL_NIT,
-        claveTecnica: sede.resolucionFe.claveTecnica,
-      });
-      qrUrl = dianVerificationUrl(cufe);
-    }
+    // CUFE (Anexo 1.9). La clave técnica ya se validó arriba (folio no quemado).
+    const cufe = computeCufe({
+      numFac: fullNumber,
+      fecFac: issueDate,
+      horFac: issueTime,
+      valFac: sale.taxableBase ?? 0,
+      valIva: sale.taxTotal ?? 0,
+      valTot: sale.total,
+      nitOFE: (sede.nit ?? '').replace(/\D/g, ''),
+      numAdq: adquiriente.docNumber ?? CONSUMIDOR_FINAL_NIT,
+      claveTecnica: sede.resolucionFe.claveTecnica,
+    });
+    const qrUrl = dianVerificationUrl(cufe);
 
     return this.model.create({
       type: 'invoice',
@@ -162,26 +169,31 @@ export class EinvoicingService {
     }
 
     const sede = await this.sedes.findOrFail(sedeId);
+
+    // Igual que en la factura: sin clave técnica no hay CUFE, así que no se
+    // consume el consecutivo de la nota crédito. Validar ANTES de nextNumber.
+    if (!sede.resolucionFe?.claveTecnica) {
+      throw new BadRequestException(
+        'No se puede emitir: falta la clave técnica DIAN de la sede para calcular el CUFE.',
+      );
+    }
+
     const number = await this.nextNumber(`nc:${sedeId}`, 1, undefined);
     const fullNumber = `NC${number}`;
     const { issueDate, issueTime } = this.now();
 
-    let cufe: string | undefined;
-    let qrUrl: string | undefined;
-    if (sede.resolucionFe?.claveTecnica) {
-      cufe = computeCufe({
-        numFac: fullNumber,
-        fecFac: issueDate,
-        horFac: issueTime,
-        valFac: invoice.taxableBase,
-        valIva: invoice.ivaTotal,
-        valTot: invoice.total,
-        nitOFE: (sede.nit ?? '').replace(/\D/g, ''),
-        numAdq: invoice.adquiriente?.docNumber ?? CONSUMIDOR_FINAL_NIT,
-        claveTecnica: sede.resolucionFe.claveTecnica,
-      });
-      qrUrl = dianVerificationUrl(cufe);
-    }
+    const cufe = computeCufe({
+      numFac: fullNumber,
+      fecFac: issueDate,
+      horFac: issueTime,
+      valFac: invoice.taxableBase,
+      valIva: invoice.ivaTotal,
+      valTot: invoice.total,
+      nitOFE: (sede.nit ?? '').replace(/\D/g, ''),
+      numAdq: invoice.adquiriente?.docNumber ?? CONSUMIDOR_FINAL_NIT,
+      claveTecnica: sede.resolucionFe.claveTecnica,
+    });
+    const qrUrl = dianVerificationUrl(cufe);
 
     return this.model.create({
       type: 'credit_note',

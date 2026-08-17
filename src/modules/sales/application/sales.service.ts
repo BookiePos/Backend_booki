@@ -39,6 +39,7 @@ import { LedgerPostingService } from '../../core-ledger/application/ledger-posti
 import { TreasuryPostingService } from '../../finance/treasury/treasury-posting.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
+import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import { CreateSaleDto } from './dto/create-sale.dto';
 
 @Injectable()
@@ -76,13 +77,6 @@ export class SalesService {
     return d.toLocaleDateString('en-CA');
   }
 
-  /** El cajero solo opera sedes asignadas a su usuario (JWT). */
-  private assertSedeAccess(sedeId: string, user: JwtUser): void {
-    if (!user.sedeIds.includes(sedeId)) {
-      throw new ForbiddenException('No tienes acceso a esta sede');
-    }
-  }
-
   /**
    * Consecutivo por sede vía $inc atómico (no requiere transacciones).
    * Formato "FV-000123" (Factura de Venta): prefijo fijo + consecutivo, sin el
@@ -104,7 +98,7 @@ export class SalesService {
     user: JwtUser,
     orderId?: Types.ObjectId,
   ): Promise<SaleDocument> {
-    this.assertSedeAccess(dto.sedeId, user);
+    assertSedeAccess(user, dto.sedeId);
     // Valida que la sede exista (lanza 404 si no).
     await this.sedes.findOrFail(dto.sedeId);
 
@@ -608,7 +602,7 @@ export class SalesService {
     const sedeId = (
       sale.sedeId as unknown as { _id: Types.ObjectId }
     )._id.toString();
-    this.assertSedeAccess(sedeId, user);
+    assertSedeAccess(user, sedeId);
     if (sale.status === 'void') {
       throw new BadRequestException('La venta ya está anulada');
     }
@@ -638,7 +632,7 @@ export class SalesService {
 
   /** Ventas de una sede, paginadas (más recientes primero). */
   async list(sedeId: string, user: JwtUser, page = 1, limit = 20) {
-    this.assertSedeAccess(sedeId, user);
+    assertSedeAccess(user, sedeId);
     const filter = { sedeId: new Types.ObjectId(sedeId) };
     const capped = Math.min(Math.max(limit, 1), 100);
     const current = Math.max(page, 1);
@@ -660,7 +654,7 @@ export class SalesService {
     sedeId: string,
     user: JwtUser,
   ): Promise<{ count: number; total: number }> {
-    this.assertSedeAccess(sedeId, user);
+    assertSedeAccess(user, sedeId);
     const start = new Date();
     start.setHours(0, 0, 0, 0);
     const sales = await this.saleModel
@@ -691,7 +685,7 @@ export class SalesService {
    * cuántas unidades se pueden vender según el stock de sus componentes.
    */
   async posProducts(sedeId: string, user: JwtUser) {
-    this.assertSedeAccess(sedeId, user);
+    assertSedeAccess(user, sedeId);
     await this.sedes.findOrFail(sedeId);
     const [catalog, items] = await Promise.all([
       this.catalog.listSellable(),

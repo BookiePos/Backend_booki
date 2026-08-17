@@ -1,4 +1,4 @@
-import { IsString, MinLength } from 'class-validator';
+import { IsString, IsStrongPassword, MinLength } from 'class-validator';
 
 export class AcceptInvitationDto {
   @IsString()
@@ -6,6 +6,12 @@ export class AcceptInvitationDto {
   name!: string;
 
   @IsString()
-  @MinLength(6)
+  @IsStrongPassword({
+    minLength: 8,
+    minLowercase: 1,
+    minUppercase: 1,
+    minNumbers: 1,
+    minSymbols: 1,
+  })
   password!: string;
 }

@@ -33,7 +33,12 @@ export class CustomersService {
     const filter: Record<string, unknown> = {};
     if (!query.includeInactive) filter.active = true;
     if (query.search) {
-      const rx = new RegExp(query.search.trim(), 'i');
+      // Escapa los metacaracteres del input del usuario antes de construir la
+      // regex: evita ReDoS (un patrón malicioso bloquearía el event loop).
+      const escaped = query.search
+        .trim()
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = new RegExp(escaped, 'i');
       filter.$or = [{ name: rx }, { docNumber: rx }, { phone: rx }];
     }
     return this.customers.find(filter).sort({ name: 1 }).limit(200).exec();

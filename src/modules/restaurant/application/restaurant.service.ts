@@ -290,7 +290,20 @@ export class RestaurantService {
     return order;
   }
 
-  /** Cierra la comanda (pagada) y libera la mesa. */
+  /**
+   * Cierra la comanda (pagada) y libera la mesa.
+   *
+   * ADVERTENCIA (impacto contable/inventario): a diferencia del cobro del POS
+   * (`orders.checkout`, sales module), este cierre NO genera una venta (Sale),
+   * NO descuenta inventario y NO registra el efectivo en la caja de la sede.
+   * Solo marca la comanda como 'closed', recalcula totales (INC + propina) y
+   * libera la mesa. El módulo de restaurante gestiona mesas/comandas; el cobro
+   * real (venta, stock, caja, ledger) se espera a través del POS. Cablear aquí
+   * la generación de la venta requeriría inyectar SalesService/CatalogService,
+   * resolver ítems de texto libre a productos vendibles del catálogo, exigir una
+   * caja abierta y una guarda de concurrencia — y arriesga DOBLE CONTEO si la
+   * comanda además se cobra por el POS. Decisión de negocio pendiente del dueño.
+   */
   async closeOrder(
     id: string,
     user: JwtUser,

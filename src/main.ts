@@ -2,11 +2,17 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
 import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule, { bufferLogs: false });
+
+  // Cabeceras de seguridad HTTP (helmet) antes de cualquier ruta. Es una API
+  // JSON (no sirve HTML propio), así que la CSP por defecto no aplica a un
+  // frontend externo; se dejan los valores por defecto de helmet.
+  app.use(helmet());
 
   // Lee cookies (el refresh token viaja como cookie HttpOnly). Necesario antes
   // de los controladores que leen req.cookies.
@@ -21,8 +27,24 @@ async function bootstrap(): Promise<void> {
     .split(',')
     .map((o) => o.trim())
     .filter(Boolean);
+  // En producción no deben permitirse orígenes localhost/http (inseguros o de
+  // desarrollo): se filtran y se advierte claramente. En desarrollo se
+  // conserva el comportamiento actual sin cambios.
+  const isProd = process.env.NODE_ENV === 'production';
+  const safeOrigins = isProd
+    ? corsOrigins.filter((o) => {
+        const insecure = /^http:\/\//i.test(o) || /localhost|127\.0\.0\.1/i.test(o);
+        if (insecure) {
+          logger.warn(
+            `CORS: origen "${o}" ignorado en producción (localhost o http inseguro). ` +
+              'Configura CORS_ORIGIN con dominios https públicos.',
+          );
+        }
+        return !insecure;
+      })
+    : corsOrigins;
   app.enableCors({
-    origin: corsOrigins,
+    origin: safeOrigins,
     credentials: true,
   });
 

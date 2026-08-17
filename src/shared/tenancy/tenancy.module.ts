@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtModule, JwtModuleOptions } from '@nestjs/jwt';
 import { jwtSecret } from '../config/jwt-secrets';
+import { ControlModule } from '../../modules/control/control.module';
 import { TenantModelRegistry } from './tenant-model.registry';
 import { TenantMiddleware } from './tenant.middleware';
 
@@ -28,6 +29,9 @@ import { TenantMiddleware } from './tenant.middleware';
         secret: jwtSecret(config),
       }),
     }),
+    // El middleware bloquea empresas suspendidas / con trial vencido; para ello
+    // consulta el estado en el control-plane vía BusinessService.
+    ControlModule,
   ],
   providers: [TenantModelRegistry, TenantMiddleware],
   exports: [TenantModelRegistry],
