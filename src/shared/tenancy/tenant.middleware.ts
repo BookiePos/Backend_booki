@@ -21,10 +21,15 @@ interface AccessClaims {
   biztype?: BusinessType;
 }
 
+/** Motivo por el que una empresa no puede operar. */
+type BlockReason = 'suspended' | 'trial_expired';
+
 /** Estado + plan cacheados de una empresa (para no consultar por request). */
 interface BusinessGate {
   /** `true` si la empresa puede operar; `false` si suspendida o trial vencido. */
   allowed: boolean;
+  /** Por qué está bloqueada (solo cuando `allowed` es `false`). */
+  reason?: BlockReason;
   /** Plan vigente (normalizado). Ausente si el control-plane no respondió. */
   plan?: BusinessPlan;
   /** Complementos contratados. */
@@ -74,10 +79,20 @@ export class TenantMiddleware implements NestMiddleware {
               // el dueño paga para reactivarse. El resto se bloquea.
               const billingBypass = (req.path ?? '').startsWith('/billing');
               if (!gate.allowed && !billingBypass) {
+                const trialExpired = gate.reason === 'trial_expired';
+                // Cuerpo con discriminador `code` para que el frontend distinga
+                // esta suspensión de un 403 por permisos y muestre el aviso de
+                // reactivación (no un "sin acceso" genérico).
                 next(
-                  new ForbiddenException(
-                    'La cuenta de tu empresa está suspendida o el periodo de prueba venció. Contacta a soporte para reactivarla.',
-                  ),
+                  new ForbiddenException({
+                    statusCode: 403,
+                    error: 'AccountSuspended',
+                    code: 'ACCOUNT_SUSPENDED',
+                    reason: gate.reason ?? 'suspended',
+                    message: trialExpired
+                      ? 'El periodo de prueba de tu empresa venció. Reactiva tu plan para volver a operar.'
+                      : 'La cuenta de tu empresa está suspendida. Reactiva tu plan para volver a operar.',
+                  }),
                 );
                 return;
               }
@@ -124,8 +139,14 @@ export class TenantMiddleware implements NestMiddleware {
           business.status === 'trial' &&
           business.trialEndsAt != null &&
           business.trialEndsAt.getTime() < now;
+        const suspended = business.status === 'suspended';
         gate = {
-          allowed: business.status !== 'suspended' && !trialExpired,
+          allowed: !suspended && !trialExpired,
+          reason: suspended
+            ? 'suspended'
+            : trialExpired
+              ? 'trial_expired'
+              : undefined,
           plan: normalizePlan(business.plan),
           addOns: business.addOns,
           expiresAt: now + TenantMiddleware.STATUS_CACHE_TTL_MS,
