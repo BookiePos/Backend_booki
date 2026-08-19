@@ -8,6 +8,7 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { BusinessService } from '../../control/application/business.service';
+import { CONTROL_CONNECTION } from '../../control/domain/control.constants';
 import {
   ADD_ONS,
   BUSINESS_PLANS,
@@ -56,9 +57,9 @@ export class BillingService {
   constructor(
     private readonly businesses: BusinessService,
     private readonly wompi: WompiClient,
-    @InjectModel(Subscription.name)
+    @InjectModel(Subscription.name, CONTROL_CONNECTION)
     private readonly subs: Model<SubscriptionDocument>,
-    @InjectModel(Payment.name)
+    @InjectModel(Payment.name, CONTROL_CONNECTION)
     private readonly payments: Model<PaymentDocument>,
   ) {}
 
