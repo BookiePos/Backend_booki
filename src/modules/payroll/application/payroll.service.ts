@@ -34,6 +34,9 @@ import {
   SedeDocument,
 } from '../../sedes/infrastructure/schemas/sede.schema';
 import { MailService } from '../../core-auth/application/mail.service';
+import { TenantContext } from '../../../shared/tenancy/tenant-context';
+import { effectiveEntitlements } from '../../control/domain/plans';
+import { PlanUpgradeRequiredException } from '../../control/domain/plan-upgrade.exception';
 import { buildPayslipPdf } from './payslip-pdf';
 import {
   classifyTurnos,
@@ -344,6 +347,23 @@ export class PayrollService {
       throw new BadRequestException(
         'No hay empleados activos con salario para nominar en esta cobertura.',
       );
+    }
+
+    // Tope de empleados por plan (Control 10 / Cadena 25 + complemento de
+    // empleados adicionales). La feature payroll ya la exige el controller; aquí
+    // limitamos el tamaño de la corrida. Fail-open si no hay plan en contexto.
+    const ctx = TenantContext.current();
+    if (ctx?.plan) {
+      const { quotas } = effectiveEntitlements(ctx.plan, ctx.addOns);
+      if (
+        quotas.payrollEmployees > 0 &&
+        emps.length > quotas.payrollEmployees
+      ) {
+        throw new PlanUpgradeRequiredException(
+          `Tu plan cubre nómina para ${quotas.payrollEmployees} empleado(s) y esta corrida tiene ${emps.length}. Agrega empleados adicionales o mejora tu plan.`,
+          { reason: 'quota', quota: 'payrollEmployees' },
+        );
+      }
     }
 
     const { slips, totals, approvedIds } = await this.buildRunSlips(
