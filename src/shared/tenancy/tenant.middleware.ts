@@ -69,7 +69,11 @@ export class TenantMiddleware implements NestMiddleware {
           const businessId = claims.biz;
           void this.resolveGate(businessId)
             .then((gate) => {
-              if (!gate.allowed) {
+              // Excepción: las rutas de facturación siguen abiertas aunque la
+              // empresa esté suspendida o con el trial vencido — es justo donde
+              // el dueño paga para reactivarse. El resto se bloquea.
+              const billingBypass = (req.path ?? '').startsWith('/billing');
+              if (!gate.allowed && !billingBypass) {
                 next(
                   new ForbiddenException(
                     'La cuenta de tu empresa está suspendida o el periodo de prueba venció. Contacta a soporte para reactivarla.',
