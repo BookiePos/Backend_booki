@@ -29,6 +29,7 @@ import { CoreReportsModule } from './modules/core-reports/core-reports.module';
 import { PurchasingModule } from './modules/purchasing/purchasing.module';
 import { RestaurantModule } from './modules/restaurant/restaurant.module';
 import { CustomersModule } from './modules/customers/customers.module';
+import { BillingModule } from './modules/billing/billing.module';
 
 /**
  * URI de la base de control. Por defecto reusa el mismo servidor de
@@ -113,6 +114,7 @@ function controlUri(): string {
     PurchasingModule,
     RestaurantModule,
     CustomersModule,
+    BillingModule,
     // La auditoría va de último: su interceptor global envuelve al resto.
     CoreAuditModule,
   ],

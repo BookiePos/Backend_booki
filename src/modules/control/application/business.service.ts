@@ -4,10 +4,12 @@ import { Model, Types } from 'mongoose';
 import { dbNameForBusiness } from '../../../shared/tenancy/tenant-context';
 import {
   BusinessPlan,
+  BusinessStatus,
   BusinessType,
   CONTROL_CONNECTION,
   TRIAL_DAYS,
 } from '../domain/control.constants';
+import type { BusinessAddOns } from '../domain/plans';
 import {
   Business,
   BusinessDocument,
@@ -51,6 +53,29 @@ export class BusinessService {
 
   findById(id: string): Promise<BusinessDocument | null> {
     return this.businesses.findById(id).exec();
+  }
+
+  /**
+   * Actualiza el plan, complementos y/o estado de una empresa. Lo usa el módulo
+   * de facturación al aprobarse un pago (activar plan/complementos) o al agotar
+   * los reintentos de cobro (suspender). Solo toca los campos provistos.
+   */
+  async updatePlan(
+    id: string,
+    patch: {
+      plan?: BusinessPlan;
+      addOns?: BusinessAddOns;
+      status?: BusinessStatus;
+    },
+  ): Promise<BusinessDocument | null> {
+    const set: Record<string, unknown> = {};
+    if (patch.plan !== undefined) set.plan = patch.plan;
+    if (patch.addOns !== undefined) set.addOns = patch.addOns;
+    if (patch.status !== undefined) set.status = patch.status;
+    if (Object.keys(set).length === 0) return this.findById(id);
+    return this.businesses
+      .findByIdAndUpdate(id, { $set: set }, { new: true })
+      .exec();
   }
 
   /**

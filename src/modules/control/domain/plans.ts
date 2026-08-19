@@ -120,14 +120,14 @@ export interface AddOnMeta {
   unit: string;
   note?: string;
 }
-export const ADD_ONS: Record<string, AddOnMeta> = {
+export const ADD_ONS = {
   payroll: { id: 'payroll', name: 'Nómina hasta 10 empleados', price: 34_900, unit: '/mes', note: 'Incluida en Control y Cadena.' },
   extraEmployee: { id: 'extraEmployee', name: 'Empleado adicional', price: 2_900, unit: '/mes' },
   extraSede: { id: 'extraSede', name: 'Sede adicional', price: 89_900, unit: '/mes', note: 'Sobre Cadena, sin límite de sedes.' },
   docPackage: { id: 'docPackage', name: 'Paquete de 1.000 documentos', price: 29_900, unit: 'único', note: 'No expira. Se consume solo al pasar el cupo del plan.' },
   migration: { id: 'migration', name: 'Migración desde Siigo, Alegra o Excel', price: 0, unit: 'sin costo', note: 'El importador de catálogo y existencias por CSV ya está construido.' },
   training: { id: 'training', name: 'Capacitación adicional en sitio', price: 180_000, unit: '/sesión', note: 'Por sesión, solo Bogotá.' },
-};
+} satisfies Record<string, AddOnMeta>;
 
 /** Complementos contratados por una empresa (se guardan en el control-plane). */
 export interface BusinessAddOns {
