@@ -14,11 +14,14 @@ import {
   UpdatePurchaseOrderDto,
 } from '../application/dto/purchasing.dto';
 import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
+import { RequireFeature } from '../../core-auth/infrastructure/decorators/require-feature.decorator';
+import { PLAN_FEATURES } from '../../control/domain/plans';
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { PurchaseOrderStatus } from '../domain/purchasing.constants';
 
+@RequireFeature(PLAN_FEATURES.PURCHASING)
 @Controller('purchasing/orders')
 export class PurchasingController {
   constructor(private readonly purchasing: PurchasingService) {}

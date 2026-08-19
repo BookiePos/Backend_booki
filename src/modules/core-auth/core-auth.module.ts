@@ -30,6 +30,7 @@ import { RolesController } from './infrastructure/roles.controller';
 import { InvitationsController } from './infrastructure/invitations.controller';
 import { JwtAuthGuard } from './infrastructure/guards/jwt-auth.guard';
 import { PermissionsGuard } from './infrastructure/guards/permissions.guard';
+import { FeatureGuard } from './infrastructure/guards/feature.guard';
 
 @Module({
   imports: [
@@ -70,6 +71,7 @@ import { PermissionsGuard } from './infrastructure/guards/permissions.guard';
     // Guards globales: autenticación + permisos en toda la API.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
+    { provide: APP_GUARD, useClass: FeatureGuard },
   ],
   exports: [UsersService, RolesService, MailService],
 })

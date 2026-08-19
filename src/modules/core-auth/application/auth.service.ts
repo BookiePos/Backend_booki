@@ -18,6 +18,11 @@ import { DirectoryService } from '../../control/application/directory.service';
 import { BusinessService } from '../../control/application/business.service';
 import { jwtRefreshSecret } from '../../../shared/config/jwt-secrets';
 import type { BusinessType } from '../../control/domain/control.constants';
+import {
+  effectiveEntitlements,
+  type BusinessPlan,
+  type Entitlements,
+} from '../../control/domain/plans';
 
 export interface AuthTokens {
   accessToken: string;
@@ -35,6 +40,10 @@ export interface AuthUserView {
   sedeIds: string[];
   /** Giro del negocio (restaurante | retail). Diferencia la experiencia. */
   tipoNegocio?: BusinessType;
+  /** Plan comercial vigente del tenant. */
+  plan?: BusinessPlan;
+  /** Features y cuotas efectivas (plan + complementos). */
+  entitlements?: Entitlements;
 }
 
 interface RefreshPayload {
@@ -193,6 +202,13 @@ export class AuthService {
   }
 
   private async toView(user: UserDocument): Promise<AuthUserView> {
+    const ctx = TenantContext.current();
+    const business = ctx ? await this.businesses.findById(ctx.businessId) : null;
+    const entitlements = business
+      ? effectiveEntitlements(business.plan, business.addOns)
+      : ctx?.plan
+        ? effectiveEntitlements(ctx.plan, ctx.addOns)
+        : undefined;
     return {
       id: user.id,
       email: user.email,
@@ -201,7 +217,9 @@ export class AuthService {
       role: user.role,
       permissions: await this.users.effectivePermissions(user),
       sedeIds: user.sedeIds.map((s) => s.toString()),
-      tipoNegocio: await this.currentTipoNegocio(),
+      tipoNegocio: business?.tipoNegocio ?? ctx?.tipoNegocio,
+      plan: entitlements?.plan,
+      entitlements,
     };
   }
 

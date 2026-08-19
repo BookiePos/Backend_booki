@@ -40,6 +40,8 @@ import {
   UpdateBudgetDto,
 } from '../application/dto/budget.dto';
 import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
+import { RequireFeature } from '../../core-auth/infrastructure/decorators/require-feature.decorator';
+import { PLAN_FEATURES } from '../../control/domain/plans';
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
@@ -49,6 +51,7 @@ import {
   ReceivableStatus,
 } from '../domain/finance.constants';
 
+@RequireFeature(PLAN_FEATURES.EXPENSES)
 @Controller('finance')
 export class FinanceController {
   constructor(private readonly finance: FinanceService) {}
@@ -154,6 +157,7 @@ export class FinanceController {
 
   // ── Cuentas por pagar ───────────────────────────────────────────────────────
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Get('payables')
   listPayables(
     @CurrentUser() user: JwtUser,
@@ -164,12 +168,14 @@ export class FinanceController {
   }
 
   @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Post('payables')
   createPayable(@Body() dto: CreatePayableDto, @CurrentUser() user: JwtUser) {
     return this.finance.createPayable(dto, user);
   }
 
   @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Post('payables/:id/payments')
   addPayablePayment(
     @Param('id') id: string,
@@ -181,6 +187,7 @@ export class FinanceController {
 
   // ── Cuentas por cobrar (fiado) ──────────────────────────────────────────────
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Get('receivables')
   listReceivables(
     @CurrentUser() user: JwtUser,
@@ -191,6 +198,7 @@ export class FinanceController {
   }
 
   @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Post('receivables')
   createReceivable(
     @Body() dto: CreateReceivableDto,
@@ -200,6 +208,7 @@ export class FinanceController {
   }
 
   @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Post('receivables/:id/payments')
   addReceivablePayment(
     @Param('id') id: string,
@@ -211,24 +220,28 @@ export class FinanceController {
 
   // ── Cuentas de tesorería y movimientos ──────────────────────────────────────
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Get('treasury')
   treasury(@CurrentUser() user: JwtUser, @Query('sedeId') sedeId?: string) {
     return this.finance.treasury(user, sedeId);
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Get('accounts')
   listAccounts(@CurrentUser() user: JwtUser) {
     return this.finance.listAccounts(user);
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_MANAGE)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Post('accounts')
   createAccount(@Body() dto: CreateAccountDto, @CurrentUser() user: JwtUser) {
     return this.finance.createAccount(dto, user);
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_MANAGE)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Patch('accounts/:id')
   updateAccount(
     @Param('id') id: string,
@@ -239,6 +252,7 @@ export class FinanceController {
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Get('accounts/:id/movements')
   listMovements(
     @Param('id') id: string,
@@ -250,6 +264,7 @@ export class FinanceController {
   }
 
   @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Post('accounts/:id/movements')
   createMovement(
     @Param('id') id: string,
@@ -260,6 +275,7 @@ export class FinanceController {
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_MANAGE)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Post('accounts/:id/reconcile')
   reconcileAccount(
     @Param('id') id: string,
@@ -271,6 +287,7 @@ export class FinanceController {
 
   // ── Presupuestos ─────────────────────────────────────────────────────────────
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Get('budgets')
   listBudgets(
     @CurrentUser() user: JwtUser,
@@ -283,18 +300,21 @@ export class FinanceController {
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Get('budgets/:id')
   getBudget(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.finance.getBudget(id, user);
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_MANAGE)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Post('budgets')
   createBudget(@Body() dto: CreateBudgetDto, @CurrentUser() user: JwtUser) {
     return this.finance.createBudget(dto, user);
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_MANAGE)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Patch('budgets/:id')
   updateBudget(
     @Param('id') id: string,
@@ -305,12 +325,14 @@ export class FinanceController {
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_MANAGE)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Delete('budgets/:id')
   deleteBudget(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.finance.deleteBudget(id, user);
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Get('budgets/:id/vs-actual')
   budgetVsActual(
     @Param('id') id: string,
@@ -322,6 +344,7 @@ export class FinanceController {
 
   // ── Reportes ─────────────────────────────────────────────────────────────────
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Get('pl')
   profitAndLoss(
     @CurrentUser() user: JwtUser,
@@ -333,6 +356,7 @@ export class FinanceController {
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
   @Get('pl-monthly')
   profitAndLossMonthly(
     @CurrentUser() user: JwtUser,

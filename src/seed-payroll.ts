@@ -32,7 +32,7 @@ async function main(): Promise<void> {
       {
         name: 'Restaurante Demo',
         ownerEmail: process.env.SEED_DEMO_EMAIL ?? 'demo@sistemapos.local',
-        plan: 'operacion',
+        plan: 'cadena',
         tipoNegocio: 'restaurante',
       },
       async () => {

@@ -6,9 +6,13 @@
 /** Nombre de la conexión Mongoose dedicada a la base de control. */
 export const CONTROL_CONNECTION = 'control';
 
-/** Planes comercializados en la web pública. */
-export const BUSINESS_PLANS = ['punto', 'operacion'] as const;
-export type BusinessPlan = (typeof BUSINESS_PLANS)[number];
+/**
+ * Planes comercializados. El catálogo completo (precios, cuotas, features,
+ * complementos) vive en `plans.ts`; aquí se re-exporta lo esencial para no
+ * romper los imports existentes.
+ */
+export { BUSINESS_PLANS } from './plans';
+export type { BusinessPlan } from './plans';
 
 /** Giro del negocio: cambia el modo por defecto del POS por sede. */
 export const BUSINESS_TYPES = ['restaurante', 'retail'] as const;

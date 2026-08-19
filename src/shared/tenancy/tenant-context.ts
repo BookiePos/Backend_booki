@@ -1,5 +1,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { BusinessType } from '../../modules/control/domain/control.constants';
+import type {
+  BusinessPlan,
+  BusinessAddOns,
+} from '../../modules/control/domain/plans';
 
 /**
  * Contexto de empresa (tenant) activo durante una request.
@@ -20,6 +24,13 @@ export interface TenantContextData {
    * emitidos antes de esta feature no lo traen.
    */
   tipoNegocio?: BusinessType;
+  /**
+   * Plan comercial vigente del tenant. Lo pone el TenantMiddleware desde el
+   * control-plane (ya normalizado). Ausente en flujos pre-auth → gating abierto.
+   */
+  plan?: BusinessPlan;
+  /** Complementos (add-ons) contratados por el tenant. */
+  addOns?: BusinessAddOns;
 }
 
 const storage = new AsyncLocalStorage<TenantContextData>();

@@ -17,10 +17,13 @@ import { CreateDeductionDto } from '../application/dto/deduction.dto';
 import { LiquidacionDto } from '../application/dto/liquidacion.dto';
 import { DeductionStatus } from '../infrastructure/schemas/payroll-deduction.schema';
 import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
+import { RequireFeature } from '../../core-auth/infrastructure/decorators/require-feature.decorator';
+import { PLAN_FEATURES } from '../../control/domain/plans';
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 
+@RequireFeature(PLAN_FEATURES.PAYROLL)
 @Controller('payroll')
 export class PayrollController {
   constructor(private readonly payroll: PayrollService) {}

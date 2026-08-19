@@ -8,6 +8,9 @@ import { Model, Types } from 'mongoose';
 import { Sede, SedeDocument } from '../infrastructure/schemas/sede.schema';
 import { CreateSedeDto } from './dto/create-sede.dto';
 import { UpdateSedeDto } from './dto/update-sede.dto';
+import { TenantContext } from '../../../shared/tenancy/tenant-context';
+import { effectiveEntitlements } from '../../control/domain/plans';
+import { PlanUpgradeRequiredException } from '../../control/domain/plan-upgrade.exception';
 
 /** Error de índice único de Mongo (documento duplicado). */
 const MONGO_DUPLICATE_KEY = 11000;
@@ -36,6 +39,17 @@ export class SedesService {
   }
 
   async create(dto: CreateSedeDto): Promise<SedeDocument> {
+    const ctx = TenantContext.current();
+    if (ctx?.plan) {
+      const { quotas } = effectiveEntitlements(ctx.plan, ctx.addOns);
+      const current = await this.count();
+      if (current >= quotas.sedes) {
+        throw new PlanUpgradeRequiredException(
+          `Tu plan permite ${quotas.sedes} sede(s). Mejora el plan o agrega una sede adicional para crear más.`,
+          { reason: 'quota', quota: 'sedes' },
+        );
+      }
+    }
     try {
       return await this.sedeModel.create({ ...dto });
     } catch (err) {

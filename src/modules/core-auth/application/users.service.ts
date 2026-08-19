@@ -13,6 +13,8 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { RolesService } from './roles.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { DirectoryService } from '../../control/application/directory.service';
+import { effectiveEntitlements } from '../../control/domain/plans';
+import { PlanUpgradeRequiredException } from '../../control/domain/plan-upgrade.exception';
 
 const BCRYPT_ROUNDS = 10;
 
@@ -25,7 +27,20 @@ export class UsersService {
   ) {}
 
   async create(dto: CreateUserDto): Promise<UserDocument> {
-    const { businessId, dbName } = TenantContext.currentOrThrow();
+    const ctx = TenantContext.currentOrThrow();
+    const { businessId, dbName } = ctx;
+    if (ctx.plan) {
+      const { quotas } = effectiveEntitlements(ctx.plan, ctx.addOns);
+      if (quotas.users !== null) {
+        const current = await this.count();
+        if (current >= quotas.users) {
+          throw new PlanUpgradeRequiredException(
+            `Tu plan permite ${quotas.users} usuarios. Mejora tu plan para agregar más.`,
+            { reason: 'quota', quota: 'users' },
+          );
+        }
+      }
+    }
     const username = dto.username?.toLowerCase().trim() || undefined;
 
     if (!dto.email && !username) {

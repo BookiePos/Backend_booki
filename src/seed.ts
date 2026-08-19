@@ -71,7 +71,7 @@ async function seed(): Promise<void> {
       {
         name: 'Negocio (seed)',
         ownerEmail: process.env.SEED_ADMIN_EMAIL ?? 'admin@sistemapos.local',
-        plan: 'operacion',
+        plan: 'cadena',
         tipoNegocio: 'restaurante',
       },
       async () => {

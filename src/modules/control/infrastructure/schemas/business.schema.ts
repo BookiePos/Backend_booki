@@ -8,6 +8,7 @@ import {
   BusinessStatus,
   BusinessType,
 } from '../../domain/control.constants';
+import type { BusinessAddOns } from '../../domain/plans';
 
 export type BusinessDocument = HydratedDocument<Business>;
 
@@ -45,6 +46,10 @@ export class Business {
   /** Correo del dueño que dio de alta la empresa. */
   @Prop({ required: true, lowercase: true, trim: true })
   ownerEmail!: string;
+
+  /** Complementos contratados (nómina, sedes extra, paquetes de documentos). */
+  @Prop({ type: Object, default: {} })
+  addOns?: BusinessAddOns;
 }
 
 export const BusinessSchema = SchemaFactory.createForClass(Business);
