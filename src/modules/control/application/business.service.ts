@@ -9,7 +9,12 @@ import {
   CONTROL_CONNECTION,
   TRIAL_DAYS,
 } from '../domain/control.constants';
-import type { BusinessAddOns } from '../domain/plans';
+import {
+  PLAN_QUOTAS,
+  normalizePlan,
+  type BusinessAddOns,
+} from '../domain/plans';
+import { PlanUpgradeRequiredException } from '../domain/plan-upgrade.exception';
 import {
   Business,
   BusinessDocument,
@@ -53,6 +58,73 @@ export class BusinessService {
 
   findById(id: string): Promise<BusinessDocument | null> {
     return this.businesses.findById(id).exec();
+  }
+
+  /** Mes actual en formato YYYY-MM (zona Colombia, UTC-5). */
+  private currentDocsPeriod(): string {
+    return new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7);
+  }
+
+  /** Suma créditos de documentos comprados en paquetes (no expiran). */
+  async addDocCredits(id: string, docs: number): Promise<void> {
+    if (docs <= 0) return;
+    await this.businesses
+      .updateOne({ _id: id }, { $inc: { docCredits: docs } })
+      .exec();
+  }
+
+  /**
+   * Consume un documento electrónico contra el cupo MENSUAL del plan; si el mes
+   * ya se agotó, tira de los créditos comprados (que no expiran). Atómico y
+   * seguro ante concurrencia; lanza 402 si no queda cupo. El contador mensual se
+   * reinicia solo al cambiar de mes.
+   */
+  async consumeDocument(id: string, plan?: string | null): Promise<void> {
+    const period = this.currentDocsPeriod();
+    const base = PLAN_QUOTAS[normalizePlan(plan)].documentsPerMonth;
+
+    // Reinicia el contador si cambió el mes (atómico e idempotente).
+    await this.businesses
+      .updateOne(
+        { _id: id, docsPeriod: { $ne: period } },
+        { $set: { docsPeriod: period, docsThisMonth: 0 } },
+      )
+      .exec();
+
+    // 1) Consumir del cupo mensual del plan.
+    const monthly = await this.businesses
+      .findOneAndUpdate(
+        { _id: id, docsThisMonth: { $lt: base } },
+        { $inc: { docsThisMonth: 1 } },
+      )
+      .exec();
+    if (monthly) return;
+
+    // 2) Mes agotado → consumir un crédito comprado.
+    const credit = await this.businesses
+      .findOneAndUpdate(
+        { _id: id, docCredits: { $gt: 0 } },
+        { $inc: { docCredits: -1, docsThisMonth: 1 } },
+      )
+      .exec();
+    if (credit) return;
+
+    throw new PlanUpgradeRequiredException(
+      `Alcanzaste el tope de ${base} documentos electrónicos de tu plan este mes. Compra un paquete de documentos o mejora tu plan.`,
+      { reason: 'quota', quota: 'documents' },
+    );
+  }
+
+  /** Uso de documentos del mes en curso (para el panel de facturación). */
+  async documentUsage(
+    id: string,
+  ): Promise<{ used: number; base: number; credits: number; period: string }> {
+    const period = this.currentDocsPeriod();
+    const business = await this.findById(id);
+    const base = PLAN_QUOTAS[normalizePlan(business?.plan)].documentsPerMonth;
+    const used =
+      business?.docsPeriod === period ? (business?.docsThisMonth ?? 0) : 0;
+    return { used, base, credits: business?.docCredits ?? 0, period };
   }
 
   /**

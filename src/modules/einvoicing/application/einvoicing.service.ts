@@ -16,6 +16,8 @@ import {
 } from '../../sales/infrastructure/schemas/counter.schema';
 import { SalesService } from '../../sales/application/sales.service';
 import { SedesService } from '../../sedes/application/sedes.service';
+import { BusinessService } from '../../control/application/business.service';
+import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { SaleDocument } from '../../sales/infrastructure/schemas/sale.schema';
 import { SedeDocument } from '../../sedes/infrastructure/schemas/sede.schema';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
@@ -37,7 +39,20 @@ export class EinvoicingService {
     private readonly counters: Model<CounterDocument>,
     private readonly sales: SalesService,
     private readonly sedes: SedesService,
+    private readonly businesses: BusinessService,
   ) {}
+
+  /**
+   * Descuenta un documento del cupo del plan (o de los créditos comprados).
+   * Se llama ANTES de quemar el consecutivo DIAN: si no hay cupo, aborta con 402
+   * sin consumir folio. Fail-open si la request no trae empresa en contexto.
+   */
+  private async consumeDocQuota(): Promise<void> {
+    const ctx = TenantContext.current();
+    if (ctx?.businessId) {
+      await this.businesses.consumeDocument(ctx.businessId, ctx.plan);
+    }
+  }
 
   /** Documentos electrónicos de una sede (más recientes primero). */
   list(sedeId: string, user: JwtUser): Promise<ElectronicDocumentDocument[]> {
@@ -85,6 +100,9 @@ export class EinvoicingService {
         'No se puede emitir: falta la clave técnica DIAN de la sede para calcular el CUFE.',
       );
     }
+
+    // Cupo de documentos del plan (antes de quemar folio: si no hay cupo, 402).
+    await this.consumeDocQuota();
 
     const prefix = sede.resolucionFe.prefijo ?? '';
     const number = await this.nextNumber(
@@ -177,6 +195,9 @@ export class EinvoicingService {
         'No se puede emitir: falta la clave técnica DIAN de la sede para calcular el CUFE.',
       );
     }
+
+    // Una nota crédito también es un documento electrónico: cuenta al cupo.
+    await this.consumeDocQuota();
 
     const number = await this.nextNumber(`nc:${sedeId}`, 1, undefined);
     const fullNumber = `NC${number}`;

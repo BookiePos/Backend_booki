@@ -50,6 +50,18 @@ export class Business {
   /** Complementos contratados (nómina, sedes extra, paquetes de documentos). */
   @Prop({ type: Object, default: {} })
   addOns?: BusinessAddOns;
+
+  /** Documentos electrónicos emitidos en el mes en curso (`docsPeriod`). */
+  @Prop({ default: 0 })
+  docsThisMonth?: number;
+
+  /** Mes (YYYY-MM) al que corresponde `docsThisMonth`. */
+  @Prop()
+  docsPeriod?: string;
+
+  /** Saldo de documentos comprados en paquetes (no expiran). */
+  @Prop({ default: 0 })
+  docCredits?: number;
 }
 
 export const BusinessSchema = SchemaFactory.createForClass(Business);

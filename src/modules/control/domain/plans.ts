@@ -149,8 +149,8 @@ export interface Entitlements {
 
 /** Empleados que habilita el complemento de nómina. */
 const PAYROLL_ADDON_EMPLOYEES = 10;
-/** Documentos por paquete comprado. */
-const DOCS_PER_PACKAGE = 1_000;
+/** Documentos electrónicos por paquete comprado. */
+export const DOCS_PER_PACKAGE = 1_000;
 
 /**
  * Normaliza un id de plan crudo (BD/token) a uno vigente. Los registros
@@ -186,9 +186,9 @@ export function effectiveEntitlements(
   if (addOns?.extraSedes && addOns.extraSedes > 0) {
     quotas.sedes += addOns.extraSedes;
   }
-  if (addOns?.docPackages && addOns.docPackages > 0) {
-    quotas.documentsPerMonth += addOns.docPackages * DOCS_PER_PACKAGE;
-  }
+  // Nota: los paquetes de documentos NO inflan el cupo mensual (no expiran y se
+  // consumen solo tras agotar el cupo del plan). Se llevan como saldo aparte
+  // (`Business.docCredits`) que descuenta el módulo de facturación electrónica.
 
   return { plan, features: [...features], quotas };
 }

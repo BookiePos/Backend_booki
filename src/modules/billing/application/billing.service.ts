@@ -13,6 +13,7 @@ import {
   BUSINESS_PLANS,
   BusinessAddOns,
   BusinessPlan,
+  DOCS_PER_PACKAGE,
   PLAN_PRICING,
   effectiveEntitlements,
 } from '../../control/domain/plans';
@@ -216,16 +217,18 @@ export class BillingService {
   async status(businessId: string): Promise<{
     subscription: SubscriptionDocument | null;
     payments: PaymentDocument[];
+    documents: { used: number; base: number; credits: number; period: string };
   }> {
-    const [subscription, payments] = await Promise.all([
+    const [subscription, payments, documents] = await Promise.all([
       this.subs.findOne({ businessId }).exec(),
       this.payments
         .find({ businessId })
         .sort({ createdAt: -1 })
         .limit(20)
         .exec(),
+      this.businesses.documentUsage(businessId),
     ]);
-    return { subscription, payments };
+    return { subscription, payments, documents };
   }
 
   /** Cancela la suscripción al final del período (no se renueva). */
@@ -362,14 +365,10 @@ export class BillingService {
     await payment.save();
 
     if (payment.kind === 'docPackage') {
-      const business = await this.businesses.findById(payment.businessId);
-      const current = business?.addOns?.docPackages ?? 0;
-      await this.businesses.updatePlan(payment.businessId, {
-        addOns: {
-          ...(business?.addOns ?? {}),
-          docPackages: current + (payment.docPackages ?? 0),
-        },
-      });
+      await this.businesses.addDocCredits(
+        payment.businessId,
+        (payment.docPackages ?? 0) * DOCS_PER_PACKAGE,
+      );
       return;
     }
 

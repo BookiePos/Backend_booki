@@ -12,6 +12,7 @@ import { EinvoicingService } from './application/einvoicing.service';
 import { EinvoicingController } from './infrastructure/einvoicing.controller';
 import { SalesModule } from '../sales/sales.module';
 import { SedesModule } from '../sedes/sedes.module';
+import { ControlModule } from '../control/control.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { SedesModule } from '../sedes/sedes.module';
     ]),
     SalesModule,
     SedesModule,
+    ControlModule,
   ],
   controllers: [EinvoicingController],
   providers: [EinvoicingService],
