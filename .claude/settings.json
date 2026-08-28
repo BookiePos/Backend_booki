@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(pnpm install)",
+      "Bash(pnpm install --frozen-lockfile)",
+      "Bash(pnpm build)",
+      "Bash(pnpm test)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm lint)",
+      "Bash(pnpm exec tsc --noEmit)",
+      "Bash(pnpm exec vitest run:*)",
+      "Bash(node --version)",
+      "Bash(git status)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(docker compose ps)",
+      "Bash(docker compose up -d)",
+      "Bash(docker compose logs:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/*.pem)",
+      "Read(./**/*.key)",
+      "Read(./**/*.p12)",
+      "Read(./**/*.pfx)",
+      "Read(./secrets/**)",
+      "Read(./certs/**)",
+      "Bash(git push:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(pnpm seed:*)",
+      "Bash(pnpm seed)"
+    ]
+  }
+}

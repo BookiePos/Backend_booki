@@ -1,5 +1,255 @@
+# =============================================================================
+#  .gitignore — BookiPos Backend (NestJS + MongoDB/Mongoose + TypeScript)
+#  Regla de oro: si contiene credenciales, llaves, certificados o datos de
+#  ejecución local, NO se versiona. Solo se versionan plantillas (*.example).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+#  Dependencias
+# -----------------------------------------------------------------------------
 node_modules/
+jspm_packages/
+.pnp
+.pnp.js
+.yarn/cache/
+.yarn/unplugged/
+.yarn/install-state.gz
+
+# Store local de pnpm (el gestor de paquetes de este repo).
+.pnpm-store/
+.pnpm-debug.log*
+
+# -----------------------------------------------------------------------------
+#  Compilación / salida de build
+# -----------------------------------------------------------------------------
 dist/
+build/
+out/
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# -----------------------------------------------------------------------------
+#  Variables de entorno (CRÍTICO)
+#  Aquí viven MONGODB_URI, JWT_SECRET, RESEND_API_KEY y las credenciales de
+#  facturación electrónica. Se ignora TODO .env* y luego se re-incluye la
+#  plantilla pública .env.example.
+# -----------------------------------------------------------------------------
 .env
+.env.*
+.env.local
+.env.*.local
+.env.development
+.env.development.local
+.env.production
+.env.production.local
+.env.staging
+.env.test
+.env.test.local
+.env.backup
+.env.bak
+.env.old
+.env.save
+*.env
+
+# Excepción: la plantilla SÍ se versiona (sin valores reales).
+!.env.example
+!.env.template
+!.env.sample
+
+# -----------------------------------------------------------------------------
+#  Secretos, llaves y certificados (CRÍTICO)
+#  Este backend firma JWT, consume Resend y emite facturación electrónica
+#  (einvoicing), que exige certificados digitales y llaves privadas.
+#  Ninguno de esos materiales puede llegar nunca al repositorio.
+# -----------------------------------------------------------------------------
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.csr
+*.p12
+*.pfx
+*.p8
+*.jks
+*.keystore
+*.truststore
+*.asc
+*.gpg
+*.pgp
+*.secret
+*.secrets
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+credentials.json
+credentials*.json
+service-account*.json
+serviceAccountKey*.json
+gcp-*.json
+aws-credentials*
+secrets/
+secretos/
+certs/
+certificates/
+certificados/
+keys/
+llaves/
+private/
+.secrets/
+.credentials/
+
+# Excepción: certificados de PRUEBA usados por los tests, si algún día existen
+# y no contienen material sensible real (habilitar conscientemente).
+# !test/fixtures/certs/dummy.pem
+
+# -----------------------------------------------------------------------------
+#  Logs
+# -----------------------------------------------------------------------------
 *.log
+logs/
+log/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# -----------------------------------------------------------------------------
+#  Tests y cobertura (vitest)
+# -----------------------------------------------------------------------------
 coverage/
+*.lcov
+.nyc_output/
+.vitest/
+.vitest-cache/
+test-results/
+junit.xml
+
+# -----------------------------------------------------------------------------
+#  Cachés de herramientas y temporales
+# -----------------------------------------------------------------------------
+.cache/
+.temp/
+.tmp/
+tmp/
+temp/
+.eslintcache
+.stylelintcache
+.prettiercache
+.swc/
+.turbo/
+*.pid
+*.seed
+*.pid.lock
+
+# -----------------------------------------------------------------------------
+#  Sistema operativo
+# -----------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# -----------------------------------------------------------------------------
+#  Editores / IDE
+# -----------------------------------------------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/*
+*.swp
+*.swo
+*.swn
+*~
+.project
+.classpath
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# Excepciones útiles de VS Code: configuración compartida del equipo.
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# -----------------------------------------------------------------------------
+#  Artefactos de ejecución / archivos subidos
+#  Hoy los PDF de nómina (pdfkit, src/modules/payroll/application/payslip-pdf.ts)
+#  se generan en memoria y se devuelven como Buffer para adjuntarlos al correo:
+#  NO se escriben a disco. Estas reglas son preventivas para cuando se agregue
+#  almacenamiento local de comprobantes, adjuntos o representaciones gráficas.
+#  Nota: *.pdf NO se ignora globalmente a propósito, para no excluir documentación
+#  legítima del repo; se acota a los directorios de salida.
+# -----------------------------------------------------------------------------
+uploads/
+upload/
+storage/
+public/uploads/
+static/uploads/
+files/
+attachments/
+adjuntos/
+generated/
+exports/
+*.pdf.tmp
+uploads/**/*.pdf
+storage/**/*.pdf
+exports/**/*.pdf
+
+# -----------------------------------------------------------------------------
+#  Datos locales de Mongo / Docker
+#  docker-compose.yml usa el volumen nombrado `sistema_pos_mongo_data`, que vive
+#  fuera del repo. Estas reglas cubren el caso de que alguien lo cambie por un
+#  bind mount local o genere dumps de la base.
+# -----------------------------------------------------------------------------
+data/
+mongo-data/
+mongodb-data/
+.docker/
+.docker-data/
+docker-data/
+dump/
+*.bson
+*.archive
+*.mongodump
+docker-compose.override.yml
+docker-compose.*.local.yml
+
+# -----------------------------------------------------------------------------
+#  Bases de datos locales y volcados
+# -----------------------------------------------------------------------------
+*.sqlite
+*.sqlite3
+*.db
+*.sql
+*.dump
+
+# -----------------------------------------------------------------------------
+#  Varios
+# -----------------------------------------------------------------------------
+*.tgz
+*.tar.gz
+*.zip
+*.rar
+*.7z
+*.orig
+*.rej
+*.bak
+*.backup
+.history/
+.vercel/
+.netlify/
+.serverless/
+.fleet/
