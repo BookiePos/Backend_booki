@@ -5,11 +5,11 @@
   "description": "API del Sistema POS (restaurante -> retail). Node/TS + NestJS + MongoDB.",
   "scripts": {
     "dev": "nest start --watch",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
-    "seed": "tsc -p tsconfig.json && node dist/seed.js",
-    "seed:demo": "tsc -p tsconfig.json && node dist/seed-demo.js",
-    "seed:payroll": "tsc -p tsconfig.json && node dist/seed-payroll.js",
+    "seed": "tsc -p tsconfig.build.json && node dist/seed.js",
+    "seed:demo": "tsc -p tsconfig.build.json && node dist/seed-demo.js",
+    "seed:payroll": "tsc -p tsconfig.build.json && node dist/seed-payroll.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "echo \"TODO: eslint\" && exit 0"
