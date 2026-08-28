@@ -13,7 +13,7 @@ import type { BusinessAddOns } from '../../domain/plans';
 export type BusinessDocument = HydratedDocument<Business>;
 
 /**
- * Empresa (tenant). Vive en la base de control compartida (`gocheck_control`),
+ * Empresa (tenant). Vive en la base de control compartida (`bookipos_control`),
  * NO en la base de la empresa. Solo guarda el registro de la cuenta y a qué
  * base de datos (`dbName`) apuntan sus datos operativos.
  */

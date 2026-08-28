@@ -1,5 +1,5 @@
 /**
- * Catálogo comercial de planes GoCheck (control-plane). Fuente ÚNICA de la
+ * Catálogo comercial de planes BookiPos (control-plane). Fuente ÚNICA de la
  * verdad para precios, cuotas, features por plan y complementos. La web de
  * precios, el registro y el gating (backend + frontend) leen de aquí.
  *

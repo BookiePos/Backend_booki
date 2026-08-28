@@ -25,7 +25,7 @@ async function bootstrap(): Promise<void> {
   // de los controladores que leen req.cookies.
   app.use(cookieParser());
 
-  // Un solo frontend: la app unificada de GoCheck en :3000 sirve la web
+  // Un solo frontend: la app unificada de BookiPos en :3000 sirve la web
   // pública, el panel (/panel) y el punto de venta (/pos). Al compartir
   // origen, ya no hay preflight entre zonas.
   // CORS_ORIGIN admite varios orígenes separados por coma (útil si se levantan

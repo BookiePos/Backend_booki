@@ -33,7 +33,7 @@ import { BillingModule } from './modules/billing/billing.module';
 
 /**
  * URI de la base de control. Por defecto reusa el mismo servidor de
- * `MONGODB_URI` cambiando el nombre de la base a `gocheck_control`. Se puede
+ * `MONGODB_URI` cambiando el nombre de la base a `bookipos_control`. Se puede
  * fijar aparte con `CONTROL_MONGODB_URI`.
  */
 function controlUri(): string {
@@ -41,7 +41,7 @@ function controlUri(): string {
   if (explicit) return explicit;
   const uri = process.env.MONGODB_URI ?? 'mongodb://localhost:27017/ert';
   // Reemplaza el nombre de base (entre el último '/' y el '?' o el final).
-  return uri.replace(/\/[^/?]*(\?|$)/, '/gocheck_control$1');
+  return uri.replace(/\/[^/?]*(\?|$)/, '/bookipos_control$1');
 }
 
 @Module({

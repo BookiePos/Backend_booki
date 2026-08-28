@@ -10,7 +10,7 @@ export type SubscriptionDocument = HydratedDocument<Subscription>;
 
 /**
  * Suscripción recurrente de una empresa. Vive en el control-plane
- * (`gocheck_control`), una por empresa. Guarda el `paymentSourceId` de Wompi
+ * (`bookipos_control`), una por empresa. Guarda el `paymentSourceId` de Wompi
  * (tarjeta tokenizada) contra el que el cron cobra cada período.
  */
 @Schema({ timestamps: true, collection: 'subscriptions' })

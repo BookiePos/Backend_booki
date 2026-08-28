@@ -14,7 +14,7 @@ import { DirectoryService } from './application/directory.service';
 
 /**
  * Control-plane: registro de empresas y directorio email → empresa. Sus modelos
- * viven en la conexión `control` (base `gocheck_control`), NO en la base de
+ * viven en la conexión `control` (base `bookipos_control`), NO en la base de
  * ninguna empresa. Exporta los servicios para que la auth los use al registrar
  * y enrutar el login.
  */
