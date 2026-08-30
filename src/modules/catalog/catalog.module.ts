@@ -15,10 +15,13 @@ import {
 import { CatalogService } from './application/catalog.service';
 import { CatalogController } from './infrastructure/catalog.controller';
 import { InventoryModule } from '../inventory/inventory.module';
+import { StorageModule } from '../../shared/storage/storage.module';
 
 @Module({
   imports: [
     forwardRef(() => InventoryModule),
+    // Fotos de los productos vendibles (Vercel Blob).
+    StorageModule,
     // Se registran también los modelos referenciados por `populate` (mismo token
     // que en InventoryModule → misma instancia cacheada por tenant), para poder
     // inyectarlos y pasarlos explícitos a populate.

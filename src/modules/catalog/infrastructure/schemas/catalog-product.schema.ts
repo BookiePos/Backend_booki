@@ -74,6 +74,21 @@ export class CatalogProduct {
   @Prop({ type: [RecipeLineSchema], default: [] })
   recipe!: RecipeLine[];
 
+  /**
+   * URL pública de la foto del producto (Vercel Blob). La usa el POS para
+   * mostrar la rejilla con imagen y el panel para la ficha.
+   */
+  @Prop({ trim: true })
+  imageUrl?: string;
+
+  /**
+   * Ruta del archivo dentro del store. Se guarda además de la URL porque es lo
+   * que hace falta para BORRAR el blob al reemplazar la foto o el producto; sin
+   * esto cada cambio dejaría el anterior huérfano y pagándose.
+   */
+  @Prop({ trim: true })
+  imagePathname?: string;
+
   @Prop({ default: true })
   active!: boolean;
 

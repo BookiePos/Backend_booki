@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import { randomBytes } from 'crypto';
 import { ProductDocument } from '../../inventory/infrastructure/schemas/product.schema';
 import {
   CatalogProduct,
@@ -17,12 +18,30 @@ import { CreateCatalogProductDto } from './dto/create-catalog-product.dto';
 import { UpdateCatalogProductDto } from './dto/update-catalog-product.dto';
 import { RecipeLineDto } from './dto/recipe-line.dto';
 import { CatalogSourceType } from '../domain/catalog.constants';
+import {
+  PRODUCT_IMAGE_MAX_BYTES,
+  PRODUCT_IMAGE_TYPES_LABEL,
+  imageExtension,
+} from '../domain/product-image';
+import { BlobStorageService } from '../../../shared/storage/blob-storage.service';
 import { ProductsService } from '../../inventory/application/products.service';
 import { Product } from '../../inventory/infrastructure/schemas/product.schema';
 import { ProductCategory } from '../../inventory/infrastructure/schemas/product-category.schema';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 
 const PRODUCT_POPULATE = 'name sku unit';
+
+/**
+ * Lo que necesitamos de un archivo subido. Se declara aquí en vez de usar
+ * `Express.Multer.File` para no añadir `@types/multer` al proyecto por cuatro
+ * campos: multer viene con `@nestjs/platform-express`, sus tipos no.
+ */
+export interface UploadedImage {
+  buffer: Buffer;
+  mimetype: string;
+  size: number;
+  originalname?: string;
+}
 
 /**
  * Resuelve el id de una referencia que puede estar poblada (documento con `_id`)
@@ -53,6 +72,7 @@ export class CatalogService {
     // llama a `syncFromInventory` al guardar un ítem con precio).
     @Inject(forwardRef(() => ProductsService))
     private readonly inventory: ProductsService,
+    private readonly storage: BlobStorageService,
   ) {}
 
   list(includeInactive = false): Promise<CatalogProductDocument[]> {
@@ -205,7 +225,77 @@ export class CatalogService {
       ? await this.model.findById(id).exec()
       : null;
     if (!product) throw new NotFoundException('Producto no encontrado');
+    const pathname = product.imagePathname;
     await product.deleteOne();
+    // Después de borrar el producto: si esto falla, queda un archivo huérfano,
+    // no un producto que no se pudo eliminar.
+    if (pathname) await this.storage.remove(pathname);
+  }
+
+  /**
+   * Guarda (o reemplaza) la foto del producto.
+   *
+   * El orden importa: primero se sube la nueva, luego se guarda el producto y
+   * solo al final se borra la anterior. Al revés, un fallo a mitad dejaría la
+   * ficha apuntando a un archivo que ya no existe.
+   */
+  async setImage(
+    id: string,
+    file: UploadedImage,
+  ): Promise<CatalogProductDocument> {
+    const product = Types.ObjectId.isValid(id)
+      ? await this.model.findById(id).exec()
+      : null;
+    if (!product) throw new NotFoundException('Producto no encontrado');
+
+    const extension = imageExtension(file.mimetype);
+    if (!extension) {
+      throw new BadRequestException(
+        `Formato de imagen no admitido. Usa ${PRODUCT_IMAGE_TYPES_LABEL}.`,
+      );
+    }
+    if (file.size > PRODUCT_IMAGE_MAX_BYTES) {
+      throw new BadRequestException(
+        `La imagen supera los ${Math.round(PRODUCT_IMAGE_MAX_BYTES / 1024 / 1024)} MB.`,
+      );
+    }
+
+    // La ruta lleva la empresa delante: en un store compartido por todos los
+    // tenants, eso mantiene separado lo de cada negocio y hace evidente de quién
+    // es cada archivo. El sufijo aleatorio evita que la CDN sirva la foto vieja
+    // cacheada cuando se reemplaza.
+    const { businessId } = TenantContext.currentOrThrow();
+    const pathname = `catalogo/${businessId}/${product.id}-${randomBytes(6).toString('hex')}.${extension}`;
+    const stored = await this.storage.upload(
+      pathname,
+      file.buffer,
+      file.mimetype,
+    );
+
+    const previous = product.imagePathname;
+    product.imageUrl = stored.url;
+    product.imagePathname = stored.pathname;
+    await product.save();
+
+    if (previous && previous !== stored.pathname) {
+      await this.storage.remove(previous);
+    }
+    return this.getOrFail(product.id);
+  }
+
+  /** Quita la foto del producto (y el archivo del store). */
+  async removeImage(id: string): Promise<CatalogProductDocument> {
+    const product = Types.ObjectId.isValid(id)
+      ? await this.model.findById(id).exec()
+      : null;
+    if (!product) throw new NotFoundException('Producto no encontrado');
+
+    const previous = product.imagePathname;
+    product.imageUrl = undefined;
+    product.imagePathname = undefined;
+    await product.save();
+    if (previous) await this.storage.remove(previous);
+    return this.getOrFail(product.id);
   }
 
   /**
@@ -401,7 +491,11 @@ export class CatalogService {
     if (!sellable) {
       // Dejó de ser vendible: se retira del POS (las ventas ya guardan su propio
       // snapshot, así que borrar el vendible no afecta el histórico).
-      if (existingAuto) await existingAuto.deleteOne();
+      if (existingAuto) {
+        const pathname = existingAuto.imagePathname;
+        await existingAuto.deleteOne();
+        if (pathname) await this.storage.remove(pathname);
+      }
       return;
     }
 
