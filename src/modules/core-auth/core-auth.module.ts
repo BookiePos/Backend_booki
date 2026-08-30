@@ -23,6 +23,7 @@ import { AuthService } from './application/auth.service';
 import { RegistrationService } from './application/registration.service';
 import { MailService } from './application/mail.service';
 import { InvitationsService } from './application/invitations.service';
+import { PasswordResetService } from './application/password-reset.service';
 import { JwtStrategy } from './infrastructure/jwt.strategy';
 import { AuthController } from './infrastructure/auth.controller';
 import { UsersController } from './infrastructure/users.controller';
@@ -67,6 +68,7 @@ import { FeatureGuard } from './infrastructure/guards/feature.guard';
     RegistrationService,
     MailService,
     InvitationsService,
+    PasswordResetService,
     JwtStrategy,
     // Guards globales: autenticación + permisos en toda la API.
     { provide: APP_GUARD, useClass: JwtAuthGuard },

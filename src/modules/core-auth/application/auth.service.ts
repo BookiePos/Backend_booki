@@ -159,6 +159,20 @@ export class AuthService {
     return { tokens, user: await this.toView(user) };
   }
 
+  /**
+   * Revoca todas las sesiones abiertas de un usuario. Lo usa la recuperación de
+   * contraseña: el refresh emitido con la contraseña vieja deja de servir.
+   * Debe llamarse dentro del `TenantContext` de la empresa del usuario.
+   */
+  async revokeAllSessions(userId: string): Promise<void> {
+    await this.refreshModel
+      .updateMany(
+        { userId: new Types.ObjectId(userId), revoked: false },
+        { $set: { revoked: true } },
+      )
+      .exec();
+  }
+
   private async issueTokens(user: UserDocument): Promise<AuthTokens> {
     const permissions = await this.users.effectivePermissions(user);
     const sedeIds = user.sedeIds.map((s) => s.toString());
