@@ -9,6 +9,10 @@ import {
   BusinessDirectory,
   BusinessDirectorySchema,
 } from './infrastructure/schemas/business-directory.schema';
+import {
+  PasswordReset,
+  PasswordResetSchema,
+} from './infrastructure/schemas/password-reset.schema';
 import { BusinessService } from './application/business.service';
 import { DirectoryService } from './application/directory.service';
 
@@ -24,11 +28,14 @@ import { DirectoryService } from './application/directory.service';
       [
         { name: Business.name, schema: BusinessSchema },
         { name: BusinessDirectory.name, schema: BusinessDirectorySchema },
+        { name: PasswordReset.name, schema: PasswordResetSchema },
       ],
       CONTROL_CONNECTION,
     ),
   ],
   providers: [BusinessService, DirectoryService],
-  exports: [BusinessService, DirectoryService],
+  // Se reexporta MongooseModule para que core-auth pueda inyectar los modelos
+  // de control (recuperación de contraseña) sin duplicar su registro.
+  exports: [BusinessService, DirectoryService, MongooseModule],
 })
 export class ControlModule {}

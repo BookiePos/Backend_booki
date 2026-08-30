@@ -9,6 +9,13 @@ interface InvitationEmail {
   inviterName?: string;
 }
 
+interface PasswordResetEmail {
+  to: string;
+  resetUrl: string;
+  userName: string;
+  expiresMinutes: number;
+}
+
 interface PayslipEmail {
   to: string;
   employeeName: string;
@@ -77,6 +84,37 @@ export class MailService {
     }
   }
 
+  /** Envía el enlace para restablecer la contraseña. */
+  async sendPasswordReset(msg: PasswordResetEmail): Promise<MailResult> {
+    const subject = 'Recupera tu contraseña de BookiPos';
+    if (!this.resend) {
+      this.logger.log(
+        `[correo simulado] Recuperación de contraseña para ${msg.to}. Enlace: ${msg.resetUrl}`,
+      );
+      return { sent: false, simulated: true };
+    }
+    try {
+      const { data, error } = await this.resend.emails.send({
+        from: this.from,
+        to: msg.to,
+        subject,
+        html: this.passwordResetHtml(msg),
+      });
+      if (error) {
+        this.logger.error(
+          `Resend rechazó la recuperación a ${msg.to}: ${error.message}`,
+        );
+        return { sent: false, error: error.message };
+      }
+      this.logger.log(`Recuperación enviada a ${msg.to} (id: ${data?.id})`);
+      return { sent: true, id: data?.id };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Fallo enviando recuperación a ${msg.to}: ${message}`);
+      return { sent: false, error: message };
+    }
+  }
+
   /** Envía el comprobante de nómina (PDF adjunto) al correo del empleado. */
   async sendPayslip(msg: PayslipEmail): Promise<MailResult> {
     const subject = `Comprobante de nómina · ${msg.period}`;
@@ -127,6 +165,40 @@ export class MailService {
       <p style="font-size:13px;line-height:1.5;color:#8a857c;margin:0;">
         El detalle completo (devengados, deducciones, aportes y provisiones) está en el
         PDF adjunto. Comprobante de pago de salarios (art. 138 CST).
+      </p>
+    </div>
+  </div>
+</body></html>`;
+  }
+
+  private passwordResetHtml(msg: PasswordResetEmail): string {
+    // La URL se escapa aunque la generemos nosotros: lleva un token en la ruta
+    // y no debe poder romper el atributo href.
+    const resetUrl = escapeHtml(msg.resetUrl);
+    return `<!doctype html>
+<html lang="es"><body style="margin:0;background:#faf9f7;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#201f1d;">
+  <div style="max-width:480px;margin:0 auto;padding:40px 24px;">
+    <div style="background:#ffffff;border:1px solid #e8e4de;border-radius:16px;padding:32px;">
+      <div style="width:40px;height:40px;border-radius:8px;background:#3f4a5a;color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:600;">B</div>
+      <h1 style="font-size:22px;margin:24px 0 8px;font-weight:600;">Recupera tu contraseña</h1>
+      <p style="font-size:15px;line-height:1.5;color:#4b4842;margin:0 0 8px;">
+        Hola ${escapeHtml(msg.userName)}, recibimos una solicitud para restablecer
+        la contraseña de tu cuenta de BookiPos.
+      </p>
+      <p style="font-size:15px;line-height:1.5;color:#4b4842;margin:0 0 24px;">
+        Haz clic en el botón para elegir una nueva. El enlace vence en
+        <strong>${msg.expiresMinutes} minutos</strong> y solo puede usarse una vez.
+      </p>
+      <a href="${resetUrl}" style="display:inline-block;background:#3f4a5a;color:#fff;text-decoration:none;font-size:15px;font-weight:500;padding:12px 24px;border-radius:10px;">
+        Cambiar mi contraseña
+      </a>
+      <p style="font-size:13px;line-height:1.5;color:#8a857c;margin:24px 0 0;">
+        O copia este enlace en tu navegador:<br>
+        <a href="${resetUrl}" style="color:#5b7196;word-break:break-all;">${resetUrl}</a>
+      </p>
+      <p style="font-size:13px;color:#8a857c;margin:16px 0 0;">
+        Si no pediste este cambio, ignora este correo: tu contraseña actual sigue
+        funcionando y nadie más puede usar este enlace sin tu buzón.
       </p>
     </div>
   </div>

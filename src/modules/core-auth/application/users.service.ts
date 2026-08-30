@@ -141,6 +141,12 @@ export class UsersService {
     return bcrypt.compare(password, user.passwordHash);
   }
 
+  /** Cambia la contraseña de un usuario ya resuelto (recuperación por correo). */
+  async setPassword(user: UserDocument, password: string): Promise<void> {
+    user.passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    await user.save();
+  }
+
   /** Permisos efectivos = permisos del rol (DB) + permisos extra del usuario. */
   async effectivePermissions(user: UserDocument): Promise<string[]> {
     const rolePerms = await this.roles.permissionsForRole(user.role);
