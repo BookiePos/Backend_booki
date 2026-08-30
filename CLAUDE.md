@@ -82,7 +82,7 @@ src/
   main.ts                  arranque: helmet, cookie-parser, CORS, ValidationPipe global
   app.module.ts
   shared/
-    config/  money/  tenancy/
+    config/  money/  storage/  tenancy/
   modules/
     core-*/                núcleo transversal (auth, audit, ledger, params, reports, tax)
     <negocio>/             sales, inventory, caja, payroll, restaurant, einvoicing, ...
@@ -97,6 +97,10 @@ modules/<nombre>/
   infrastructure/  controllers + schemas/ (+ guards/decorators si aplica)
   <nombre>.module.ts
 ```
+
+`shared/storage/` guarda archivos públicos en Vercel Blob (hoy, las fotos de los
+productos vendibles). El token del store es de servidor: el archivo entra por el
+API —multipart— y nunca se sube directo desde el navegador.
 
 Respeta la dirección de dependencias: `infrastructure` → `application` → `domain`.
 `domain` no importa nada de Nest ni de Mongoose.
