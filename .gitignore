@@ -203,6 +203,12 @@ attachments/
 adjuntos/
 generated/
 exports/
+
+# ...pero `src/` es código, no salida. `storage/` (arriba) ignora cualquier
+# carpeta con ese nombre a cualquier profundidad, y eso se tragaba en silencio
+# `src/shared/storage/` —el módulo que sube archivos a Vercel Blob—: compilaba
+# en local y el despliegue fallaba por un módulo que nunca se subió al repo.
+!src/shared/storage/
 *.pdf.tmp
 uploads/**/*.pdf
 storage/**/*.pdf
