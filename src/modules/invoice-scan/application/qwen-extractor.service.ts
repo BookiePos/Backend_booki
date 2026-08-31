@@ -15,7 +15,15 @@ import {
 } from './invoice-extractor';
 import { parseExtractedInvoice } from '../domain/invoice-extraction';
 
-/** Endpoint internacional de Alibaba Model Studio (región Singapur). */
+/**
+ * Endpoint internacional histórico de DashScope (Singapur).
+ *
+ * Model Studio migró a URLs por workspace
+ * (`https://<workspaceId>.ap-southeast-1.maas.aliyuncs.com/api/v1`), que no se
+ * pueden adivinar desde aquí. Por eso esto es solo un valor de respaldo: lo
+ * normal es copiar la URL de la consola a `QWEN_BASE_URL`. Y ojo con la región:
+ * una llave de Beijing NO sirve contra un endpoint de Singapur.
+ */
 const DEFAULT_BASE_URL =
   'https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
 
@@ -46,6 +54,12 @@ export class QwenExtractorService implements InvoiceExtractor {
     this.timeoutMs = Number(
       this.config.get<string>('INVOICE_AI_TIMEOUT_MS') ?? DEFAULT_TIMEOUT_MS,
     );
+    if (this.apiKey && !this.config.get<string>('QWEN_BASE_URL')) {
+      this.logger.warn(
+        'QWEN_BASE_URL sin definir: se usará el endpoint histórico. Si tu cuenta ' +
+          'de Model Studio da una URL con tu workspace (…maas.aliyuncs.com), cópiala ahí.',
+      );
+    }
   }
 
   get enabled(): boolean {
