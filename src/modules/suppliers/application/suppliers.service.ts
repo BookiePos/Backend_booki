@@ -8,12 +8,19 @@ import { Model, Types } from 'mongoose';
 import {
   Supplier,
   SupplierDocument,
+  SupplierDocType,
 } from '../infrastructure/schemas/supplier.schema';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 
 /** Error de índice único de Mongo (documento duplicado). */
 const MONGO_DUPLICATE_KEY = 11000;
+
+/** Deja un documento en dígitos y sin el DV final ("900.123.456-7" -> 900123456). */
+function onlyDigits(value?: string): string {
+  if (!value) return '';
+  return value.trim().replace(/-\s*\d\s*$/, '').replace(/\D/g, '');
+}
 
 function isDuplicateKeyError(err: unknown): boolean {
   return (
@@ -33,6 +40,26 @@ export class SuppliersService {
   list(includeInactive = false): Promise<SupplierDocument[]> {
     const filter = includeInactive ? {} : { active: true };
     return this.supplierModel.find(filter).sort({ name: 1 }).exec();
+  }
+
+  /**
+   * Busca por documento. Lo usa el escaneo de facturas para reconocer al
+   * proveedor por el NIT impreso.
+   *
+   * Compara solo los dígitos porque el mismo NIT se escribe de muchas formas
+   * ("900.123.456-7", "900123456", "900123456-7") y una comparación literal
+   * dejaría de reconocer al proveedor por un punto de diferencia.
+   */
+  async findByDocNumber(
+    docType: SupplierDocType,
+    docNumber: string,
+  ): Promise<SupplierDocument | null> {
+    const digits = onlyDigits(docNumber);
+    if (!digits) return null;
+    const candidates = await this.supplierModel.find({ docType }).exec();
+    return (
+      candidates.find((s) => onlyDigits(s.docNumber) === digits) ?? null
+    );
   }
 
   async create(dto: CreateSupplierDto): Promise<SupplierDocument> {

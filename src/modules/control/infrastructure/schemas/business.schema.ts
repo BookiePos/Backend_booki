@@ -62,6 +62,14 @@ export class Business {
   /** Saldo de documentos comprados en paquetes (no expiran). */
   @Prop({ default: 0 })
   docCredits?: number;
+
+  /** Facturas leídas por foto en el mes en curso (`scansPeriod`). */
+  @Prop({ default: 0 })
+  scansThisMonth?: number;
+
+  /** Mes (YYYY-MM) al que corresponde `scansThisMonth`. */
+  @Prop()
+  scansPeriod?: string;
 }
 
 export const BusinessSchema = SchemaFactory.createForClass(Business);

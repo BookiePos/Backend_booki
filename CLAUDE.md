@@ -12,6 +12,7 @@ Gestor de paquetes: **pnpm** (existe un `package-lock.json` residual: no lo uses
 | `pnpm test` | Tests unitarios con vitest (`src/**/*.spec.ts`) |
 | `pnpm test:watch` | Vitest en watch |
 | `pnpm seed` / `seed:demo` / `seed:payroll` | Semillas (compilan antes con tsc) |
+| `pnpm eval:facturas [carpeta]` | Compara los extractores de facturas (Qwen vs GLM) sobre imágenes reales |
 | `pnpm lint` | **Placeholder**: hoy es `echo "TODO: eslint"`. No hay linter real todavía. |
 
 ## Invariantes no negociables
@@ -98,9 +99,27 @@ modules/<nombre>/
   <nombre>.module.ts
 ```
 
-`shared/storage/` guarda archivos públicos en Vercel Blob (hoy, las fotos de los
-productos vendibles). El token del store es de servidor: el archivo entra por el
+`shared/storage/` guarda archivos públicos en Vercel Blob (fotos de productos y
+facturas de compra). El token del store es de servidor: el archivo entra por el
 API —multipart— y nunca se sube directo desde el navegador.
+
+`modules/invoice-scan/` carga compras a partir de una FOTO de la factura. Dos
+reglas lo gobiernan y conviene no romperlas:
+
+- **No reimplementa el circuito de compra.** Orquesta lo que ya existe
+  (`PurchasingService.create/receive` para la mercancía, `FinanceService`
+  para los renglones que no son inventariables, `SuppliersService`,
+  `ProductsService`). Registrar mercancía como gasto descuadra el inventario y
+  duplica el costo al venderla.
+- **Nada se aplica solo.** El modelo propone un borrador y una persona lo
+  aprueba. `apply()` no es transaccional de punta a punta —cada servicio trae la
+  suya—, así que la garantía es la idempotencia: lo ya creado queda en
+  `appliedTo` y un reintento lo salta.
+
+Qué modelo lee la foto lo decide `INVOICE_AI_PROVIDER` (qwen | glm) por una
+fábrica en el módulo; el resto del código habla con la interfaz
+`InvoiceExtractor` y no sabe con quién. **GLM-5.2 no acepta imágenes**: en la
+implementación de Z.ai lee GLM-OCR y GLM-5.2 solo convierte ese texto en JSON.
 
 Respeta la dirección de dependencias: `infrastructure` → `application` → `domain`.
 `domain` no importa nada de Nest ni de Mongoose.

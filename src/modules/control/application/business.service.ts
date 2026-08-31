@@ -115,6 +115,52 @@ export class BusinessService {
     );
   }
 
+  /**
+   * Consume una lectura de factura por foto contra el cupo MENSUAL del plan.
+   *
+   * Mismo mecanismo que `consumeDocument` —reset atómico al cambiar de mes y
+   * `findOneAndUpdate` condicional para que dos peticiones simultáneas no se
+   * pisen—, pero con contador propio: escanear no debe gastar los documentos
+   * electrónicos del negocio. Aquí no hay créditos comprados: si se agota el
+   * mes, se mejora el plan.
+   */
+  async consumeScan(id: string, plan?: string | null): Promise<void> {
+    const period = this.currentDocsPeriod();
+    const base = PLAN_QUOTAS[normalizePlan(plan)].invoiceScansPerMonth;
+
+    await this.businesses
+      .updateOne(
+        { _id: id, scansPeriod: { $ne: period } },
+        { $set: { scansPeriod: period, scansThisMonth: 0 } },
+      )
+      .exec();
+
+    const consumed = await this.businesses
+      .findOneAndUpdate(
+        { _id: id, scansThisMonth: { $lt: base } },
+        { $inc: { scansThisMonth: 1 } },
+      )
+      .exec();
+    if (consumed) return;
+
+    throw new PlanUpgradeRequiredException(
+      `Alcanzaste el tope de ${base} facturas por foto de tu plan este mes. Mejora tu plan para leer más.`,
+      { reason: 'quota', quota: 'invoiceScans' },
+    );
+  }
+
+  /** Uso de lecturas del mes en curso (para mostrarlo en el módulo). */
+  async scanUsage(
+    id: string,
+  ): Promise<{ used: number; base: number; period: string }> {
+    const period = this.currentDocsPeriod();
+    const business = await this.findById(id);
+    const base = PLAN_QUOTAS[normalizePlan(business?.plan)].invoiceScansPerMonth;
+    const used =
+      business?.scansPeriod === period ? (business?.scansThisMonth ?? 0) : 0;
+    return { used, base, period };
+  }
+
   /** Uso de documentos del mes en curso (para el panel de facturación). */
   async documentUsage(
     id: string,

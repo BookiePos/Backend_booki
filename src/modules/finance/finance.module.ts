@@ -82,5 +82,8 @@ import { FinanceController } from './infrastructure/finance.controller';
   ],
   controllers: [FinanceController],
   providers: [FinanceService, RecurringExpenseScheduler],
+  // Lo usa el módulo de facturas por foto para registrar los renglones que no
+  // son mercancía (fletes, servicios).
+  exports: [FinanceService],
 })
 export class FinanceModule {}

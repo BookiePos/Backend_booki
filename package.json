@@ -10,6 +10,7 @@
     "seed": "tsc -p tsconfig.build.json && node dist/seed.js",
     "seed:demo": "tsc -p tsconfig.build.json && node dist/seed-demo.js",
     "seed:payroll": "tsc -p tsconfig.build.json && node dist/seed-payroll.js",
+    "eval:facturas": "tsc -p tsconfig.build.json && node dist/eval-invoices.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "echo \"TODO: eslint\" && exit 0"
