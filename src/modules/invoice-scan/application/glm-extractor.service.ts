@@ -17,8 +17,15 @@ import { parseExtractedInvoice } from '../domain/invoice-extraction';
 const DEFAULT_OCR_URL = 'https://api.z.ai/api/paas/v4/layout_parsing';
 const DEFAULT_CHAT_URL = 'https://api.z.ai/api/paas/v4/chat/completions';
 const DEFAULT_OCR_MODEL = 'glm-ocr';
-/** Modelo de texto de la segunda pasada. GLM-5.2 no ve imágenes, pero sí lee. */
-const DEFAULT_TEXT_MODEL = 'glm-5.2';
+/**
+ * Modelo de texto de la segunda pasada.
+ *
+ * Flash y no el buque insignia: convertir un texto ya leído en JSON es una
+ * tarea mecánica, y GLM-5.2 cuesta $1.4/$4.4 por millón frente a los
+ * $0.075/$0.25 de este. Pagar veinte veces más por el mismo resultado no tiene
+ * defensa. Se puede subir con ZAI_TEXT_MODEL si alguna factura rara lo pide.
+ */
+const DEFAULT_TEXT_MODEL = 'glm-5.3-flash';
 const DEFAULT_TIMEOUT_MS = 60_000;
 
 /**
@@ -26,7 +33,7 @@ const DEFAULT_TIMEOUT_MS = 60_000;
  *
  * 1. **GLM-OCR** convierte la foto en texto/markdown fiel, con su estructura de
  *    tablas. Es lo que mejor hace: lidera OmniDocBench y cuesta una miseria.
- * 2. Un modelo de **texto** (GLM-5.2 por defecto) convierte ese texto en
+ * 2. Un modelo de **texto barato** (GLM-5.3-Flash) convierte ese texto en
  *    nuestro JSON.
  *
  * Son dos llamadas y no una porque la API pública de GLM-OCR no expone un
