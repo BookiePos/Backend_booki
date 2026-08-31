@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   normalizeDocNumber,
   parseAmount,
+  parseCop,
   parseDate,
   parseExtractedInvoice,
 } from './invoice-extraction';
@@ -31,6 +32,24 @@ describe('parseAmount', () => {
     expect(parseAmount(null)).toBeUndefined();
     expect(parseAmount(undefined)).toBeUndefined();
     expect(parseAmount({})).toBeUndefined();
+  });
+});
+
+describe('parseCop · red de seguridad de los miles', () => {
+  it('recupera el importe cuando el modelo lo mandó como número', () => {
+    // Caso real (factura de Farmatodo): el modelo devolvió 4.450 como número
+    // JSON, y JSON.parse lo dejó en 4,45. Sin esto, un Gatorade costaba $4.
+    expect(parseCop(4.45)).toBe(4450);
+    expect(parseCop(2.975)).toBe(2975);
+    expect(parseCop(7.425)).toBe(7425);
+    expect(parseCop(6.239)).toBe(6239);
+    expect(parseCop(1.186)).toBe(1186);
+  });
+
+  it('deja en paz los importes que ya son enteros', () => {
+    expect(parseCop(4450)).toBe(4450);
+    expect(parseCop('4.450')).toBe(4450);
+    expect(parseCop('$ 7.425')).toBe(7425);
   });
 });
 

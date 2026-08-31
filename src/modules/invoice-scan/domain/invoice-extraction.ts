@@ -104,11 +104,25 @@ export function parseAmount(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-/** Importe en pesos: entero y nunca negativo (el repo trabaja en COP entero). */
+/**
+ * Importe en pesos: entero y nunca negativo (el repo trabaja en COP entero).
+ *
+ * Con una red de seguridad que vale la pena explicar. Si el modelo devuelve el
+ * importe como NÚMERO en vez de como texto, `JSON.parse` ya destrozó el dato
+ * antes de que llegue aquí: `4.450` (cuatro mil cuatrocientos cincuenta) se
+ * convierte en 4,45, y el Gatorade de la factura pasa a costar cuatro pesos.
+ *
+ * En este sistema el peso colombiano **no usa centavos** (ver
+ * `finance/domain/money.util.ts`), así que un importe con decimales no es un
+ * precio: es un separador de miles mal interpretado. Se multiplica por mil y se
+ * recupera el valor real. El prompt ya pide los importes como texto; esto es
+ * para cuando el modelo no obedezca, que pasa.
+ */
 export function parseCop(value: unknown): number | undefined {
   const amount = parseAmount(value);
   if (amount === undefined) return undefined;
-  return Math.max(0, Math.round(amount));
+  const real = Number.isInteger(amount) ? amount : amount * 1000;
+  return Math.max(0, Math.round(real));
 }
 
 /** Cantidad: admite decimales (2,5 kg) pero nunca negativa ni cero. */
