@@ -114,6 +114,36 @@ export class InventoryController {
     return this.stock.stock(sedeId, allowedSedeIds(user));
   }
 
+  /**
+   * Lotes abiertos de todo el inventario (con filtros). Alimenta la pestaña
+   * "Lotes" del panel. Va ANTES de `products/:id/lots` a propósito: son rutas
+   * distintas, pero mantener juntas las de lotes evita que la siguiente se
+   * cuele en medio.
+   */
+  @RequirePermissions(PERMISSIONS.INVENTORY_VIEW)
+  @Get('lots')
+  listLots(
+    @CurrentUser() user: JwtUser,
+    @Query('sedeId') sedeId?: string,
+    @Query('productId') productId?: string,
+    @Query('status') status?: string,
+    @Query('days') days?: string,
+  ) {
+    if (sedeId) assertSedeAccess(user, sedeId);
+    const parsedDays = days ? Number.parseInt(days, 10) : undefined;
+    const allowed = ['all', 'expired', 'expiring', 'ok'] as const;
+    const parsedStatus = allowed.includes(status as (typeof allowed)[number])
+      ? (status as (typeof allowed)[number])
+      : 'all';
+    return this.stock.allLots({
+      sedeId: sedeId || undefined,
+      productId: productId || undefined,
+      status: parsedStatus,
+      days: parsedDays && parsedDays > 0 ? parsedDays : undefined,
+      restrict: allowedSedeIds(user),
+    });
+  }
+
   @RequirePermissions(PERMISSIONS.INVENTORY_VIEW)
   @Get('products/:id/lots')
   getLots(

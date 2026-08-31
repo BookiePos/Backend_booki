@@ -679,6 +679,56 @@ export class StockService {
     return this.sortFefo(lots);
   }
 
+  /**
+   * Todos los lotes abiertos, para la pestaña "Lotes" del inventario.
+   *
+   * `lots()` responde a "qué lotes tiene ESTE producto en ESTA sede", que es
+   * lo que hace falta al desplegar una fila de existencias. Esta responde a la
+   * otra pregunta, la que se hace de mañana al abrir: "¿qué tengo por vencer o
+   * ya vencido, en cualquier producto?". Sin ella había que ir producto por
+   * producto desplegando filas.
+   *
+   * `status` filtra por vencimiento: `expired` lo ya vencido, `expiring` lo que
+   * vence dentro de `days` días, `ok` el resto (incluido lo que no caduca).
+   * El orden es siempre FEFO: lo que primero vence, primero se ve.
+   */
+  async allLots(query: {
+    sedeId?: string;
+    productId?: string;
+    status?: 'all' | 'expired' | 'expiring' | 'ok';
+    days?: number;
+    restrict?: string[] | null;
+  }) {
+    const days = query.days && query.days > 0 ? query.days : 30;
+    const now = new Date();
+    const limitDate = new Date();
+    limitDate.setDate(limitDate.getDate() + days);
+
+    const filter: Record<string, unknown> = {
+      qty: { $gt: 0 },
+      ...this.sedeMatch(query.sedeId, query.restrict),
+    };
+    if (query.productId && Types.ObjectId.isValid(query.productId)) {
+      filter.productId = new Types.ObjectId(query.productId);
+    }
+    if (query.status === 'expired') {
+      filter.expiresAt = { $lt: now };
+    } else if (query.status === 'expiring') {
+      filter.expiresAt = { $gte: now, $lte: limitDate };
+    } else if (query.status === 'ok') {
+      filter.$or = [{ expiresAt: { $gt: limitDate } }, { expiresAt: null }];
+    }
+
+    const lots = await this.lotModel
+      .find(filter)
+      .populate('productId', 'sku name unit trackLots perishable imageUrl')
+      .populate('sedeId', 'code name')
+      .limit(500)
+      .exec();
+
+    return { days, rows: this.sortFefo(lots) };
+  }
+
   /** Kardex paginado. */
   async movements(query: {
     sedeId?: string;

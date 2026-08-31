@@ -712,6 +712,9 @@ export class SalesService {
     );
     return catalog.map((p) => {
       const components = this.catalog.componentsOf(p, 1);
+      // Variante (talla / color): el POS agrupa por `variantGroupId` y usa
+      // `variantAttrs` para pintar los botones de talla.
+      const variant = this.catalog.variantInfoOf(p);
       // Disponible = mínimo, entre sus componentes, de floor(stock / consumo).
       let available = components.length > 0 ? Infinity : 0;
       for (const c of components) {
@@ -737,6 +740,11 @@ export class SalesService {
         barcode: this.catalog.barcodeOf(p),
         categoryId: cat?._id ? cat._id.toString() : null,
         categoryName: cat?.name ?? null,
+        // Nulos en todo lo que no sea una variante, que es el caso normal.
+        variantGroupId: variant?.groupId ?? null,
+        variantGroupName: variant?.groupName ?? null,
+        variantAttrs: variant?.attrs ?? null,
+        variantAxes: variant?.axes ?? null,
       };
     });
   }
