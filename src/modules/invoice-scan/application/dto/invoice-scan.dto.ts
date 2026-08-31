@@ -5,12 +5,57 @@ import {
   IsIn,
   IsInt,
   IsMongoId,
+  IsNumber,
   IsObject,
   IsOptional,
+  IsString,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
 import { LINE_TARGETS, LineTarget } from '../../domain/invoice-scan.constants';
+
+/** Datos con los que crear un producto que no existe en el inventario. */
+export class NewProductDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  sku?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  unit?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  categoryId?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  cost?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  salePrice?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  barcode?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  minStock?: number;
+}
 
 /** Qué hacer con un renglón al aplicar la factura. */
 export class LineDecisionDto {
@@ -32,6 +77,11 @@ export class LineDecisionDto {
   @IsOptional()
   @IsMongoId()
   categoryId?: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => NewProductDto)
+  newProduct?: NewProductDto;
 }
 
 export class UpdateInvoiceScanDto {

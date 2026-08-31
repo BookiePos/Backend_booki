@@ -69,7 +69,17 @@ describe('InvoiceScanService.apply', () => {
       sedeId: new Types.ObjectId(sedeId),
       lineDecisions: [
         { lineIndex: 0, target: 'inventory', productId, createProduct: false },
-        { lineIndex: 1, target: 'inventory', createProduct: true },
+        {
+          lineIndex: 1,
+          target: 'inventory',
+          createProduct: true,
+          newProduct: {
+            sku: 'ARROZ-500',
+            name: 'Arroz Diana 500 g',
+            unit: 'und',
+            salePrice: 3500,
+          },
+        },
         { lineIndex: 2, target: 'expense', categoryId, createProduct: false },
       ],
       appliedTo: { expenseIds: [], createdProductIds: [] },
@@ -180,13 +190,46 @@ describe('InvoiceScanService.apply', () => {
     expect(scan.status).toBe('applied');
   });
 
-  it('crea el producto que no existía y lo usa en la compra', async () => {
+  it('crea el producto nuevo con lo que se completó en la revisión', async () => {
     await TenantContext.run(ctx, () => service.apply(scan.id, user));
 
     expect(deps.products.create).toHaveBeenCalledTimes(1);
-    const created = deps.products.create.mock.calls[0][0] as { name: string; cost: number };
-    expect(created).toMatchObject({ name: 'Arroz 500 g', cost: 2500 });
+    const created = deps.products.create.mock.calls[0][0] as {
+      sku: string;
+      name: string;
+      cost: number;
+      salePrice: number;
+    };
+    // El nombre y el precio de venta los puso la persona; el costo, la factura.
+    expect(created).toMatchObject({
+      sku: 'ARROZ-500',
+      name: 'Arroz Diana 500 g',
+      salePrice: 3500,
+      cost: 2500,
+    });
     expect(scan.appliedTo.createdProductIds).toHaveLength(1);
+  });
+
+  it('pide el SKU cuando el producto es nuevo y la factura no trae código', async () => {
+    // Sin código en la factura ni ficha completada no hay SKU: antes se
+    // generaba uno tipo FAC-XYZ que quedaba para siempre en el catálogo.
+    scan.lineDecisions[1].newProduct = undefined;
+
+    await expect(
+      TenantContext.run(ctx, () => service.apply(scan.id, user)),
+    ).rejects.toThrow(/SKU/);
+    expect(deps.products.create).not.toHaveBeenCalled();
+    expect(deps.purchasing.create).not.toHaveBeenCalled();
+  });
+
+  it('usa el código de la factura como SKU cuando viene', async () => {
+    scan.lineDecisions[1].newProduct = undefined;
+    scan.draft.lines[1].code = 'ARZ-500';
+
+    await TenantContext.run(ctx, () => service.apply(scan.id, user));
+
+    const created = deps.products.create.mock.calls[0][0] as { sku: string };
+    expect(created.sku).toBe('ARZ-500');
   });
 
   it('aprende el alias para que la próxima factura empareje sola', async () => {

@@ -20,6 +20,7 @@ import { cop } from '../../finance/domain/money.util';
 import {
   InvoiceScan,
   InvoiceScanDocument,
+  NewProductDraft,
 } from '../infrastructure/schemas/invoice-scan.schema';
 import {
   INVOICE_IMAGE_MAX_BYTES,
@@ -322,6 +323,14 @@ export class InvoiceScanService {
         productId: d.productId ? new Types.ObjectId(d.productId) : undefined,
         createProduct: d.createProduct ?? false,
         categoryId: d.categoryId ? new Types.ObjectId(d.categoryId) : undefined,
+        newProduct: d.newProduct
+          ? {
+              ...d.newProduct,
+              categoryId: d.newProduct.categoryId
+                ? new Types.ObjectId(d.newProduct.categoryId)
+                : undefined,
+            }
+          : undefined,
         matchedBy: 'manual',
       }));
       this.addHistory(scan, user, 'edited', 'Se ajustó el destino de las líneas');
@@ -359,17 +368,22 @@ export class InvoiceScanService {
     const supplierName =
       draft.supplier.name ?? (await this.suppliers.getOrFail(supplierId)).name;
 
-    // 2. Productos que no existían.
+    // 2. Productos que no existían. Se crean con lo que la persona completó en
+    //    la ficha de la revisión; lo que no tocó, con lo que dijo la factura.
     for (const item of plan.inventory) {
       if (item.productId) continue;
+      const nuevo = item.newProduct ?? {};
       const created = await this.products.create({
         sku: item.sku,
-        name: item.line.description,
-        unit: item.line.unit || 'und',
+        name: nuevo.name || item.line.description,
+        unit: nuevo.unit || item.line.unit || 'und',
+        categoryId: nuevo.categoryId?.toString(),
         supplierId,
         supplier: supplierName,
-        cost: item.unitCost,
-        barcode: item.line.barcode,
+        cost: nuevo.cost ?? item.unitCost,
+        salePrice: nuevo.salePrice,
+        minStock: nuevo.minStock,
+        barcode: nuevo.barcode || item.line.barcode,
       });
       item.productId = created.id as string;
       scan.appliedTo.createdProductIds.push(new Types.ObjectId(item.productId));
@@ -479,6 +493,7 @@ export class InvoiceScanService {
       unitCost: number;
       productId?: string;
       sku: string;
+      newProduct?: NewProductDraft;
     }[] = [];
     const expenses: { line: ExtractedLine; amount: number; categoryId: string }[] = [];
 
@@ -499,13 +514,24 @@ export class InvoiceScanService {
             `La línea ${label} no tiene valor unitario. Complétalo antes de aplicar.`,
           );
         }
+        const newProduct = decision?.newProduct;
+        // Producto nuevo sin SKU: se pide en vez de inventarlo. Un código
+        // generado a la brava se queda para siempre en el catálogo y luego hay
+        // que adivinar a qué correspondía.
+        const sku = (newProduct?.sku || line.code || '').trim().toUpperCase();
+        if (!decision?.productId && !sku) {
+          throw new BadRequestException(
+            `El producto ${label} es nuevo y la factura no trae código. Complétale el SKU antes de aplicar.`,
+          );
+        }
         inventory.push({
           lineIndex,
           line,
           qty: line.qty as number,
           unitCost: cop(unitCost),
           productId: decision?.productId?.toString(),
-          sku: skuFor(line),
+          sku,
+          newProduct,
         });
         return;
       }
@@ -643,17 +669,6 @@ function unitFromTotal(line: ExtractedLine): number | undefined {
 function totalFromUnit(line: ExtractedLine): number | undefined {
   if (line.unitCost === undefined) return undefined;
   return line.unitCost * (line.qty ?? 1);
-}
-
-/**
- * SKU para un producto que no existía. Se prefiere el código del proveedor
- * (así la próxima factura empareja por SKU); si no hay, se genera uno con
- * marca de tiempo, que es feo pero único y editable después.
- */
-function skuFor(line: ExtractedLine): string {
-  const code = line.code?.trim().toUpperCase();
-  if (code) return code;
-  return `FAC-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 1000)}`;
 }
 
 /** Fecha de hoy en Colombia (UTC-5), en YYYY-MM-DD. */
