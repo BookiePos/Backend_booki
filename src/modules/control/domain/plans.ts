@@ -81,13 +81,21 @@ export interface PlanQuotas {
   users: number | null;
   documentsPerMonth: number;
   payrollEmployees: number;
+  /**
+   * Facturas de compra que se pueden cargar por foto al mes.
+   *
+   * Cupo propio y no compartido con `documentsPerMonth`: son cosas distintas
+   * (aquello son documentos electrónicos emitidos a la DIAN) y mezclarlas
+   * dejaría a un negocio sin facturar por haber escaneado mucho.
+   */
+  invoiceScansPerMonth: number;
 }
 
 export const PLAN_QUOTAS: Record<BusinessPlan, PlanQuotas> = {
-  punto: { sedes: 1, users: 3, documentsPerMonth: 400, payrollEmployees: 0 },
-  negocio: { sedes: 1, users: null, documentsPerMonth: 2_000, payrollEmployees: 0 },
-  control: { sedes: 1, users: null, documentsPerMonth: 5_000, payrollEmployees: 10 },
-  cadena: { sedes: 3, users: null, documentsPerMonth: 12_000, payrollEmployees: 25 },
+  punto: { sedes: 1, users: 3, documentsPerMonth: 400, payrollEmployees: 0, invoiceScansPerMonth: 30 },
+  negocio: { sedes: 1, users: null, documentsPerMonth: 2_000, payrollEmployees: 0, invoiceScansPerMonth: 150 },
+  control: { sedes: 1, users: null, documentsPerMonth: 5_000, payrollEmployees: 10, invoiceScansPerMonth: 400 },
+  cadena: { sedes: 3, users: null, documentsPerMonth: 12_000, payrollEmployees: 25, invoiceScansPerMonth: 1_000 },
 };
 
 export interface PlanPricing {
