@@ -33,6 +33,43 @@ export class ScanPage {
 }
 export const ScanPageSchema = SchemaFactory.createForClass(ScanPage);
 
+/**
+ * Datos para crear el producto que la factura trae y el inventario no tiene.
+ *
+ * Se guardan en la decisión de la línea —y no se inventan al aplicar— porque
+ * un SKU generado a la brava queda para siempre en el catálogo: la persona lo
+ * revisa antes, con lo que la factura ya dio prellenado.
+ */
+@Schema({ _id: false })
+export class NewProductDraft {
+  @Prop({ trim: true, uppercase: true })
+  sku?: string;
+
+  @Prop({ trim: true })
+  name?: string;
+
+  @Prop({ trim: true })
+  unit?: string;
+
+  @Prop({ type: Types.ObjectId, ref: 'ProductCategory' })
+  categoryId?: Types.ObjectId;
+
+  @Prop({ min: 0 })
+  cost?: number;
+
+  /** Sin precio de venta el producto entra al inventario pero no al POS. */
+  @Prop({ min: 0 })
+  salePrice?: number;
+
+  @Prop({ trim: true })
+  barcode?: string;
+
+  @Prop({ min: 0 })
+  minStock?: number;
+}
+export const NewProductDraftSchema =
+  SchemaFactory.createForClass(NewProductDraft);
+
 /** Qué hacer con un renglón de la factura al aplicarla. */
 @Schema({ _id: false })
 export class LineDecision {
@@ -53,6 +90,10 @@ export class LineDecision {
   /** Categoría de gasto (si target = expense). */
   @Prop({ type: Types.ObjectId, ref: 'FinanceCategory' })
   categoryId?: Types.ObjectId;
+
+  /** Datos del producto a crear (solo si `createProduct`). */
+  @Prop({ type: NewProductDraftSchema })
+  newProduct?: NewProductDraft;
 
   /** Cómo se emparejó: alias | barcode | sku | name | manual | none. */
   @Prop()
