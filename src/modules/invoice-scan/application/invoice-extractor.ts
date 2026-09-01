@@ -24,7 +24,20 @@ export interface InvoiceExtractor {
   readonly model: string;
   /** ¿Está configurado? Sin llaves, el módulo responde 503 con mensaje claro. */
   readonly enabled: boolean;
+
+  /** Lee la factura de una imagen (foto o página rasterizada). */
   extract(image: Buffer, mimetype: string): Promise<ExtractorResult>;
+
+  /**
+   * Lee la factura de su TEXTO, cuando el PDF ya lo trae.
+   *
+   * Las facturas electrónicas llegan por correo en PDF con capa de texto: los
+   * caracteres ya están ahí, exactos. Pasarlas por OCR sería reconocer con un
+   * modelo de visión —y con su margen de error en los precios— algo que se
+   * puede leer sin equivocarse. Este camino usa un modelo de texto: más
+   * preciso, mucho más barato y bastante más rápido.
+   */
+  extractText(text: string): Promise<ExtractorResult>;
 }
 
 /**

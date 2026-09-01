@@ -21,6 +21,16 @@ export class ScanPage {
   @Prop({ required: true })
   imagePathname!: string;
 
+  /**
+   * Capa de texto del PDF, cuando la traía.
+   *
+   * Su sola presencia decide el camino de lectura: con texto exacto no hace
+   * falta reconocer caracteres con un modelo de visión, que es donde se cuelan
+   * los errores en los precios.
+   */
+  @Prop()
+  text?: string;
+
   /** Respuesta cruda del modelo, tal cual llegó. */
   @Prop({ type: Object })
   raw?: unknown;

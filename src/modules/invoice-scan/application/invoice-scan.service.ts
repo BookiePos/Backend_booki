@@ -78,6 +78,8 @@ export class InvoiceScanService {
   async upload(
     file: UploadedInvoiceImage,
     user: JwtUser,
+    /** Texto del PDF, si el navegador lo pudo extraer. */
+    text?: string,
   ): Promise<InvoiceScanDocument> {
     const extension = invoiceImageExtension(file.mimetype);
     if (!extension) {
@@ -97,12 +99,26 @@ export class InvoiceScanService {
     const pathname = `facturas/${ctx.businessId}/${Date.now()}-${randomBytes(6).toString('hex')}.${extension}`;
     const stored = await this.storage.upload(pathname, file.buffer, file.mimetype);
 
+    const conTexto = Boolean(text && text.trim().length > 0);
     const scan = await this.scans.create({
-      pages: [{ imageUrl: stored.url, imagePathname: stored.pathname }],
+      pages: [
+        {
+          imageUrl: stored.url,
+          imagePathname: stored.pathname,
+          text: conTexto ? text : undefined,
+        },
+      ],
       status: 'uploaded',
       createdByEmail: user.email,
       history: [
-        { at: new Date(), userEmail: user.email, action: 'uploaded', detail: 'Imagen subida' },
+        {
+          at: new Date(),
+          userEmail: user.email,
+          action: 'uploaded',
+          detail: conTexto
+            ? 'PDF subido con su texto (se leerá sin OCR)'
+            : 'Imagen subida',
+        },
       ],
     });
     return scan;
@@ -126,8 +142,13 @@ export class InvoiceScanService {
     if (!page) throw new BadRequestException('La factura no tiene imagen');
 
     try {
-      const image = await this.download(page.imageUrl);
-      const result = await this.extractor.extract(image.buffer, image.mimetype);
+      // Con texto del PDF no se usa visión: los caracteres ya son exactos y
+      // reconocerlos otra vez solo puede introducir errores en los precios.
+      const result = page.text
+        ? await this.extractor.extractText(page.text)
+        : await this.extractor.extract(
+            ...(await this.downloadArgs(page.imageUrl)),
+          );
 
       page.raw = result.raw;
       page.model = result.model;
@@ -136,7 +157,12 @@ export class InvoiceScanService {
       scan.status = 'extracted';
       scan.error = undefined;
       await this.hydrateMatches(scan, result.parsed);
-      this.addHistory(scan, user, 'extracted', `Leída con ${result.model} en ${result.ms} ms`);
+      this.addHistory(
+        scan,
+        user,
+        'extracted',
+        `Leída ${page.text ? 'del texto del PDF' : 'por OCR'} con ${result.model} en ${result.ms} ms`,
+      );
       await scan.save();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -643,6 +669,12 @@ export class InvoiceScanService {
     detail?: string,
   ): void {
     scan.history.push({ at: new Date(), userEmail: user.email, action, detail });
+  }
+
+  /** Argumentos de `extract` a partir de la imagen guardada. */
+  private async downloadArgs(url: string): Promise<[Buffer, string]> {
+    const { buffer, mimetype } = await this.download(url);
+    return [buffer, mimetype];
   }
 
   /** Descarga la imagen guardada para poder releerla sin volver a subirla. */
