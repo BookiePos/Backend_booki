@@ -21,14 +21,58 @@ import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { SaleDocument } from '../../sales/infrastructure/schemas/sale.schema';
 import { SedeDocument } from '../../sedes/infrastructure/schemas/sede.schema';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
-import { assertSedeAccess } from '../../core-auth/domain/sede-access';
+import {
+  allowedSedeIds,
+  assertSedeAccess,
+} from '../../core-auth/domain/sede-access';
 import {
   CONSUMIDOR_FINAL_NIT,
   MEDIO_PAGO_BY_METHOD,
 } from '../domain/einvoicing.constants';
 import { computeCufe, dianVerificationUrl } from '../domain/cufe';
+import {
+  computeResolutionStatus,
+  type ResolutionStatus,
+} from '../domain/resolution-status';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** Una sede con su resolución y su estado, para la pantalla de control. */
+export interface ResolutionRow {
+  sedeId: string;
+  sedeCode: string;
+  sedeName: string;
+  resolucion?: {
+    numero?: string;
+    fechaResolucion?: Date;
+    prefijo?: string;
+    rangoDesde?: number;
+    rangoHasta?: number;
+    vigenciaDesde?: Date;
+    vigenciaHasta?: Date;
+  };
+  status: ResolutionStatus;
+}
+
+/** Datos con los que se registra o renueva una resolución. */
+export interface RegisterResolutionInput {
+  numero?: string;
+  fechaResolucion?: string;
+  prefijo?: string;
+  rangoDesde?: number;
+  rangoHasta?: number;
+  vigenciaDesde?: string;
+  vigenciaHasta?: string;
+  claveTecnica?: string;
+  /** Número por el que arranca el consecutivo. Por defecto, el inicio del rango. */
+  empezarEn?: number;
+}
+
+/** Inicio y fin del día, para comparar vigencias sin que la hora estorbe. */
+const startOfDay = (d: Date) =>
+  new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const endOfDay = (d: Date) =>
+  new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
 
 @Injectable()
 export class EinvoicingService {
@@ -100,6 +144,11 @@ export class EinvoicingService {
         'No se puede emitir: falta la clave técnica DIAN de la sede para calcular el CUFE.',
       );
     }
+
+    // La vigencia también se comprueba antes de tocar nada. Una resolución
+    // vencida no autoriza a facturar, y sin esto el sistema seguía emitiendo
+    // con normalidad e imprimiendo en cada factura una vigencia ya expirada.
+    this.assertResolucionVigente(sede);
 
     // Cupo de documentos del plan (antes de quemar folio: si no hay cupo, 402).
     await this.consumeDocQuota();
@@ -262,6 +311,135 @@ export class EinvoicingService {
   }
 
   /** Consecutivo dentro del rango autorizado (o libre para notas). */
+  /**
+   * Rechaza la emisión si la resolución no está vigente hoy.
+   *
+   * Se llama antes de consumir cupo y antes de quemar folio: el consecutivo
+   * autorizado es un recurso escaso y no se gasta en una factura que no se
+   * debería estar emitiendo.
+   */
+  private assertResolucionVigente(sede: SedeDocument): void {
+    const r = sede.resolucionFe;
+    const hoy = new Date();
+    if (r?.vigenciaHasta && new Date(r.vigenciaHasta) < startOfDay(hoy)) {
+      throw new BadRequestException(
+        'La resolución de numeración de esta sede está vencida. Renuévala ante la DIAN antes de seguir facturando.',
+      );
+    }
+    if (r?.vigenciaDesde && new Date(r.vigenciaDesde) > endOfDay(hoy)) {
+      throw new BadRequestException(
+        'La vigencia de la resolución de numeración de esta sede todavía no ha empezado.',
+      );
+    }
+  }
+
+  /**
+   * Estado de la resolución de cada sede: qué queda de rango, cuánto de
+   * vigencia y si se puede emitir.
+   *
+   * Es la información que hasta ahora no se veía por ningún lado: el
+   * consecutivo vive en un contador atómico, no en la sede, así que nadie sabía
+   * por qué número iba ni cuántos quedaban hasta que se acababan.
+   */
+  async resolutionStatus(user: JwtUser): Promise<ResolutionRow[]> {
+    const sedes = await this.sedes.list(allowedSedeIds(user));
+    return Promise.all(
+      sedes.map(async (sede) => {
+        const r = sede.resolucionFe;
+        const siguiente = r
+          ? await this.peekNumber(sede.id as string, r.prefijo, r.rangoDesde)
+          : undefined;
+        return {
+          sedeId: sede.id as string,
+          sedeCode: sede.code,
+          sedeName: sede.name,
+          // La clave técnica NO viaja: solo si está puesta, dentro del estado.
+          resolucion: r
+            ? {
+                numero: r.numero,
+                fechaResolucion: r.fechaResolucion,
+                prefijo: r.prefijo,
+                rangoDesde: r.rangoDesde,
+                rangoHasta: r.rangoHasta,
+                vigenciaDesde: r.vigenciaDesde,
+                vigenciaHasta: r.vigenciaHasta,
+              }
+            : undefined,
+          status: computeResolutionStatus(r, siguiente),
+        };
+      }),
+    );
+  }
+
+  /**
+   * Registra una resolución nueva y **ancla el consecutivo** donde corresponde.
+   *
+   * Esto último es la razón de ser del endpoint. El contador va por
+   * `fe:<sede>:<prefijo>` y el número se calcula como `rangoDesde + seq - 1`:
+   * al renovar con el mismo prefijo, el contador seguía donde estaba mientras
+   * `rangoDesde` cambiaba, así que la numeración saltaba (ibas por la 500 del
+   * rango 1-2000, renovabas a 2001-4000 y la siguiente salía 2500, comiéndose
+   * 499 números autorizados). Fijando `seq` al registrar, la próxima factura
+   * sale con el número que se pide.
+   */
+  async registerResolution(
+    sedeId: string,
+    dto: RegisterResolutionInput,
+    user: JwtUser,
+  ): Promise<ResolutionRow[]> {
+    assertSedeAccess(user, sedeId);
+    const sede = await this.sedes.findOrFail(sedeId);
+
+    const desde = dto.rangoDesde ?? 1;
+    const empezarEn = dto.empezarEn ?? desde;
+    if (empezarEn < desde || (dto.rangoHasta != null && empezarEn > dto.rangoHasta)) {
+      throw new BadRequestException(
+        'El número inicial tiene que estar dentro del rango autorizado.',
+      );
+    }
+
+    sede.resolucionFe = {
+      numero: dto.numero,
+      fechaResolucion: dto.fechaResolucion
+        ? new Date(dto.fechaResolucion)
+        : undefined,
+      prefijo: dto.prefijo?.toUpperCase(),
+      rangoDesde: desde,
+      rangoHasta: dto.rangoHasta,
+      vigenciaDesde: dto.vigenciaDesde ? new Date(dto.vigenciaDesde) : undefined,
+      vigenciaHasta: dto.vigenciaHasta ? new Date(dto.vigenciaHasta) : undefined,
+      // La clave técnica se conserva si no viene una nueva: es un dato que se
+      // teclea una vez y perderlo dejaría la sede sin poder emitir.
+      claveTecnica: dto.claveTecnica ?? sede.resolucionFe?.claveTecnica,
+    };
+    await sede.save();
+
+    await this.counters
+      .findOneAndUpdate(
+        { _id: `fe:${sedeId}:${sede.resolucionFe.prefijo ?? ''}` },
+        { $set: { seq: empezarEn - desde } },
+        { upsert: true },
+      )
+      .exec();
+
+    return this.resolutionStatus(user);
+  }
+
+  /**
+   * Qué número le tocaría a la próxima factura, SIN consumirlo.
+   * Leer el contador no lo incrementa; el `$inc` solo ocurre al emitir.
+   */
+  private async peekNumber(
+    sedeId: string,
+    prefijo: string | undefined,
+    rangoDesde: number | undefined,
+  ): Promise<number> {
+    const counter = await this.counters
+      .findById(`fe:${sedeId}:${prefijo ?? ''}`)
+      .exec();
+    return (rangoDesde ?? 1) + (counter?.seq ?? 0);
+  }
+
   private async nextNumber(
     counterId: string,
     desde: number,
