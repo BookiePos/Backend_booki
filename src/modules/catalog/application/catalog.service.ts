@@ -307,7 +307,20 @@ export class CatalogService {
     return this.model
       .find({ active: true, salePrice: { $gt: 0 } })
       .populate({ path: 'categoryId', select: 'name', model: this.categoryModel })
-      .populate({ path: 'inventoryProductId', select: 'sku barcode', model: this.productModel })
+      .populate({
+        path: 'inventoryProductId',
+        select: 'sku barcode variantOf variantAttrs',
+        model: this.productModel,
+        // Segundo nivel: el producto "padre" que agrupa las variantes. Es lo
+        // que permite al POS juntar las quince filas de una camisa en una sola
+        // tarjeta con selector de talla, en vez de inundar la rejilla con una
+        // tarjeta por combinación.
+        populate: {
+          path: 'variantOf',
+          select: 'name sku variantAxes',
+          model: this.productModel,
+        },
+      })
       .sort({ name: 1 })
       .exec();
   }
@@ -367,6 +380,45 @@ export class CatalogService {
       | null
       | undefined;
     return ref?.barcode ?? null;
+  }
+
+  /**
+   * Variante a la que pertenece el vendible: bajo qué producto padre se agrupa
+   * y con qué valores (Talla: M, Color: Rojo). Solo funciona con
+   * `inventoryProductId` poblado (p. ej. desde `listSellable`).
+   *
+   * Que devuelva `null` es el caso normal —la inmensa mayoría de productos no
+   * son variantes— y significa "píntalo como una tarjeta suelta".
+   */
+  variantInfoOf(product: CatalogProductDocument): {
+    groupId: string;
+    groupName: string;
+    attrs: Record<string, string>;
+    axes: { name: string; values: string[] }[];
+  } | null {
+    if (product.sourceType !== 'inventory') return null;
+    const ref = product.inventoryProductId as unknown as
+      | {
+          variantAttrs?: Record<string, string>;
+          variantOf?: {
+            _id?: unknown;
+            name?: string;
+            variantAxes?: { name: string; values: string[] }[];
+          } | null;
+        }
+      | null
+      | undefined;
+    const parent = ref?.variantOf;
+    if (!parent || !parent._id) return null;
+    return {
+      groupId: String(parent._id),
+      groupName: parent.name ?? product.name,
+      attrs: ref?.variantAttrs ?? {},
+      // El orden de los valores tal como los escribió el comerciante. Sin esto
+      // el POS solo puede ordenar alfabéticamente y las tallas salen
+      // "L · M · S · XL", que no es el orden en que nadie piensa una talla.
+      axes: parent.variantAxes ?? [],
+    };
   }
 
   /** Versión que carga el producto por id (para usos puntuales). */
