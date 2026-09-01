@@ -101,17 +101,7 @@ export class GlmExtractorService implements InvoiceExtractor {
       };
     }
 
-    const chat = await this.post(this.chatUrl, {
-      model: this.textModel,
-      temperature: 0,
-      messages: [
-        { role: 'system', content: EXTRACTION_PROMPT },
-        {
-          role: 'user',
-          content: `Texto de la factura:\n\n${documentText.slice(0, 30_000)}`,
-        },
-      ],
-    });
+    const chat = await this.chat(documentText);
 
     return {
       raw: { ocr, chat },
@@ -119,6 +109,41 @@ export class GlmExtractorService implements InvoiceExtractor {
       model: this.model,
       ms: Date.now() - started,
     };
+  }
+
+  /**
+   * Lee la factura de su texto: una sola llamada al modelo de texto, sin OCR.
+   * Es el camino de los PDF que ya traen capa de texto.
+   */
+  async extractText(text: string): Promise<ExtractorResult> {
+    if (!this.apiKey) {
+      throw new ServiceUnavailableException(
+        'La lectura de facturas no está configurada en este entorno.',
+      );
+    }
+    const started = Date.now();
+    const chat = await this.chat(text);
+    return {
+      raw: chat,
+      parsed: parseExtractedInvoice(findInvoicePayload(chat) ?? {}),
+      model: this.textModel,
+      ms: Date.now() - started,
+    };
+  }
+
+  /** Manda un texto al modelo y pide de vuelta el JSON de la factura. */
+  private chat(text: string): Promise<unknown> {
+    return this.post(this.chatUrl, {
+      model: this.textModel,
+      temperature: 0,
+      messages: [
+        { role: 'system', content: EXTRACTION_PROMPT },
+        {
+          role: 'user',
+          content: `Texto de la factura:\n\n${text.slice(0, 30_000)}`,
+        },
+      ],
+    });
   }
 
   private async post(url: string, body: unknown): Promise<unknown> {

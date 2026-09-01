@@ -28,6 +28,15 @@ const DEFAULT_BASE_URL =
   'https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
 
 const DEFAULT_MODEL = 'qwen3.5-ocr';
+/**
+ * Modelo de TEXTO para los PDF que ya traen sus caracteres.
+ *
+ * No hace falta visión ahí, y un modelo de texto es más barato y más rápido.
+ */
+const DEFAULT_TEXT_MODEL = 'qwen-plus';
+/** El texto va por el endpoint de generación, no por el multimodal. */
+const DEFAULT_TEXT_URL =
+  'https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation';
 const DEFAULT_TIMEOUT_MS = 60_000;
 
 /**
@@ -44,6 +53,8 @@ export class QwenExtractorService implements InvoiceExtractor {
   private readonly apiKey?: string;
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  private readonly textModel: string;
+  private readonly textUrl: string;
   readonly model: string;
 
   constructor(private readonly config: ConfigService) {
@@ -51,6 +62,10 @@ export class QwenExtractorService implements InvoiceExtractor {
     this.baseUrl =
       this.config.get<string>('QWEN_BASE_URL')?.trim() || DEFAULT_BASE_URL;
     this.model = this.config.get<string>('QWEN_OCR_MODEL')?.trim() || DEFAULT_MODEL;
+    this.textModel =
+      this.config.get<string>('QWEN_TEXT_MODEL')?.trim() || DEFAULT_TEXT_MODEL;
+    this.textUrl =
+      this.config.get<string>('QWEN_TEXT_URL')?.trim() || DEFAULT_TEXT_URL;
     this.timeoutMs = Number(
       this.config.get<string>('INVOICE_AI_TIMEOUT_MS') ?? DEFAULT_TIMEOUT_MS,
     );
@@ -137,6 +152,68 @@ export class QwenExtractorService implements InvoiceExtractor {
       raw,
       parsed: parseExtractedInvoice(payload ?? {}),
       model: this.model,
+      ms: Date.now() - started,
+    };
+  }
+
+  /** Lee la factura de su texto, sin pasar por OCR. */
+  async extractText(text: string): Promise<ExtractorResult> {
+    if (!this.apiKey) {
+      throw new ServiceUnavailableException(
+        'La lectura de facturas no está configurada en este entorno.',
+      );
+    }
+    const started = Date.now();
+    const body = {
+      model: this.textModel,
+      input: {
+        messages: [
+          { role: 'system', content: EXTRACTION_PROMPT },
+          {
+            role: 'user',
+            content: `Texto de la factura:\n\n${text.slice(0, 30_000)}`,
+          },
+        ],
+      },
+      parameters: { result_format: 'message', temperature: 0 },
+    };
+
+    let response: Response;
+    try {
+      response = await fetchWithTimeout(
+        this.textUrl,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        },
+        this.timeoutMs,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Fallo llamando a Qwen (texto): ${message}`);
+      throw new ServiceUnavailableException(
+        'No se pudo leer la factura: el servicio de lectura no respondió a tiempo.',
+      );
+    }
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      this.logger.error(
+        `Qwen (texto) respondió ${response.status}: ${detail.slice(0, 500)}`,
+      );
+      throw new ServiceUnavailableException(
+        'No se pudo leer la factura. Inténtalo de nuevo en un momento.',
+      );
+    }
+
+    const raw: unknown = await response.json();
+    return {
+      raw,
+      parsed: parseExtractedInvoice(findInvoicePayload(raw) ?? {}),
+      model: this.textModel,
       ms: Date.now() - started,
     };
   }

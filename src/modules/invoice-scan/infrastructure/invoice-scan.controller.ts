@@ -76,11 +76,17 @@ export class InvoiceScanController {
   upload(
     @UploadedFile() file: UploadedInvoiceImage | undefined,
     @CurrentUser() user: JwtUser,
+    /**
+     * Texto del PDF, si el navegador lo pudo extraer. Va como campo del
+     * multipart junto al archivo: su presencia hace que la factura se lea sin
+     * OCR, que es más exacto y más barato.
+     */
+    @Body('text') text?: string,
   ) {
     if (!file) {
       throw new BadRequestException('Adjunta la imagen en el campo "file"');
     }
-    return this.scans.upload(file, user);
+    return this.scans.upload(file, user, text);
   }
 
   /** Lee la factura con el modelo. Se puede reintentar si falla. */
