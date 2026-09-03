@@ -8,7 +8,7 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { randomBytes } from 'crypto';
-import { BlobStorageService } from '../../../shared/storage/blob-storage.service';
+import { StorageService } from '../../../shared/storage/storage.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { BusinessService } from '../../control/application/business.service';
 import { ProductsService } from '../../inventory/application/products.service';
@@ -58,7 +58,7 @@ export class InvoiceScanService {
     @Inject(INVOICE_EXTRACTOR)
     private readonly extractor: InvoiceExtractor,
     private readonly matching: InvoiceMatchingService,
-    private readonly storage: BlobStorageService,
+    private readonly storage: StorageService,
     private readonly businesses: BusinessService,
     private readonly suppliers: SuppliersService,
     private readonly products: ProductsService,

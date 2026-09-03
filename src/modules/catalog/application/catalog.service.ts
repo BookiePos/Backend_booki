@@ -23,7 +23,7 @@ import {
   PRODUCT_IMAGE_TYPES_LABEL,
   imageExtension,
 } from '../domain/product-image';
-import { BlobStorageService } from '../../../shared/storage/blob-storage.service';
+import { StorageService } from '../../../shared/storage/storage.service';
 import { ProductsService } from '../../inventory/application/products.service';
 import { Product } from '../../inventory/infrastructure/schemas/product.schema';
 import { ProductCategory } from '../../inventory/infrastructure/schemas/product-category.schema';
@@ -72,7 +72,7 @@ export class CatalogService {
     // llama a `syncFromInventory` al guardar un ítem con precio).
     @Inject(forwardRef(() => ProductsService))
     private readonly inventory: ProductsService,
-    private readonly storage: BlobStorageService,
+    private readonly storage: StorageService,
   ) {}
 
   list(includeInactive = false): Promise<CatalogProductDocument[]> {
