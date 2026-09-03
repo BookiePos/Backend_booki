@@ -73,7 +73,8 @@ export class InvoiceScanService {
    *
    * La cuota se consume aquí y no al extraer porque es la subida la que ya
    * comprometió almacenamiento; y así un reintento de lectura fallida no vuelve
-   * a cobrar.
+   * a cobrar. Por lo mismo se comprueba antes que el store esté configurado:
+   * cobrar un escaneo que nunca se llegó a guardar sería peor que no cobrarlo.
    */
   async upload(
     file: UploadedInvoiceImage,
@@ -92,6 +93,10 @@ export class InvoiceScanService {
         `La imagen supera los ${Math.round(INVOICE_IMAGE_MAX_BYTES / 1024 / 1024)} MB.`,
       );
     }
+
+    // Antes de cobrar: si no hay almacenamiento la subida va a fallar igual, y
+    // un 503 de configuración no debe costarle un escaneo al negocio.
+    this.storage.assertAvailable();
 
     const ctx = TenantContext.currentOrThrow();
     await this.businesses.consumeScan(ctx.businessId, ctx.plan);

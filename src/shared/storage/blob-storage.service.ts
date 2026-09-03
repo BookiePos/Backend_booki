@@ -43,6 +43,16 @@ export class BlobStorageService {
   }
 
   /**
+   * Falla ya si no hay almacenamiento, antes de que quien llama comprometa
+   * nada. Existe porque `upload()` es la última operación de flujos que primero
+   * consumen cuota: sin esto, un 503 de configuración le cuesta al negocio un
+   * escaneo por cada reintento. El mensaje vive aquí, no en cada llamador.
+   */
+  assertAvailable(): void {
+    this.requireToken();
+  }
+
+  /**
    * Sube el archivo y devuelve su URL pública.
    *
    * `addRandomSuffix: false` porque la ruta ya la construye quien llama con su
