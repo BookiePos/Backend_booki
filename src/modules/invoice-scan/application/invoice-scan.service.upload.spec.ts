@@ -14,7 +14,7 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
 });
 
 import { InvoiceScanService } from './invoice-scan.service';
-import { BlobStorageService } from '../../../shared/storage/blob-storage.service';
+import { StorageService } from '../../../shared/storage/storage.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 
@@ -59,7 +59,7 @@ describe('InvoiceScanService · cuota al subir', () => {
 
   it('sin almacenamiento configurado responde 503 y NO consume cuota', async () => {
     // El servicio real, con la variable ausente: mismo camino que en producción.
-    const storage = new BlobStorageService({
+    const storage = new StorageService({
       get: () => undefined,
     } as never);
     const { service, scans, businesses } = makeService(storage);
