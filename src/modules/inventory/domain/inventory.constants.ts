@@ -22,6 +22,8 @@ export const MOVEMENT_TYPES = [
   'transfer_in', // entrada por traslado entre sedes
   'sale', // salida por venta (lo usará el POS)
   'sale_void', // entrada por anulación de una venta (reversa del stock)
+  'production_out', // salida de insumo consumido por una orden de producción
+  'production_in', // entrada del terminado que fabricó una orden de producción
 ] as const;
 
 export type MovementType = (typeof MOVEMENT_TYPES)[number];

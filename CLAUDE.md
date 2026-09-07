@@ -123,6 +123,42 @@ fábrica en el módulo; el resto del código habla con la interfaz
 `InvoiceExtractor` y no sabe con quién. **GLM-5.2 no acepta imágenes**: en la
 implementación de Z.ai lee GLM-OCR y GLM-5.2 solo convierte ese texto en JSON.
 
+`modules/production/` es el intermediario de ALGUNOS productos entre inventario
+y catálogo:
+
+```
+Inventario ─────────────────────────────────────────────► Productos (catálogo)
+     └──────────────► Producción ────────────────────────────┘
+```
+
+Lo que se compra ya hecho va derecho de uno a otro y no pasa por aquí. Lo que se
+fabrica sí. Tres reglas lo gobiernan:
+
+- **No reimplementa el inventario.** Consume con `StockService.consumeLines`
+  (el mismo primitivo FEFO que usa la venta, con tipo de movimiento
+  `production_out`) e ingresa con `StockService.entry` y `production_in`. El
+  kardex, por tanto, distingue "salió porque se vendió" de "salió porque se
+  fabricó otra cosa".
+- **La receta de lote NO es la receta del catálogo.** `bom_recipes` describe una
+  FABRICACIÓN previa —el panadero hornea de madrugada y vende durante el día—;
+  `catalog_products.recipe` descuenta ingredientes al VENDER. Publicar el
+  terminado como vendible usa `sourceType: 'inventory'` a propósito: montarlo
+  como receta descontaría la harina dos veces.
+- **El cierre es idempotente.** `complete()` comprueba disponibilidad, RESERVA el
+  cierre con un `findOneAndUpdate` condicionado al estado abierto y solo después
+  mueve stock. Un reintento no vuelve a consumir. La ventana que queda (crash
+  entre reserva y movimientos) se registra en el log y se corrige con un ajuste;
+  es preferible al doble consumo silencioso del orden inverso.
+
+El costo del terminado sale del costo REAL de los lotes consumidos (las
+`portions` que devuelve `consumeLines`) más el costo de conversión del lote,
+repartido entre la salida REAL y no entre la planeada.
+
+Qué ítem de inventario se vende solo en el POS lo decide su **precio de venta**,
+no su `itemType` (ver `CatalogService.syncFromInventory`). No infieras lo
+contrario: la ficha de inventario crea su "Producto" como `ingredient` y las
+variantes de retail como `product`, y los dos se venden.
+
 Respeta la dirección de dependencias: `infrastructure` → `application` → `domain`.
 `domain` no importa nada de Nest ni de Mongoose.
 

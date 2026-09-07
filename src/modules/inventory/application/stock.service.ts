@@ -53,6 +53,14 @@ export interface SoldLine {
   portions: ConsumedPortion[];
 }
 
+/**
+ * Los mismos tipos con nombre neutral: consumir stock no siempre es vender
+ * (producción transforma). Se declaran como alias para no duplicar la forma ni
+ * obligar al módulo de producción a hablar de "ventas".
+ */
+export type ConsumeLineInput = SaleLineInput;
+export type ConsumedLine = SoldLine;
+
 @Injectable()
 export class StockService {
   private readonly logger = new Logger(StockService.name);
@@ -96,7 +104,19 @@ export class StockService {
 
   // ─── Entradas ──────────────────────────────────────────────────────────────
 
-  async entry(dto: StockEntryDto, user: JwtUser) {
+  /**
+   * Ingresa mercancía a una sede.
+   *
+   * `opts.movementType` existe para que quien produce (o cualquier flujo que
+   * NO sea una compra) quede identificado en el kardex sin duplicar los ~60
+   * renglones de esta función. Por omisión es 'entry', que es lo que registra
+   * una recepción de proveedor.
+   */
+  async entry(
+    dto: StockEntryDto,
+    user: JwtUser,
+    opts: { movementType?: MovementType } = {},
+  ) {
     assertSedeAccess(user, dto.sedeId);
     const product = await this.products.getOrFail(dto.productId);
     if (!product.active) {
@@ -148,7 +168,7 @@ export class StockService {
       const [movement] = await this.movementModel.create(
         [
           {
-            type: 'entry' satisfies MovementType,
+            type: opts.movementType ?? ('entry' satisfies MovementType),
             productId: product._id,
             sedeId,
             lotId: lot?._id,
@@ -462,6 +482,29 @@ export class StockService {
     lines: SaleLineInput[],
     user: JwtUser,
   ): Promise<SoldLine[]> {
+    return this.consumeLines('sale', sedeId, lines, user);
+  }
+
+  // ─── Consumo genérico ──────────────────────────────────────────────────────
+
+  /**
+   * Descuenta varias líneas del stock de una sede en una sola transacción,
+   * consumiendo lotes FEFO y registrando movimientos del tipo indicado. Falla
+   * completa si alguna línea no tiene stock suficiente.
+   *
+   * Es el primitivo que comparten la venta ('sale') y la producción
+   * ('production_out'): quien transforma mercancía necesita exactamente el
+   * mismo descuento por lotes que quien la vende, y devolver las porciones
+   * consumidas es lo que permite costear el lote resultante con el costo REAL
+   * de lo que entró, no con un promedio.
+   */
+  async consumeLines(
+    type: MovementType,
+    sedeId: string,
+    lines: ConsumeLineInput[],
+    user: JwtUser,
+    meta: { note?: string; reason?: string } = {},
+  ): Promise<ConsumedLine[]> {
     await this.sedes.findOrFail(sedeId);
     const sede = new Types.ObjectId(sedeId);
     const items = await Promise.all(
@@ -472,7 +515,7 @@ export class StockService {
     );
 
     return this.withTransaction(async (session) => {
-      const sold: SoldLine[] = [];
+      const consumed: ConsumedLine[] = [];
       for (const { product, qty } of items) {
         const { item, portions } = await this.consume(
           product,
@@ -480,12 +523,14 @@ export class StockService {
           qty,
           session,
         );
-        await this.recordExits('sale', product, sede, item, portions, session, {
+        await this.recordExits(type, product, sede, item, portions, session, {
           user,
+          note: meta.note,
+          reason: meta.reason,
         });
-        sold.push({ product, portions });
+        consumed.push({ product, portions });
       }
-      return sold;
+      return consumed;
     });
   }
 
@@ -593,6 +638,52 @@ export class StockService {
   }
 
   // ─── Consultas ─────────────────────────────────────────────────────────────
+
+  /**
+   * Existencia de un producto en una sede (0 si nunca ha tenido).
+   *
+   * Sirve para comprobar disponibilidad ANTES de empezar una operación de
+   * varias líneas: `consume` también protege, pero lo hace a mitad de camino y
+   * en un Mongo sin réplicas eso deja la operación a medias. Es una lectura
+   * orientativa —entre la consulta y el descuento cabe otra venta—, así que no
+   * sustituye al decremento condicional, solo evita el caso común.
+   */
+  async availableQty(productId: string, sedeId: string): Promise<number> {
+    const item = await this.stockItemModel
+      .findOne({
+        productId: new Types.ObjectId(productId),
+        sedeId: new Types.ObjectId(sedeId),
+      })
+      .exec();
+    return item?.qty ?? 0;
+  }
+
+  /**
+   * Existencias de varios productos de una vez, como mapa `productId -> qty`.
+   *
+   * Una sola agregación en vez de N lecturas: quien pinta un tablero de
+   * terminados necesita el stock de todos a la vez, y hacerlo producto a
+   * producto convierte una pantalla en una tormenta de consultas.
+   */
+  async qtyByProduct(
+    productIds: (Types.ObjectId | string)[],
+    sedeId?: string,
+    restrict?: string[] | null,
+  ): Promise<Map<string, number>> {
+    if (productIds.length === 0) return new Map();
+    const match: Record<string, unknown> = {
+      productId: { $in: productIds.map((id) => new Types.ObjectId(id)) },
+      ...(this.sedeMatch(sedeId, restrict) ?? {}),
+    };
+    const rows = await this.stockItemModel.aggregate<{
+      _id: Types.ObjectId;
+      qty: number;
+    }>([
+      { $match: match },
+      { $group: { _id: '$productId', qty: { $sum: '$qty' } } },
+    ]);
+    return new Map(rows.map((r) => [r._id.toString(), r.qty]));
+  }
 
   /** Existencias consolidadas (opcionalmente filtradas por sede). */
   async stock(sedeId?: string, restrict?: string[] | null) {

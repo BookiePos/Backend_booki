@@ -26,6 +26,7 @@ import { CoreTaxModule } from './modules/core-tax/core-tax.module';
 import { CoreAuditModule } from './modules/core-audit/core-audit.module';
 import { CoreLedgerModule } from './modules/core-ledger/core-ledger.module';
 import { CoreReportsModule } from './modules/core-reports/core-reports.module';
+import { ProductionModule } from './modules/production/production.module';
 import { PurchasingModule } from './modules/purchasing/purchasing.module';
 import { InvoiceScanModule } from './modules/invoice-scan/invoice-scan.module';
 import { RestaurantModule } from './modules/restaurant/restaurant.module';
@@ -112,6 +113,7 @@ function controlUri(): string {
     CoreTaxModule,
     CoreLedgerModule,
     CoreReportsModule,
+    ProductionModule,
     PurchasingModule,
     InvoiceScanModule,
     RestaurantModule,

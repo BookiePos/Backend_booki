@@ -517,15 +517,25 @@ export class CatalogService {
   /**
    * Sincroniza el vendible del POS que corresponde a un ítem de inventario.
    *
-   * Un ítem de inventario **vendible** (itemType `product`, activo, con
-   * `salePrice > 0` y que no sea el padre-plantilla de variantes) aparece solo
-   * en el POS: aquí se crea/actualiza su producto de catálogo "automático"
-   * (fuente inventario, 1 unidad de stock por venta). Si deja de ser vendible
-   * (sin precio, inactivo o pasa a ingrediente), se elimina.
+   * Un ítem de inventario **vendible** —activo, con `salePrice > 0` y que no sea
+   * el padre-plantilla de variantes— aparece solo en el POS: aquí se
+   * crea/actualiza su producto de catálogo "automático" (fuente inventario, 1
+   * unidad de stock por venta). Si deja de ser vendible (pierde el precio o se
+   * inactiva), se elimina.
+   *
+   * **El `itemType` NO decide.** Lo decide el precio de venta, que es donde el
+   * usuario declara la intención. Esta condición miraba `itemType === 'product'`
+   * y eso dejó la función muerta para el camino principal: la ficha de
+   * inventario crea su "Producto" como `ingredient` (`product` solo lo usan hoy
+   * las variantes de retail, que sí entraban), así que un tendero le ponía
+   * precio a su gaseosa y nunca aparecía en la caja; tocaba volver a crearla a
+   * mano en /productos. Un `assembly` también se vende —es lo que sale de
+   * Producción—, así que tampoco tiene por qué quedar fuera.
    *
    * Solo toca los vendibles automáticos (`autoFromInventory: true`): los que el
    * usuario creó a mano en /productos (precio, receta o IVA propios) no se
-   * pisan, y si ya existe uno manual para este ítem, no se duplica.
+   * pisan —incluidos los que publica Producción—, y si ya existe uno manual
+   * para este ítem, no se duplica.
    */
   async syncFromInventory(product: ProductDocument): Promise<void> {
     const productId = product._id as Types.ObjectId;
@@ -533,8 +543,7 @@ export class CatalogService {
     const isParent = Boolean(
       product.variantAxes && product.variantAxes.length > 0,
     );
-    const sellable =
-      product.itemType === 'product' && product.active && price > 0 && !isParent;
+    const sellable = product.active && price > 0 && !isParent;
 
     const existingAuto = await this.model
       .findOne({ inventoryProductId: productId, autoFromInventory: true })
@@ -590,6 +599,34 @@ export class CatalogService {
       active: true,
       autoFromInventory: true,
     });
+  }
+
+  /**
+   * Vendibles del POS que se abastecen de los ítems de inventario indicados,
+   * como mapa `inventoryProductId -> vendible`.
+   *
+   * Lo consulta Producción para responder la pregunta que cierra el circuito:
+   * este terminado que acabo de fabricar, ¿ya se puede vender y a qué precio?
+   * Devuelve solo los de fuente `inventory`: un vendible por receta consume sus
+   * ingredientes al vender y no representa al terminado en bodega.
+   */
+  async listByInventoryProducts(
+    productIds: (Types.ObjectId | string)[],
+  ): Promise<Map<string, CatalogProductDocument>> {
+    if (productIds.length === 0) return new Map();
+    const rows = await this.model
+      .find({
+        sourceType: 'inventory',
+        inventoryProductId: {
+          $in: productIds.map((id) => new Types.ObjectId(id)),
+        },
+      })
+      .exec();
+    return new Map(
+      rows
+        .filter((r) => r.inventoryProductId)
+        .map((r) => [r.inventoryProductId!.toString(), r]),
+    );
   }
 
   /**

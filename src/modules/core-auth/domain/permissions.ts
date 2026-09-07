@@ -26,6 +26,9 @@ export const PERMISSIONS = {
   INVENTORY_VIEW: 'inventory.view',
   INVENTORY_ADJUST: 'inventory.adjust',
   INVENTORY_TRANSFER: 'inventory.transfer',
+  // Producción (recetas de lote y órdenes de fabricación)
+  PRODUCTION_VIEW: 'production.view',
+  PRODUCTION_MANAGE: 'production.manage',
   // Compras / finanzas / reportes
   PURCHASING_MANAGE: 'purchasing.manage',
   FINANCE_VIEW: 'finance.view',
@@ -88,6 +91,17 @@ export const PERMISSION_GROUPS: {
       { key: PERMISSIONS.INVENTORY_VIEW, label: 'Ver inventario y proveedores' },
       { key: PERMISSIONS.INVENTORY_ADJUST, label: 'Ajustar inventario y proveedores' },
       { key: PERMISSIONS.INVENTORY_TRANSFER, label: 'Trasladar entre sedes' },
+    ],
+  },
+  {
+    group: 'production',
+    label: 'Producción',
+    items: [
+      { key: PERMISSIONS.PRODUCTION_VIEW, label: 'Ver recetas y órdenes de producción' },
+      {
+        key: PERMISSIONS.PRODUCTION_MANAGE,
+        label: 'Crear recetas y fabricar (consume insumos)',
+      },
     ],
   },
   {
