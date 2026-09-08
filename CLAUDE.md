@@ -76,6 +76,19 @@ Los permisos viven en `src/modules/core-auth/domain/permissions.ts` como cadenas
 estables `modulo.accion`. El frontend replica esa lista en `src/lib/access.ts`:
 si añades o renombras un permiso, ese archivo del repo hermano queda desincronizado.
 
+**Un permiso nuevo llega solo a Dueño y Administrador.** Sus permisos se
+resuelven desde `SYSTEM_ROLES` (código), no desde la fila de `roles`, porque
+`update` prohíbe editarlos y esa fila —escrita al registrar la empresa— envejecía:
+toda función publicada después nacía invisible para los dueños ya existentes y
+hacía falta correr una semilla contra la base de cada empresa. No hay migración
+que correr: basta con desplegar y que el usuario renueve su token.
+
+Gerente, Cajero y los roles a medida NO reciben nada automáticamente, y es a
+propósito: son editables, así que su fila es la verdad y regalarles cada
+capacidad nueva sería abrir acceso que nadie autorizó. Si una función debe
+llegarles, agrégala a su lista en `roles.ts` (aplica a empresas nuevas) o
+márcala por usuario con `extraPermissions`.
+
 ## Organización del código
 
 ```

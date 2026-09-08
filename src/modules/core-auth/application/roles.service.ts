@@ -29,6 +29,35 @@ export interface RoleView {
 /** Roles de sistema cuyos permisos no se pueden alterar. */
 const LOCKED_PERMISSION_ROLES: string[] = [ROLES.OWNER, ROLES.ADMIN];
 
+/** Definición en código de cada rol de sistema, por clave. */
+const SYSTEM_ROLE_BY_KEY = new Map(
+  SYSTEM_ROLES.map((def) => [def.key, def]),
+);
+
+/**
+ * Permisos vigentes de un rol de sistema BLOQUEADO, leídos del código.
+ *
+ * Para Dueño y Administrador el código es la fuente de la verdad, no la fila de
+ * `roles`. Nadie puede editarlos (lo impide `update`), así que esa fila solo
+ * aspira a ser un espejo… y era un espejo que se quedaba viejo: los permisos se
+ * escriben al REGISTRAR la empresa, de modo que toda función publicada después
+ * nacía invisible para los dueños que ya existían. Había que correr una semilla
+ * contra la base de cada empresa, y mientras tanto el Dueño —que por definición
+ * puede todo— no veía el módulo nuevo.
+ *
+ * Resolviéndolo desde el código, una capacidad nueva llega sola a todos los
+ * dueños en cuanto se despliega: sin migración, sin semilla y sin tocar datos.
+ *
+ * Devuelve `null` si el rol no es uno de los bloqueados. Gerente y Cajero NO
+ * entran aquí a propósito: SÍ se pueden editar, así que su fila es la verdad, y
+ * regalarles en silencio cada permiso nuevo sería abrirles acceso que nadie
+ * autorizó.
+ */
+function lockedRolePermissions(key: string): Permission[] | null {
+  if (!LOCKED_PERMISSION_ROLES.includes(key)) return null;
+  return SYSTEM_ROLE_BY_KEY.get(key)?.permissions ?? null;
+}
+
 @Injectable()
 export class RolesService {
   private readonly logger = new Logger('RolesService');
@@ -61,9 +90,18 @@ export class RolesService {
     return this.roleModel.findOne({ key: key.toLowerCase() }).exec();
   }
 
-  /** Permisos de un rol resueltos desde la DB (vacío si no existe). */
+  /**
+   * Permisos vigentes de un rol.
+   *
+   * Dueño y Administrador se resuelven desde el código (ver
+   * `lockedRolePermissions`); el resto, desde su fila en la base. Vacío si el
+   * rol no existe.
+   */
   async permissionsForRole(key: string): Promise<string[]> {
-    const role = await this.findByKey(key);
+    const normalized = key.toLowerCase();
+    const locked = lockedRolePermissions(normalized);
+    if (locked) return [...locked];
+    const role = await this.findByKey(normalized);
     return role ? role.permissions : [];
   }
 
@@ -179,7 +217,10 @@ export class RolesService {
       key: role.key,
       name: role.name,
       description: role.description,
-      permissions: role.permissions,
+      // Los bloqueados se muestran como se aplican de verdad: si la pantalla
+      // pintara la fila guardada, un Dueño vería menos permisos de los que
+      // realmente tiene en cuanto se publique una función nueva.
+      permissions: lockedRolePermissions(role.key) ?? role.permissions,
       isSystem: role.isSystem,
       userCount,
     };
