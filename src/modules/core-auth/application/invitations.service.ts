@@ -18,6 +18,10 @@ import { UsersService } from './users.service';
 import { RolesService } from './roles.service';
 import { MailService } from './mail.service';
 import { AuthService, AuthTokens, AuthUserView } from './auth.service';
+import {
+  TenantContext,
+  dbNameForBusiness,
+} from '../../../shared/tenancy/tenant-context';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
 import { AcceptInvitationDto } from './dto/accept-invitation.dto';
 
@@ -176,19 +180,30 @@ export class InvitationsService {
 
   /** Valida un token (público) y devuelve datos para la pantalla de aceptación. */
   async getByToken(
-    rawToken: string,
+    linkToken: string,
   ): Promise<{ email: string; role: string; roleName: string }> {
-    const invitation = await this.requireValidToken(rawToken);
-    const role = await this.roles.findByKey(invitation.role);
-    return {
-      email: invitation.email,
-      role: invitation.role,
-      roleName: role?.name ?? invitation.role,
-    };
+    return this.inBusinessOf(linkToken, async (rawToken) => {
+      const invitation = await this.requireValidToken(rawToken);
+      const role = await this.roles.findByKey(invitation.role);
+      return {
+        email: invitation.email,
+        role: invitation.role,
+        roleName: role?.name ?? invitation.role,
+      };
+    });
   }
 
   /** Acepta la invitación: crea el usuario y devuelve una sesión iniciada. */
   async accept(
+    linkToken: string,
+    dto: AcceptInvitationDto,
+  ): Promise<{ tokens: AuthTokens; user: AuthUserView }> {
+    return this.inBusinessOf(linkToken, (rawToken) =>
+      this.acceptInBusiness(rawToken, dto),
+    );
+  }
+
+  private async acceptInBusiness(
     rawToken: string,
     dto: AcceptInvitationDto,
   ): Promise<{ tokens: AuthTokens; user: AuthUserView }> {
@@ -223,6 +238,35 @@ export class InvitationsService {
 
   // ---- helpers ----
 
+  /**
+   * Ejecuta `fn` dentro de la empresa que indica el enlace.
+   *
+   * `dbNameForBusiness` es una función pura, así que aceptar una invitación no
+   * consulta el control-plane: si ese servicio está caído, la gente igual puede
+   * entrar al negocio.
+   */
+  private inBusinessOf<T>(
+    linkToken: string,
+    fn: (rawToken: string) => Promise<T>,
+  ): Promise<T> {
+    const separator = linkToken.indexOf('.');
+    if (separator <= 0) {
+      // Enlaces emitidos antes de este cambio: solo traen el token, así que no
+      // hay forma de saber a qué empresa pertenecen. Se pide un reenvío en vez
+      // de un "no válida" que hace pensar que el enlace está corrupto.
+      throw new BadRequestException(
+        'Este enlace de invitación es de una versión anterior y ya no se puede ' +
+          'usar. Pide que te reenvíen la invitación.',
+      );
+    }
+    const businessId = linkToken.slice(0, separator);
+    const rawToken = linkToken.slice(separator + 1);
+    return TenantContext.run(
+      { businessId, dbName: dbNameForBusiness(businessId) },
+      () => fn(rawToken),
+    );
+  }
+
   private async requireValidToken(
     rawToken: string,
   ): Promise<InvitationDocument> {
@@ -241,11 +285,24 @@ export class InvitationsService {
     return invitation;
   }
 
+  /**
+   * Enlace de aceptación. Lleva la empresa DELANTE del token, separada por un
+   * punto, porque quien lo abre todavía no es usuario: no manda `Bearer`, el
+   * middleware no abre contexto de empresa y sin él no hay base donde buscar la
+   * invitación. Es el mismo problema que el restablecimiento de contraseña
+   * resuelve guardando `businessId`; aquí viaja en el propio enlace y así
+   * aceptar no depende de leer el control-plane.
+   *
+   * El id de la empresa no es un secreto (ya viaja en cada JWT) y conocerlo no
+   * acerca a nadie a adivinar los 32 bytes aleatorios del token: lo único que
+   * hace es decir en qué base mirar.
+   */
   private buildInviteUrl(rawToken: string): string {
     const base = (
       this.config.get<string>('APP_URL') ?? 'http://localhost:3000'
     ).replace(/\/+$/, '');
-    return `${base}/invitacion/${rawToken}`;
+    const { businessId } = TenantContext.currentOrThrow();
+    return `${base}/invitacion/${businessId}.${rawToken}`;
   }
 
   private expiryDate(): Date {
