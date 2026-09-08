@@ -116,6 +116,59 @@ export const EXTRACTION_RESULT_SCHEMA: Record<string, unknown> = {
 };
 
 /** La imagen como data URL, que es como la aceptan las dos APIs. */
+/**
+ * Traduce el rechazo del proveedor de lectura a algo accionable.
+ *
+ * Existe porque el mensaje genérico —"Inténtalo de nuevo en un momento"— costó
+ * dos días de diagnóstico: un id de modelo inexistente, una cuenta sin acceso
+ * contratado y una cuenta sin saldo producían EXACTAMENTE el mismo texto, y
+ * ninguno de los tres se arregla reintentando. El status real solo estaba en el
+ * log del servidor, que quien sube la factura no ve.
+ *
+ * Los mensajes hablan de "el servicio de lectura" y no del proveedor concreto:
+ * cuál se usa es una variable de entorno, y el tendero no tiene por qué saber
+ * si detrás hay Alibaba o Z.ai. Lo que sí dice es QUÉ hay que hacer y quién.
+ */
+export function providerErrorMessage(status: number, body: string): string {
+  const text = body.toLowerCase();
+
+  // Sin saldo / sin plan contratado. Le pasa al dueño de la cuenta, no a quien
+  // sube la factura, así que el mensaje tiene que delatar de quién es el turno.
+  if (
+    /insufficient balance|no resource package|recharge|"1113"/.test(text) ||
+    /unpurchased|not eligible/.test(text)
+  ) {
+    return (
+      'La lectura de facturas está sin cupo: la cuenta del servicio de lectura ' +
+      'no tiene saldo o no tiene activado el acceso. Avisa al administrador; ' +
+      'reintentar no lo va a resolver.'
+    );
+  }
+
+  // Id de modelo que no existe: error de configuración, no del proveedor.
+  if (/model not exist|invalidparameter.*model|unknown model/.test(text)) {
+    return (
+      'La lectura de facturas está mal configurada: el modelo indicado no ' +
+      'existe. Revisa la variable del modelo en el entorno.'
+    );
+  }
+
+  // Llave inválida — casi siempre es una llave de otra región.
+  if (status === 401 || /invalidapikey|invalid api-key|unauthorized/.test(text)) {
+    return (
+      'La lectura de facturas no pudo autenticarse: la llave del servicio no es ' +
+      'válida o es de otra región. Revísala en el entorno.'
+    );
+  }
+
+  // Límite de peticiones: esto SÍ se arregla reintentando.
+  if (status === 429) {
+    return 'El servicio de lectura está saturado. Espera un momento y reintenta.';
+  }
+
+  return 'No se pudo leer la factura. Inténtalo de nuevo en un momento.';
+}
+
 export function toDataUrl(image: Buffer, mimetype: string): string {
   return `data:${mimetype};base64,${image.toString('base64')}`;
 }

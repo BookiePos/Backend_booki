@@ -10,6 +10,7 @@ import {
   ExtractorResult,
   InvoiceExtractor,
   fetchWithTimeout,
+  providerErrorMessage,
   findInvoicePayload,
   toDataUrl,
 } from './invoice-extractor';
@@ -27,7 +28,14 @@ import { parseExtractedInvoice } from '../domain/invoice-extraction';
 const DEFAULT_BASE_URL =
   'https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
 
-const DEFAULT_MODEL = 'qwen3.5-ocr';
+/**
+ * `qwen3.5-ocr` NO existe: DashScope responde `InvalidParameter: Model not
+ * exist`, que el extractor traduce a un 503 genérico ("No se pudo leer la
+ * factura"), así que el nombre equivocado parecía una caída del proveedor.
+ * Comprobado contra el endpoint internacional: el modelo de OCR publicado es
+ * `qwen-vl-ocr`.
+ */
+const DEFAULT_MODEL = 'qwen-vl-ocr';
 /**
  * Modelo de TEXTO para los PDF que ya traen sus caracteres.
  *
@@ -139,7 +147,7 @@ export class QwenExtractorService implements InvoiceExtractor {
       const detail = await response.text().catch(() => '');
       this.logger.error(`Qwen respondió ${response.status}: ${detail.slice(0, 500)}`);
       throw new ServiceUnavailableException(
-        'No se pudo leer la factura. Inténtalo de nuevo en un momento.',
+        providerErrorMessage(response.status, detail),
       );
     }
 
@@ -205,7 +213,7 @@ export class QwenExtractorService implements InvoiceExtractor {
         `Qwen (texto) respondió ${response.status}: ${detail.slice(0, 500)}`,
       );
       throw new ServiceUnavailableException(
-        'No se pudo leer la factura. Inténtalo de nuevo en un momento.',
+        providerErrorMessage(response.status, detail),
       );
     }
 

@@ -9,6 +9,7 @@ import {
   ExtractorResult,
   InvoiceExtractor,
   fetchWithTimeout,
+  providerErrorMessage,
   findInvoicePayload,
   toDataUrl,
 } from './invoice-extractor';
@@ -174,7 +175,7 @@ export class GlmExtractorService implements InvoiceExtractor {
         `Z.ai respondió ${response.status} en ${url}: ${detail.slice(0, 500)}`,
       );
       throw new ServiceUnavailableException(
-        'No se pudo leer la factura. Inténtalo de nuevo en un momento.',
+        providerErrorMessage(response.status, detail),
       );
     }
     return response.json();
