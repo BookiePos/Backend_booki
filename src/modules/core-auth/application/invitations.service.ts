@@ -25,6 +25,31 @@ import {
 import { CreateInvitationDto } from './dto/create-invitation.dto';
 import { AcceptInvitationDto } from './dto/accept-invitation.dto';
 
+/**
+ * Discriminadores de por qué un enlace de invitación no sirve.
+ *
+ * Van en el cuerpo del error, como `ACCOUNT_SUSPENDED`, porque la pantalla de
+ * aceptación tiene que decir cosas distintas —y ofrecer salidas distintas— para
+ * cada caso: una invitación vencida se resuelve pidiendo otra, una ya aceptada
+ * se resuelve iniciando sesión, y una revocada no se resuelve sola. Antes todas
+ * caían en el mismo "Invitación no válida", que además tapó un 500 durante
+ * días.
+ */
+export const INVITATION_ERRORS = {
+  /** Enlace anterior al formato con empresa: no se puede resolver. */
+  LEGACY_LINK: 'INVITATION_LEGACY_LINK',
+  /** El token no corresponde a ninguna invitación. */
+  NOT_FOUND: 'INVITATION_NOT_FOUND',
+  /** El dueño la canceló. */
+  REVOKED: 'INVITATION_REVOKED',
+  /** Ya se usó: la cuenta existe. */
+  ACCEPTED: 'INVITATION_ACCEPTED',
+  /** Se pasó de la fecha de expiración. */
+  EXPIRED: 'INVITATION_EXPIRED',
+  /** Al aceptar: ese correo ya tiene cuenta en la empresa. */
+  EMAIL_TAKEN: 'INVITATION_EMAIL_TAKEN',
+} as const;
+
 /** Vista de una invitación para la API (sin el hash del token). */
 export interface InvitationView {
   id: string;
@@ -214,7 +239,10 @@ export class InvitationsService {
       invitation.status = 'accepted';
       invitation.acceptedAt = new Date();
       await invitation.save();
-      throw new ConflictException('Ya existe un usuario con ese correo');
+      throw new ConflictException({
+        code: INVITATION_ERRORS.EMAIL_TAKEN,
+        message: 'Ya existe una cuenta con ese correo.',
+      });
     }
 
     const role = await this.roles.findByKey(invitation.role);
@@ -254,10 +282,12 @@ export class InvitationsService {
       // Enlaces emitidos antes de este cambio: solo traen el token, así que no
       // hay forma de saber a qué empresa pertenecen. Se pide un reenvío en vez
       // de un "no válida" que hace pensar que el enlace está corrupto.
-      throw new BadRequestException(
-        'Este enlace de invitación es de una versión anterior y ya no se puede ' +
-          'usar. Pide que te reenvíen la invitación.',
-      );
+      throw new BadRequestException({
+        code: INVITATION_ERRORS.LEGACY_LINK,
+        message:
+          'Este enlace de invitación es de una versión anterior y ya no se ' +
+          'puede usar.',
+      });
     }
     const businessId = linkToken.slice(0, separator);
     const rawToken = linkToken.slice(separator + 1);
@@ -273,14 +303,32 @@ export class InvitationsService {
     const invitation = await this.invitationModel
       .findOne({ tokenHash: hashToken(rawToken) })
       .exec();
-    if (!invitation || invitation.status === 'revoked') {
-      throw new NotFoundException('Invitación no válida');
+    if (!invitation) {
+      throw new NotFoundException({
+        code: INVITATION_ERRORS.NOT_FOUND,
+        message: 'Este enlace de invitación no existe.',
+      });
+    }
+    // 410 y no 404 en los tres casos siguientes: la invitación EXISTIÓ y ya no
+    // sirve, que es información distinta —y accionable— frente a un enlace que
+    // nunca existió.
+    if (invitation.status === 'revoked') {
+      throw new GoneException({
+        code: INVITATION_ERRORS.REVOKED,
+        message: 'Esta invitación fue cancelada por el administrador.',
+      });
     }
     if (invitation.status === 'accepted') {
-      throw new GoneException('La invitación ya fue aceptada');
+      throw new GoneException({
+        code: INVITATION_ERRORS.ACCEPTED,
+        message: 'Esta invitación ya se usó: la cuenta está activa.',
+      });
     }
     if (invitation.expiresAt.getTime() < Date.now()) {
-      throw new GoneException('La invitación expiró');
+      throw new GoneException({
+        code: INVITATION_ERRORS.EXPIRED,
+        message: 'Esta invitación venció.',
+      });
     }
     return invitation;
   }

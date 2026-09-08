@@ -16,7 +16,7 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
   };
 });
 
-import { InvitationsService } from './invitations.service';
+import { InvitationsService, INVITATION_ERRORS } from './invitations.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 
 /**
@@ -114,11 +114,14 @@ describe('InvitationsService · contexto de empresa al aceptar', () => {
     expect(auth.issueSession).toHaveBeenCalledOnce();
   });
 
-  it('un enlace sin empresa (formato viejo) lo dice, en vez de reventar', async () => {
-    // Las invitaciones emitidas antes del arreglo llevan solo el token. No hay
-    // forma de saber de qué empresa son: el mensaje tiene que pedir un reenvío,
-    // no un "no válida" que hace pensar que el enlace está corrupto.
-    await expect(service.getByToken(RAW)).rejects.toThrow(/reenv/i);
+  it('un enlace sin empresa (formato viejo) se identifica, no revienta', async () => {
+    // Las invitaciones emitidas antes del arreglo llevan solo el token y no hay
+    // forma de saber de qué empresa son. Se distingue con su propio código para
+    // que la pantalla pida un reenvío, en vez de un "no válida" que hace pensar
+    // que el enlace está corrupto.
+    await expect(service.getByToken(RAW)).rejects.toMatchObject({
+      response: { code: INVITATION_ERRORS.LEGACY_LINK },
+    });
   });
 
   it('no busca en otra empresa si el enlace viene manipulado', async () => {
