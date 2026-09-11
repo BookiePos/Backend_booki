@@ -34,7 +34,7 @@ import { TenantContext } from '../../../shared/tenancy/tenant-context';
  * contraseña, que sí guardaba `businessId` para esto—.
  *
  * El servicio se instancia DIRECTAMENTE con dependencias mockeadas:
- * (invitationModel, users, roles, mail, auth, config).
+ * (invitationModel, userModel, users, roles, mail, auth, config).
  */
 describe('InvitationsService · contexto de empresa al aceptar', () => {
   const BUSINESS_ID = '68b0f3c2a1d4e5f6a7b8c9d0';
@@ -87,6 +87,8 @@ describe('InvitationsService · contexto de empresa al aceptar', () => {
 
     service = new InvitationsService(
       invitationModel as never,
+      // Modelo de usuarios: aquí solo lo usa `list()` al poblar `invitedBy`.
+      {} as never,
       users as never,
       roles as never,
       {} as never,

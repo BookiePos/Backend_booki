@@ -85,7 +85,7 @@ export class ProductsService {
     const filter = includeInactive ? {} : { active: true };
     return this.productModel
       .find(filter)
-      .populate('categoryId', 'name')
+      .populate({ path: 'categoryId', select: 'name', model: this.categoryModel })
       .sort({ name: 1 })
       .exec();
   }

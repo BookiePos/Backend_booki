@@ -14,6 +14,10 @@ import {
   Counter,
   CounterSchema,
 } from '../sales/infrastructure/schemas/counter.schema';
+import {
+  Product,
+  ProductSchema,
+} from '../inventory/infrastructure/schemas/product.schema';
 import { ProductionService } from './application/production.service';
 import { ProductionController } from './infrastructure/production.controller';
 
@@ -44,6 +48,10 @@ import { ProductionController } from './infrastructure/production.controller';
       { name: ProductionOrder.name, schema: ProductionOrderSchema },
       // Consecutivo OP-000001 sobre la colección de contadores compartida.
       { name: Counter.name, schema: CounterSchema },
+      // Referenciado por `populate` en las recetas (mismo token que en
+      // InventoryModule): se pasa explícito para no depender de que "Product"
+      // ya esté compilado en la base de la empresa activa.
+      { name: Product.name, schema: ProductSchema },
     ]),
   ],
   controllers: [ProductionController],

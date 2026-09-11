@@ -19,6 +19,7 @@ import {
 } from '../../caja/infrastructure/schemas/caja-session.schema';
 import { SedesService } from '../../sedes/application/sedes.service';
 import { CatalogService } from '../../catalog/application/catalog.service';
+import { Sede } from '../../sedes/infrastructure/schemas/sede.schema';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { CreateOrderDto, OrderLineInputDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
@@ -37,6 +38,16 @@ export class OrdersService {
     private readonly sedes: SedesService,
     private readonly catalog: CatalogService,
     private readonly sales: SalesService,
+    /**
+     * Modelo referenciado por `populate`. Va EXPLÍCITO en cada populate porque
+     * los modelos se compilan de forma perezosa sobre la base de cada empresa:
+     * si el referenciado todavía no lo estaba, mongoose lanzaba
+     * MissingSchemaError y la pantalla salía en 500 hasta que otra petición lo
+     * compilara. Se declara al final para no mover el orden de los parámetros
+     * ya existentes (varias pruebas construyen el servicio posicionalmente).
+     */
+    @InjectModel(Sede.name)
+    private readonly sedeModel: Model<unknown>,
   ) {}
 
   /** El cajero solo opera sedes asignadas a su usuario (JWT). */
@@ -125,7 +136,7 @@ export class OrdersService {
     return this.orderModel
       .find({ sedeId: new Types.ObjectId(sedeId), status })
       .sort({ updatedAt: -1 })
-      .populate('sedeId', 'code name')
+      .populate({ path: 'sedeId', select: 'code name', model: this.sedeModel })
       .exec();
   }
 
@@ -133,7 +144,7 @@ export class OrdersService {
     const order = Types.ObjectId.isValid(id)
       ? await this.orderModel
           .findById(id)
-          .populate('sedeId', 'code name')
+          .populate({ path: 'sedeId', select: 'code name', model: this.sedeModel })
           .exec()
       : null;
     if (!order) throw new NotFoundException('Cuenta no encontrada');
