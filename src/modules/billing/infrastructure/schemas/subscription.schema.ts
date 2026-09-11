@@ -62,6 +62,13 @@ export class Subscription {
 
   @Prop()
   canceledAt?: Date;
+
+  /**
+   * Cuándo se le retiró el acceso tras cancelar (al agotarse el período ya
+   * pagado). Sirve de marca de idempotencia: el barrido suspende una sola vez.
+   */
+  @Prop()
+  accessEndedAt?: Date;
 }
 
 export const SubscriptionSchema = SchemaFactory.createForClass(Subscription);

@@ -98,6 +98,58 @@ export const PLAN_QUOTAS: Record<BusinessPlan, PlanQuotas> = {
   cadena: { sedes: 3, users: null, documentsPerMonth: 12_000, payrollEmployees: 25, invoiceScansPerMonth: 1_000 },
 };
 
+/**
+ * Periodicidad de cobro. Pagar por adelantado sale más barato: el ciclo largo
+ * factura MENOS meses de los que cubre, y esa diferencia es el descuento.
+ */
+export const BILLING_CYCLES = [
+  'monthly',
+  'quarterly',
+  'semiannual',
+  'annual',
+] as const;
+export type BillingCycle = (typeof BILLING_CYCLES)[number];
+
+/** Meses de servicio que cubre cada ciclo. */
+export const CYCLE_MONTHS: Record<BillingCycle, number> = {
+  monthly: 1,
+  quarterly: 3,
+  semiannual: 6,
+  annual: 12,
+};
+
+/**
+ * Meses que se COBRAN en cada ciclo. La diferencia con `CYCLE_MONTHS` es el
+ * descuento por pagar por adelantado:
+ *
+ *   trimestral   2,85 de 3    →  −5 %
+ *   semestral    5,4  de 6    →  −10 %
+ *   anual       10    de 12   →  −16,7 % (dos meses gratis; es el que ya regía)
+ *
+ * Se aplica igual al plan y a los complementos: quien paga por adelantado lo
+ * hace por todo lo que contrató, no solo por una parte.
+ */
+export const CYCLE_BILLED_MONTHS: Record<BillingCycle, number> = {
+  monthly: 1,
+  quarterly: 2.85,
+  semiannual: 5.4,
+  annual: 10,
+};
+
+/** Redondeo comercial: los precios de lista no llevan unidades sueltas. */
+export function roundPrice(amount: number): number {
+  return Math.round(amount / 100) * 100;
+}
+
+/**
+ * Precio de lista de un plan en un ciclo. Se deriva del mensual por los meses
+ * facturables del ciclo, así que cambiar un precio mensual arrastra todos sus
+ * ciclos y no quedan tablas desincronizadas.
+ */
+export function planPrice(plan: BusinessPlan, cycle: BillingCycle): number {
+  return roundPrice(PLAN_PRICING[plan].monthly * CYCLE_BILLED_MONTHS[cycle]);
+}
+
 export interface PlanPricing {
   monthly: number;
   annual: number;

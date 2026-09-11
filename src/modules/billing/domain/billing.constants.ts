@@ -3,9 +3,17 @@
  * schemas y servicios para reusarse sin ciclos de importación.
  */
 
-/** Ciclo de cobro del plan. Los complementos se prorratean al ciclo. */
-export const BILLING_CYCLES = ['monthly', 'annual'] as const;
-export type BillingCycle = (typeof BILLING_CYCLES)[number];
+/**
+ * Ciclo de cobro del plan. La lista y sus precios viven en el catálogo
+ * comercial (`control/domain/plans`), que es la fuente única; aquí solo se
+ * reexportan para que el módulo de facturación no tenga que conocer esa ruta.
+ */
+export {
+  BILLING_CYCLES,
+  CYCLE_MONTHS,
+  CYCLE_BILLED_MONTHS,
+} from '../../control/domain/plans';
+export type { BillingCycle } from '../../control/domain/plans';
 
 /** Estado de la suscripción recurrente. */
 export const SUBSCRIPTION_STATUSES = [
@@ -38,6 +46,17 @@ export const MAX_CHARGE_RETRIES = 3;
 
 /** Espera mínima entre reintentos de cobro de una suscripción en mora. */
 export const RETRY_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 h
+
+/**
+ * Antigüedad a partir de la cual un cobro que sigue "pendiente" se consulta
+ * directamente a la pasarela. El webhook normalmente resuelve en segundos; si
+ * se pierde, sin esta consulta el pago se queda pendiente para siempre y la
+ * suscripción nunca se activa ni se vuelve a cobrar.
+ */
+export const PENDING_RECONCILE_AFTER_MS = 15 * 60 * 1000; // 15 min
+
+/** Tope de cobros pendientes que se reconcilian en un mismo barrido. */
+export const PENDING_RECONCILE_LIMIT = 100;
 
 /** Mapea el estado de una transacción Wompi a nuestro `PaymentStatus`. */
 export function mapWompiStatus(status: string): PaymentStatus {

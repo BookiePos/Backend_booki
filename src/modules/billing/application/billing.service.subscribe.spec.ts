@@ -17,7 +17,14 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
 });
 
 import { BillingService } from './billing.service';
-import { ADD_ONS, PLAN_PRICING } from '../../control/domain/plans';
+import {
+  ADD_ONS,
+  CYCLE_BILLED_MONTHS,
+  CYCLE_MONTHS,
+  PLAN_PRICING,
+  planPrice,
+  roundPrice,
+} from '../../control/domain/plans';
 
 /**
  * Alta y cambio de suscripción: el primer cobro y el monto que queda grabado
@@ -243,7 +250,9 @@ describe('BillingService.subscribe', () => {
       expect(guardada().amountInCents).toBe(esperado * 100);
     });
 
-    it('en el plan anual los complementos se cobran por los doce meses', async () => {
+    it('los complementos llevan el mismo descuento del ciclo que el plan', async () => {
+      // Quien paga por adelantado lo hace por todo lo contratado, no solo por
+      // el plan: en el anual se cobran 10 meses de complemento, no 12.
       await service.subscribe(BIZ, {
         ...alta,
         billingCycle: 'annual',
@@ -251,8 +260,39 @@ describe('BillingService.subscribe', () => {
       } as never);
 
       expect(guardada().amountInCents).toBe(
-        (PLAN_PRICING.control.annual + ADD_ONS.payroll.price * 12) * 100,
+        (planPrice('control', 'annual') +
+          roundPrice(ADD_ONS.payroll.price * CYCLE_BILLED_MONTHS.annual)) *
+          100,
       );
+    });
+
+    it('trimestral y semestral cobran su precio de lista', async () => {
+      for (const cycle of ['quarterly', 'semiannual'] as const) {
+        build();
+        await service.subscribe(BIZ, { ...alta, billingCycle: cycle } as never);
+        expect(guardada().billingCycle).toBe(cycle);
+        expect(guardada().amountInCents).toBe(planPrice('control', cycle) * 100);
+      }
+    });
+
+    it('el ciclo largo sale más barato por mes que el mensual', async () => {
+      // Es la razón de existir del ciclo largo: si no fuese más barato, nadie
+      // pagaría por adelantado.
+      const porMes: number[] = [];
+      for (const cycle of [
+        'monthly',
+        'quarterly',
+        'semiannual',
+        'annual',
+      ] as const) {
+        build();
+        await service.subscribe(BIZ, { ...alta, billingCycle: cycle } as never);
+        porMes.push(guardada().amountInCents / CYCLE_MONTHS[cycle]);
+      }
+
+      expect(porMes[1]).toBeLessThan(porMes[0]!);
+      expect(porMes[2]).toBeLessThan(porMes[1]!);
+      expect(porMes[3]).toBeLessThan(porMes[2]!);
     });
 
     it('el monto siempre es un entero de centavos', async () => {

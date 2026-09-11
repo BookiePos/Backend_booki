@@ -269,6 +269,77 @@ describe('BillingService · documentos, estado y cancelación', () => {
     });
   });
 
+  describe('catálogo de precios publicado', () => {
+    it('trae los cuatro ciclos con los meses que cubre cada uno', () => {
+      build(suscripcion());
+
+      const lista = service.priceList();
+
+      expect(lista.map((c) => c.cycle)).toEqual([
+        'monthly',
+        'quarterly',
+        'semiannual',
+        'annual',
+      ]);
+      expect(lista.map((c) => c.months)).toEqual([1, 3, 6, 12]);
+    });
+
+    it('publica el precio de los cuatro planes en cada ciclo', () => {
+      build(suscripcion());
+
+      for (const fila of service.priceList()) {
+        expect(Object.keys(fila.plans)).toEqual([
+          'punto',
+          'negocio',
+          'control',
+          'cadena',
+        ]);
+        for (const precio of Object.values(fila.plans)) {
+          expect(Number.isInteger(precio)).toBe(true);
+          expect(precio).toBeGreaterThan(0);
+        }
+      }
+    });
+
+    it('el precio publicado es EXACTAMENTE el que se cobra', async () => {
+      // Es el punto de la lista: que no haya dos tablas de precios que puedan
+      // discrepar entre lo que ve el cliente y lo que se le cobra.
+      build(suscripcion());
+      const lista = service.priceList();
+
+      for (const fila of lista) {
+        const sub = suscripcion();
+        build(sub);
+        wompi.createPaymentSource = vi.fn().mockResolvedValue(1);
+        subs.findOneAndUpdate = vi.fn((_f: unknown, doc: any) =>
+          Promise.resolve({ ...sub, ...doc }),
+        );
+
+        await service.subscribe(BIZ, {
+          plan: 'control',
+          cardToken: 'tok',
+          acceptanceToken: 'acc',
+          billingCycle: fila.cycle,
+        } as never);
+
+        expect(subs.findOneAndUpdate.mock.calls[0][1].amountInCents).toBe(
+          fila.plans.control * 100,
+        );
+      }
+    });
+
+    it('el descuento informado crece con la duración del ciclo', () => {
+      build(suscripcion());
+
+      const descuentos = service.priceList().map((c) => c.discountPercent);
+
+      expect(descuentos[0]).toBe(0);
+      expect(descuentos[1]).toBe(5);
+      expect(descuentos[2]).toBe(10);
+      expect(descuentos[3]).toBeCloseTo(16.7, 1);
+    });
+  });
+
   describe('datos de configuración para el frontend', () => {
     it('sin pasarela configurada lo dice, en vez de dar llaves vacías', async () => {
       build(suscripcion());
@@ -280,6 +351,9 @@ describe('BillingService · documentos, estado y cancelación', () => {
       expect(cfg.configured).toBe(false);
       expect(cfg.publicKey).toBe('');
       expect(cfg.acceptanceToken).toBe('');
+      // Los precios sí se publican: la página de planes debe poder mostrarlos
+      // aunque todavía no se pueda cobrar.
+      expect(cfg.pricing).toHaveLength(4);
     });
 
     it('configurada entrega la llave pública y la aceptación vigente', async () => {
@@ -293,7 +367,7 @@ describe('BillingService · documentos, estado y cancelación', () => {
 
       const cfg = await service.config();
 
-      expect(cfg).toEqual({
+      expect(cfg).toMatchObject({
         publicKey: 'pub_test_123',
         environment: 'sandbox',
         acceptanceToken: 'acc_1',
@@ -320,6 +394,7 @@ describe('BillingService · documentos, estado y cancelación', () => {
         'acceptanceToken',
         'permalink',
         'configured',
+        'pricing',
       ]);
     });
   });
