@@ -139,8 +139,17 @@ export class AuthController {
     clearRefreshCookie(res, this.config);
   }
 
-  // Cierra la sesión del propio usuario: solo requiere estar autenticado.
-  @NoPermissionRequired()
+  /**
+   * Cierra la sesión: revoca el refresh token y limpia la cookie.
+   *
+   * Es `@Public()` por la misma razón que `refresh`: quien autentica aquí es el
+   * propio refresh token, que se verifica con su firma y trae dentro la empresa.
+   * Exigir además el access token dejaba el cierre de sesión roto de fábrica —el
+   * cliente manda solo la cookie, así que el guard respondía 401, el token no se
+   * revocaba y la cookie seguía viva hasta su vencimiento—. Revocar el token que
+   * uno mismo presenta no es una acción privilegiada.
+   */
+  @Public()
   @Post('logout')
   @HttpCode(204)
   async logout(
