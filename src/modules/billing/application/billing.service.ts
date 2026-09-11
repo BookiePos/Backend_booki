@@ -14,9 +14,12 @@ import {
   BUSINESS_PLANS,
   BusinessAddOns,
   BusinessPlan,
+  CYCLE_MONTHS,
+  CYCLE_BILLED_MONTHS,
   DOCS_PER_PACKAGE,
-  PLAN_PRICING,
   effectiveEntitlements,
+  planPrice,
+  roundPrice,
 } from '../../control/domain/plans';
 import {
   Subscription,
@@ -29,8 +32,11 @@ import {
 import { WompiClient } from '../infrastructure/wompi.client';
 import { SubscribeDto } from './dto/subscribe.dto';
 import {
+  BILLING_CYCLES,
   BillingCycle,
   MAX_CHARGE_RETRIES,
+  PENDING_RECONCILE_AFTER_MS,
+  PENDING_RECONCILE_LIMIT,
   RETRY_COOLDOWN_MS,
   mapWompiStatus,
 } from '../domain/billing.constants';
@@ -63,6 +69,33 @@ export class BillingService {
     private readonly payments: Model<PaymentDocument>,
   ) {}
 
+  /**
+   * Catálogo de precios tal como los va a cobrar ESTE servidor: un renglón por
+   * plan y ciclo, con los meses que cubre y el descuento por pagar por
+   * adelantado.
+   *
+   * Se publica porque el frontend tenía su propia tabla de precios, y dos
+   * tablas separadas se desincronizan: el cliente ve un número y se le cobra
+   * otro. El que cobra es el que manda.
+   */
+  priceList(): {
+    cycle: BillingCycle;
+    months: number;
+    plans: Record<BusinessPlan, number>;
+    discountPercent: number;
+  }[] {
+    return BILLING_CYCLES.map((cycle) => ({
+      cycle,
+      months: CYCLE_MONTHS[cycle],
+      plans: Object.fromEntries(
+        BUSINESS_PLANS.map((plan) => [plan, planPrice(plan, cycle)]),
+      ) as Record<BusinessPlan, number>,
+      discountPercent: Math.round(
+        (1 - CYCLE_BILLED_MONTHS[cycle] / CYCLE_MONTHS[cycle]) * 1000,
+      ) / 10,
+    }));
+  }
+
   /** Datos que necesita el frontend para tokenizar la tarjeta con Wompi. */
   async config(): Promise<{
     publicKey: string;
@@ -70,7 +103,9 @@ export class BillingService {
     acceptanceToken: string;
     permalink: string;
     configured: boolean;
+    pricing: ReturnType<BillingService['priceList']>;
   }> {
+    const pricing = this.priceList();
     if (!this.wompi.configured) {
       return {
         publicKey: '',
@@ -78,6 +113,7 @@ export class BillingService {
         acceptanceToken: '',
         permalink: '',
         configured: false,
+        pricing,
       };
     }
     const acc = await this.wompi.getAcceptance();
@@ -87,6 +123,7 @@ export class BillingService {
       acceptanceToken: acc.acceptanceToken,
       permalink: acc.permalink,
       configured: true,
+      pricing,
     };
   }
 
@@ -100,7 +137,11 @@ export class BillingService {
     if (!(BUSINESS_PLANS as readonly string[]).includes(plan)) {
       throw new BadRequestException('Plan no válido');
     }
-    const cycle: BillingCycle = dto.billingCycle === 'annual' ? 'annual' : 'monthly';
+    const cycle: BillingCycle = (
+      BILLING_CYCLES as readonly string[]
+    ).includes(dto.billingCycle ?? '')
+      ? (dto.billingCycle as BillingCycle)
+      : 'monthly';
     const addOns = this.sanitizeAddOns(dto.addOns);
     const email = dto.customerEmail ?? business.ownerEmail;
 
@@ -195,6 +236,15 @@ export class BillingService {
     timestamp?: number;
     signature?: { checksum?: string; properties?: string[] };
   }): Promise<{ received: boolean }> {
+    // Sin llaves configuradas el secreto de eventos es la cadena vacía, así que
+    // cualquiera que conozca el algoritmo puede firmar un evento y activarse el
+    // plan: el webhook es público por necesidad. Se rechaza antes de validar.
+    if (!this.wompi.configured) {
+      this.logger.warn(
+        'Evento de webhook recibido con la pasarela sin configurar: se descarta.',
+      );
+      throw new ForbiddenException('Firma de evento inválida');
+    }
     if (!this.wompi.verifyEvent(event)) {
       throw new ForbiddenException('Firma de evento inválida');
     }
@@ -232,25 +282,58 @@ export class BillingService {
     return { subscription, payments, documents };
   }
 
-  /** Cancela la suscripción al final del período (no se renueva). */
+  /**
+   * Cancela la suscripción: no se vuelve a cobrar, pero el servicio sigue hasta
+   * el final del período YA PAGADO. Quien pagó el mes completo lo usa completo.
+   *
+   * Quien no tiene período pagado por delante (nunca llegó a aprobarse un cobro,
+   * o ya venció) pierde el acceso en el acto. Del resto se encarga el barrido
+   * cuando llegue la fecha; ver `revokeEndedSubscriptions`.
+   */
   async cancel(businessId: string): Promise<SubscriptionDocument> {
     const sub = await this.subs.findOne({ businessId }).exec();
     if (!sub) throw new NotFoundException('No hay suscripción activa');
     sub.status = 'canceled';
     sub.canceledAt = new Date();
     sub.nextChargeAt = undefined;
+    const pagadoHasta = sub.currentPeriodEnd?.getTime() ?? 0;
+    if (pagadoHasta <= Date.now()) {
+      await this.revokeAccess(sub);
+    }
     await sub.save();
     return sub;
   }
 
+  /** Suspende la empresa y deja constancia de cuándo se le retiró el acceso. */
+  private async revokeAccess(sub: SubscriptionDocument): Promise<void> {
+    if (sub.accessEndedAt) return; // idempotente: no se suspende dos veces
+    sub.accessEndedAt = new Date();
+    await this.businesses.updatePlan(sub.businessId, { status: 'suspended' });
+  }
+
   // ── Cron (lo dispara el scheduler) ──────────────────────────────────────────
 
-  /** Cobra renovaciones vencidas y gestiona los reintentos/suspensión (dunning). */
-  async runBillingCycle(): Promise<{ charged: number; suspended: number }> {
-    if (!this.wompi.configured) return { charged: 0, suspended: 0 };
+  /**
+   * Barrido de facturación. Hace cuatro cosas, en este orden:
+   *
+   *   1. Resuelve los cobros que quedaron pendientes (webhook perdido).
+   *   2. Cobra las renovaciones vencidas.
+   *   3. Reintenta las que están en mora y suspende al agotar los intentos.
+   *   4. Retira el acceso a quien canceló y ya consumió lo que pagó.
+   */
+  async runBillingCycle(): Promise<{
+    charged: number;
+    suspended: number;
+    reconciled: number;
+  }> {
+    if (!this.wompi.configured) {
+      return { charged: 0, suspended: 0, reconciled: 0 };
+    }
     const now = new Date();
     let charged = 0;
     let suspended = 0;
+
+    const reconciled = await this.reconcilePending();
 
     const due = await this.subs
       .find({ status: 'active', nextChargeAt: { $lte: now } })
@@ -271,10 +354,13 @@ export class BillingService {
     const pastDue = await this.subs.find({ status: 'past_due' }).exec();
     for (const sub of pastDue) {
       if ((sub.failedAttempts ?? 0) >= MAX_CHARGE_RETRIES) {
+        // Aquí no hay período pagado que respetar: el cobro falló. Se corta el
+        // acceso en el acto, y `revokeAccess` deja la marca para que el barrido
+        // de canceladas no vuelva a tomar esta suscripción.
         sub.status = 'canceled';
         sub.canceledAt = now;
+        await this.revokeAccess(sub);
         await sub.save();
-        await this.businesses.updatePlan(sub.businessId, { status: 'suspended' });
         suspended++;
         continue;
       }
@@ -292,7 +378,78 @@ export class BillingService {
       }
     }
 
-    return { charged, suspended };
+    suspended += await this.revokeEndedSubscriptions(now);
+
+    return { charged, suspended, reconciled };
+  }
+
+  /**
+   * Pregunta a la pasarela por los cobros que siguen "pendientes" pasado un
+   * rato y aplica el estado real.
+   *
+   * El webhook resuelve en segundos cuando llega; cuando se pierde —y se
+   * pierde— el pago se quedaba pendiente para siempre: ni se activaba el plan
+   * de quien ya había pagado, ni se volvía a intentar el cobro. Nadie se entera
+   * porque no hay error en ningún lado, simplemente no pasa nada.
+   */
+  private async reconcilePending(): Promise<number> {
+    const limite = new Date(Date.now() - PENDING_RECONCILE_AFTER_MS);
+    const pendientes = await this.payments
+      .find({
+        status: 'pending',
+        wompiTransactionId: { $ne: null },
+        createdAt: { $lte: limite },
+      })
+      .sort({ createdAt: 1 })
+      .limit(PENDING_RECONCILE_LIMIT)
+      .exec();
+
+    let resueltos = 0;
+    for (const payment of pendientes) {
+      try {
+        const tx = await this.wompi.getTransaction(payment.wompiTransactionId!);
+        if (mapWompiStatus(tx.status) === 'pending') continue;
+        await this.syncTransaction(payment, tx.status);
+        resueltos++;
+      } catch (err) {
+        this.logger.error(
+          `No se pudo consultar la transacción ${payment.wompiTransactionId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    return resueltos;
+  }
+
+  /**
+   * Retira el acceso a las suscripciones canceladas cuyo período pagado ya
+   * venció. Cancelar no corta en el acto: el servicio dura hasta donde se pagó.
+   */
+  private async revokeEndedSubscriptions(now: Date): Promise<number> {
+    const vencidas = await this.subs
+      .find({
+        status: 'canceled',
+        accessEndedAt: null,
+        currentPeriodEnd: { $lte: now },
+      })
+      .exec();
+
+    let retirados = 0;
+    for (const sub of vencidas) {
+      try {
+        await this.revokeAccess(sub);
+        await sub.save();
+        retirados++;
+      } catch (err) {
+        this.logger.error(
+          `No se pudo retirar el acceso de ${sub.businessId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    return retirados;
   }
 
   private async chargeRenewal(sub: SubscriptionDocument): Promise<void> {
@@ -302,7 +459,7 @@ export class BillingService {
     // pasa a past_due y el reintento lo maneja el cooldown.
     sub.lastChargeAttemptAt = new Date();
     if (sub.status === 'active') {
-      sub.nextChargeAt = this.advance(new Date(), sub.billingCycle as BillingCycle);
+      sub.nextChargeAt = this.nextChargeFrom(sub);
     }
     await sub.save();
 
@@ -419,29 +576,60 @@ export class BillingService {
     return addOns;
   }
 
-  /** Monto recurrente en centavos: plan del ciclo + complementos prorrateados. */
+  /**
+   * Monto recurrente en centavos: plan del ciclo + complementos.
+   *
+   * Los complementos llevan el MISMO descuento del ciclo que el plan (se cobran
+   * los meses facturables, no los cubiertos): quien paga por adelantado lo hace
+   * por todo lo que contrató, no solo por una parte.
+   */
   private recurringAmountCents(
     plan: BusinessPlan,
     cycle: BillingCycle,
     addOns: BusinessAddOns,
   ): number {
-    const planPrice =
-      cycle === 'annual' ? PLAN_PRICING[plan].annual : PLAN_PRICING[plan].monthly;
-    const months = cycle === 'annual' ? 12 : 1;
     let addOnMonthly = 0;
     if (addOns.payroll) addOnMonthly += ADD_ONS.payroll.price;
     if (addOns.extraSedes) addOnMonthly += addOns.extraSedes * ADD_ONS.extraSede.price;
     if (addOns.extraEmployees) {
       addOnMonthly += addOns.extraEmployees * ADD_ONS.extraEmployee.price;
     }
-    return (planPrice + addOnMonthly * months) * 100;
+    const addOnTotal = roundPrice(addOnMonthly * CYCLE_BILLED_MONTHS[cycle]);
+    return (planPrice(plan, cycle) + addOnTotal) * 100;
   }
 
+  /**
+   * Avanza la fecha los meses del ciclo CONSERVANDO el día de cobro.
+   *
+   * Sumar meses sobre el día 31 se desborda al mes siguiente (31 de enero + 1
+   * mes = 3 de marzo), de modo que quien se suscribía a fin de mes se saltaba
+   * febrero entero y recibía un mes de servicio sin pagar. Se ancla el día 1
+   * para mover el mes sin desbordar y después se recorta al último día del mes
+   * destino: el 31 de enero pasa al 28 de febrero y vuelve al 31 en marzo.
+   */
   private advance(from: Date, cycle: BillingCycle): Date {
+    const day = from.getDate();
     const d = new Date(from);
-    if (cycle === 'annual') d.setFullYear(d.getFullYear() + 1);
-    else d.setMonth(d.getMonth() + 1);
+    d.setDate(1);
+    d.setMonth(d.getMonth() + CYCLE_MONTHS[cycle]);
+    const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    d.setDate(Math.min(day, lastDay));
     return d;
+  }
+
+  /**
+   * Próximo cobro a partir del anterior, para no perder el día de aniversario
+   * si un barrido corre tarde. Nunca queda en el pasado: si se saltaron varios
+   * períodos, avanza hasta el primero que esté por venir.
+   */
+  private nextChargeFrom(sub: SubscriptionDocument): Date {
+    const cycle = sub.billingCycle as BillingCycle;
+    const now = Date.now();
+    let next = this.advance(sub.nextChargeAt ?? new Date(), cycle);
+    while (next.getTime() <= now) {
+      next = this.advance(next, cycle);
+    }
+    return next;
   }
 
   /** Entitlements efectivos de una empresa (para mostrar en el panel). */

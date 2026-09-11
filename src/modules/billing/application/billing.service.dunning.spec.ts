@@ -66,7 +66,14 @@ describe('BillingService.runBillingCycle · cobro y mora', () => {
    * @param enMora    suscripciones ya en mora
    * @param respuesta estado que devuelve la pasarela al intentar el cobro
    */
-  function build(vencidas: any[], enMora: any[], respuesta = 'APPROVED') {
+  function build(
+    vencidas: any[],
+    enMora: any[],
+    respuesta = 'APPROVED',
+    extra: { canceladas?: any[]; pendientes?: any[] } = {},
+  ) {
+    const canceladas = extra.canceladas ?? [];
+    const pendientes = extra.pendientes ?? [];
     businesses = {
       updatePlan: vi.fn().mockResolvedValue(undefined),
       addDocCredits: vi.fn().mockResolvedValue(undefined),
@@ -77,12 +84,19 @@ describe('BillingService.runBillingCycle · cobro y mora', () => {
       createTransaction: vi
         .fn()
         .mockResolvedValue({ id: 'tx-1', status: respuesta }),
+      getTransaction: vi
+        .fn()
+        .mockResolvedValue({ id: 'tx-1', status: respuesta }),
     };
     subs = {
-      // El servicio distingue los dos grupos por el estado del filtro.
+      // El servicio distingue los grupos por el estado del filtro: activas
+      // vencidas, en mora, y canceladas a las que ya se les acabó lo pagado.
       find: vi.fn((filter: any) => ({
-        exec: () =>
-          Promise.resolve(filter.status === 'past_due' ? enMora : vencidas),
+        exec: () => {
+          if (filter.status === 'past_due') return Promise.resolve(enMora);
+          if (filter.status === 'canceled') return Promise.resolve(canceladas);
+          return Promise.resolve(vencidas);
+        },
       })),
       findOne: vi.fn(() => ({
         exec: () => Promise.resolve([...vencidas, ...enMora][0] ?? null),
@@ -98,6 +112,12 @@ describe('BillingService.runBillingCycle · cobro y mora', () => {
         }),
       ),
       findOne: vi.fn(() => ({ exec: () => Promise.resolve(null) })),
+      // Cobros que quedaron pendientes y hay que consultar a la pasarela.
+      find: vi.fn(() => ({
+        sort: () => ({
+          limit: () => ({ exec: () => Promise.resolve(pendientes) }),
+        }),
+      })),
     };
 
     service = new BillingService(
@@ -118,7 +138,7 @@ describe('BillingService.runBillingCycle · cobro y mora', () => {
 
     const r = await service.runBillingCycle();
 
-    expect(r).toEqual({ charged: 0, suspended: 0 });
+    expect(r).toMatchObject({ charged: 0, suspended: 0 });
     expect(wompi.createTransaction).not.toHaveBeenCalled();
   });
 
@@ -180,7 +200,7 @@ describe('BillingService.runBillingCycle · cobro y mora', () => {
       const r = await service.runBillingCycle();
 
       expect(wompi.createTransaction).not.toHaveBeenCalled();
-      expect(r).toEqual({ charged: 0, suspended: 0 });
+      expect(r).toMatchObject({ charged: 0, suspended: 0 });
     });
 
     it('reintenta cuando ya pasó la espera', async () => {
@@ -285,7 +305,7 @@ describe('BillingService.runBillingCycle · cobro y mora', () => {
 
     const r = await service.runBillingCycle();
 
-    expect(r).toEqual({ charged: 0, suspended: 0 });
+    expect(r).toMatchObject({ charged: 0, suspended: 0 });
     expect(payments.create).not.toHaveBeenCalled();
   });
 });
