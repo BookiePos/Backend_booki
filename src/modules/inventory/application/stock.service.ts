@@ -19,7 +19,9 @@ import {
   StockMovement,
   StockMovementDocument,
 } from '../infrastructure/schemas/stock-movement.schema';
-import { ProductDocument } from '../infrastructure/schemas/product.schema';
+import { Product, ProductDocument } from '../infrastructure/schemas/product.schema';
+import { ProductCategory } from '../infrastructure/schemas/product-category.schema';
+import { Sede } from '../../sedes/infrastructure/schemas/sede.schema';
 import { ProductsService } from './products.service';
 import { SedesService } from '../../sedes/application/sedes.service';
 import { StockEntryDto } from './dto/stock-entry.dto';
@@ -75,6 +77,20 @@ export class StockService {
     private readonly tenant: TenantModelRegistry,
     private readonly products: ProductsService,
     private readonly sedes: SedesService,
+    /**
+     * Modelos referenciados por `populate`. Van EXPLÍCITOS en cada populate
+     * porque los modelos se compilan de forma perezosa sobre la base de cada
+     * empresa: si el referenciado todavía no lo estaba, mongoose lanzaba
+     * MissingSchemaError y la pantalla salía en 500 hasta que otra petición lo
+     * compilara. Se declaran al final para no mover el orden de los parámetros
+     * ya existentes (varias pruebas construyen el servicio posicionalmente).
+     */
+    @InjectModel(Product.name)
+    private readonly productModel: Model<unknown>,
+    @InjectModel(ProductCategory.name)
+    private readonly categoryModel: Model<unknown>,
+    @InjectModel(Sede.name)
+    private readonly sedeModel: Model<unknown>,
   ) {}
 
   /**
@@ -694,9 +710,14 @@ export class StockService {
       // Anidado: la UI muestra la categoría del producto en existencias.
       .populate({
         path: 'productId',
-        populate: { path: 'categoryId', select: 'name' },
+        model: this.productModel,
+        populate: {
+          path: 'categoryId',
+          select: 'name',
+          model: this.categoryModel,
+        },
       })
-      .populate('sedeId', 'code name')
+      .populate({ path: 'sedeId', select: 'code name', model: this.sedeModel })
       .sort({ updatedAt: -1 })
       .exec();
 
@@ -765,7 +786,7 @@ export class StockService {
     };
     const lots = await this.lotModel
       .find(filter)
-      .populate('sedeId', 'code name')
+      .populate({ path: 'sedeId', select: 'code name', model: this.sedeModel })
       .exec();
     return this.sortFefo(lots);
   }
@@ -812,8 +833,12 @@ export class StockService {
 
     const lots = await this.lotModel
       .find(filter)
-      .populate('productId', 'sku name unit trackLots perishable imageUrl')
-      .populate('sedeId', 'code name')
+      .populate({
+        path: 'productId',
+        select: 'sku name unit trackLots perishable imageUrl',
+        model: this.productModel,
+      })
+      .populate({ path: 'sedeId', select: 'code name', model: this.sedeModel })
       .limit(500)
       .exec();
 
@@ -845,9 +870,17 @@ export class StockService {
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
-        .populate('productId', 'sku name unit')
-        .populate('sedeId', 'code name')
-        .populate('lotId', 'lotCode expiresAt')
+        .populate({
+          path: 'productId',
+          select: 'sku name unit',
+          model: this.productModel,
+        })
+        .populate({ path: 'sedeId', select: 'code name', model: this.sedeModel })
+        .populate({
+          path: 'lotId',
+          select: 'lotCode expiresAt',
+          model: this.lotModel,
+        })
         .exec(),
     ]);
 
@@ -869,8 +902,16 @@ export class StockService {
         return this.lotModel
           .find(filter)
           .sort({ expiresAt: 1 })
-          .populate('productId', 'sku name unit perishable')
-          .populate('sedeId', 'code name')
+          .populate({
+            path: 'productId',
+            select: 'sku name unit perishable',
+            model: this.productModel,
+          })
+          .populate({
+            path: 'sedeId',
+            select: 'code name',
+            model: this.sedeModel,
+          })
           .exec();
       })(),
     ]);

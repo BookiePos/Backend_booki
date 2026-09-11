@@ -133,17 +133,41 @@ export class AuthService {
     );
   }
 
+  /**
+   * Revoca el refresh token que se está cerrando.
+   *
+   * La empresa se toma del PROPIO token, igual que en `refresh`, y no del
+   * contexto que abrió el middleware. Son dos cosas distintas: el contexto sale
+   * del access token, y si ese no trae empresa (tokens anteriores al modelo
+   * multi-empresa) el modelo es un proxy inerte, `updateOne` ni siquiera es una
+   * función y el `catch` de abajo se tragaba el TypeError. El cierre de sesión
+   * respondía 204 y el refresh token seguía sirviendo: la sesión no se cerraba
+   * de verdad.
+   *
+   * Solo se ignora el token ilegible; un fallo al revocar sí se propaga, para
+   * no volver a decir "sesión cerrada" cuando no lo está.
+   */
   async logout(refreshToken: string): Promise<void> {
+    let payload: RefreshPayload;
     try {
-      const payload = await this.jwt.verifyAsync<RefreshPayload>(refreshToken, {
+      payload = await this.jwt.verifyAsync<RefreshPayload>(refreshToken, {
         secret: this.refreshSecret(),
       });
-      await this.refreshModel
-        .updateOne({ jti: payload.jti }, { revoked: true })
-        .exec();
     } catch {
-      // Token inválido: nada que revocar.
+      // Token inválido o vencido: no hay nada que revocar.
+      return;
     }
+    if (!payload.biz) {
+      // Token anterior al modelo multi-empresa: no se sabe en qué base está.
+      return;
+    }
+    await TenantContext.run(
+      { businessId: payload.biz, dbName: dbNameForBusiness(payload.biz) },
+      () =>
+        this.refreshModel
+          .updateOne({ jti: payload.jti }, { revoked: true })
+          .exec(),
+    );
   }
 
   me(user: UserDocument): Promise<AuthUserView> {

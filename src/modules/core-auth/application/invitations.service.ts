@@ -14,6 +14,7 @@ import {
   InvitationDocument,
   InvitationStatus,
 } from '../infrastructure/schemas/invitation.schema';
+import { User } from '../infrastructure/schemas/user.schema';
 import { UsersService } from './users.service';
 import { RolesService } from './roles.service';
 import { MailService } from './mail.service';
@@ -73,6 +74,15 @@ export class InvitationsService {
   constructor(
     @InjectModel(Invitation.name)
     private readonly invitationModel: Model<InvitationDocument>,
+    /**
+     * Modelo referenciado por `invitedBy`. Se pasa EXPLÍCITO a `populate` para
+     * no depender de que "User" ya esté compilado en la conexión del tenant
+     * activo: los modelos se compilan de forma perezosa por empresa, así que
+     * quien llegara primero a `GET /invitations` reventaba con
+     * MissingSchemaError (500). Mismo arreglo que en `CatalogService`.
+     */
+    @InjectModel(User.name)
+    private readonly userModel: Model<unknown>,
     private readonly users: UsersService,
     private readonly roles: RolesService,
     private readonly mail: MailService,
@@ -138,7 +148,7 @@ export class InvitationsService {
     const invitations = await this.invitationModel
       .find()
       .sort({ createdAt: -1 })
-      .populate('invitedBy', 'name')
+      .populate({ path: 'invitedBy', select: 'name', model: this.userModel })
       .exec();
 
     const roleNames = await this.roleNameMap();

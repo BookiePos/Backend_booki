@@ -2,6 +2,7 @@ import {
   ForbiddenException,
   Injectable,
   NestMiddleware,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -66,52 +67,63 @@ export class TenantMiddleware implements NestMiddleware {
     const header = req.headers['authorization'];
     if (header?.startsWith('Bearer ')) {
       const token = header.slice(7);
+      let claims: AccessClaims | undefined;
       try {
-        const claims = this.jwt.verify<AccessClaims>(token, {
+        claims = this.jwt.verify<AccessClaims>(token, {
           secret: jwtSecret(this.config),
         });
-        if (claims?.biz) {
-          const businessId = claims.biz;
-          void this.resolveGate(businessId)
-            .then((gate) => {
-              // Excepción: las rutas de facturación siguen abiertas aunque la
-              // empresa esté suspendida o con el trial vencido — es justo donde
-              // el dueño paga para reactivarse. El resto se bloquea.
-              const billingBypass = (req.path ?? '').startsWith('/billing');
-              if (!gate.allowed && !billingBypass) {
-                const trialExpired = gate.reason === 'trial_expired';
-                // Cuerpo con discriminador `code` para que el frontend distinga
-                // esta suspensión de un 403 por permisos y muestre el aviso de
-                // reactivación (no un "sin acceso" genérico).
-                next(
-                  new ForbiddenException({
-                    statusCode: 403,
-                    error: 'AccountSuspended',
-                    code: 'ACCOUNT_SUSPENDED',
-                    reason: gate.reason ?? 'suspended',
-                    message: trialExpired
-                      ? 'El periodo de prueba de tu empresa venció. Reactiva tu plan para volver a operar.'
-                      : 'La cuenta de tu empresa está suspendida. Reactiva tu plan para volver a operar.',
-                  }),
-                );
-                return;
-              }
-              TenantContext.run(
-                {
-                  businessId,
-                  dbName: dbNameForBusiness(businessId),
-                  tipoNegocio: claims.biztype,
-                  plan: gate.plan,
-                  addOns: gate.addOns,
-                },
-                () => next(),
-              );
-            })
-            .catch((err) => next(err));
-          return;
-        }
       } catch {
         // Token inválido/expirado: seguimos sin contexto; el JwtAuthGuard 401.
+      }
+      if (claims) {
+        if (!claims.biz) {
+          // Token válido pero SIN empresa: los emitidos antes del modelo
+          // multi-empresa. Antes se dejaba pasar, y como el JwtAuthGuard sí los
+          // acepta, el handler llegaba a los modelos —proxies inertes sin
+          // contexto— y reventaba en 500. Un 401 dice la verdad y además
+          // arranca la recuperación: el cliente intenta refrescar, `refresh`
+          // rechaza igual los refresh tokens sin empresa, y se vuelve al login.
+          next(new UnauthorizedException('Sesión anterior: vuelve a entrar'));
+          return;
+        }
+        const businessId = claims.biz;
+        void this.resolveGate(businessId)
+          .then((gate) => {
+            // Excepción: las rutas de facturación siguen abiertas aunque la
+            // empresa esté suspendida o con el trial vencido — es justo donde
+            // el dueño paga para reactivarse. El resto se bloquea.
+            const billingBypass = (req.path ?? '').startsWith('/billing');
+            if (!gate.allowed && !billingBypass) {
+              const trialExpired = gate.reason === 'trial_expired';
+              // Cuerpo con discriminador `code` para que el frontend distinga
+              // esta suspensión de un 403 por permisos y muestre el aviso de
+              // reactivación (no un "sin acceso" genérico).
+              next(
+                new ForbiddenException({
+                  statusCode: 403,
+                  error: 'AccountSuspended',
+                  code: 'ACCOUNT_SUSPENDED',
+                  reason: gate.reason ?? 'suspended',
+                  message: trialExpired
+                    ? 'El periodo de prueba de tu empresa venció. Reactiva tu plan para volver a operar.'
+                    : 'La cuenta de tu empresa está suspendida. Reactiva tu plan para volver a operar.',
+                }),
+              );
+              return;
+            }
+            TenantContext.run(
+              {
+                businessId,
+                dbName: dbNameForBusiness(businessId),
+                tipoNegocio: claims.biztype,
+                plan: gate.plan,
+                addOns: gate.addOns,
+              },
+              () => next(),
+            );
+          })
+          .catch((err) => next(err));
+        return;
       }
     }
     next();

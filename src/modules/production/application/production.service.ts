@@ -25,7 +25,10 @@ import {
   ConsumedLine,
   StockService,
 } from '../../inventory/application/stock.service';
-import { ProductDocument } from '../../inventory/infrastructure/schemas/product.schema';
+import {
+  Product,
+  ProductDocument,
+} from '../../inventory/infrastructure/schemas/product.schema';
 import { cop, sumBy, sumCop } from '../../finance/domain/money.util';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import {
@@ -153,6 +156,16 @@ export class ProductionService {
     private readonly products: ProductsService,
     private readonly stock: StockService,
     private readonly catalog: CatalogService,
+    /**
+     * Modelo referenciado por `populate`. Va EXPLÍCITO en cada populate porque
+     * los modelos se compilan de forma perezosa sobre la base de cada empresa:
+     * si el referenciado todavía no lo estaba, mongoose lanzaba
+     * MissingSchemaError y la pantalla salía en 500 hasta que otra petición lo
+     * compilara. Se declara al final para no mover el orden de los parámetros
+     * ya existentes (varias pruebas construyen el servicio posicionalmente).
+     */
+    @InjectModel(Product.name)
+    private readonly productModel: Model<unknown>,
   ) {}
 
   // ─── Recetas de lote (BOM) ─────────────────────────────────────────────────
@@ -161,8 +174,16 @@ export class ProductionService {
     const filter = includeInactive ? {} : { active: true };
     return this.boms
       .find(filter)
-      .populate('productId', 'sku name unit itemType perishable cost active')
-      .populate('lines.productId', 'sku name unit cost active')
+      .populate({
+        path: 'productId',
+        select: 'sku name unit itemType perishable cost active',
+        model: this.productModel,
+      })
+      .populate({
+        path: 'lines.productId',
+        select: 'sku name unit cost active',
+        model: this.productModel,
+      })
       .sort({ name: 1 })
       .exec();
   }
@@ -170,8 +191,16 @@ export class ProductionService {
   async getBom(id: string): Promise<BillOfMaterialsDocument> {
     const bom = await this.boms
       .findById(id)
-      .populate('productId', 'sku name unit itemType perishable cost active')
-      .populate('lines.productId', 'sku name unit cost active')
+      .populate({
+        path: 'productId',
+        select: 'sku name unit itemType perishable cost active',
+        model: this.productModel,
+      })
+      .populate({
+        path: 'lines.productId',
+        select: 'sku name unit cost active',
+        model: this.productModel,
+      })
       .exec();
     if (!bom) throw new NotFoundException('Receta no encontrada');
     return bom;

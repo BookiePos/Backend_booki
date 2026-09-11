@@ -25,6 +25,7 @@ import { ProductsService } from './application/products.service';
 import { StockService } from './application/stock.service';
 import { InventoryController } from './infrastructure/inventory.controller';
 import { SedesModule } from '../sedes/sedes.module';
+import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
 
 @Module({
   imports: [
@@ -33,12 +34,18 @@ import { SedesModule } from '../sedes/sedes.module';
     // ProductsService usa CatalogService para reflejar en el POS los ítems con
     // precio de venta.
     forwardRef(() => CatalogModule),
+    // Modelos referenciados por `populate`. Se registran aquí (mismo token que
+    // en su módulo de origen → misma instancia cacheada por empresa) para poder
+    // inyectarlos y pasarlos EXPLÍCITOS a populate: los modelos se compilan de
+    // forma perezosa sobre la base de cada empresa, y si el referenciado aún no
+    // lo estaba, mongoose lanzaba MissingSchemaError (500).
     TenantMongooseModule.forFeature([
       { name: Product.name, schema: ProductSchema },
       { name: ProductCategory.name, schema: ProductCategorySchema },
       { name: StockItem.name, schema: StockItemSchema },
       { name: StockLot.name, schema: StockLotSchema },
       { name: StockMovement.name, schema: StockMovementSchema },
+      { name: Sede.name, schema: SedeSchema },
     ]),
   ],
   controllers: [InventoryController],
