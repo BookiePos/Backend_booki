@@ -42,3 +42,25 @@ export const PRODUCTION_COUNTER_KEY = 'production_order';
 
 /** Prefijo del lote que genera el terminado de una orden. */
 export const PRODUCTION_LOT_PREFIX = 'OP';
+
+/**
+ * Nota que queda en el kárdex por cada movimiento de una orden.
+ *
+ * Es el único hilo que une un insumo consumido con la orden que lo usó, y de
+ * ahí con el terminado que salió: la trazabilidad hacia adelante lo lee para
+ * responder "este bulto de harina, ¿en qué tandas entró y a quién se vendió?".
+ *
+ * Por eso escribirla y leerla viven juntas. Cambiar el texto de un lado sin el
+ * otro no rompe nada visible: simplemente la trazabilidad deja de encontrar
+ * las órdenes, y nadie se entera hasta que el INVIMA pregunta.
+ */
+export function productionNote(orderNumber: string): string {
+  return `Producción ${orderNumber}`;
+}
+
+/** Saca el número de orden de una nota del kárdex. Null si no es una. */
+export function orderNumberFromNote(note?: string | null): string | null {
+  if (!note) return null;
+  const m = /^Producción\s+(\S+)/.exec(note.trim());
+  return m?.[1] ?? null;
+}

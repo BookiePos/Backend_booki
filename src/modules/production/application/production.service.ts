@@ -41,6 +41,7 @@ import {
   PRODUCTION_LOT_PREFIX,
   PRODUCTION_ORDER_PREFIX,
   ProductionOrderStatus,
+  productionNote,
 } from '../domain/production.constants';
 import {
   CompleteProductionOrderDto,
@@ -543,7 +544,7 @@ export class ProductionService {
           qty: l.qty,
         })),
         user,
-        { note: `Producción ${order.number}` },
+        { note: productionNote(order.number) },
       );
     } catch (err) {
       this.logger.error(
@@ -574,7 +575,7 @@ export class ProductionService {
           unitCost,
           lotCode,
           expiresAt: dto.expiresAt,
-          note: `Producción ${order.number}`,
+          note: productionNote(order.number),
         },
         user,
         { movementType: 'production_in' },
