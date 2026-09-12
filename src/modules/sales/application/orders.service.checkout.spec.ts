@@ -119,7 +119,13 @@ describe('OrdersService.checkout (guarda de concurrencia)', () => {
     expect(orderModel.updateOne).toHaveBeenCalledTimes(1);
     const [filter, update] = orderModel.updateOne.mock.calls[0];
     expect(filter).toEqual({ _id: orderObjId });
-    expect(update).toEqual({ $set: { saleId } });
+    // `saleId` guarda la última venta porque ya lo leen las pantallas;
+    // `saleIds` las acumula todas, que es lo que importa cuando la cuenta se
+    // dividió entre varios.
+    expect(update).toEqual({
+      $set: { saleId },
+      $push: { saleIds: saleId },
+    });
     expect(result).toMatchObject({ _id: saleId });
   });
 

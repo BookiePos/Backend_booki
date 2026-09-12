@@ -1,16 +1,48 @@
 import { Type } from 'class-transformer';
-import { IsNumber, IsOptional, Min, ValidateNested } from 'class-validator';
+import {
+  IsArray,
+  IsMongoId,
+  IsNumber,
+  IsOptional,
+  IsPositive,
+  Min,
+  ValidateNested,
+} from 'class-validator';
 import {
   SaleCustomerDto,
   SaleDiscountDto,
   SalePaymentDto,
 } from './create-sale.dto';
 
+/** Una parte de la cuenta que alguien paga ahora. */
+export class CheckoutLineDto {
+  @IsMongoId()
+  productId!: string;
+
+  @IsNumber()
+  @IsPositive()
+  qty!: number;
+}
+
 /** Liquidación de una cuenta abierta: pago, descuento y cliente (factura). */
 export class CheckoutOrderDto {
   @ValidateNested()
   @Type(() => SalePaymentDto)
   payment!: SalePaymentDto;
+
+  /**
+   * Subconjunto que se cobra ahora, para dividir la cuenta de una mesa.
+   *
+   * SIN este campo se cobra todo lo que falte, que es el cobro de siempre —la
+   * comanda que se paga entera— y también el último de una cuenta dividida.
+   * Mandar el último sin líneas es lo que hace que lo que no se pudo repartir
+   * exacto lo absorba quien paga de último, en vez de quedar colgando.
+   */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CheckoutLineDto)
+  lines?: CheckoutLineDto[];
 
   @IsOptional()
   @ValidateNested()
