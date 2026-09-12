@@ -10,6 +10,8 @@ import {
 import { SalesService } from '../application/sales.service';
 import { CreateSaleDto } from '../application/dto/create-sale.dto';
 import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
+import { SaleReturnsService } from '../application/sale-returns.service';
+import { CreateSaleReturnDto } from '../application/dto/create-sale-return.dto';
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
@@ -17,7 +19,10 @@ import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 @Controller('sales')
 // Endpoints del POS: catálogo vendible, historial, venta y anulación.
 export class SalesController {
-  constructor(private readonly sales: SalesService) {}
+  constructor(
+    private readonly sales: SalesService,
+    private readonly returns: SaleReturnsService,
+  ) {}
 
   /** Catálogo vendible con stock de la sede (antes de :id). */
   @RequirePermissions(PERMISSIONS.POS_SELL)
@@ -65,6 +70,31 @@ export class SalesController {
   }
 
   /** Anula una venta y devuelve su consumo al inventario. */
+  /**
+   * Devolución PARCIAL: el cliente se llevó diez y trae dos.
+   *
+   * Va con `pos.refund` y no con el permiso de anular: son dos cosas distintas.
+   * Anular borra la venta entera y suele ser un error de digitación; devolver
+   * es atención al cliente, y el cajero del turno tiene que poder hacerlo sin
+   * llamar al dueño.
+   */
+  @RequirePermissions(PERMISSIONS.POS_REFUND)
+  @Post(':id/returns')
+  createReturn(
+    @Param('id') id: string,
+    @Body() dto: CreateSaleReturnDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.returns.create(id, dto, user);
+  }
+
+  /** Lo que ya se devolvió de esta venta (para no devolver dos veces). */
+  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @Get(':id/returns')
+  listReturns(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.returns.listForSale(id, user);
+  }
+
   @RequirePermissions(PERMISSIONS.POS_VOID_AUTHORIZE)
   @Post(':id/void')
   void(@Param('id') id: string, @CurrentUser() user: JwtUser) {
