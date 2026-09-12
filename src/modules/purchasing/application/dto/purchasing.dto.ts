@@ -28,6 +28,18 @@ export class PurchaseLineDto {
   @Min(0)
   unitCost!: number;
 
+  /**
+   * `qty` y `unitCost` van en la PRESENTACIÓN de compra del producto: 3 bultos
+   * a $95.000 el bulto, que es como llega la factura del proveedor.
+   *
+   * Exige que el producto tenga presentación definida; si no, se rechaza en vez
+   * de asumir factor 1, porque "3 bultos" entrando como 3 gramos dejaría el
+   * inventario en nada.
+   */
+  @IsOptional()
+  @IsBoolean()
+  inPurchaseUnits?: boolean;
+
   @IsOptional()
   @IsString()
   taxCode?: string;
