@@ -17,6 +17,10 @@ import {
   ProductCategory,
   ProductCategoryDocument,
 } from '../infrastructure/schemas/product-category.schema';
+import {
+  PurchasePresentation,
+  normalizePurchase,
+} from '../domain/purchase-unit';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
@@ -98,6 +102,27 @@ export class ProductsService {
     return product;
   }
 
+  /**
+   * Valida la presentación de compra y la deja lista para asignar.
+   *
+   * La regla vive en `domain/purchase-unit.ts` y lanza `Error` pelado; aquí se
+   * traduce a 400 para que el usuario vea el porqué en vez de un 500. La
+   * importación masiva la llama igual: atrapa el error por fila y lo reporta
+   * junto al SKU sin tumbar el resto del lote.
+   */
+  private purchaseFields(
+    unit: string | undefined | null,
+    factor: number | undefined | null,
+  ): PurchasePresentation {
+    try {
+      return normalizePurchase(unit, factor);
+    } catch (err) {
+      throw new BadRequestException(
+        err instanceof Error ? err.message : 'Presentación de compra inválida',
+      );
+    }
+  }
+
   /** Busca un ítem de inventario por SKU (normalizado). Null si no existe. */
   findBySku(sku: string): Promise<ProductDocument | null> {
     return this.productModel
@@ -124,6 +149,8 @@ export class ProductsService {
       perishable,
       trackLots,
       salePrice: dto.salePrice,
+      // Presentación de compra: pisa lo que trajo el spread ya normalizado.
+      ...this.purchaseFields(dto.purchaseUnit, dto.purchaseFactor),
       // La fecha de vencimiento solo aplica a perecederos.
       expiresAt: perishable && dto.expiresAt ? new Date(dto.expiresAt) : undefined,
       categoryId: dto.categoryId
@@ -282,6 +309,24 @@ export class ProductsService {
     if (dto.unit !== undefined) product.unit = dto.unit;
     if (dto.barcode !== undefined) product.barcode = dto.barcode;
     if (dto.weight !== undefined) product.weight = dto.weight;
+    // La presentación de compra se valida como PAR: si solo llega el factor,
+    // tiene que seguir cuadrando con el nombre que el producto ya tenía. El
+    // nombre vacío es la forma explícita de quitarla, y por eso se atiende
+    // antes: mezclarlo con el factor viejo daría "falta el nombre".
+    if (dto.purchaseUnit === '') {
+      product.purchaseUnit = undefined;
+      product.purchaseFactor = undefined;
+    } else if (
+      dto.purchaseUnit !== undefined ||
+      dto.purchaseFactor !== undefined
+    ) {
+      const p = this.purchaseFields(
+        dto.purchaseUnit ?? product.purchaseUnit,
+        dto.purchaseFactor ?? product.purchaseFactor,
+      );
+      product.purchaseUnit = p.purchaseUnit;
+      product.purchaseFactor = p.purchaseFactor;
+    }
     if (dto.shelfLifeDays !== undefined) product.shelfLifeDays = dto.shelfLifeDays;
     if (dto.expiresAt !== undefined) {
       if (dto.expiresAt === '') {
@@ -376,6 +421,21 @@ export class ProductsService {
           if (row.barcode !== undefined)
             existing.barcode = row.barcode || undefined;
           if (row.weight !== undefined) existing.weight = row.weight;
+          // Igual que en `update`: par nombre+factor, y nombre vacío = quitar.
+          if (row.purchaseUnit === '') {
+            existing.purchaseUnit = undefined;
+            existing.purchaseFactor = undefined;
+          } else if (
+            row.purchaseUnit !== undefined ||
+            row.purchaseFactor !== undefined
+          ) {
+            const p = this.purchaseFields(
+              row.purchaseUnit ?? existing.purchaseUnit,
+              row.purchaseFactor ?? existing.purchaseFactor,
+            );
+            existing.purchaseUnit = p.purchaseUnit;
+            existing.purchaseFactor = p.purchaseFactor;
+          }
           if (row.perishable !== undefined) existing.perishable = row.perishable;
           if (row.trackLots !== undefined) existing.trackLots = row.trackLots;
           if (row.shelfLifeDays !== undefined)
@@ -410,6 +470,7 @@ export class ProductsService {
             unit: row.unit?.trim() || 'und',
             barcode: row.barcode || undefined,
             weight: row.weight,
+            ...this.purchaseFields(row.purchaseUnit, row.purchaseFactor),
             perishable,
             trackLots,
             shelfLifeDays: row.shelfLifeDays,
