@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsDateString,
   IsMongoId,
   IsNumber,
@@ -22,6 +23,15 @@ export class StockEntryDto {
   @IsOptional()
   @IsNumber()
   unitCost?: number;
+
+  /**
+   * `qty` y `unitCost` vienen en PRESENTACIONES de compra —3 bultos a $95.000
+   * el bulto— y no en unidades de consumo. El backend los convierte con el
+   * factor del producto, que es donde vive esa cuenta.
+   */
+  @IsOptional()
+  @IsBoolean()
+  inPurchaseUnits?: boolean;
 
   /** Código de lote; si el producto controla lotes y no llega, se genera. */
   @IsOptional()

@@ -35,6 +35,10 @@ import {
   MovementType,
   WASTE_REASONS,
 } from '../domain/inventory.constants';
+import {
+  packsToStockQty,
+  unitCostFromPack,
+} from '../domain/purchase-unit';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 
@@ -145,13 +149,34 @@ export class StockService {
     }
     await this.sedes.findOrFail(dto.sedeId);
     const sedeId = new Types.ObjectId(dto.sedeId);
-    const unitCost = dto.unitCost ?? product.cost ?? 0;
+
+    // La mercancía llega como la despacha el proveedor —3 bultos de harina—,
+    // no en la unidad en que se consume. Si la entrada viene marcada así, la
+    // cantidad se multiplica por el factor del producto (75.000 g) y el precio
+    // del bulto se reexpresa por gramo. La conversión se hace AQUÍ y no en la
+    // pantalla: es la misma cuenta para la recepción, el POS y lo que venga
+    // después, y tenerla repetida en cada pantalla fue justo lo que obligó a
+    // poner un parche que adivinaba la unidad de compra.
+    if (dto.inPurchaseUnits && !product.purchaseFactor) {
+      throw new BadRequestException(
+        `${product.name} no tiene definida una presentación de compra`,
+      );
+    }
+    const factor = dto.inPurchaseUnits ? product.purchaseFactor : undefined;
+    const qty = packsToStockQty(dto.qty, factor);
+    // Se guarda aparte del costo efectivo porque abajo decide si el producto
+    // actualiza su "último costo de compra": solo cuando el usuario lo digitó.
+    const enteredCost =
+      dto.unitCost !== undefined
+        ? unitCostFromPack(dto.unitCost, factor)
+        : undefined;
+    const unitCost = enteredCost ?? product.cost ?? 0;
 
     return this.withTransaction(async (session) => {
       const item = await this.stockItemModel
         .findOneAndUpdate(
           { productId: product._id, sedeId },
-          { $inc: { qty: dto.qty } },
+          { $inc: { qty } },
           { upsert: true, new: true, session },
         )
         .exec();
@@ -170,8 +195,8 @@ export class StockService {
                 ? new Types.ObjectId(dto.supplierId)
                 : (product.supplierId ?? undefined),
               expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
-              qty: dto.qty,
-              initialQty: dto.qty,
+              qty,
+              initialQty: qty,
               unitCost,
               receivedAt: new Date(),
             },
@@ -188,7 +213,7 @@ export class StockService {
             productId: product._id,
             sedeId,
             lotId: lot?._id,
-            delta: dto.qty,
+            delta: qty,
             balanceAfter: item.qty,
             unitCost,
             note: dto.note,
@@ -199,9 +224,10 @@ export class StockService {
         { session },
       );
 
-      // Último costo de compra como referencia del producto.
-      if (dto.unitCost !== undefined && dto.unitCost !== product.cost) {
-        product.cost = dto.unitCost;
+      // Último costo de compra como referencia del producto, ya por unidad de
+      // consumo: si vino el precio del bulto, lo que se guarda es el del gramo.
+      if (enteredCost !== undefined && enteredCost !== product.cost) {
+        product.cost = enteredCost;
         await product.save({ session });
       }
 

@@ -42,6 +42,20 @@ export class Product {
   @Prop({ min: 0 })
   weight?: number;
 
+  // ─── Presentación de compra ──────────────────────────────────────────────
+  // Cómo ENTRA la mercancía cuando no es como se consume: la harina se consume
+  // en gramos pero se compra en bultos de 25 kg. Ver `domain/purchase-unit.ts`.
+  // Van juntos o no van; vacíos significan que se compra en la misma `unit` en
+  // que se consume, que es como funcionaba todo antes de que esto existiera.
+
+  /** Nombre de la presentación con que llega: bulto, caja, garrafa… */
+  @Prop({ trim: true })
+  purchaseUnit?: string;
+
+  /** Cuántas `unit` trae una presentación (25000 g en un bulto de 25 kg). */
+  @Prop({ min: 0 })
+  purchaseFactor?: number;
+
   @Prop({ trim: true })
   barcode?: string;
 
