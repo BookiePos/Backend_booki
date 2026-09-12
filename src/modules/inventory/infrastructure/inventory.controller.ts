@@ -156,6 +156,29 @@ export class InventoryController {
     return this.stock.lots(productId, sedeId, allowedSedeIds(user));
   }
 
+  /**
+   * Reporte de merma: qué se botó, por qué y cuánto costó.
+   *
+   * Va con `inventory.view` porque quien maneja la bodega es quien tiene que
+   * verlo, no solo quien mira los estados financieros.
+   */
+  @RequirePermissions(PERMISSIONS.INVENTORY_VIEW)
+  @Get('waste-report')
+  wasteReport(
+    @CurrentUser() user: JwtUser,
+    @Query('sedeId') sedeId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    if (sedeId) assertSedeAccess(user, sedeId);
+    return this.stock.wasteReport({
+      sedeId,
+      from,
+      to,
+      restrict: allowedSedeIds(user),
+    });
+  }
+
   @RequirePermissions(PERMISSIONS.INVENTORY_VIEW)
   @Get('alerts')
   getAlerts(
