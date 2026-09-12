@@ -74,6 +74,9 @@ describe('PurchasingService.nextNumber (consecutivo OC-000012)', () => {
       {} as any, // payables
       counterModel,
       {} as any, // stock
+      // Ningún renglón de esta prueba viene en presentación de compra, así que
+      // no hace falta resolver ningún producto.
+      {} as any, // products
       tax,
       {} as any, // ledgerPosting
     );

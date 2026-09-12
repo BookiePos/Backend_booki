@@ -16,6 +16,7 @@ import { UpdateProductDto } from '../application/dto/update-product.dto';
 import { CreateCategoryDto } from '../application/dto/create-category.dto';
 import { ImportProductsDto } from '../application/dto/import-products.dto';
 import { ImportStockDto } from '../application/dto/import-stock.dto';
+import { StockCountDto } from '../application/dto/stock-count.dto';
 import { StockEntryDto } from '../application/dto/stock-entry.dto';
 import { StockAdjustDto } from '../application/dto/stock-adjust.dto';
 import { StockTransferDto } from '../application/dto/stock-transfer.dto';
@@ -220,5 +221,18 @@ export class InventoryController {
   @Post('stock/import')
   importStock(@Body() dto: ImportStockDto, @CurrentUser() user: JwtUser) {
     return this.stock.importStock(dto.rows, user);
+  }
+
+  /**
+   * Conteo físico de una sede: deja las existencias en lo contado.
+   *
+   * Va aparte de `stock/import` a propósito, aunque las dos reciban una lista
+   * de productos con cantidades: aquella SUMA cada fila como entrada y esta
+   * FIJA la existencia. Confundirlas duplica el inventario.
+   */
+  @RequirePermissions(PERMISSIONS.INVENTORY_ADJUST)
+  @Post('stock/count')
+  applyCount(@Body() dto: StockCountDto, @CurrentUser() user: JwtUser) {
+    return this.stock.applyCount(dto, user);
   }
 }

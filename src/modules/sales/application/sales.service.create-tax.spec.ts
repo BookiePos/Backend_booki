@@ -165,6 +165,8 @@ describe('SalesService.create (IVA incluido + prorrateo de descuento)', () => {
       {} as any, // products
       sedes,
       catalog,
+      // Sin lista de precios: se cobra el precio de mostrador del catálogo.
+      { rulesFor: async () => null } as any, // priceLists
       // Sin domicilio: no hay zona que resolver.
       { refFor: async () => null } as any, // deliveryZones
       {} as any, // customers

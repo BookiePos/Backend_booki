@@ -26,6 +26,10 @@ import { ProductsService } from './products.service';
 import { SedesService } from '../../sedes/application/sedes.service';
 import { StockEntryDto } from './dto/stock-entry.dto';
 import { StockAdjustDto } from './dto/stock-adjust.dto';
+import {
+  StockCountDto,
+  StockCountResult,
+} from './dto/stock-count.dto';
 import { StockTransferDto } from './dto/stock-transfer.dto';
 import {
   ImportStockRow,
@@ -35,8 +39,13 @@ import {
   MovementType,
   WASTE_REASONS,
 } from '../domain/inventory.constants';
+import {
+  packsToStockQty,
+  unitCostFromPack,
+} from '../domain/purchase-unit';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
+import { cop } from '../../finance/domain/money.util';
 
 export interface ConsumedPortion {
   lot?: StockLotDocument;
@@ -145,13 +154,34 @@ export class StockService {
     }
     await this.sedes.findOrFail(dto.sedeId);
     const sedeId = new Types.ObjectId(dto.sedeId);
-    const unitCost = dto.unitCost ?? product.cost ?? 0;
+
+    // La mercancía llega como la despacha el proveedor —3 bultos de harina—,
+    // no en la unidad en que se consume. Si la entrada viene marcada así, la
+    // cantidad se multiplica por el factor del producto (75.000 g) y el precio
+    // del bulto se reexpresa por gramo. La conversión se hace AQUÍ y no en la
+    // pantalla: es la misma cuenta para la recepción, el POS y lo que venga
+    // después, y tenerla repetida en cada pantalla fue justo lo que obligó a
+    // poner un parche que adivinaba la unidad de compra.
+    if (dto.inPurchaseUnits && !product.purchaseFactor) {
+      throw new BadRequestException(
+        `${product.name} no tiene definida una presentación de compra`,
+      );
+    }
+    const factor = dto.inPurchaseUnits ? product.purchaseFactor : undefined;
+    const qty = packsToStockQty(dto.qty, factor);
+    // Se guarda aparte del costo efectivo porque abajo decide si el producto
+    // actualiza su "último costo de compra": solo cuando el usuario lo digitó.
+    const enteredCost =
+      dto.unitCost !== undefined
+        ? unitCostFromPack(dto.unitCost, factor)
+        : undefined;
+    const unitCost = enteredCost ?? product.cost ?? 0;
 
     return this.withTransaction(async (session) => {
       const item = await this.stockItemModel
         .findOneAndUpdate(
           { productId: product._id, sedeId },
-          { $inc: { qty: dto.qty } },
+          { $inc: { qty } },
           { upsert: true, new: true, session },
         )
         .exec();
@@ -170,8 +200,8 @@ export class StockService {
                 ? new Types.ObjectId(dto.supplierId)
                 : (product.supplierId ?? undefined),
               expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
-              qty: dto.qty,
-              initialQty: dto.qty,
+              qty,
+              initialQty: qty,
               unitCost,
               receivedAt: new Date(),
             },
@@ -188,7 +218,7 @@ export class StockService {
             productId: product._id,
             sedeId,
             lotId: lot?._id,
-            delta: dto.qty,
+            delta: qty,
             balanceAfter: item.qty,
             unitCost,
             note: dto.note,
@@ -199,9 +229,10 @@ export class StockService {
         { session },
       );
 
-      // Último costo de compra como referencia del producto.
-      if (dto.unitCost !== undefined && dto.unitCost !== product.cost) {
-        product.cost = dto.unitCost;
+      // Último costo de compra como referencia del producto, ya por unidad de
+      // consumo: si vino el precio del bulto, lo que se guarda es el del gramo.
+      if (enteredCost !== undefined && enteredCost !== product.cost) {
+        product.cost = enteredCost;
         await product.save({ session });
       }
 
@@ -298,6 +329,124 @@ export class StockService {
       );
       return { item, movements };
     });
+  }
+
+  /**
+   * Aplica un conteo físico: la planilla que se llena recorriendo la bodega.
+   *
+   * No suma ni resta lo que le digan — DEJA la existencia en lo contado. El
+   * estante es la verdad; la diferencia contra lo que el sistema creía es el
+   * ajuste, y puede salir para cualquier lado. Esa es toda la diferencia con
+   * `importStock`, que suma cada fila como entrada: usar aquello para contar
+   * duplica el inventario, que es exactamente lo que pasaba hasta hoy.
+   *
+   * Reutiliza `adjust` con razón `conteo`, así que el kardex, los lotes, el
+   * FEFO y el control de acceso por sede salen gratis y con el mismo
+   * comportamiento que un ajuste hecho a mano. Sale una transacción por
+   * producto en vez de una sola grande: es más lento, pero un producto que
+   * falle no puede tumbar el conteo entero, y un conteo se hace una vez a la
+   * semana con la persiana abajo.
+   *
+   * Cada fila es independiente: lo que no se pueda ajustar se reporta con su
+   * motivo y el resto del conteo se aplica igual.
+   */
+  async applyCount(
+    dto: StockCountDto,
+    user: JwtUser,
+  ): Promise<StockCountResult> {
+    assertSedeAccess(user, dto.sedeId);
+    await this.sedes.findOrFail(dto.sedeId);
+    const sedeId = new Types.ObjectId(dto.sedeId);
+
+    const result: StockCountResult = {
+      total: dto.rows.length,
+      adjusted: 0,
+      unchanged: 0,
+      addedQty: 0,
+      removedQty: 0,
+      addedValue: 0,
+      removedValue: 0,
+      moved: [],
+      errors: [],
+    };
+
+    const note = dto.note?.trim() || 'Conteo físico';
+
+    for (const row of dto.rows) {
+      let nombre = row.productId;
+      try {
+        const product = await this.products.getOrFail(row.productId);
+        nombre = product.name;
+
+        // La existencia se lee AHORA, no cuando se generó la planilla: entre
+        // una cosa y otra pudo venderse algo. Un producto que nunca ha entrado
+        // a esta sede no tiene fila de existencias todavía, y eso es un cero
+        // legítimo —puede aparecer en el estante y hay que registrarlo—.
+        const item = await this.stockItemModel
+          .findOne({ productId: product._id, sedeId })
+          .exec();
+        const actual = item?.qty ?? 0;
+
+        if (row.expected !== undefined && row.expected !== actual) {
+          result.moved.push({
+            productId: row.productId,
+            name: product.name,
+            expected: row.expected,
+            actual,
+          });
+        }
+
+        const delta = row.counted - actual;
+        // Los insumos se miden en gramos: por debajo de esto la diferencia es
+        // del redondeo de la balanza, no del inventario.
+        if (Math.abs(delta) < 0.0005) {
+          result.unchanged += 1;
+          continue;
+        }
+
+        // Un perecedero que aparece de más necesita saber cuándo vence, o
+        // rompería el FEFO. No hay forma de adivinarlo desde una planilla, así
+        // que esa fila se devuelve para registrarla como entrada de verdad.
+        if (delta > 0 && product.perishable) {
+          throw new Error(
+            'Apareció de más y es perecedero: regístralo como entrada de mercancía para poder ponerle el vencimiento',
+          );
+        }
+
+        await this.adjust(
+          {
+            productId: row.productId,
+            sedeId: dto.sedeId,
+            direction: delta > 0 ? 'add' : 'remove',
+            qty: Math.abs(delta),
+            reason: 'conteo',
+            note,
+          } as StockAdjustDto,
+          user,
+        );
+
+        result.adjusted += 1;
+        // El valor se calcula con el costo del producto y no con el de cada
+        // lote: es para que el dueño vea de un vistazo cuánta plata se fue en
+        // faltantes, no para contabilizarlo.
+        const valor = cop(Math.abs(delta) * (product.cost ?? 0));
+        if (delta > 0) {
+          result.addedQty += Math.abs(delta);
+          result.addedValue += valor;
+        } else {
+          result.removedQty += Math.abs(delta);
+          result.removedValue += valor;
+        }
+      } catch (err) {
+        result.errors.push({
+          productId: row.productId,
+          name: nombre,
+          message: err instanceof Error ? err.message : 'Error desconocido',
+        });
+      }
+    }
+
+    return result;
   }
 
   /**

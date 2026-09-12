@@ -58,6 +58,17 @@ export class CreateProductDto {
   @Min(0)
   weight?: number;
 
+  /** Presentación con la que se compra: bulto, caja, garrafa… */
+  @IsOptional()
+  @IsString()
+  purchaseUnit?: string;
+
+  /** Cuántas unidades de consumo trae esa presentación (25000 g por bulto). */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  purchaseFactor?: number;
+
   @IsOptional()
   @IsBoolean()
   perishable?: boolean;

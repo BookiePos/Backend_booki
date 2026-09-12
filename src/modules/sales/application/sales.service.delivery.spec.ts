@@ -36,7 +36,8 @@ import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
  *
  * Constructor (orden):
  *   saleModel, counterModel, stockItemModel, cajaSessionModel, discountModel,
- *   receivableModel, stock, products, sedes, catalog, deliveryZones, customers,
+ *   receivableModel, stock, products, sedes, catalog, priceLists, deliveryZones,
+ *   customers,
  *   payroll, params, ledgerPosting, treasury
  */
 describe('SalesService.create · domicilio', () => {
@@ -125,6 +126,8 @@ describe('SalesService.create · domicilio', () => {
           { productId: p.inventoryProductId.toString(), qty },
         ]),
       } as never,
+      // Sin lista de precios: se cobra el precio de mostrador del catálogo.
+      { rulesFor: vi.fn().mockResolvedValue(null) } as never,
       { refFor: vi.fn().mockResolvedValue(zona) } as never,
       {} as never, // customers
       {} as never, // payroll

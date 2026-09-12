@@ -28,6 +28,17 @@ class OrderLine {
 
   @Prop({ required: true, min: 0 })
   lineTotal!: number;
+
+  /**
+   * Cuánto de esta línea ya se cobró.
+   *
+   * Es lo que permite dividir la cuenta: cada cobro paga un subconjunto y la
+   * comanda sigue abierta hasta que no quede nada. En una comanda que se paga
+   * entera vale 0 hasta el cobro y `qty` después, así que las que ya existen
+   * siguen comportándose igual.
+   */
+  @Prop({ default: 0, min: 0 })
+  paidQty!: number;
 }
 const OrderLineSchema = SchemaFactory.createForClass(OrderLine);
 
@@ -64,9 +75,27 @@ export class Order {
   @Prop({ required: true })
   openedByEmail!: string;
 
-  /** Venta generada al liquidar (si status === 'closed'). */
+  /**
+   * Última venta generada al liquidar. Se conserva porque ya lo leen las
+   * pantallas; con la cuenta dividida hay varias y están todas en `saleIds`.
+   */
   @Prop({ type: Types.ObjectId, ref: 'Sale' })
   saleId?: Types.ObjectId;
+
+  /** Todas las ventas de esta comanda, en el orden en que se cobraron. */
+  @Prop({ type: [{ type: Types.ObjectId, ref: 'Sale' }], default: [] })
+  saleIds!: Types.ObjectId[];
+
+  /**
+   * Contador de cobros, para el bloqueo optimista.
+   *
+   * Dos meseros cobrando partes distintas de la misma mesa al mismo tiempo
+   * leerían las mismas cantidades pendientes y las cobrarían dos veces. Cada
+   * cobro exige que el contador siga siendo el que leyó; el segundo pierde y
+   * vuelve a intentar con los datos frescos.
+   */
+  @Prop({ default: 0, min: 0 })
+  paymentSeq!: number;
 
   /** Comanda de restaurante que originó esta cuenta (puente restaurante → POS). */
   @Prop({ type: Types.ObjectId, ref: 'RestaurantOrder' })
