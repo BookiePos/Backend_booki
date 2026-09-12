@@ -82,20 +82,31 @@ export class LedgerPostingService {
     total: number;
     tax: number;
     cogs: number;
+    /**
+     * Cobro del domicilio. Es ingreso del negocio pero NO lleva IVA, así que
+     * entra entero a Ingresos sin nada que separar. La propina no aparece aquí
+     * a propósito: esa es del personal, no del negocio.
+     */
+    deliveryFee?: number;
     paymentMethod?: string;
     onCredit?: boolean;
     userEmail?: string;
   }): Promise<void> {
     const total = Math.round(input.total);
     const tax = Math.round(input.tax);
-    const income = total - tax;
+    const delivery = Math.round(input.deliveryFee ?? 0);
+    const income = total - tax + delivery;
     const cogs = Math.round(input.cogs);
     const debitAccount = input.onCredit
       ? ACC.CLIENTES
       : this.funding(input.paymentMethod);
 
     const lines: PostLine[] = [
-      { accountCode: debitAccount, debit: total, sedeId: input.sedeId },
+      {
+        accountCode: debitAccount,
+        debit: total + delivery,
+        sedeId: input.sedeId,
+      },
       { accountCode: ACC.INGRESOS_VENTAS, credit: income, sedeId: input.sedeId },
     ];
     if (tax > 0) {

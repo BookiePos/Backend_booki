@@ -94,6 +94,8 @@ describe('SalesService.void (anulación atómica)', () => {
       {} as any, // products
       {} as any, // sedes
       {} as any, // catalog
+      // Sin domicilio: no hay zona que resolver.
+      { refFor: async () => null } as any, // deliveryZones
       {} as any, // customers
       {} as any, // payroll
       {} as any, // params

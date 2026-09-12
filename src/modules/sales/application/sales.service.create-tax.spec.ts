@@ -165,6 +165,8 @@ describe('SalesService.create (IVA incluido + prorrateo de descuento)', () => {
       {} as any, // products
       sedes,
       catalog,
+      // Sin domicilio: no hay zona que resolver.
+      { refFor: async () => null } as any, // deliveryZones
       {} as any, // customers
       {} as any, // payroll
       {} as any, // params

@@ -29,6 +29,7 @@ import { DiscountsModule } from '../discounts/discounts.module';
 import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
 import { TreasuryModule } from '../finance/treasury/treasury.module';
 import { CustomersModule } from '../customers/customers.module';
+import { DeliveryModule } from '../delivery/delivery.module';
 import { PayrollModule } from '../payroll/payroll.module';
 import { CoreParamsModule } from '../core-params/core-params.module';
 import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
@@ -42,6 +43,8 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
     CoreLedgerModule,
     TreasuryModule,
     CustomersModule,
+    // La tarifa del domicilio la pone el servidor, nunca el navegador.
+    DeliveryModule,
     PayrollModule,
     CoreParamsModule,
     // Modelos referenciados por `populate`. Se registran aquí (mismo token que
