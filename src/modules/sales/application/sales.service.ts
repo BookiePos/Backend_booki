@@ -32,6 +32,8 @@ import { StockService } from '../../inventory/application/stock.service';
 import { ProductsService } from '../../inventory/application/products.service';
 import { SedesService } from '../../sedes/application/sedes.service';
 import { CatalogService } from '../../catalog/application/catalog.service';
+import { PriceListsService } from '../../catalog/application/price-lists.service';
+import { resolveUnitPrice } from '../../catalog/domain/price-list';
 import { Sede } from '../../sedes/infrastructure/schemas/sede.schema';
 import { CustomersService } from '../../customers/application/customers.service';
 import { PayrollService } from '../../payroll/application/payroll.service';
@@ -64,6 +66,7 @@ export class SalesService {
     private readonly products: ProductsService,
     private readonly sedes: SedesService,
     private readonly catalog: CatalogService,
+    private readonly priceLists: PriceListsService,
     private readonly customers: CustomersService,
     private readonly payroll: PayrollService,
     private readonly params: ParamsService,
@@ -158,6 +161,41 @@ export class SalesService {
       ),
     );
 
+    /**
+     * Qué lista de precios se cobra, de lo más explícito a lo más general:
+     *
+     *   1. La que el cajero eligió a mano en el terminal, para el cliente de
+     *      paso que se lleva una caja. Eso es decidir cobrar menos, así que
+     *      pide el mismo permiso que un descuento.
+     *   2. La que el cliente REGISTRADO tiene asignada. Esa no pide permiso:
+     *      no la está decidiendo el cajero, ya estaba pactada — y ese es el
+     *      punto de todo esto, que el precio del mayorista no dependa de que
+     *      alguien se acuerde de aplicarlo.
+     *   3. Ninguna: precio de mostrador.
+     *
+     * Una lista desactivada no aplica aunque el cliente la tenga (lo resuelve
+     * `rulesFor`): es la forma de dejar de vender a mayorista de un tirón.
+     */
+    let priceListId: string | undefined = dto.priceListId;
+    if (priceListId) {
+      if (!user.permissions.includes(PERMISSIONS.POS_DISCOUNT_AUTHORIZE)) {
+        throw new ForbiddenException(
+          'No tienes permiso para cambiar la lista de precios de una venta',
+        );
+      }
+    } else {
+      // El fiado identifica al deudor en `payment.customerId`; el resto de las
+      // ventas, en `customerId`. La tienda que compra por cajas paga de
+      // contado casi siempre, así que mirar solo el fiado dejaría la lista sin
+      // aplicar justo en el caso que importa.
+      const customerId = dto.customerId ?? dto.payment.customerId;
+      if (customerId) {
+        const cliente = await this.customers.getOrFail(customerId);
+        priceListId = cliente.priceListId?.toString();
+      }
+    }
+    const priceRules = await this.priceLists.rulesFor(priceListId);
+
     // Descuentos por línea: predefinidos de la sede. Aplicarlos requiere permiso.
     const lineDiscountIds = [
       ...new Set(
@@ -191,7 +229,13 @@ export class SalesService {
 
     const lineTotals = dto.lines.map((line) => {
       const product = catalogById.get(line.productId)!;
-      const gross = product.salePrice * line.qty;
+      const unitPrice = resolveUnitPrice({
+        basePrice: product.salePrice,
+        qty: line.qty,
+        catalogProductId: line.productId,
+        list: priceRules,
+      });
+      const gross = unitPrice * line.qty;
       let discountAmount = 0;
       let discountName: string | undefined;
       if (line.discountId) {
@@ -204,7 +248,7 @@ export class SalesService {
       return {
         product,
         qty: line.qty,
-        unitPrice: product.salePrice,
+        unitPrice,
         lineTotal: gross,
         discountAmount,
         discountName,

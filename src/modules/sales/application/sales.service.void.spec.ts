@@ -94,6 +94,8 @@ describe('SalesService.void (anulación atómica)', () => {
       {} as any, // products
       {} as any, // sedes
       {} as any, // catalog
+      // Sin lista de precios: se cobra el precio de mostrador del catálogo.
+      { rulesFor: async () => null } as any, // priceLists
       {} as any, // customers
       {} as any, // payroll
       {} as any, // params

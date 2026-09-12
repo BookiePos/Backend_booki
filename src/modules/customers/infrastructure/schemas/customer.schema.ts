@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument } from 'mongoose';
+import { HydratedDocument, Types } from 'mongoose';
 
 export type CustomerDocument = HydratedDocument<Customer>;
 
@@ -37,6 +37,16 @@ export class Customer {
   /** Cupo de crédito para fiado (0 = sin control de cupo). */
   @Prop({ default: 0, min: 0 })
   creditLimit!: number;
+
+  /**
+   * Lista de precios con la que se le cobra: mayorista, distribuidor…
+   *
+   * Sin ella se cobra el precio de mostrador, que es la venta normal. Existe
+   * para que el descuento del mayorista no dependa de que el cajero se acuerde
+   * de aplicarlo a mano en cada venta.
+   */
+  @Prop({ type: Types.ObjectId, ref: 'PriceList' })
+  priceListId?: Types.ObjectId;
 
   @Prop({ trim: true })
   notes?: string;
