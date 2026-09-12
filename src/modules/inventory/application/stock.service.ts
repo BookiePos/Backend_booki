@@ -37,6 +37,7 @@ import {
 } from '../domain/inventory.constants';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
+import { cop } from '../../finance/domain/money.util';
 
 export interface ConsumedPortion {
   lot?: StockLotDocument;
@@ -885,6 +886,120 @@ export class StockService {
     ]);
 
     return { total, page, limit, rows };
+  }
+
+  /**
+   * Reporte de merma: qué se botó, por qué y cuánto costó.
+   *
+   * La merma es la plata que se pierde sin que nadie la vea salir. Cada baja
+   * queda en el kárdex desde siempre, pero una a una no dice nada: lo que
+   * revela el problema es el acumulado —"el mes pasado se botaron $340.000 de
+   * leche por vencimiento"— y eso hasta ahora tocaba armarlo a mano.
+   *
+   * Se cuentan los movimientos de tipo `waste`, que son los que el inventario
+   * registra cuando la razón es daño, vencimiento o merma de proceso. Un ajuste
+   * por conteo NO es merma: es una corrección de lo que el sistema creía, y
+   * mezclarlo escondería el problema de verdad detrás del ruido del inventario.
+   *
+   * El costo sale del `unitCost` que el movimiento guardó, que es el del lote
+   * que salió. No se recalcula con el costo de hoy: lo que se perdió se perdió
+   * al precio al que se había comprado.
+   */
+  async wasteReport(query: {
+    sedeId?: string;
+    from?: string;
+    to?: string;
+    restrict?: string[] | null;
+  }) {
+    const filter: Record<string, unknown> = {
+      type: 'waste',
+      ...this.sedeMatch(query.sedeId, query.restrict),
+    };
+    const rango: Record<string, Date> = {};
+    if (query.from) rango.$gte = new Date(`${query.from}T00:00:00`);
+    // El `to` es inclusivo: quien escribe "hasta el 30" espera que el 30 entre.
+    if (query.to) rango.$lte = new Date(`${query.to}T23:59:59.999`);
+    if (Object.keys(rango).length > 0) filter.createdAt = rango;
+
+    const movimientos = await this.movementModel
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .limit(5000)
+      .populate({
+        path: 'productId',
+        select: 'sku name unit',
+        model: this.productModel,
+      })
+      .populate({ path: 'sedeId', select: 'code name', model: this.sedeModel })
+      .exec();
+
+    type Fila = {
+      productId: string;
+      sku: string;
+      name: string;
+      unit: string;
+      qty: number;
+      value: number;
+      /** Cuánto se fue por cada razón, para saber dónde atacar. */
+      byReason: Record<string, { qty: number; value: number }>;
+    };
+
+    const porProducto = new Map<string, Fila>();
+    const porRazon: Record<string, { qty: number; value: number }> = {};
+    let totalQty = 0;
+    let totalValue = 0;
+
+    for (const m of movimientos) {
+      const product = m.productId as unknown as {
+        _id: Types.ObjectId;
+        sku?: string;
+        name?: string;
+        unit?: string;
+      } | null;
+      if (!product?._id) continue; // producto borrado: no se puede reportar
+
+      // El `delta` de una salida es negativo; la merma se lee en positivo.
+      const qty = Math.abs(m.delta);
+      const value = cop(qty * (m.unitCost ?? 0));
+      const razon = m.reason ?? 'otro';
+      const key = product._id.toString();
+
+      const fila = porProducto.get(key) ?? {
+        productId: key,
+        sku: product.sku ?? '',
+        name: product.name ?? 'Producto eliminado',
+        unit: product.unit ?? 'und',
+        qty: 0,
+        value: 0,
+        byReason: {},
+      };
+      fila.qty += qty;
+      fila.value += value;
+      fila.byReason[razon] = {
+        qty: (fila.byReason[razon]?.qty ?? 0) + qty,
+        value: (fila.byReason[razon]?.value ?? 0) + value,
+      };
+      porProducto.set(key, fila);
+
+      porRazon[razon] = {
+        qty: (porRazon[razon]?.qty ?? 0) + qty,
+        value: (porRazon[razon]?.value ?? 0) + value,
+      };
+      totalQty += qty;
+      totalValue += value;
+    }
+
+    return {
+      from: query.from ?? null,
+      to: query.to ?? null,
+      totalQty,
+      totalValue,
+      byReason: porRazon,
+      // De mayor a menor plata perdida: lo primero que hay que mirar es lo que
+      // más cuesta, no lo que más veces pasó.
+      rows: [...porProducto.values()].sort((a, b) => b.value - a.value),
+      movements: movimientos.length,
+    };
   }
 
   /** Alertas: stock bajo + lotes vencidos o por vencer. */
