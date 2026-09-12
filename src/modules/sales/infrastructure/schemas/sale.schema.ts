@@ -9,6 +9,8 @@ import {
   SaleStatus,
 } from '../../domain/sales.constants';
 import {
+  DELIVERY_STATUSES,
+  DeliveryStatus,
   ORDER_TYPES,
   OrderType,
 } from '../../../delivery/domain/delivery.constants';
@@ -190,6 +192,26 @@ export class SaleDelivery {
   /** Quién lo llevó. Texto libre: casi siempre es un nombre de pila. */
   @Prop({ trim: true })
   courier?: string;
+
+  /**
+   * En qué va la entrega. Es logística, no dinero: la venta ya ocurrió y la
+   * plata ya entró. Un domicilio que se cae se resuelve con una devolución, no
+   * cambiándole el estado a la venta.
+   */
+  @Prop({ required: true, enum: DELIVERY_STATUSES, default: 'pendiente' })
+  status!: DeliveryStatus;
+
+  /** Cuándo salió con el repartidor. */
+  @Prop()
+  dispatchedAt?: Date;
+
+  /** Cuándo llegó. De aquí sale cuánto se demoró de verdad cada entrega. */
+  @Prop()
+  deliveredAt?: Date;
+
+  /** Por qué no se pudo entregar. Obligatorio al marcar fallido. */
+  @Prop({ trim: true })
+  failureReason?: string;
 }
 const SaleDeliverySchema = SchemaFactory.createForClass(SaleDelivery);
 

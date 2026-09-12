@@ -109,3 +109,51 @@ export function resolveDelivery(
     courier: input?.courier?.trim() || undefined,
   };
 }
+
+/**
+ * En qué va la entrega.
+ *
+ * La venta ya ocurrió y la plata ya entró: esto es logística, no dinero. Por
+ * eso vive en la venta pero no la toca — un domicilio que se cae se resuelve
+ * con una devolución, no cambiándole el estado a la venta.
+ */
+export const DELIVERY_STATUSES = [
+  'pendiente', // cobrado, todavía en el mostrador
+  'en_camino', // salió con el repartidor
+  'entregado', // llegó
+  'fallido', // no se pudo entregar (nadie, dirección mala, se devolvió)
+] as const;
+
+export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
+
+export const DELIVERY_STATUS_LABELS: Record<DeliveryStatus, string> = {
+  pendiente: 'Pendiente',
+  en_camino: 'En camino',
+  entregado: 'Entregado',
+  fallido: 'No se pudo entregar',
+};
+
+/**
+ * A qué estados se puede pasar desde cada uno.
+ *
+ * Un domicilio entregado no vuelve a "en camino": si de verdad volvió, eso es
+ * una devolución de la venta, no un paso atrás de la logística. Dejar ir hacia
+ * atrás convertiría el cuadre del repartidor en algo que nadie puede auditar.
+ */
+export const DELIVERY_TRANSITIONS: Record<DeliveryStatus, DeliveryStatus[]> = {
+  pendiente: ['en_camino', 'entregado', 'fallido'],
+  // Se permite entregado → fallido para el caso real de que el repartidor
+  // marque por error antes de llegar y lo corrija enseguida.
+  en_camino: ['entregado', 'fallido'],
+  entregado: [],
+  fallido: ['en_camino'],
+};
+
+/** Si el paso de un estado a otro está permitido. */
+export function canTransition(
+  from: DeliveryStatus,
+  to: DeliveryStatus,
+): boolean {
+  if (from === to) return true;
+  return DELIVERY_TRANSITIONS[from].includes(to);
+}
