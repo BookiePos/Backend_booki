@@ -13,6 +13,7 @@ import {
   SaleDiscountDto,
   SalePackagingDto,
   SalePaymentDto,
+  SaleSellerDto,
 } from './create-sale.dto';
 
 /** Una parte de la cuenta que alguien paga ahora. */
@@ -67,4 +68,10 @@ export class CheckoutOrderDto {
   @ValidateNested({ each: true })
   @Type(() => SalePackagingDto)
   packaging?: SalePackagingDto[];
+
+  /** Quién vendió. Sin este campo, el vendedor es quien cobra. */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SaleSellerDto)
+  seller?: SaleSellerDto;
 }

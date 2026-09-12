@@ -108,6 +108,21 @@ export class SaleCustomerDto {
   email?: string;
 }
 
+/**
+ * Quién vendió. No siempre es quien cobra: en el mostrador uno atiende y otro
+ * pasa la venta por la caja, y lo que se quiere saber es cuánto vendió cada uno.
+ */
+export class SaleSellerDto {
+  /** Empleado de nómina, si lo es. Sin él, el vendedor es solo un nombre. */
+  @IsOptional()
+  @IsMongoId()
+  employeeId?: string;
+
+  @IsString()
+  @MaxLength(120)
+  name!: string;
+}
+
 /** Empaque gastado en un cobro, anotado a mano por quien cobra. */
 export class SalePackagingDto {
   /** Ítem de INVENTARIO (la bolsa), no un producto vendible. */
@@ -245,4 +260,10 @@ export class CreateSaleDto {
   @IsOptional()
   @IsMongoId()
   customerId?: string;
+
+  /** Quién vendió. Sin este campo, el vendedor es quien cobra. */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SaleSellerDto)
+  seller?: SaleSellerDto;
 }

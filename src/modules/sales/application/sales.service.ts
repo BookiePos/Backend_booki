@@ -631,6 +631,7 @@ export class SalesService {
       cashierId: user.userId,
       cashierEmail: user.email,
       cashierName: user.name,
+      seller: this.cleanSeller(dto.seller),
       cajaSessionId: openCaja?._id,
       status: 'completed',
       lines: linesWithTax.map((l) => ({
@@ -762,6 +763,21 @@ export class SalesService {
       .map((k) => [k, customer[k]?.trim()] as const)
       .filter(([, v]) => v);
     return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+  }
+
+  /**
+   * Vendedor sin nombre no es vendedor: se descarta, y la venta queda a nombre
+   * de quien cobró, que es lo mismo que pasaba antes de existir el campo.
+   */
+  private cleanSeller(seller?: CreateSaleDto['seller']) {
+    const name = seller?.name?.trim();
+    if (!name) return undefined;
+    return {
+      name,
+      employeeId: seller?.employeeId
+        ? new Types.ObjectId(seller.employeeId)
+        : undefined,
+    };
   }
 
   /**
