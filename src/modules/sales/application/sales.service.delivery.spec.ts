@@ -122,6 +122,8 @@ describe('SalesService.create · domicilio', () => {
       { findOrFail: vi.fn().mockResolvedValue({ _id: sedeId }) } as never,
       {
         loadSellableOrFail: vi.fn((id: string) => Promise.resolve(catalogDb[id])),
+        // Ningún producto de esta prueba gasta empaque.
+        packagingOf: vi.fn(() => []),
         componentsOf: vi.fn((p: any, qty: number) => [
           { productId: p.inventoryProductId.toString(), qty },
         ]),

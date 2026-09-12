@@ -398,6 +398,47 @@ export class SalesService {
       }
     }
 
+    /*
+     * 3b. Empaque: la bolsa, el vaso, la cuchara. Sale de dos sitios —lo que
+     * cada producto gasta por unidad, y lo que el cajero anotó a mano en este
+     * cobro— y se suma al consumo DESPUÉS del pre-chequeo, a propósito.
+     *
+     * El empaque NUNCA puede tumbar una venta. Si el sistema cree que no hay
+     * bolsas, casi siempre es que alguien no registró la compra, y las bolsas
+     * físicamente están ahí: no poder cobrar una galleta por eso sería mucho
+     * peor que el descuadre. Por eso se acota a lo que haya, se gasta hasta
+     * donde alcance y el inventario se queda en cero en vez de irse a negativo.
+     *
+     * Va dentro del mismo consumo y no aparte para que su costo entre al de la
+     * venta: el margen tiene que incluir la bolsa, que es justo lo que nadie
+     * veía cuando el empaque solo bajaba con ajustes a mano.
+     */
+    const packagingDemand = new Map<string, number>();
+    for (const line of dto.lines) {
+      const product = catalogById.get(line.productId)!;
+      for (const p of this.catalog.packagingOf(product, line.qty)) {
+        packagingDemand.set(
+          p.productId,
+          (packagingDemand.get(p.productId) ?? 0) + p.qty,
+        );
+      }
+    }
+    for (const p of dto.packaging ?? []) {
+      packagingDemand.set(
+        p.productId,
+        (packagingDemand.get(p.productId) ?? 0) + p.qty,
+      );
+    }
+    for (const [productId, pedida] of packagingDemand) {
+      const disponible =
+        (stockByProduct.get(productId) ?? 0) - (demand.get(productId) ?? 0);
+      const gasta = Math.min(pedida, Math.max(disponible, 0));
+      if (gasta <= 0) continue;
+      const existente = componentLines.find((c) => c.productId === productId);
+      if (existente) existente.qty += gasta;
+      else componentLines.push({ productId, qty: gasta });
+    }
+
     // 4. Descuento FEFO + kardex 'sale' (una sola operación agregada).
     const sold = await this.stock.sell(dto.sedeId, componentLines, user);
 

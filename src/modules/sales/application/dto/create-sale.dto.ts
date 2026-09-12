@@ -108,6 +108,17 @@ export class SaleCustomerDto {
   email?: string;
 }
 
+/** Empaque gastado en un cobro, anotado a mano por quien cobra. */
+export class SalePackagingDto {
+  /** Ítem de INVENTARIO (la bolsa), no un producto vendible. */
+  @IsMongoId()
+  productId!: string;
+
+  @IsNumber()
+  @IsPositive()
+  qty!: number;
+}
+
 /** A dónde se lleva el pedido. */
 export class SaleDeliveryDto {
   @IsOptional()
@@ -190,6 +201,20 @@ export class CreateSaleDto {
   @IsOptional()
   @IsIn(ORDER_TYPES as readonly string[])
   orderType?: OrderType;
+
+  /**
+   * Empaque gastado en ESTE cobro, además del que cada producto ya descuenta
+   * por su cuenta: la bolsa grande porque el cliente se llevó todo junto, la
+   * cuchara de más que pidió.
+   *
+   * No se le cobra al cliente —no suma al total— pero sí sale del inventario y
+   * entra al costo de la venta.
+   */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SalePackagingDto)
+  packaging?: SalePackagingDto[];
 
   /**
    * A dónde se lleva. Solo se tiene en cuenta con `orderType: 'domicilio'`.

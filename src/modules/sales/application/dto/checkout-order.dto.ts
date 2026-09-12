@@ -11,6 +11,7 @@ import {
 import {
   SaleCustomerDto,
   SaleDiscountDto,
+  SalePackagingDto,
   SalePaymentDto,
 } from './create-sale.dto';
 
@@ -59,4 +60,11 @@ export class CheckoutOrderDto {
   @ValidateNested()
   @Type(() => SaleCustomerDto)
   customer?: SaleCustomerDto;
+
+  /** Empaque gastado al liquidar la cuenta (bolsas para llevar, servilletas). */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SalePackagingDto)
+  packaging?: SalePackagingDto[];
 }
