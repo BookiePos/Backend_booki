@@ -18,6 +18,7 @@ import {
   FinancePayableDocument,
 } from '../../finance/infrastructure/schemas/finance-payable.schema';
 import { StockService } from '../../inventory/application/stock.service';
+import { ProductsService } from '../../inventory/application/products.service';
 import { TaxService } from '../../core-tax/application/tax.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
@@ -43,6 +44,7 @@ export class PurchasingService {
     @InjectModel(Counter.name)
     private readonly counterModel: Model<CounterDocument>,
     private readonly stock: StockService,
+    private readonly products: ProductsService,
     private readonly tax: TaxService,
     private readonly ledgerPosting: LedgerPostingService,
   ) {}
@@ -63,7 +65,15 @@ export class PurchasingService {
     return `OC-${String(counter.seq).padStart(6, '0')}`;
   }
 
-  /** Calcula subtotal e impuesto de cada renglón (tarifa vigente del código). */
+  /**
+   * Calcula subtotal e impuesto de cada renglón (tarifa vigente del código).
+   *
+   * Un renglón puede venir en la PRESENTACIÓN de compra —3 bultos a $95.000 el
+   * bulto— porque así llega la factura del proveedor. La plata sale igual en
+   * los dos casos (3 × 95.000 = 75.000 g × 3,80), así que aquí no cambia nada
+   * del cálculo: lo único que se hace es copiar la presentación al renglón para
+   * que el inventario sepa convertir al recibir.
+   */
   private async buildLines(dtoLines: PurchaseLineDto[]) {
     const lines = [];
     let subtotal = 0;
@@ -77,12 +87,38 @@ export class PurchasingService {
       }
       subtotal += lineSub;
       taxAmount += lineTax;
+
+      // Presentación de compra: se resuelve al crear la orden y se congela en
+      // el renglón. Sin producto enlazado no hay de dónde sacarla, y sin
+      // presentación definida se rechaza en vez de asumir factor 1: "3 bultos"
+      // entrando como 3 gramos dejaría el inventario en nada.
+      let purchaseUnit: string | undefined;
+      let purchaseFactor: number | undefined;
+      if (l.inPurchaseUnits) {
+        if (!l.productId) {
+          throw new BadRequestException(
+            `El renglón "${l.description}" no está enlazado a un producto, así que no se sabe qué trae un ${l.description}`,
+          );
+        }
+        const product = await this.products.getOrFail(l.productId);
+        if (!product.purchaseUnit || !product.purchaseFactor) {
+          throw new BadRequestException(
+            `${product.name} no tiene definida una presentación de compra: defínela en su ficha o registra la cantidad en ${product.unit}`,
+          );
+        }
+        purchaseUnit = product.purchaseUnit;
+        purchaseFactor = product.purchaseFactor;
+      }
+
       lines.push({
         productId: l.productId ? new Types.ObjectId(l.productId) : undefined,
         description: l.description,
         qty: l.qty,
         qtyReceived: 0,
         unitCost: l.unitCost,
+        inPurchaseUnits: Boolean(l.inPurchaseUnits),
+        purchaseUnit,
+        purchaseFactor,
         taxCode: l.taxCode,
         subtotal: lineSub,
         taxAmount: lineTax,
@@ -262,6 +298,9 @@ export class PurchasingService {
             sedeId: po.sedeId.toString(),
             qty: rl.qty,
             unitCost: line.unitCost,
+            // Si el renglón vino en bultos, el inventario convierte: entran
+            // 75.000 g a $3,80 y no 3 unidades a $95.000.
+            inPurchaseUnits: line.inPurchaseUnits || undefined,
             lotCode: rl.lotCode,
             supplier: po.supplierName,
             supplierId: po.supplierId?.toString(),

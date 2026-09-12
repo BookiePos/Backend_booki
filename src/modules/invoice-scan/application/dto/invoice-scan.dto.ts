@@ -78,6 +78,15 @@ export class LineDecisionDto {
   @IsMongoId()
   categoryId?: string;
 
+  /**
+   * La cantidad de la factura viene en la presentación de compra del producto
+   * ("3 BULTOS"), no en la unidad de consumo. Se propone solo cuando el
+   * producto emparejado tiene presentación definida, y la persona lo confirma.
+   */
+  @IsOptional()
+  @IsBoolean()
+  inPurchaseUnits?: boolean;
+
   @IsOptional()
   @ValidateNested()
   @Type(() => NewProductDto)

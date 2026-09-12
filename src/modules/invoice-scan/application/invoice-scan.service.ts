@@ -199,12 +199,33 @@ export class InvoiceScanService {
     scan.invoiceNumber = draft.invoice.number;
 
     const matches = await this.matching.matchLines(draft.lines, supplier.supplierId);
+
+    /*
+     * Se propone cobrar en presentación cuando el producto emparejado la tiene
+     * definida, porque el proveedor factura en lo que vende: "3 BULTOS HARINA",
+     * no "75.000 G". Sin esta propuesta alguien tendría que acordarse de
+     * marcarlo en cada factura, y el día que se le olvide entrarían 3 gramos de
+     * harina al inventario.
+     *
+     * Sigue siendo una propuesta: la persona la ve en la pantalla de revisión y
+     * la puede quitar, como todo lo demás de este módulo.
+     */
+    const conPresentacion = new Set<string>();
+    for (const m of matches) {
+      if (!m.productId) continue;
+      const product = await this.products.getOrFail(m.productId).catch(() => null);
+      if (product?.purchaseUnit && product.purchaseFactor) {
+        conPresentacion.add(m.productId);
+      }
+    }
+
     scan.lineDecisions = matches.map((m) => ({
       lineIndex: m.lineIndex,
       target: m.target,
       productId: m.productId ? new Types.ObjectId(m.productId) : undefined,
       createProduct: m.createProduct,
       categoryId: undefined,
+      inPurchaseUnits: Boolean(m.productId && conPresentacion.has(m.productId)),
       matchedBy: m.matchedBy,
     }));
   }
@@ -354,6 +375,7 @@ export class InvoiceScanService {
         productId: d.productId ? new Types.ObjectId(d.productId) : undefined,
         createProduct: d.createProduct ?? false,
         categoryId: d.categoryId ? new Types.ObjectId(d.categoryId) : undefined,
+        inPurchaseUnits: d.inPurchaseUnits ?? false,
         newProduct: d.newProduct
           ? {
               ...d.newProduct,
@@ -441,6 +463,7 @@ export class InvoiceScanService {
             description: item.line.description,
             qty: item.qty,
             unitCost: item.unitCost,
+            inPurchaseUnits: item.inPurchaseUnits || undefined,
             taxCode: taxCodeForRate(item.line.ivaRate),
           })),
           note: `Factura ${draft.invoice.number ?? 'sin número'} · cargada por foto`,
@@ -525,6 +548,8 @@ export class InvoiceScanService {
       productId?: string;
       sku: string;
       newProduct?: NewProductDraft;
+      /** La cantidad viene en bultos/cajas y no en la unidad de consumo. */
+      inPurchaseUnits: boolean;
     }[] = [];
     const expenses: { line: ExtractedLine; amount: number; categoryId: string }[] = [];
 
@@ -563,6 +588,12 @@ export class InvoiceScanService {
           productId: decision?.productId?.toString(),
           sku,
           newProduct,
+          // Un producto que se crea EN ESTA factura todavía no tiene
+          // presentación definida, así que la cantidad no puede venir en
+          // bultos: entraría en la unidad que se le acabe de poner.
+          inPurchaseUnits: Boolean(
+            decision?.inPurchaseUnits && decision?.productId,
+          ),
         });
         return;
       }

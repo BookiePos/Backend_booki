@@ -105,6 +105,18 @@ export class LineDecision {
   @Prop({ type: NewProductDraftSchema })
   newProduct?: NewProductDraft;
 
+  /**
+   * La cantidad de la factura viene en la PRESENTACIÓN de compra del producto
+   * —"3 BULTOS HARINA"— y no en la unidad en que se consume.
+   *
+   * Se PROPONE en true cuando el producto emparejado tiene presentación
+   * definida, porque el proveedor factura en lo que vende. Pero es una
+   * propuesta: la persona la ve y la puede quitar antes de aplicar, igual que
+   * todo lo demás de esta pantalla.
+   */
+  @Prop({ default: false })
+  inPurchaseUnits!: boolean;
+
   /** Cómo se emparejó: alias | barcode | sku | name | manual | none. */
   @Prop()
   matchedBy?: string;

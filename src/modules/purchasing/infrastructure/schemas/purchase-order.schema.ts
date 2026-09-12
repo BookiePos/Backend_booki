@@ -24,6 +24,29 @@ export class PurchaseLine {
   @Prop({ required: true, min: 0 })
   unitCost!: number;
 
+  /**
+   * `qty` y `unitCost` van en la PRESENTACIÓN de compra del producto —3 bultos
+   * a $95.000 el bulto— y no en la unidad en que se consume.
+   *
+   * Es como llega la factura del proveedor, así que la orden se lee igual que
+   * el papel. La conversión a gramos la hace el inventario al recibir.
+   */
+  @Prop({ default: false })
+  inPurchaseUnits!: boolean;
+
+  /**
+   * Nombre y contenido de la presentación, copiados al crear la orden.
+   *
+   * Se guardan aunque el producto ya los tenga: si alguien le cambia la
+   * presentación el mes entrante, esta orden tiene que seguir diciendo lo que
+   * se pidió y a qué precio.
+   */
+  @Prop({ trim: true })
+  purchaseUnit?: string;
+
+  @Prop({ min: 0 })
+  purchaseFactor?: number;
+
   /** Código de impuesto (motor core-tax), opcional. */
   @Prop({ trim: true })
   taxCode?: string;
