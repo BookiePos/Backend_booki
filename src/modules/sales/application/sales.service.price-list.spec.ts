@@ -34,7 +34,8 @@ import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
  *
  * Constructor (orden):
  *   saleModel, counterModel, stockItemModel, cajaSessionModel, discountModel,
- *   receivableModel, stock, products, sedes, catalog, priceLists, customers,
+ *   receivableModel, stock, products, sedes, catalog, priceLists, deliveryZones,
+ *   customers,
  *   payroll, params, ledgerPosting, treasury
  */
 describe('SalesService.create · lista de precios', () => {
@@ -134,6 +135,8 @@ describe('SalesService.create · lista de precios', () => {
       { findOrFail: vi.fn().mockResolvedValue({ _id: sedeId }) } as never,
       catalog as never,
       { rulesFor: vi.fn().mockResolvedValue(reglas) } as never,
+      // Sin domicilio: no hay zona que resolver.
+      { refFor: vi.fn().mockResolvedValue(null) } as never,
       { getOrFail: vi.fn().mockResolvedValue(cliente) } as never,
       {} as never, // payroll
       {} as never, // params

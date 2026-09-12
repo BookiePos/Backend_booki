@@ -20,6 +20,10 @@ import {
   PAYMENT_METHODS,
   PaymentMethod,
 } from '../../domain/sales.constants';
+import {
+  ORDER_TYPES,
+  OrderType,
+} from '../../../delivery/domain/delivery.constants';
 
 export class SaleDiscountDto {
   @IsIn(DISCOUNT_TYPES as readonly string[])
@@ -104,6 +108,45 @@ export class SaleCustomerDto {
   email?: string;
 }
 
+/** A dónde se lleva el pedido. */
+export class SaleDeliveryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(240)
+  address?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(240)
+  notes?: string;
+
+  /** Quién lo lleva. Texto libre: casi siempre es un nombre de pila. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  courier?: string;
+
+  /** Zona con tarifa fija. El servidor pone el precio, no el navegador. */
+  @IsOptional()
+  @IsMongoId()
+  zoneId?: string;
+
+  /**
+   * Tarifa escrita a mano, para el pedido que no cae en ninguna zona.
+   * Si además se manda `zoneId`, manda la zona: las zonas existen para que el
+   * precio no dependa de quién tome el pedido.
+   */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  fee?: number;
+}
+
 /** El precio NUNCA viene del cliente: se toma el salePrice del servidor. */
 export class CreateSaleDto {
   @IsMongoId()
@@ -142,6 +185,23 @@ export class CreateSaleDto {
   @IsNumber()
   @Min(0)
   tip?: number;
+
+  /** Cómo sale el pedido. Por omisión, mostrador. */
+  @IsOptional()
+  @IsIn(ORDER_TYPES as readonly string[])
+  orderType?: OrderType;
+
+  /**
+   * A dónde se lleva. Solo se tiene en cuenta con `orderType: 'domicilio'`.
+   *
+   * La TARIFA no viaja desde el navegador cuando hay zona: se manda el id de la
+   * zona y el servidor pone el precio. `fee` solo se usa para el pedido raro
+   * que no cae en ninguna zona, y es la casilla a mano que se acordó.
+   */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SaleDeliveryDto)
+  delivery?: SaleDeliveryDto;
 
   /** Datos del cliente para la factura (opcional). */
   @IsOptional()

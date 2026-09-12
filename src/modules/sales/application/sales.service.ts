@@ -34,6 +34,12 @@ import { SedesService } from '../../sedes/application/sedes.service';
 import { CatalogService } from '../../catalog/application/catalog.service';
 import { PriceListsService } from '../../catalog/application/price-lists.service';
 import { resolveUnitPrice } from '../../catalog/domain/price-list';
+import { DeliveryZonesService } from '../../delivery/application/delivery-zones.service';
+import {
+  OrderType,
+  ResolvedDelivery,
+  resolveDelivery,
+} from '../../delivery/domain/delivery.constants';
 import { Sede } from '../../sedes/infrastructure/schemas/sede.schema';
 import { CustomersService } from '../../customers/application/customers.service';
 import { PayrollService } from '../../payroll/application/payroll.service';
@@ -67,6 +73,7 @@ export class SalesService {
     private readonly sedes: SedesService,
     private readonly catalog: CatalogService,
     private readonly priceLists: PriceListsService,
+    private readonly deliveryZones: DeliveryZonesService,
     private readonly customers: CustomersService,
     private readonly payroll: PayrollService,
     private readonly params: ParamsService,
@@ -307,7 +314,42 @@ export class SalesService {
     // Propina voluntaria (restaurante): se cobra ENCIMA del total. No es venta
     // ni base gravable; el monto a pagar por el cliente es total + tip.
     const tip = Math.max(0, Math.round((dto.tip ?? 0) * 100) / 100);
-    const grandTotal = Math.round((total + tip) * 100) / 100;
+
+    /*
+     * Cobro del domicilio. Como la propina, se suma ENCIMA del total y no entra
+     * a la base gravable —decisión tomada con el dueño—. A diferencia de la
+     * propina sí es ingreso del negocio, así que sí va al libro contable.
+     *
+     * La tarifa la pone el SERVIDOR a partir de la zona; del navegador solo
+     * viaja el id. El valor a mano existe para el pedido que no cae en ninguna
+     * zona, que es la casilla que se acordó en vez de calcular por kilómetros.
+     */
+    const orderType = dto.orderType ?? 'mostrador';
+    let delivery: ResolvedDelivery | undefined;
+    if (orderType === 'domicilio') {
+      const zone = await this.deliveryZones.refFor(
+        dto.delivery?.zoneId,
+        dto.sedeId,
+      );
+      try {
+        delivery = resolveDelivery(dto.delivery, zone);
+      } catch (err) {
+        throw new BadRequestException(
+          err instanceof Error ? err.message : 'Datos del domicilio inválidos',
+        );
+      }
+    } else if (dto.delivery) {
+      // Mandar dirección sin marcar domicilio casi siempre es que se escogió
+      // mal el tipo de pedido. Cobrar el envío igual sería un cobro que nadie
+      // pidió; ignorarlo en silencio, un domicilio que nadie va a entregar.
+      throw new BadRequestException(
+        'Para registrar una entrega, el pedido tiene que ser de tipo domicilio',
+      );
+    }
+    const deliveryFee = delivery?.fee ?? 0;
+
+    const grandTotal =
+      Math.round((total + tip + deliveryFee) * 100) / 100;
 
     let received: number | undefined;
     let change: number | undefined;
@@ -405,6 +447,16 @@ export class SalesService {
         taxTotal,
         total,
         tip,
+        orderType,
+        deliveryFee,
+        delivery: delivery
+          ? {
+              ...delivery,
+              zoneId: delivery.zoneId
+                ? new Types.ObjectId(delivery.zoneId)
+                : undefined,
+            }
+          : undefined,
         received,
         change,
         isCredit,
@@ -494,6 +546,16 @@ export class SalesService {
     taxTotal: number;
     total: number;
     tip: number;
+    orderType: OrderType;
+    deliveryFee: number;
+    delivery?: {
+      zoneId?: Types.ObjectId;
+      zoneName?: string;
+      address: string;
+      phone?: string;
+      notes?: string;
+      courier?: string;
+    };
     received?: number;
     change?: number;
     isCredit: boolean;
@@ -513,6 +575,9 @@ export class SalesService {
       taxTotal,
       total,
       tip,
+      orderType,
+      deliveryFee,
+      delivery,
       received,
       change,
       isCredit,
@@ -549,6 +614,9 @@ export class SalesService {
       taxTotal,
       total,
       tip,
+      orderType,
+      deliveryFee,
+      delivery,
       payment: { method: dto.payment.method, received, change },
       customer: this.cleanCustomer(dto.customer),
       orderId,
@@ -615,6 +683,9 @@ export class SalesService {
       total: Math.round(total),
       tax: Math.round(taxTotal),
       cogs: Math.round(cogs),
+      // El domicilio es ingreso del negocio (a diferencia de la propina, que
+      // es del personal y por eso no aparece aquí), pero sin IVA que separar.
+      deliveryFee: Math.round(deliveryFee),
       paymentMethod: dto.payment.method,
       onCredit: isCredit,
       userEmail: user.email,
@@ -630,7 +701,11 @@ export class SalesService {
         sedeId: dto.sedeId,
         method: dto.payment.method,
         direction: 'in',
-        amount: Math.round(total) + Math.round(sale.tip ?? 0),
+        // Lo que de verdad entró a la cuenta: el cliente pagó todo junto.
+        amount:
+          Math.round(total) +
+          Math.round(sale.tip ?? 0) +
+          Math.round(deliveryFee),
         date: new Date().toLocaleDateString('en-CA'),
         concept: `Venta #${saleNumber}`,
       });

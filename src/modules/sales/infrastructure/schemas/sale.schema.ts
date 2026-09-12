@@ -8,6 +8,10 @@ import {
   SALE_STATUSES,
   SaleStatus,
 } from '../../domain/sales.constants';
+import {
+  ORDER_TYPES,
+  OrderType,
+} from '../../../delivery/domain/delivery.constants';
 
 export type SaleDocument = HydratedDocument<Sale>;
 
@@ -158,6 +162,37 @@ class SaleCustomer {
 }
 const SaleCustomerSchema = SchemaFactory.createForClass(SaleCustomer);
 
+/**
+ * Entrega a domicilio: a dónde va el pedido y cuánto costó llevarlo.
+ *
+ * El nombre de la zona y la tarifa se copian a propósito. La zona se puede
+ * renombrar o cambiar de precio mañana, y la venta tiene que seguir diciendo
+ * lo que se cobró ese día.
+ */
+@Schema({ _id: false })
+export class SaleDelivery {
+  @Prop({ type: Types.ObjectId, ref: 'DeliveryZone' })
+  zoneId?: Types.ObjectId;
+
+  @Prop({ trim: true })
+  zoneName?: string;
+
+  @Prop({ required: true, trim: true })
+  address!: string;
+
+  @Prop({ trim: true })
+  phone?: string;
+
+  /** "Apartamento 302, timbre dañado, llamar al llegar." */
+  @Prop({ trim: true })
+  notes?: string;
+
+  /** Quién lo llevó. Texto libre: casi siempre es un nombre de pila. */
+  @Prop({ trim: true })
+  courier?: string;
+}
+const SaleDeliverySchema = SchemaFactory.createForClass(SaleDelivery);
+
 /** Venta del POS. Documento único y atómico (Mongo standalone). */
 @Schema({ timestamps: true, collection: 'sales' })
 export class Sale {
@@ -216,6 +251,25 @@ export class Sale {
    */
   @Prop({ default: 0, min: 0 })
   tip!: number;
+
+  /** Cómo salió el pedido: mostrador, mesa, para llevar o domicilio. */
+  @Prop({ required: true, enum: ORDER_TYPES, default: 'mostrador' })
+  orderType!: OrderType;
+
+  /**
+   * Cobro del domicilio. Se cobra ENCIMA del total y NO entra a la base
+   * gravable —decisión tomada con el dueño— así que va en su propio campo y no
+   * como una línea más. El monto a pagar = total + tip + deliveryFee.
+   *
+   * A diferencia de la propina, sí es ingreso del negocio y por eso sí va al
+   * libro contable.
+   */
+  @Prop({ default: 0, min: 0 })
+  deliveryFee!: number;
+
+  /** A dónde se lleva y quién lo lleva. Solo en `orderType: 'domicilio'`. */
+  @Prop({ type: SaleDeliverySchema })
+  delivery?: SaleDelivery;
 
   @Prop({ type: SalePaymentSchema, required: true })
   payment!: SalePayment;

@@ -14,6 +14,7 @@ import { InventoryModule } from './modules/inventory/inventory.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { SuppliersModule } from './modules/suppliers/suppliers.module';
 import { SalesModule } from './modules/sales/sales.module';
+import { DeliveryModule } from './modules/delivery/delivery.module';
 import { CajaModule } from './modules/caja/caja.module';
 import { DiscountsModule } from './modules/discounts/discounts.module';
 import { EinvoicingModule } from './modules/einvoicing/einvoicing.module';
@@ -102,6 +103,7 @@ function controlUri(): string {
     CatalogModule,
     SuppliersModule,
     SalesModule,
+    DeliveryModule,
     CajaModule,
     DiscountsModule,
     EinvoicingModule,
