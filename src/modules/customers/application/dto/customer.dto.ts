@@ -47,6 +47,15 @@ export class CreateCustomerDto {
   @Min(0)
   creditLimit?: number;
 
+  /**
+   * Lista de precios con la que se le cobra. Vacío = precio de mostrador.
+   * Va como texto y no como @IsMongoId para que la cadena vacía pueda QUITAR
+   * la lista; el servicio valida que sea un id de verdad.
+   */
+  @IsOptional()
+  @IsString()
+  priceListId?: string;
+
   @IsOptional()
   @IsString()
   notes?: string;
@@ -77,6 +86,15 @@ export class UpdateCustomerDto {
   @IsInt()
   @Min(0)
   creditLimit?: number;
+
+  /**
+   * Lista de precios con la que se le cobra. Vacío = precio de mostrador.
+   * Va como texto y no como @IsMongoId para que la cadena vacía pueda QUITAR
+   * la lista; el servicio valida que sea un id de verdad.
+   */
+  @IsOptional()
+  @IsString()
+  priceListId?: string;
 
   @IsOptional()
   @IsString()

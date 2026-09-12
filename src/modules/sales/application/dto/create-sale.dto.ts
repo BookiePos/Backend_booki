@@ -125,6 +125,18 @@ export class CreateSaleDto {
   @Type(() => SaleDiscountDto)
   discount?: SaleDiscountDto;
 
+  /**
+   * Lista de precios elegida A MANO en el terminal, para el cliente de paso
+   * que se lleva una caja entera y no está registrado.
+   *
+   * Requiere `pos.discount.authorize`: elegirla es decidir cobrar menos, igual
+   * que aplicar un descuento. La lista que el cliente REGISTRADO ya tiene
+   * asignada no pide permiso — no la está decidiendo el cajero.
+   */
+  @IsOptional()
+  @IsMongoId()
+  priceListId?: string;
+
   /** Propina voluntaria (restaurante): se cobra encima del total. */
   @IsOptional()
   @IsNumber()
@@ -136,4 +148,16 @@ export class CreateSaleDto {
   @ValidateNested()
   @Type(() => SaleCustomerDto)
   customer?: SaleCustomerDto;
+
+  /**
+   * Cliente REGISTRADO al que se le está vendiendo, sin importar cómo paga.
+   *
+   * `payment.customerId` solo existe para el fiado, donde identifica al deudor
+   * de la cuenta por cobrar. Pero la tienda que compra por cajas casi siempre
+   * paga de contado o por transferencia, y su lista de precios tiene que
+   * aplicarse igual: para eso está este campo.
+   */
+  @IsOptional()
+  @IsMongoId()
+  customerId?: string;
 }
