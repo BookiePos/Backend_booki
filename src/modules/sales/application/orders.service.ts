@@ -24,6 +24,7 @@ import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { CreateOrderDto, OrderLineInputDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { CheckoutOrderDto } from './dto/checkout-order.dto';
+import { PaymentPlan, planPayment } from '../domain/split-bill';
 import { SalesService } from './sales.service';
 
 @Injectable()
@@ -85,7 +86,10 @@ export class OrdersService {
    * Resuelve los ítems a líneas con snapshot del catálogo (precio del servidor),
    * sumando las cantidades de un mismo producto.
    */
-  private async buildLines(inputs: OrderLineInputDto[]) {
+  private async buildLines(
+    inputs: OrderLineInputDto[],
+    yaPagado?: ReadonlyMap<string, number>,
+  ) {
     const merged = new Map<string, number>();
     for (const l of inputs) {
       if (l.qty > 0) merged.set(l.productId, (merged.get(l.productId) ?? 0) + l.qty);
@@ -93,6 +97,10 @@ export class OrdersService {
     return Promise.all(
       [...merged.entries()].map(async ([productId, qty]) => {
         const product = await this.catalog.loadSellableOrFail(productId);
+        // Lo ya cobrado se conserva al reescribir las líneas: si la mesa pidió
+        // otra ronda después de que uno pagara lo suyo, perderlo dejaría esa
+        // parte cobrándose otra vez.
+        const pagado = Math.min(yaPagado?.get(productId) ?? 0, qty);
         return {
           productId: product._id,
           sku: product.sku,
@@ -101,6 +109,7 @@ export class OrdersService {
           qty,
           unitPrice: product.salePrice,
           lineTotal: Math.round(product.salePrice * qty * 100) / 100,
+          paidQty: pagado,
         };
       }),
     );
@@ -173,7 +182,12 @@ export class OrdersService {
     if (dto.label !== undefined) order.label = dto.label.trim() || undefined;
     if (dto.note !== undefined) order.note = dto.note.trim() || undefined;
     if (dto.lines !== undefined) {
-      order.lines = await this.buildLines(dto.lines);
+      const yaPagado = new Map<string, number>();
+      for (const l of order.lines) {
+        const key = l.productId.toString();
+        yaPagado.set(key, (yaPagado.get(key) ?? 0) + (l.paidQty ?? 0));
+      }
+      order.lines = await this.buildLines(dto.lines, yaPagado);
     }
     await order.save();
     return this.getOrFail(order.id);
@@ -192,20 +206,57 @@ export class OrdersService {
       throw new BadRequestException('La cuenta no tiene ítems para cobrar');
     }
 
-    // Guarda de concurrencia (Mongo standalone, sin transacciones): "tomamos"
-    // la cuenta de forma atómica ANTES de crear la venta. Solo el proceso que
-    // gana el flip open→closed procede; dos cobros simultáneos ya no pueden
-    // pasar ambos → se evita la doble venta y el doble descuento de stock.
+    /*
+     * Qué se cobra ahora. Sin `dto.lines` se cobra todo lo que falte, que es
+     * el cobro de siempre y también el último de una cuenta dividida.
+     */
+    const estado = order.lines.map((l) => ({
+      productId: l.productId.toString(),
+      qty: l.qty,
+      paidQty: l.paidQty ?? 0,
+    }));
+    let plan: PaymentPlan;
+    try {
+      plan = planPayment(estado, dto.lines);
+    } catch (err) {
+      throw new BadRequestException(
+        err instanceof Error ? err.message : 'Cobro inválido',
+      );
+    }
+
+    /*
+     * Guarda de concurrencia (Mongo standalone, sin transacciones): se "toma"
+     * lo que se va a cobrar de forma atómica ANTES de crear la venta.
+     *
+     * Con la cuenta entera bastaba el flip open→closed. Dividida no alcanza:
+     * dos meseros cobrando partes distintas de la misma mesa leerían las
+     * mismas cantidades pendientes y las cobrarían dos veces sin que la
+     * comanda se cerrara nunca. Por eso el update exige que `paymentSeq` siga
+     * siendo el que se leyó; el segundo pierde, se entera, y reintenta con los
+     * datos frescos.
+     */
+    const seq = order.paymentSeq ?? 0;
     const closedAt = new Date();
+    const cambios: Record<string, unknown> = { paymentSeq: seq + 1 };
+    plan.paidAfter.forEach((q, i) => {
+      cambios[`lines.${i}.paidQty`] = q;
+    });
+    if (plan.fullyPaid) {
+      cambios.status = 'closed';
+      cambios.closedAt = closedAt;
+    }
+
     const claimed = await this.orderModel
       .findOneAndUpdate(
-        { _id: order._id, status: 'open' },
-        { $set: { status: 'closed', closedAt } },
+        { _id: order._id, status: 'open', paymentSeq: seq },
+        { $set: cambios },
         { new: true },
       )
       .exec();
     if (!claimed) {
-      throw new ConflictException('La cuenta ya fue cobrada');
+      throw new ConflictException(
+        'Alguien más está cobrando esta cuenta: vuelve a abrirla para ver qué falta',
+      );
     }
 
     let sale: Awaited<ReturnType<SalesService['create']>>;
@@ -213,10 +264,7 @@ export class OrdersService {
       sale = await this.sales.create(
         {
           sedeId,
-          lines: order.lines.map((l) => ({
-            productId: l.productId.toString(),
-            qty: l.qty,
-          })),
+          lines: plan.lines,
           payment: dto.payment,
           discount: dto.discount,
           customer: dto.customer,
@@ -226,21 +274,33 @@ export class OrdersService {
         order._id as Types.ObjectId,
       );
     } catch (err) {
-      // La venta falló: liberamos la cuenta para que pueda reintentarse el cobro.
+      // La venta falló: se devuelve lo tomado para que el cobro se reintente.
+      // El `paymentSeq` NO se devuelve: sigue avanzando, porque lo único que
+      // tiene que garantizar es que nadie cobre con datos viejos.
+      const revertir: Record<string, unknown> = {};
+      order.lines.forEach((l, i) => {
+        revertir[`lines.${i}.paidQty`] = l.paidQty ?? 0;
+      });
+      revertir.status = 'open';
       await this.orderModel
         .updateOne(
           { _id: order._id },
-          { $set: { status: 'open' }, $unset: { closedAt: '' } },
+          { $set: revertir, $unset: { closedAt: '' } },
         )
         .exec();
       throw err;
     }
 
-    // Enlaza la venta a la cuenta ya cerrada.
+    // Enlaza la venta a la cuenta. `saleId` guarda la última porque ya lo leen
+    // las pantallas; `saleIds` las tiene todas, que es lo que importa cuando
+    // la cuenta se dividió entre cuatro.
     await this.orderModel
       .updateOne(
         { _id: order._id },
-        { $set: { saleId: sale._id as Types.ObjectId } },
+        {
+          $set: { saleId: sale._id as Types.ObjectId },
+          $push: { saleIds: sale._id as Types.ObjectId },
+        },
       )
       .exec();
     return sale;
