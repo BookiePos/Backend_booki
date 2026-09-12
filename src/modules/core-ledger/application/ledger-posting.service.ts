@@ -120,6 +120,77 @@ export class LedgerPostingService {
     await this.safeReverse('sale', saleId, userEmail);
   }
 
+  /**
+   * Devolución PARCIAL de una venta: el espejo de la venta, pero solo por lo
+   * que volvió.
+   *
+   * No se reversa el asiento de la venta porque esa venta sí ocurrió: el
+   * cliente se quedó con el resto. Se postea un asiento propio que baja el
+   * ingreso y el IVA por el monto devuelto, contra la cuenta por la que sale
+   * la plata.
+   *
+   * `credit_note` y `none` no sacan plata hoy —una queda a favor del cliente y
+   * la otra es un cambio por otro producto—, así que la contrapartida es
+   * Clientes: lo que el negocio le queda debiendo.
+   *
+   * El costo solo se deshace si la mercancía VOLVIÓ al inventario. Si se fue a
+   * merma, el inventario se perdió igual y el costo de venta se queda.
+   */
+  async postSaleReturn(input: {
+    returnId: string;
+    saleNumber: string;
+    date: string;
+    sedeId: string;
+    refundTotal: number;
+    tax: number;
+    cogs: number;
+    refundMethod: string;
+    userEmail?: string;
+  }): Promise<void> {
+    const total = Math.round(input.refundTotal);
+    if (total <= 0 && input.cogs <= 0) return;
+    const tax = Math.round(input.tax);
+    const income = total - tax;
+    const cogs = Math.round(input.cogs);
+
+    const contrapartida =
+      input.refundMethod === 'credit_note' || input.refundMethod === 'none'
+        ? ACC.CLIENTES
+        : this.funding(input.refundMethod);
+
+    const lines: PostLine[] = [];
+    if (total > 0) {
+      lines.push({ accountCode: contrapartida, credit: total, sedeId: input.sedeId });
+      if (income > 0) {
+        lines.push({
+          accountCode: ACC.INGRESOS_VENTAS,
+          debit: income,
+          sedeId: input.sedeId,
+        });
+      }
+      if (tax > 0) {
+        lines.push({
+          accountCode: ACC.IVA_POR_PAGAR,
+          debit: tax,
+          sedeId: input.sedeId,
+        });
+      }
+    }
+    if (cogs > 0) {
+      lines.push({ accountCode: ACC.INVENTARIO, debit: cogs, sedeId: input.sedeId });
+      lines.push({ accountCode: ACC.COSTO_VENTA, credit: cogs, sedeId: input.sedeId });
+    }
+
+    await this.safePost({
+      date: input.date,
+      sourceType: 'sale_return',
+      sourceId: input.returnId,
+      memo: `Devolución de la venta ${input.saleNumber}`,
+      lines,
+      userEmail: input.userEmail,
+    });
+  }
+
   // ── Gastos ──────────────────────────────────────────────────────────────────
 
   /**

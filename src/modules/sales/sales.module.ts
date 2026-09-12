@@ -1,6 +1,10 @@
 import { Module } from '@nestjs/common';
 import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import { Sale, SaleSchema } from './infrastructure/schemas/sale.schema';
+import {
+  SaleReturn,
+  SaleReturnSchema,
+} from './infrastructure/schemas/sale-return.schema';
 import { Order, OrderSchema } from './infrastructure/schemas/order.schema';
 import {
   Counter,
@@ -19,6 +23,7 @@ import {
   FinanceReceivableSchema,
 } from '../finance/infrastructure/schemas/finance-receivable.schema';
 import { SalesService } from './application/sales.service';
+import { SaleReturnsService } from './application/sale-returns.service';
 import { OrdersService } from './application/orders.service';
 import { SalesController } from './infrastructure/sales.controller';
 import { OrdersController } from './infrastructure/orders.controller';
@@ -29,6 +34,7 @@ import { DiscountsModule } from '../discounts/discounts.module';
 import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
 import { TreasuryModule } from '../finance/treasury/treasury.module';
 import { CustomersModule } from '../customers/customers.module';
+import { CajaModule } from '../caja/caja.module';
 import { PayrollModule } from '../payroll/payroll.module';
 import { CoreParamsModule } from '../core-params/core-params.module';
 import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
@@ -42,6 +48,8 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
     CoreLedgerModule,
     TreasuryModule,
     CustomersModule,
+    // La devolución parcial saca la plata por la caja del turno.
+    CajaModule,
     PayrollModule,
     CoreParamsModule,
     // Modelos referenciados por `populate`. Se registran aquí (mismo token que
@@ -51,6 +59,7 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
     // lo estaba, mongoose lanzaba MissingSchemaError (500).
     TenantMongooseModule.forFeature([
       { name: Sale.name, schema: SaleSchema },
+      { name: SaleReturn.name, schema: SaleReturnSchema },
       { name: Order.name, schema: OrderSchema },
       { name: Counter.name, schema: CounterSchema },
       { name: StockItem.name, schema: StockItemSchema },
@@ -60,7 +69,7 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
     ]),
   ],
   controllers: [SalesController, OrdersController],
-  providers: [SalesService, OrdersService],
-  exports: [SalesService, OrdersService],
+  providers: [SalesService, OrdersService, SaleReturnsService],
+  exports: [SalesService, OrdersService, SaleReturnsService],
 })
 export class SalesModule {}
