@@ -20,6 +20,42 @@ es decidir "esto ya es lo que va a usar el negocio".
 
 ---
 
+## 1.2.0 — 12 de septiembre de 2026
+
+Empaque y vendedor en la venta. Sin variables de entorno nuevas, sin
+migraciones y sin permisos nuevos: los campos nuevos nacen vacíos y las ventas
+que no los mandan quedan exactamente como antes.
+
+> **Este backend se despliega ANTES que el frontend 1.2.0.** El frontend nuevo
+> manda `seller` y `packaging`; con `forbidNonWhitelisted`, el backend viejo
+> rechazaría el cobro entero. Al revés no hay problema: el frontend viejo no
+> manda los campos nuevos.
+
+### Ventas
+
+- **Empaque que se descuenta solo.** `CatalogProduct.packaging` (misma forma
+  que `recipe`) dice qué gasta cada unidad vendida, tenga el producto receta o
+  no. Además, `CreateSaleDto.packaging` y `CheckoutOrderDto.packaging` llevan
+  el empaque extra anotado al cobrar. Todo entra al mismo `stock.sell`, así que
+  su costo suma al COGS de la venta.
+  - **Nunca tumba un cobro.** Se suma después del pre-chequeo de existencias y
+    se acota a lo que haya: sin bolsas registradas, la venta pasa y el
+    inventario queda en cero, no en negativo. La mercancía sí bloquea.
+  - **La devolución parcial no lo devuelve** —la bolsa ya se usó—, porque arma
+    lo que vuelve con `componentsOf`, que no incluye empaque. La anulación sí
+    lo devuelve: revierte `components` completo, como si la venta no hubiera
+    existido.
+  - `CatalogService.packagingOf` va aparte de `componentsOf` a propósito.
+- **Vendedor.** `Sale.seller` (`{ employeeId?, name }`), opcional en la venta
+  directa y en el cobro de una cuenta. Se copia el nombre porque el empleado
+  puede irse o cambiar en la ficha. Sin vendedor, la venta queda a nombre de
+  `cashierName`, como siempre.
+
+732 pruebas pasan (13 nuevas: `sales.service.empaque.spec.ts` y
+`sales.service.seller.spec.ts`).
+
+---
+
 ## 1.1.0 — 12 de septiembre de 2026
 
 Los siete huecos de producto de la hoja de ruta, más tres pendientes que
