@@ -108,6 +108,32 @@ export class SaleCustomerDto {
   email?: string;
 }
 
+/**
+ * Quién vendió. No siempre es quien cobra: en el mostrador uno atiende y otro
+ * pasa la venta por la caja, y lo que se quiere saber es cuánto vendió cada uno.
+ */
+export class SaleSellerDto {
+  /** Empleado de nómina, si lo es. Sin él, el vendedor es solo un nombre. */
+  @IsOptional()
+  @IsMongoId()
+  employeeId?: string;
+
+  @IsString()
+  @MaxLength(120)
+  name!: string;
+}
+
+/** Empaque gastado en un cobro, anotado a mano por quien cobra. */
+export class SalePackagingDto {
+  /** Ítem de INVENTARIO (la bolsa), no un producto vendible. */
+  @IsMongoId()
+  productId!: string;
+
+  @IsNumber()
+  @IsPositive()
+  qty!: number;
+}
+
 /** A dónde se lleva el pedido. */
 export class SaleDeliveryDto {
   @IsOptional()
@@ -192,6 +218,20 @@ export class CreateSaleDto {
   orderType?: OrderType;
 
   /**
+   * Empaque gastado en ESTE cobro, además del que cada producto ya descuenta
+   * por su cuenta: la bolsa grande porque el cliente se llevó todo junto, la
+   * cuchara de más que pidió.
+   *
+   * No se le cobra al cliente —no suma al total— pero sí sale del inventario y
+   * entra al costo de la venta.
+   */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SalePackagingDto)
+  packaging?: SalePackagingDto[];
+
+  /**
    * A dónde se lleva. Solo se tiene en cuenta con `orderType: 'domicilio'`.
    *
    * La TARIFA no viaja desde el navegador cuando hay zona: se manda el id de la
@@ -220,4 +260,10 @@ export class CreateSaleDto {
   @IsOptional()
   @IsMongoId()
   customerId?: string;
+
+  /** Quién vendió. Sin este campo, el vendedor es quien cobra. */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SaleSellerDto)
+  seller?: SaleSellerDto;
 }

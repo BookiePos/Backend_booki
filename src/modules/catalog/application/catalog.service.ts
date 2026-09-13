@@ -82,6 +82,7 @@ export class CatalogService {
       .populate({ path: 'categoryId', select: 'name', model: this.categoryModel })
       .populate({ path: 'inventoryProductId', select: PRODUCT_POPULATE, model: this.productModel })
       .populate({ path: 'recipe.productId', select: PRODUCT_POPULATE, model: this.productModel })
+      .populate({ path: 'packaging.productId', select: PRODUCT_POPULATE, model: this.productModel })
       .sort({ name: 1 })
       .exec();
   }
@@ -93,6 +94,7 @@ export class CatalogService {
           .populate({ path: 'categoryId', select: 'name', model: this.categoryModel })
           .populate({ path: 'inventoryProductId', select: PRODUCT_POPULATE, model: this.productModel })
           .populate({ path: 'recipe.productId', select: PRODUCT_POPULATE, model: this.productModel })
+          .populate({ path: 'packaging.productId', select: PRODUCT_POPULATE, model: this.productModel })
           .exec()
       : null;
     if (!doc) throw new NotFoundException('Producto no encontrado');
@@ -133,6 +135,7 @@ export class CatalogService {
       ivaRate: dto.ivaRate ?? 19,
       ivaType: dto.ivaType ?? 'gravado',
       active: dto.active ?? true,
+      packaging: await this.resolvePackaging(dto.packaging),
       ...sourceFields,
     });
     return this.getOrFail(created.id);
@@ -152,6 +155,10 @@ export class CatalogService {
     if (dto.ivaRate !== undefined) product.ivaRate = dto.ivaRate;
     if (dto.ivaType !== undefined) product.ivaType = dto.ivaType;
     if (dto.active !== undefined) product.active = dto.active;
+    // El empaque es independiente de la fuente: una lista vacía lo quita.
+    if (dto.packaging !== undefined) {
+      product.packaging = await this.resolvePackaging(dto.packaging);
+    }
 
     if (dto.categoryId !== undefined) {
       if (dto.categoryId === '') {
@@ -369,6 +376,29 @@ export class CatalogService {
   }
 
   /**
+   * Empaque que gasta vender `qty` unidades: la bolsa, el vaso, la cuchara.
+   *
+   * Va SEPARADO de `componentsOf` y no mezclado dentro, por dos razones que
+   * conviene no revolver:
+   *
+   * 1. La mercancía puede bloquear una venta por falta de stock; el empaque no.
+   *    Si el sistema cree que no hay bolsas, casi seguro sí las hay y alguien no
+   *    registró la compra — tumbar la caja por eso sería peor que el descuadre.
+   * 2. Al devolver parte de una venta se devuelve la mercancía, no el empaque:
+   *    la bolsa ya se usó. Como la devolución arma lo que vuelve con
+   *    `componentsOf`, dejar el empaque fuera resuelve eso solo.
+   */
+  packagingOf(
+    product: CatalogProductDocument,
+    qty = 1,
+  ): { productId: string; qty: number }[] {
+    return (product.packaging ?? []).map((line) => ({
+      productId: refId(line.productId),
+      qty: line.qty * qty,
+    }));
+  }
+
+  /**
    * Código de barras del ítem de inventario vinculado (solo productos de fuente
    * inventario y solo si `inventoryProductId` viene poblado, p. ej. desde
    * `listSellable`). Lo usa el POS para escanear. Las recetas no tienen barcode.
@@ -482,6 +512,25 @@ export class CatalogService {
       await this.loadInventoryItemOrFail(line.productId.toString());
     }
     return { sourceType, qtyPerUnit: undefined, recipe: lines };
+  }
+
+  /**
+   * Valida y normaliza el empaque que se gasta al vender una unidad.
+   *
+   * No pasa por `resolveSource` porque no es una fuente: un producto puede
+   * venir del inventario o de una receta y, además, gastar una bolsa. Son dos
+   * preguntas distintas —de qué está hecho y en qué se entrega— y mezclarlas
+   * fue lo que dejó sin empaque a todo lo que se compra ya hecho.
+   */
+  private async resolvePackaging(
+    packaging: RecipeLineDto[] | undefined,
+  ): Promise<{ productId: Types.ObjectId; qty: number }[]> {
+    if (!packaging || packaging.length === 0) return [];
+    const lines = this.mergeRecipe(packaging);
+    for (const line of lines) {
+      await this.loadInventoryItemOrFail(line.productId.toString());
+    }
+    return lines;
   }
 
   /** Suma cantidades de ingredientes repetidos para no dejar líneas dobles. */

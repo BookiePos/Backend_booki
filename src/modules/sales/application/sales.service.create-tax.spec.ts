@@ -146,6 +146,8 @@ describe('SalesService.create (IVA incluido + prorrateo de descuento)', () => {
       loadSellableOrFail: vi
         .fn()
         .mockImplementation((id: string) => Promise.resolve(catalogDb[id])),
+      // Ningún producto de esta prueba gasta empaque.
+      packagingOf: vi.fn(() => []),
       componentsOf: vi.fn().mockImplementation((product: any, qty: number) => [
         { productId: product.inventoryProductId.toString(), qty: qty },
       ]),

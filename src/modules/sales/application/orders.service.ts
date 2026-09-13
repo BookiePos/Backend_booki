@@ -269,6 +269,8 @@ export class OrdersService {
           discount: dto.discount,
           customer: dto.customer,
           tip: dto.tip,
+          packaging: dto.packaging,
+          seller: dto.seller,
         },
         user,
         order._id as Types.ObjectId,
