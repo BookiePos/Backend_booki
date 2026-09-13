@@ -118,6 +118,8 @@ describe('SalesService.create · lista de precios', () => {
     };
     const catalog = {
       loadSellableOrFail: vi.fn((id: string) => Promise.resolve(catalogDb[id])),
+      // Ningún producto de esta prueba gasta empaque.
+      packagingOf: vi.fn(() => []),
       componentsOf: vi.fn((product: any, qty: number) => [
         { productId: product.inventoryProductId.toString(), qty },
       ]),

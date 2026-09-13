@@ -165,6 +165,22 @@ class SaleCustomer {
 const SaleCustomerSchema = SchemaFactory.createForClass(SaleCustomer);
 
 /**
+ * Quién vendió, copiado al momento de la venta.
+ *
+ * Se guarda el nombre y no solo el id porque el empleado se puede ir o cambiar
+ * de nombre en la ficha, y la venta tiene que seguir diciendo quién la hizo.
+ */
+@Schema({ _id: false })
+class SaleSeller {
+  @Prop({ type: Types.ObjectId, ref: 'Employee' })
+  employeeId?: Types.ObjectId;
+
+  @Prop({ required: true, trim: true })
+  name!: string;
+}
+const SaleSellerSchema = SchemaFactory.createForClass(SaleSeller);
+
+/**
  * Entrega a domicilio: a dónde va el pedido y cuánto costó llevarlo.
  *
  * El nombre de la zona y la tarifa se copian a propósito. La zona se puede
@@ -234,6 +250,13 @@ export class Sale {
   /** Nombre del cajero al momento de la venta (encabezado de factura). */
   @Prop({ trim: true })
   cashierName?: string;
+
+  /**
+   * Quién vendió, si no fue quien cobró. Vacío en las ventas viejas y cuando
+   * el mismo cajero atendió: en ese caso el vendedor es `cashierName`.
+   */
+  @Prop({ type: SaleSellerSchema })
+  seller?: SaleSeller;
 
   @Prop({ required: true, enum: SALE_STATUSES, default: 'completed' })
   status!: SaleStatus;

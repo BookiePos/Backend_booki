@@ -74,6 +74,16 @@ export class UpdateCatalogProductDto {
   @Type(() => RecipeLineDto)
   recipe?: RecipeLineDto[];
 
+  /**
+   * Empaque que se gasta al vender una unidad. Una lista vacía lo quita; no
+   * mandar el campo lo deja como estaba.
+   */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RecipeLineDto)
+  packaging?: RecipeLineDto[];
+
   @IsOptional()
   @IsBoolean()
   active?: boolean;

@@ -74,6 +74,16 @@ export class CreateCatalogProductDto {
   @Type(() => RecipeLineDto)
   recipe?: RecipeLineDto[];
 
+  /**
+   * Empaque que se gasta al vender una unidad: la bolsa, el vaso, la cuchara.
+   * Aplica a cualquier producto, tenga receta o no.
+   */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RecipeLineDto)
+  packaging?: RecipeLineDto[];
+
   @IsOptional()
   @IsBoolean()
   active?: boolean;

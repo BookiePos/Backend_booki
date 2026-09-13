@@ -75,6 +75,20 @@ export class CatalogProduct {
   recipe!: RecipeLine[];
 
   /**
+   * Empaque que se gasta al vender una unidad: la bolsa, el vaso, la cuchara.
+   *
+   * Va aparte de la receta y de la fuente a propósito, y sirve para los DOS
+   * tipos de producto. La galleta que se compra hecha y se revende no tiene
+   * receta donde meter la bolsa, y sin esto su empaque solo bajaba cuando
+   * alguien se acordaba de hacer un ajuste a mano.
+   *
+   * También mantiene separadas dos cosas que se leen distinto: la receta dice
+   * de qué está hecho el producto, el empaque dice en qué se entrega.
+   */
+  @Prop({ type: [RecipeLineSchema], default: [] })
+  packaging!: RecipeLine[];
+
+  /**
    * URL pública de la foto del producto (Vercel Blob). La usa el POS para
    * mostrar la rejilla con imagen y el panel para la ficha.
    */
