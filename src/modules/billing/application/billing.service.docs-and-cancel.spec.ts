@@ -351,18 +351,21 @@ describe('BillingService · documentos, estado y cancelación', () => {
       expect(cfg.configured).toBe(false);
       expect(cfg.publicKey).toBe('');
       expect(cfg.acceptanceToken).toBe('');
+      expect(cfg.personalDataAuthToken).toBe('');
       // Los precios sí se publican: la página de planes debe poder mostrarlos
       // aunque todavía no se pueda cobrar.
       expect(cfg.pricing).toHaveLength(4);
     });
 
-    it('configurada entrega la llave pública y la aceptación vigente', async () => {
+    it('configurada entrega la llave pública y las dos aceptaciones vigentes', async () => {
       build(suscripcion());
       wompi.publicKey = 'pub_test_123';
       wompi.environment = 'sandbox';
       wompi.getAcceptance = vi.fn().mockResolvedValue({
         acceptanceToken: 'acc_1',
         permalink: 'https://wompi/tyc',
+        personalDataAuthToken: 'pda_1',
+        personalDataPermalink: 'https://wompi/datos',
       });
 
       const cfg = await service.config();
@@ -372,6 +375,8 @@ describe('BillingService · documentos, estado y cancelación', () => {
         environment: 'sandbox',
         acceptanceToken: 'acc_1',
         permalink: 'https://wompi/tyc',
+        personalDataAuthToken: 'pda_1',
+        personalDataPermalink: 'https://wompi/datos',
         configured: true,
       });
     });
@@ -382,7 +387,12 @@ describe('BillingService · documentos, estado y cancelación', () => {
       wompi.environment = 'sandbox';
       wompi.getAcceptance = vi
         .fn()
-        .mockResolvedValue({ acceptanceToken: 'acc_1', permalink: 'x' });
+        .mockResolvedValue({
+          acceptanceToken: 'acc_1',
+          permalink: 'x',
+          personalDataAuthToken: 'pda_1',
+          personalDataPermalink: 'y',
+        });
 
       const cfg = await service.config();
 
@@ -393,6 +403,8 @@ describe('BillingService · documentos, estado y cancelación', () => {
         'environment',
         'acceptanceToken',
         'permalink',
+        'personalDataAuthToken',
+        'personalDataPermalink',
         'configured',
         'pricing',
       ]);

@@ -102,6 +102,8 @@ export class BillingService {
     environment: string;
     acceptanceToken: string;
     permalink: string;
+    personalDataAuthToken: string;
+    personalDataPermalink: string;
     configured: boolean;
     pricing: ReturnType<BillingService['priceList']>;
   }> {
@@ -112,6 +114,8 @@ export class BillingService {
         environment: this.wompi.environment,
         acceptanceToken: '',
         permalink: '',
+        personalDataAuthToken: '',
+        personalDataPermalink: '',
         configured: false,
         pricing,
       };
@@ -122,6 +126,8 @@ export class BillingService {
       environment: this.wompi.environment,
       acceptanceToken: acc.acceptanceToken,
       permalink: acc.permalink,
+      personalDataAuthToken: acc.personalDataAuthToken,
+      personalDataPermalink: acc.personalDataPermalink,
       configured: true,
       pricing,
     };
@@ -149,6 +155,7 @@ export class BillingService {
       token: dto.cardToken,
       customerEmail: email,
       acceptanceToken: dto.acceptanceToken,
+      acceptPersonalAuth: dto.acceptPersonalAuth,
     });
 
     const amountInCents = this.recurringAmountCents(plan, cycle, addOns);
