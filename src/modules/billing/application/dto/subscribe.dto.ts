@@ -34,8 +34,9 @@ export class SubscribeAddOnsDto {
 }
 
 /**
- * Alta o cambio de suscripción. El frontend tokeniza la tarjeta con la llave
- * pública (Wompi) y envía aquí el `cardToken` + `acceptanceToken`.
+ * Alta o cambio de suscripción. El frontend captura la tarjeta con el widget
+ * oficial de Wompi (modo `tokenize`) y envía aquí el `cardToken` junto con los
+ * tokens de aceptación que el dueño aceptó.
  */
 export class SubscribeDto {
   @IsIn(BUSINESS_PLANS as readonly string[])
@@ -52,6 +53,16 @@ export class SubscribeDto {
   @IsString()
   @MinLength(3)
   acceptanceToken!: string;
+
+  /**
+   * Autorización de tratamiento de datos personales. Opcional para no romper
+   * un frontend desplegado antes que este backend: con `forbidNonWhitelisted`
+   * el orden de despliegue no puede tumbar el cobro.
+   */
+  @IsOptional()
+  @IsString()
+  @MinLength(3)
+  acceptPersonalAuth?: string;
 
   @IsOptional()
   @IsEmail()

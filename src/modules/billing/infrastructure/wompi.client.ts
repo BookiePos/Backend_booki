@@ -72,8 +72,18 @@ export class WompiClient {
     return (json.data ?? {}) as Record<string, unknown>;
   }
 
-  /** Acceptance token vigente del comercio (el usuario debe aceptar los T&C). */
-  async getAcceptance(): Promise<{ acceptanceToken: string; permalink: string }> {
+  /**
+   * Tokens de aceptación vigentes del comercio. Wompi pide DOS al crear una
+   * fuente de pago: los términos y condiciones (`presigned_acceptance`) y la
+   * autorización de tratamiento de datos personales
+   * (`presigned_personal_data_auth`). El usuario debe aceptar ambos.
+   */
+  async getAcceptance(): Promise<{
+    acceptanceToken: string;
+    permalink: string;
+    personalDataAuthToken: string;
+    personalDataPermalink: string;
+  }> {
     const json = await this.request(`/merchants/${this.cfg.publicKey}`, {
       method: 'GET',
     });
@@ -82,9 +92,15 @@ export class WompiClient {
       string,
       unknown
     >;
+    const personal = (merchant.presigned_personal_data_auth ?? {}) as Record<
+      string,
+      unknown
+    >;
     return {
       acceptanceToken: String(presigned.acceptance_token ?? ''),
       permalink: String(presigned.permalink ?? ''),
+      personalDataAuthToken: String(personal.acceptance_token ?? ''),
+      personalDataPermalink: String(personal.permalink ?? ''),
     };
   }
 
@@ -115,6 +131,7 @@ export class WompiClient {
     token: string;
     customerEmail: string;
     acceptanceToken: string;
+    acceptPersonalAuth?: string;
   }): Promise<number> {
     const json = await this.request('/payment_sources', {
       method: 'POST',
@@ -127,6 +144,11 @@ export class WompiClient {
         token: input.token,
         customer_email: input.customerEmail,
         acceptance_token: input.acceptanceToken,
+        // Solo si el cliente la envió: un front anterior no la trae y mandar
+        // el campo vacío haría que Wompi rechazara la fuente por formato.
+        ...(input.acceptPersonalAuth
+          ? { accept_personal_auth: input.acceptPersonalAuth }
+          : {}),
       }),
     });
     return Number(this.data(json).id);

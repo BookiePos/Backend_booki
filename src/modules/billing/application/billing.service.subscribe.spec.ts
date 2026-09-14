@@ -144,7 +144,19 @@ describe('BillingService.subscribe', () => {
         token: 'tok_test_abc',
         customerEmail: 'duena@negocio.com',
         acceptanceToken: 'acc_test_abc',
+        acceptPersonalAuth: undefined,
       });
+    });
+
+    it('pasa a Wompi la autorización de datos personales que aceptó el dueño', async () => {
+      await service.subscribe(BIZ, {
+        ...alta,
+        acceptPersonalAuth: 'pda_test_abc',
+      } as never);
+
+      expect(wompi.createPaymentSource).toHaveBeenCalledWith(
+        expect.objectContaining({ acceptPersonalAuth: 'pda_test_abc' }),
+      );
     });
 
     it('guarda la fuente de pago para poder cobrar las renovaciones solo', async () => {
