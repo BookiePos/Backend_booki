@@ -150,31 +150,11 @@ export class InvoiceScanService {
     try {
       // Con texto del PDF no se usa visión: los caracteres ya son exactos y
       // reconocerlos otra vez solo puede introducir errores en los precios.
-      let result = page.text
+      const result = page.text
         ? await this.extractor.extractText(page.text)
         : await this.extractor.extract(
             ...(await this.downloadArgs(page.imageUrl)),
           );
-      let via = page.text ? 'del texto del PDF' : 'por OCR';
-
-      // Pero hay PDFs cuya capa de texto solo trae el pie —los de la "Solución
-      // Gratuita" de la DIAN, por ejemplo—: leídos así, quedan sin proveedor ni
-      // renglones aunque la página los muestre. Sin renglones se lee la imagen.
-      // Si esa segunda lectura falla, se conserva lo que dio el texto.
-      if (page.text && result.parsed.lines.length === 0) {
-        try {
-          const fromImage = await this.extractor.extract(
-            ...(await this.downloadArgs(page.imageUrl)),
-          );
-          if (fromImage.parsed.lines.length > 0) {
-            result = { ...fromImage, ms: result.ms + fromImage.ms };
-            via = 'por OCR (el texto del PDF no traía renglones)';
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          this.logger.warn(`Falló la lectura de respaldo por imagen: ${message}`);
-        }
-      }
 
       page.raw = result.raw;
       page.model = result.model;
@@ -187,7 +167,7 @@ export class InvoiceScanService {
         scan,
         user,
         'extracted',
-        `Leída ${via} con ${result.model} en ${result.ms} ms`,
+        `Leída ${page.text ? 'del texto del PDF' : 'por OCR'} con ${result.model} en ${result.ms} ms`,
       );
       await scan.save();
     } catch (err) {
