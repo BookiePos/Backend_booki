@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 
 // SWC emite `Object` como metadata para los @Prop() con uniones de literales y
 // @nestjs/mongoose revienta al importar los esquemas (aquí llega el de Business
@@ -96,5 +96,61 @@ describe('TenantMiddleware', () => {
 
     expect(next).toHaveBeenCalledWith();
     expect(jwt.verify).not.toHaveBeenCalled();
+  });
+
+  describe('empresa con el trial vencido', () => {
+    /**
+     * Así llega la petición en la app real: Nest monta el middleware con
+     * `forRoutes('*')` y Express recorta la ruta, dejando `path` en "/" y la
+     * ruta completa solo en `originalUrl`. Simular `path: '/billing/...'`
+     * escondía el error que dejaba al dueño sin poder pagar.
+     */
+    function montada(url: string) {
+      return {
+        headers: { authorization: 'Bearer token-bueno' },
+        path: '/',
+        url: '/',
+        originalUrl: url,
+      } as never;
+    }
+
+    beforeEach(() => {
+      jwt.verify.mockReturnValue({ biz: BUSINESS_ID, biztype: 'retail' });
+      businesses.findById.mockResolvedValue({
+        status: 'trial',
+        trialEndsAt: new Date(Date.now() - 86_400_000),
+        plan: 'negocio',
+      });
+    });
+
+    it('deja entrar a facturación, que es donde paga para reactivarse', async () => {
+      let seen: string | undefined;
+      next.mockImplementation(() => {
+        seen = TenantContext.current()?.businessId;
+      });
+
+      middleware.use(montada('/billing/config?t=1'), {} as never, next);
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(next).toHaveBeenCalledOnce();
+      expect(next.mock.calls[0][0]).toBeUndefined();
+      expect(seen).toBe(BUSINESS_ID);
+    });
+
+    it('bloquea el resto con ACCOUNT_SUSPENDED, incluidas rutas que solo se parecen', async () => {
+      for (const url of ['/sales/orders', '/billingx']) {
+        next.mockClear();
+
+        middleware.use(montada(url), {} as never, next);
+        await new Promise((r) => setTimeout(r, 0));
+
+        const error = next.mock.calls[0][0];
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(error.getResponse()).toMatchObject({
+          code: 'ACCOUNT_SUSPENDED',
+          reason: 'trial_expired',
+        });
+      }
+    });
   });
 });

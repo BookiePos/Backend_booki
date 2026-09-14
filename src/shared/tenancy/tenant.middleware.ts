@@ -25,6 +25,12 @@ interface AccessClaims {
 /** Motivo por el que una empresa no puede operar. */
 type BlockReason = 'suspended' | 'trial_expired';
 
+/** `/billing` o `/billing/...` (con o sin query), sin confundirlo con `/billingx`. */
+function isBillingRoute(url: string | undefined): boolean {
+  const pathname = (url ?? '').split('?')[0] ?? '';
+  return /^\/billing(\/|$)/.test(pathname);
+}
+
 /** Estado + plan cacheados de una empresa (para no consultar por request). */
 interface BusinessGate {
   /** `true` si la empresa puede operar; `false` si suspendida o trial vencido. */
@@ -92,7 +98,12 @@ export class TenantMiddleware implements NestMiddleware {
             // Excepción: las rutas de facturación siguen abiertas aunque la
             // empresa esté suspendida o con el trial vencido — es justo donde
             // el dueño paga para reactivarse. El resto se bloquea.
-            const billingBypass = (req.path ?? '').startsWith('/billing');
+            // Se mira `originalUrl`, no `path`: Nest monta este middleware con
+            // `forRoutes('*')` y Express le recorta la ruta montada, así que
+            // aquí `req.path` llega siempre como "/". Con `path` la excepción
+            // nunca aplicaba: /billing/config y /billing/status respondían 403 y
+            // quien tenía el trial vencido no podía ni abrir la página de pago.
+            const billingBypass = isBillingRoute(req.originalUrl ?? req.url);
             if (!gate.allowed && !billingBypass) {
               const trialExpired = gate.reason === 'trial_expired';
               // Cuerpo con discriminador `code` para que el frontend distinga
