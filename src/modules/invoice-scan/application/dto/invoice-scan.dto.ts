@@ -65,6 +65,16 @@ export class NewProductDto {
   @IsOptional()
   @IsIn(ITEM_TYPES as readonly string[])
   itemType?: ItemType;
+
+  /** No se vende en el POS: no hace falta precio de venta. */
+  @IsOptional()
+  @IsBoolean()
+  notSold?: boolean;
+
+  /** La persona confirmó contra la factura los datos prellenados. */
+  @IsOptional()
+  @IsBoolean()
+  reviewed?: boolean;
 }
 
 /** Qué hacer con un renglón al aplicar la factura. */
