@@ -183,11 +183,30 @@ export class GlmExtractorService implements InvoiceExtractor {
 }
 
 /**
+ * Claves de la respuesta que son metadatos, no texto de la factura.
+ *
+ * `id` y `request_id` son cadenas de 30 caracteres: pasaban el filtro de
+ * "cadena larga" y, como en la respuesta de GLM-OCR van ANTES que
+ * `md_results`, el segundo paso recibía el id de la petición en vez de la
+ * factura. Resultado: cada foto se leía como `{}`.
+ */
+const METADATA_KEYS = new Set([
+  'id',
+  'request_id',
+  'model',
+  'created',
+  'object',
+  'usage',
+  'layout_visualization',
+]);
+
+/**
  * Junta el texto que venga en la respuesta del OCR, mire donde mire.
  *
- * La forma exacta (`content`, `text`, `markdown`, por página o entera) depende
- * de la versión de la API; recolectar todas las cadenas largas es más robusto
- * que acertar la ruta y romperse en la siguiente versión.
+ * La forma exacta (`md_results`, `content`, `text`, por página o entera)
+ * depende de la versión de la API; recolectar las cadenas largas es más
+ * robusto que acertar la ruta y romperse en la siguiente versión. Pero primero
+ * se buscan las claves que sí son el documento y se saltan los metadatos.
  */
 function collectText(value: unknown, depth = 0): string {
   if (depth > 8 || value === null || value === undefined) return '';
@@ -200,8 +219,18 @@ function collectText(value: unknown, depth = 0): string {
   }
   if (typeof value === 'object') {
     const record = value as Record<string, unknown>;
-    const preferred = ['content', 'text', 'markdown', 'md', 'result', 'data'];
-    const keys = Object.keys(record).sort((a, b) => {
+    const preferred = [
+      'md_results',
+      'content',
+      'text',
+      'markdown',
+      'md',
+      'result',
+      'data',
+    ];
+    const keys = Object.keys(record)
+      .filter((key) => !METADATA_KEYS.has(key.toLowerCase()))
+      .sort((a, b) => {
       const ia = preferred.indexOf(a.toLowerCase());
       const ib = preferred.indexOf(b.toLowerCase());
       return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);

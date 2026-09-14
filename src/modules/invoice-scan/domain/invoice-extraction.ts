@@ -66,6 +66,24 @@ export function emptyInvoice(): ExtractedInvoice {
   return { supplier: {}, invoice: {}, lines: [], totals: {} };
 }
 
+/**
+ * El borrador guardado, con la forma completa garantizada.
+ *
+ * Mongoose borra los objetos vacíos al guardar (`minimize`): un borrador donde
+ * el modelo no leyó proveedor vuelve de la base SIN `supplier`, y
+ * `draft.supplier.name` tumbaba la API con un 500 en vez de pedir el
+ * proveedor. Todo lo que lea `scan.draft` tiene que pasar por aquí.
+ */
+export function normalizeDraft(raw: unknown): ExtractedInvoice {
+  const draft = (raw && typeof raw === 'object' ? raw : {}) as Partial<ExtractedInvoice>;
+  return {
+    supplier: draft.supplier ?? {},
+    invoice: draft.invoice ?? {},
+    lines: Array.isArray(draft.lines) ? draft.lines : [],
+    totals: draft.totals ?? {},
+  };
+}
+
 // ─── Números ────────────────────────────────────────────────────────────────
 
 /**

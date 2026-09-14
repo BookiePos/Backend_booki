@@ -33,7 +33,7 @@ import {
 import {
   ExtractedInvoice,
   ExtractedLine,
-  emptyInvoice,
+  normalizeDraft,
 } from '../domain/invoice-extraction';
 import { qtyFitsPurchaseLine } from '../domain/line-classification';
 import { INVOICE_EXTRACTOR, InvoiceExtractor } from './invoice-extractor';
@@ -150,11 +150,31 @@ export class InvoiceScanService {
     try {
       // Con texto del PDF no se usa visión: los caracteres ya son exactos y
       // reconocerlos otra vez solo puede introducir errores en los precios.
-      const result = page.text
+      let result = page.text
         ? await this.extractor.extractText(page.text)
         : await this.extractor.extract(
             ...(await this.downloadArgs(page.imageUrl)),
           );
+      let via = page.text ? 'del texto del PDF' : 'por OCR';
+
+      // Pero hay PDFs cuya capa de texto solo trae el pie —los de la "Solución
+      // Gratuita" de la DIAN, por ejemplo—: leídos así, quedan sin proveedor ni
+      // renglones aunque la página los muestre. Sin renglones se lee la imagen.
+      // Si esa segunda lectura falla, se conserva lo que dio el texto.
+      if (page.text && result.parsed.lines.length === 0) {
+        try {
+          const fromImage = await this.extractor.extract(
+            ...(await this.downloadArgs(page.imageUrl)),
+          );
+          if (fromImage.parsed.lines.length > 0) {
+            result = { ...fromImage, ms: result.ms + fromImage.ms };
+            via = 'por OCR (el texto del PDF no traía renglones)';
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.logger.warn(`Falló la lectura de respaldo por imagen: ${message}`);
+        }
+      }
 
       page.raw = result.raw;
       page.model = result.model;
@@ -167,7 +187,7 @@ export class InvoiceScanService {
         scan,
         user,
         'extracted',
-        `Leída ${page.text ? 'del texto del PDF' : 'por OCR'} con ${result.model} en ${result.ms} ms`,
+        `Leída ${via} con ${result.model} en ${result.ms} ms`,
       );
       await scan.save();
     } catch (err) {
@@ -261,8 +281,8 @@ export class InvoiceScanService {
     source: InvoiceScanDocument,
     user: JwtUser,
   ): Promise<InvoiceScanDocument> {
-    const targetDraft = (target.draft as ExtractedInvoice) ?? emptyInvoice();
-    const sourceDraft = (source.draft as ExtractedInvoice) ?? emptyInvoice();
+    const targetDraft = normalizeDraft(target.draft);
+    const sourceDraft = normalizeDraft(source.draft);
 
     target.pages.push(...source.pages);
     // Las líneas se concatenan; la cabecera y los totales se quedan con los de
@@ -410,7 +430,7 @@ export class InvoiceScanService {
     const scan = await this.getOrFail(id);
     if (scan.status === 'applied') return scan;
 
-    const draft = (scan.draft as ExtractedInvoice) ?? emptyInvoice();
+    const draft = normalizeDraft(scan.draft);
     const plan = this.planApplication(scan, draft);
 
     // 1. Proveedor.
@@ -554,7 +574,7 @@ export class InvoiceScanService {
   ): Promise<InvoiceScanDocument> {
     const scan = await this.getOrFail(id);
     if (scan.status === 'applied') return scan;
-    const draft = (scan.draft as ExtractedInvoice) ?? emptyInvoice();
+    const draft = normalizeDraft(scan.draft);
 
     const amount = cop(dto.amount);
     const taxAmount = cop(dto.taxAmount ?? 0);
