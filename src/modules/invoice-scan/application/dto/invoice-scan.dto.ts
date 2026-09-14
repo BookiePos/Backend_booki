@@ -15,6 +15,10 @@ import {
 } from 'class-validator';
 import { LINE_TARGETS, LineTarget } from '../../domain/invoice-scan.constants';
 
+/** Cómo se emparejó un renglón; mismos valores que `LineDecision.matchedBy`. */
+export const MATCHED_BY = ['alias', 'barcode', 'sku', 'name', 'manual', 'none'] as const;
+export type MatchedBy = (typeof MATCHED_BY)[number];
+
 /** Datos con los que crear un producto que no existe en el inventario. */
 export class NewProductDto {
   @IsOptional()
@@ -91,6 +95,16 @@ export class LineDecisionDto {
   @ValidateNested()
   @Type(() => NewProductDto)
   newProduct?: NewProductDto;
+
+  /**
+   * Cómo se emparejó la línea. La API lo devuelve en cada decisión y la
+   * pantalla de revisión reenvía las decisiones tal cual al guardar: sin
+   * declararlo aquí, `forbidNonWhitelisted` rechazaba con 400 el guardado —y
+   * con él el botón "Aplicar", que guarda antes de aplicar—.
+   */
+  @IsOptional()
+  @IsIn(MATCHED_BY as readonly string[])
+  matchedBy?: MatchedBy;
 }
 
 export class UpdateInvoiceScanDto {
