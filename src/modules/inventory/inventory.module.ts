@@ -23,6 +23,7 @@ import {
 } from './infrastructure/schemas/stock-movement.schema';
 import { ProductsService } from './application/products.service';
 import { StockService } from './application/stock.service';
+import { ProductMergeService } from './application/product-merge.service';
 import { InventoryController } from './infrastructure/inventory.controller';
 import { SedesModule } from '../sedes/sedes.module';
 import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
@@ -49,7 +50,7 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
     ]),
   ],
   controllers: [InventoryController],
-  providers: [ProductsService, StockService],
+  providers: [ProductsService, StockService, ProductMergeService],
   exports: [ProductsService, StockService],
 })
 export class InventoryModule {}

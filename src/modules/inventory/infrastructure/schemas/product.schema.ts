@@ -90,6 +90,16 @@ export class Product {
   @Prop({ default: true })
   active!: boolean;
 
+  /**
+   * Producto en el que se fusionó este duplicado. No se borra: sus ventas y
+   * compras pasadas siguen apuntándole, y así se sabe a dónde fue a parar.
+   */
+  @Prop({ type: Types.ObjectId, ref: 'Product' })
+  mergedInto?: Types.ObjectId;
+
+  @Prop()
+  mergedAt?: Date;
+
   // ─── Variantes (retail) ──────────────────────────────────────────────────
   // Cada variante (talla/color…) es su propia fila Product con SKU, barcode,
   // precio y stock propios, agrupada bajo un producto "padre" plantilla. Así se

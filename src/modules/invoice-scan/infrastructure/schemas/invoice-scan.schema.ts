@@ -76,6 +76,14 @@ export class NewProductDraft {
 
   @Prop({ min: 0 })
   minStock?: number;
+
+  /**
+   * Producto (se compra y se guarda) o Montaje (se arma con otros y lleva
+   * lotes). De una foto no se puede saber: lo elige la persona antes de
+   * aplicar, porque decide cómo lo trata el inventario desde el primer día.
+   */
+  @Prop({ type: String })
+  itemType?: 'ingredient' | 'product' | 'assembly';
 }
 export const NewProductDraftSchema =
   SchemaFactory.createForClass(NewProductDraft);

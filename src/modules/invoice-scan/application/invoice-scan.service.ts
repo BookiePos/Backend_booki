@@ -440,6 +440,7 @@ export class InvoiceScanService {
         salePrice: nuevo.salePrice,
         minStock: nuevo.minStock,
         barcode: nuevo.barcode || item.line.barcode,
+        itemType: nuevo.itemType,
       });
       item.productId = created.id as string;
       scan.appliedTo.createdProductIds.push(new Types.ObjectId(item.productId));
@@ -714,6 +715,14 @@ export class InvoiceScanService {
         if (!decision?.productId && !sku) {
           throw new BadRequestException(
             `El producto ${label} es nuevo y la factura no trae código. Complétale el SKU antes de aplicar.`,
+          );
+        }
+        // De una foto no se sabe si es un Producto o un Montaje, y cambia cómo
+        // lo trata el inventario (un montaje lleva lotes). Creado a ciegas
+        // quedaba con el tipo por defecto; se pide en vez de suponerlo.
+        if (!decision?.productId && !newProduct?.itemType) {
+          throw new BadRequestException(
+            `Elige si ${label} es un Producto o un Montaje antes de aplicar: define cómo se guarda en el inventario.`,
           );
         }
         inventory.push({
