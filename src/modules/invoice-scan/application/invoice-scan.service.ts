@@ -697,6 +697,15 @@ export class InvoiceScanService {
             `La línea ${label} no tiene valor unitario. Complétalo antes de aplicar.`,
           );
         }
+        // Un unitario que no cuadra con el total del renglón es casi siempre
+        // una lectura con los separadores cambiados. Pasó: "11,619.05" entró
+        // como 11.619.050 e infló una compra ×1000. Mejor frenar aquí que
+        // meter millones al inventario y a la caja.
+        if (!unitCostMatchesTotal(line, unitCost)) {
+          throw new BadRequestException(
+            `El valor unitario de ${label} ($${Math.round(unitCost).toLocaleString('es-CO')}) no cuadra con el total del renglón ($${Math.round(line.lineTotal ?? 0).toLocaleString('es-CO')}). Revisa los dos antes de aplicar.`,
+          );
+        }
         const newProduct = decision?.newProduct;
         // Producto nuevo sin SKU: se pide en vez de inventarlo. Un código
         // generado a la brava se queda para siempre en el catálogo y luego hay
@@ -858,6 +867,19 @@ export class InvoiceScanService {
 function unitFromTotal(line: ExtractedLine): number | undefined {
   if (line.lineTotal === undefined || !line.qty) return undefined;
   return line.lineTotal / line.qty;
+}
+
+/**
+ * ¿El unitario por la cantidad cuadra con el total del renglón?
+ *
+ * La holgura es amplia a propósito: el total puede traer IVA (hasta 19%) o
+ * descuentos. Solo se frena un desfase de más de tres veces, que es lo que
+ * deja un separador mal leído (×1000 o ÷1000).
+ */
+function unitCostMatchesTotal(line: ExtractedLine, unitCost: number): boolean {
+  if (!line.lineTotal || !line.qty) return true;
+  const ratio = (unitCost * line.qty) / line.lineTotal;
+  return ratio > 1 / 3 && ratio < 3;
 }
 
 /** Total de la línea deducido del unitario. */

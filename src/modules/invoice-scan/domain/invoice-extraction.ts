@@ -121,7 +121,15 @@ export function parseAmount(value: unknown): number | undefined {
 export function parseCop(value: unknown): number | undefined {
   const amount = parseAmount(value);
   if (amount === undefined) return undefined;
-  const real = Number.isInteger(amount) ? amount : amount * 1000;
+  // Red de seguridad SOLO para números JSON: el modelo a veces manda 4.450
+  // como número y JSON.parse lo deja en 4,45. Un TEXTO ya dice dónde está el
+  // separador —"11,619.05" trae centavos de verdad—, y multiplicarlo infló una
+  // compra real ×1000. Tampoco se toca un número de mil o más: con centavos
+  // así no hay separador de miles que se haya perdido.
+  const real =
+    typeof value === 'number' && !Number.isInteger(amount) && amount < 1000
+      ? amount * 1000
+      : amount;
   return Math.max(0, Math.round(real));
 }
 

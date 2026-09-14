@@ -51,6 +51,41 @@ describe('parseCop · red de seguridad de los miles', () => {
     expect(parseCop('4.450')).toBe(4450);
     expect(parseCop('$ 7.425')).toBe(7425);
   });
+
+  it('respeta los centavos cuando el importe viene como texto', () => {
+    // Caso real (factura electrónica de un proveedor de Crunchy Munch): el
+    // PDF imprime "11,619.05" y el ×1000 de arriba lo convertía en
+    // 11.619.050. Entró así al inventario y a la caja.
+    expect(parseCop('11,619.05')).toBe(11619);
+    expect(parseCop('62,605.04')).toBe(62605);
+    expect(parseCop('633,825.77')).toBe(633826);
+    expect(parseCop('44,774.23')).toBe(44774);
+    expect(parseCop('97,600.00')).toBe(97600);
+    expect(parseCop('1.234,56')).toBe(1235);
+  });
+
+  it('no multiplica un número JSON de mil o más aunque traiga decimales', () => {
+    expect(parseCop(11619.05)).toBe(11619);
+    expect(parseCop(1000.5)).toBe(1001);
+  });
+
+  it('lee bien una factura en formato anglosajón con centavos', () => {
+    const invoice = parseExtractedInvoice({
+      lines: [
+        {
+          description: 'AZUCAR MORENA 2.5KG',
+          qty: '8.00',
+          unitCost: '11,619.05',
+          ivaRate: 5,
+          lineTotal: '97,600.00',
+        },
+      ],
+      totals: { subtotal: '633,825.77', iva: '44,774.23', total: '678,600.00' },
+    });
+
+    expect(invoice.lines[0]).toMatchObject({ qty: 8, unitCost: 11619, lineTotal: 97600 });
+    expect(invoice.totals).toMatchObject({ subtotal: 633826, iva: 44774, total: 678600 });
+  });
 });
 
 describe('parseDate', () => {
