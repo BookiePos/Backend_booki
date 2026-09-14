@@ -21,6 +21,7 @@ import {
   SplitInvoiceScanDto,
   UpdateInvoiceScanDto,
 } from '../application/dto/invoice-scan.dto';
+import { ApplyAsExpenseDto } from '../application/dto/apply-as-expense.dto';
 import {
   INVOICE_IMAGE_MAX_BYTES,
   INVOICE_SCAN_STATUSES,
@@ -132,6 +133,20 @@ export class InvoiceScanController {
   @Post(':id/apply')
   apply(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.scans.apply(id, user);
+  }
+
+  /**
+   * Aplica la factura COMPLETA como un gasto, con IVA y retenciones, sin pasar
+   * por inventario. A crédito deja además la cuenta por pagar.
+   */
+  @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
+  @Post(':id/apply-expense')
+  applyAsExpense(
+    @Param('id') id: string,
+    @Body() dto: ApplyAsExpenseDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.scans.applyAsExpense(id, dto, user);
   }
 
   @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)

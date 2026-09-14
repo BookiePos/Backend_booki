@@ -36,6 +36,14 @@ export class FinanceExpense {
   @Prop({ default: 0, min: 0 })
   taxAmount!: number;
 
+  /**
+   * Retenciones practicadas al proveedor (ReteFuente, ReteIVA, ReteICA).
+   * No cambian el costo del gasto: cambian cuánto sale hacia el proveedor,
+   * porque esa parte se le paga a la DIAN.
+   */
+  @Prop({ default: 0, min: 0 })
+  withholdingAmount!: number;
+
   /** Fecha del gasto en formato YYYY-MM-DD (string, no Date). */
   @Prop({ required: true, trim: true })
   date!: string;

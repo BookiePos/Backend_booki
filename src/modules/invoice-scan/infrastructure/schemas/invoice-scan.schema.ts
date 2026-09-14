@@ -156,6 +156,10 @@ export class AppliedRefs {
 
   @Prop({ type: [Types.ObjectId], default: [] })
   createdProductIds!: Types.ObjectId[];
+
+  /** Cuenta por pagar de una factura aplicada como gasto a crédito. */
+  @Prop({ type: Types.ObjectId, ref: 'FinancePayable' })
+  payableId?: Types.ObjectId;
 }
 export const AppliedRefsSchema = SchemaFactory.createForClass(AppliedRefs);
 

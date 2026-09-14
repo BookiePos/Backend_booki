@@ -39,6 +39,12 @@ export class CreateExpenseDto {
   @Min(0)
   taxAmount?: number;
 
+  /** Retenciones practicadas al proveedor. No pueden superar base + IVA. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  withholdingAmount?: number;
+
   @Matches(YYYYMMDD, { message: 'date debe ser YYYY-MM-DD' })
   date!: string;
 
@@ -89,6 +95,12 @@ export class UpdateExpenseDto {
   @IsNumber()
   @Min(0)
   taxAmount?: number;
+
+  /** Retenciones practicadas al proveedor. No pueden superar base + IVA. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  withholdingAmount?: number;
 
   @IsOptional()
   @Matches(YYYYMMDD, { message: 'date debe ser YYYY-MM-DD' })

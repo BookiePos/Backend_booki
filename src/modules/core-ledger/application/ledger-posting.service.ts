@@ -218,26 +218,42 @@ export class LedgerPostingService {
     paymentMethod?: string;
     expenseAccount?: string;
     concept: string;
+    /** Retenciones practicadas al proveedor (ReteFuente, ReteIVA, ReteICA). */
+    withholding?: number;
     userEmail?: string;
   }): Promise<void> {
     const gross = Math.round(input.amount) + Math.round(input.tax);
+    // Lo retenido no sale hacia el proveedor: se le debe a la DIAN. El gasto
+    // sigue siendo el bruto; cambia a quién se le debe cada parte.
+    const withholding = Math.min(
+      Math.max(Math.round(input.withholding ?? 0), 0),
+      gross,
+    );
     const credit =
       input.status === 'paid'
         ? this.funding(input.paymentMethod)
         : ACC.PROVEEDORES;
+    const lines: PostLine[] = [
+      {
+        accountCode: input.expenseAccount ?? ACC.GASTOS_DIVERSOS,
+        debit: gross,
+        sedeId: input.sedeId,
+      },
+      { accountCode: credit, credit: gross - withholding, sedeId: input.sedeId },
+    ];
+    if (withholding > 0) {
+      lines.push({
+        accountCode: ACC.RETENCION_FUENTE,
+        credit: withholding,
+        sedeId: input.sedeId,
+      });
+    }
     await this.safePost({
       date: input.date,
       sourceType: 'expense',
       sourceId: input.expenseId,
       memo: `Gasto: ${input.concept}`,
-      lines: [
-        {
-          accountCode: input.expenseAccount ?? ACC.GASTOS_DIVERSOS,
-          debit: gross,
-          sedeId: input.sedeId,
-        },
-        { accountCode: credit, credit: gross, sedeId: input.sedeId },
-      ],
+      lines,
       userEmail: input.userEmail,
     });
   }
