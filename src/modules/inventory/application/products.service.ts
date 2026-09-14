@@ -21,6 +21,10 @@ import {
   PurchasePresentation,
   normalizePurchase,
 } from '../domain/purchase-unit';
+import {
+  SIMILAR_MIN_SCORE,
+  productSimilarity,
+} from '../domain/product-similarity';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { CreateCategoryDto } from './dto/create-category.dto';
@@ -81,6 +85,41 @@ export class ProductsService {
     } catch {
       /* el ítem ya se borró; un fallo aquí no debe propagarse */
     }
+  }
+
+  /** Vuelve a reflejar el ítem en el POS (lo usa la fusión de productos). */
+  async syncCatalogFor(product: ProductDocument): Promise<void> {
+    await this.syncCatalog(product);
+  }
+
+  /**
+   * Productos activos que se parecen a este: los candidatos a duplicado que se
+   * ofrecen al fusionar. El mismo código de barras cuenta como idéntico.
+   */
+  async similar(
+    id: string,
+    limit = 8,
+  ): Promise<{ product: ProductDocument; score: number }[]> {
+    const product = await this.getOrFail(id);
+    const others = await this.productModel
+      .find({
+        _id: { $ne: product._id },
+        active: true,
+        mergedInto: { $exists: false },
+      })
+      .exec();
+    const barcode = product.barcode?.trim();
+    return others
+      .map((other) => ({
+        product: other,
+        score:
+          barcode && other.barcode?.trim() === barcode
+            ? 1
+            : productSimilarity(product.name, other.name),
+      }))
+      .filter((candidate) => candidate.score >= SIMILAR_MIN_SCORE)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
   }
 
   // ─── Productos ─────────────────────────────────────────────────────────────

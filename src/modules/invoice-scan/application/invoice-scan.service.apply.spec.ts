@@ -75,6 +75,7 @@ describe('InvoiceScanService.apply', () => {
           createProduct: true,
           newProduct: {
             sku: 'ARROZ-500',
+            itemType: 'ingredient',
             name: 'Arroz Diana 500 g',
             unit: 'und',
             salePrice: 3500,
@@ -223,7 +224,7 @@ describe('InvoiceScanService.apply', () => {
   });
 
   it('usa el código de la factura como SKU cuando viene', async () => {
-    scan.lineDecisions[1].newProduct = undefined;
+    scan.lineDecisions[1].newProduct = { itemType: 'ingredient' } as never;
     scan.draft.lines[1].code = 'ARZ-500';
 
     await TenantContext.run(ctx, () => service.apply(scan.id, user));
@@ -332,5 +333,27 @@ describe('InvoiceScanService.apply', () => {
     ).rejects.toThrow(/no cuadra/);
     expect(deps.purchasing.create).not.toHaveBeenCalled();
     expect(deps.products.create).not.toHaveBeenCalled();
+  });
+
+  it('crea el producto nuevo con el tipo que eligió la persona', async () => {
+    await TenantContext.run(ctx, () => service.apply(scan.id, user));
+
+    expect(deps.products.create.mock.calls[0]?.[0]).toMatchObject({
+      itemType: 'ingredient',
+    });
+  });
+
+  it('exige elegir si el producto nuevo es Producto o Montaje, sin tocar nada', async () => {
+    // De una foto no se sabe. Creado a ciegas quedaba con el tipo por defecto.
+    scan.lineDecisions[1]!.newProduct = {
+      sku: 'ARROZ-500',
+      name: 'Arroz Diana 500 g',
+    } as never;
+
+    await expect(
+      TenantContext.run(ctx, () => service.apply(scan.id, user)),
+    ).rejects.toThrow(/Producto o un Montaje/);
+    expect(deps.products.create).not.toHaveBeenCalled();
+    expect(deps.purchasing.create).not.toHaveBeenCalled();
   });
 });

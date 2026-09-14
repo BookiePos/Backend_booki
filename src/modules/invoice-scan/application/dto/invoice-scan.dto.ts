@@ -14,6 +14,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { LINE_TARGETS, LineTarget } from '../../domain/invoice-scan.constants';
+import { ITEM_TYPES, ItemType } from '../../../inventory/domain/inventory.constants';
 
 /** Cómo se emparejó un renglón; mismos valores que `LineDecision.matchedBy`. */
 export const MATCHED_BY = ['alias', 'barcode', 'sku', 'name', 'manual', 'none'] as const;
@@ -59,6 +60,11 @@ export class NewProductDto {
   @IsNumber()
   @Min(0)
   minStock?: number;
+
+  /** Producto o Montaje: obligatorio para crear el producto al aplicar. */
+  @IsOptional()
+  @IsIn(ITEM_TYPES as readonly string[])
+  itemType?: ItemType;
 }
 
 /** Qué hacer con un renglón al aplicar la factura. */

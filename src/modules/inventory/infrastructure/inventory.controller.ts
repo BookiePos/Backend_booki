@@ -20,6 +20,8 @@ import { StockCountDto } from '../application/dto/stock-count.dto';
 import { StockEntryDto } from '../application/dto/stock-entry.dto';
 import { StockAdjustDto } from '../application/dto/stock-adjust.dto';
 import { StockTransferDto } from '../application/dto/stock-transfer.dto';
+import { MergeProductsDto } from '../application/dto/merge-products.dto';
+import { ProductMergeService } from '../application/product-merge.service';
 import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
 import { RequireFeature } from '../../core-auth/infrastructure/decorators/require-feature.decorator';
 import { PLAN_FEATURES } from '../../control/domain/plans';
@@ -36,6 +38,7 @@ export class InventoryController {
   constructor(
     private readonly products: ProductsService,
     private readonly stock: StockService,
+    private readonly merge: ProductMergeService,
   ) {}
 
   // ─── Catálogo de productos ─────────────────────────────────────────────────
@@ -77,6 +80,27 @@ export class InventoryController {
   @Delete('products/:id')
   deleteProduct(@Param('id') id: string) {
     return this.stock.removeProduct(id);
+  }
+
+  /** Productos que se parecen a este: candidatos a duplicado para fusionar. */
+  @RequirePermissions(PERMISSIONS.INVENTORY_VIEW)
+  @Get('products/:id/similar')
+  similarProducts(@Param('id') id: string) {
+    return this.products.similar(id);
+  }
+
+  /**
+   * Fusiona otros productos en este: existencias, lotes, recetas, documentos
+   * abiertos y alias pasan aquí, y los fusionados quedan inactivos.
+   */
+  @RequirePermissions(PERMISSIONS.INVENTORY_ADJUST)
+  @Post('products/:id/merge')
+  mergeProducts(
+    @Param('id') id: string,
+    @Body() dto: MergeProductsDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.merge.merge(id, dto.sourceIds, user);
   }
 
   // ─── Categorías ────────────────────────────────────────────────────────────

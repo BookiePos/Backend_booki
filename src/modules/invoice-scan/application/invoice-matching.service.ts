@@ -9,7 +9,8 @@ import {
   SupplierItemAliasDocument,
 } from '../infrastructure/schemas/supplier-item-alias.schema';
 import { ExtractedInvoice, ExtractedLine } from '../domain/invoice-extraction';
-import { normalizeText, similarity } from '../domain/text-normalize';
+import { normalizeText } from '../domain/text-normalize';
+import { productSimilarity } from '../../inventory/domain/product-similarity';
 import { proposeLineTarget } from '../domain/line-classification';
 import {
   LineTarget,
@@ -204,17 +205,30 @@ export class InvoiceMatchingService {
   }
 }
 
-/** Mejor candidato por nombre, o null si ninguno llega al umbral. */
+/**
+ * Ventaja mínima del mejor candidato sobre el segundo para emparejar solo.
+ *
+ * Con dos productos igual de parecidos ("Arroz Diana 500 g" y "Arroz Diana
+ * 1 kg" para "ARROZ DIANA") elegir uno sería adivinar, y emparejar mal
+ * descuadra dos inventarios. Ahí se deja para que la persona elija entre las
+ * sugerencias de la pantalla de revisión.
+ */
+const NAME_MATCH_MARGIN = 0.1;
+
+/** Mejor candidato por nombre, o null si no hay uno claro. */
 function bestByName(
   catalog: ProductDocument[],
   description: string,
 ): { product: ProductDocument; score: number } | null {
-  let best: { product: ProductDocument; score: number } | null = null;
-  for (const product of catalog) {
-    const score = similarity(description, product.name);
-    if (score >= NAME_MATCH_THRESHOLD && (!best || score > best.score)) {
-      best = { product, score };
-    }
-  }
+  const ranked = catalog
+    .map((product) => ({
+      product,
+      score: productSimilarity(description, product.name),
+    }))
+    .filter((candidate) => candidate.score > 0)
+    .sort((a, b) => b.score - a.score);
+  const [best, second] = ranked;
+  if (!best || best.score < NAME_MATCH_THRESHOLD) return null;
+  if (second && best.score - second.score < NAME_MATCH_MARGIN) return null;
   return best;
 }
