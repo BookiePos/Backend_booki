@@ -384,7 +384,9 @@ export class InvoiceScanService {
                 : undefined,
             }
           : undefined,
-        matchedBy: 'manual',
+        // La pantalla marca 'manual' las líneas que la persona tocó; las demás
+        // conservan cómo las emparejó el sistema.
+        matchedBy: d.matchedBy ?? 'manual',
       }));
       this.addHistory(scan, user, 'edited', 'Se ajustó el destino de las líneas');
     }
