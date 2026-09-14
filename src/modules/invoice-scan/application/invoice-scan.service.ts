@@ -39,6 +39,7 @@ import { qtyFitsPurchaseLine } from '../domain/line-classification';
 import { INVOICE_EXTRACTOR, InvoiceExtractor } from './invoice-extractor';
 import { InvoiceMatchingService } from './invoice-matching.service';
 import { UpdateInvoiceScanDto } from './dto/invoice-scan.dto';
+import { ApplyAsExpenseDto } from './dto/apply-as-expense.dto';
 
 /** Archivo subido. Se declara aquí para no añadir `@types/multer` al proyecto. */
 export interface UploadedInvoiceImage {
@@ -529,6 +530,130 @@ export class InvoiceScanService {
       user,
       'applied',
       `${plan.inventory.length} línea(s) al inventario y ${plan.expenses.length} a gastos`,
+    );
+    await scan.save();
+    return scan;
+  }
+
+  /**
+   * Registra la factura ENTERA como un solo gasto, sin pasar por inventario.
+   *
+   * Es para lo que no es mercancía de punta a punta —servicios, arriendo,
+   * mantenimiento, papelería—. Renglón por renglón habría que marcar "a gasto"
+   * y elegir categoría en cada línea del mismo papel; aquí se piden una vez los
+   * datos del gasto y sus impuestos.
+   *
+   * Mismas garantías que `apply`: todo se valida antes de crear nada, cada paso
+   * se guarda antes del siguiente y lo creado queda en `appliedTo`, así que un
+   * reintento no duplica.
+   */
+  async applyAsExpense(
+    id: string,
+    dto: ApplyAsExpenseDto,
+    user: JwtUser,
+  ): Promise<InvoiceScanDocument> {
+    const scan = await this.getOrFail(id);
+    if (scan.status === 'applied') return scan;
+    const draft = (scan.draft as ExtractedInvoice) ?? emptyInvoice();
+
+    const amount = cop(dto.amount);
+    const taxAmount = cop(dto.taxAmount ?? 0);
+    const withholdingAmount = cop(dto.withholdingAmount ?? 0);
+    const total = amount + taxAmount;
+    if (total <= 0) {
+      throw new BadRequestException(
+        'El gasto no tiene valor. Completa la base antes de aplicar.',
+      );
+    }
+    if (withholdingAmount > total) {
+      throw new BadRequestException(
+        'Las retenciones no pueden superar el total de la factura.',
+      );
+    }
+    if (dto.status === 'paid' && !dto.paymentMethod) {
+      throw new BadRequestException(
+        'Indica con qué se pagó la factura: define si sale de caja o de bancos.',
+      );
+    }
+    if (dto.status === 'payable' && dto.dueDate && dto.dueDate < dto.date) {
+      throw new BadRequestException(
+        'El vencimiento no puede ser anterior a la fecha de la factura.',
+      );
+    }
+    if (!scan.supplierId && !draft.supplier.name) {
+      throw new BadRequestException(
+        'Elige el proveedor o completa su nombre para poder crearlo.',
+      );
+    }
+    scan.sedeId = new Types.ObjectId(dto.sedeId);
+
+    // 1. Proveedor.
+    if (!scan.appliedTo.supplierId) {
+      const supplierId = await this.resolveSupplier(scan, draft);
+      scan.appliedTo.supplierId = new Types.ObjectId(supplierId);
+      scan.supplierId = scan.appliedTo.supplierId;
+      await scan.save();
+    }
+    const supplierId = scan.appliedTo.supplierId.toString();
+    const supplierName =
+      draft.supplier.name ?? (await this.suppliers.getOrFail(supplierId)).name;
+    const invoiceLabel = `Factura ${draft.invoice.number ?? 'sin número'}`;
+
+    // 2. El gasto, con su IVA y sus retenciones: de ahí sale el asiento.
+    if (scan.appliedTo.expenseIds.length === 0) {
+      const expense = await this.finance.createExpense(
+        {
+          sedeId: dto.sedeId,
+          categoryId: dto.categoryId,
+          concept: dto.concept,
+          amount,
+          taxAmount,
+          withholdingAmount,
+          date: dto.date,
+          status: dto.status,
+          paymentMethod: dto.status === 'paid' ? dto.paymentMethod : undefined,
+          supplierId,
+          supplierName,
+          note: [`${invoiceLabel} · cargada por foto`, dto.note?.trim()]
+            .filter(Boolean)
+            .join(' · ')
+            .slice(0, 500),
+        },
+        user,
+      );
+      scan.appliedTo.expenseIds.push(expense._id as Types.ObjectId);
+      await scan.save();
+    }
+
+    // 3. A crédito, la deuda con su vencimiento. Sin esto no aparecería en
+    //    cuentas por pagar ni en la proyección de caja, que leen de ahí. Es
+    //    por el NETO: lo retenido no se le paga al proveedor.
+    if (dto.status === 'payable' && !scan.appliedTo.payableId) {
+      const payable = await this.finance.createPayable(
+        {
+          sedeId: dto.sedeId,
+          supplierId,
+          supplierName,
+          categoryId: dto.categoryId,
+          docNumber: draft.invoice.number,
+          issueDate: dto.date,
+          dueDate: dto.dueDate,
+          amount: total - withholdingAmount,
+          note: `${invoiceLabel} · aplicada como gasto`,
+        },
+        user,
+      );
+      scan.appliedTo.payableId = payable._id as Types.ObjectId;
+      await scan.save();
+    }
+
+    scan.status = 'applied';
+    this.addHistory(
+      scan,
+      user,
+      'applied',
+      `Registrada completa como gasto por $${total.toLocaleString('es-CO')}` +
+        (dto.status === 'payable' ? ' (por pagar)' : ' (pagada)'),
     );
     await scan.save();
     return scan;

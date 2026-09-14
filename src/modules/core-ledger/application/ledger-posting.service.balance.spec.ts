@@ -191,6 +191,50 @@ describe('LedgerPostingService · asientos automáticos', () => {
 
       expect(amountOn(ACC.GASTOS_DIVERSOS, 'debit')).toBe(5_000);
     });
+
+    it('con retención: el gasto es el bruto, sale el neto y lo retenido se le debe a la DIAN', async () => {
+      await service.postExpense({
+        ...base,
+        amount: 1_000_000,
+        tax: 190_000,
+        withholding: 25_000,
+        status: 'paid',
+        paymentMethod: 'transfer',
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.GASTOS_DIVERSOS, 'debit')).toBe(1_190_000);
+      expect(amountOn(ACC.BANCOS, 'credit')).toBe(1_165_000);
+      expect(amountOn(ACC.RETENCION_FUENTE, 'credit')).toBe(25_000);
+    });
+
+    it('a crédito con retención: al proveedor se le debe solo el neto', async () => {
+      await service.postExpense({
+        ...base,
+        amount: 500_000,
+        tax: 95_000,
+        withholding: 12_500,
+        status: 'payable',
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.PROVEEDORES, 'credit')).toBe(582_500);
+      expect(amountOn(ACC.RETENCION_FUENTE, 'credit')).toBe(12_500);
+    });
+
+    it('sin retención no abre el renglón de retención', async () => {
+      await service.postExpense({
+        ...base,
+        amount: 100_000,
+        tax: 19_000,
+        status: 'paid',
+        paymentMethod: 'cash',
+      });
+
+      expect(
+        lines().some((l) => l.accountCode === ACC.RETENCION_FUENTE),
+      ).toBe(false);
+    });
   });
 
   describe('abonos', () => {

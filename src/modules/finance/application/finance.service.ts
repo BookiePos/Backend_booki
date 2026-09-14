@@ -443,14 +443,23 @@ export class FinanceService {
     user: JwtUser,
   ): Promise<FinanceExpenseDocument> {
     assertSedeAccess(user, dto.sedeId);
+    const amount = cop(dto.amount);
+    const taxAmount = cop(dto.taxAmount ?? 0);
+    const withholdingAmount = cop(dto.withholdingAmount ?? 0);
+    if (withholdingAmount > amount + taxAmount) {
+      throw new BadRequestException(
+        'Las retenciones no pueden superar el total del gasto',
+      );
+    }
     const cat = await this.categoryOrThrow(dto.categoryId);
     const expense = await this.expenses.create({
       sedeId: new Types.ObjectId(dto.sedeId),
       categoryId: cat._id,
       categoryName: cat.name,
       concept: dto.concept,
-      amount: cop(dto.amount),
-      taxAmount: cop(dto.taxAmount ?? 0),
+      amount,
+      taxAmount,
+      withholdingAmount,
       date: dto.date,
       status: dto.status ?? 'paid',
       paymentMethod: dto.paymentMethod,
@@ -473,6 +482,7 @@ export class FinanceService {
       paymentMethod: expense.paymentMethod,
       expenseAccount: this.expenseAccountFor(cat.kind),
       concept: expense.concept,
+      withholding: expense.withholdingAmount,
       userEmail: user.email,
     });
     // Auto-posteo a tesorería si se pagó por transferencia/tarjeta (salida).
@@ -484,7 +494,9 @@ export class FinanceService {
   private async postExpenseTreasury(
     expense: FinanceExpenseDocument,
   ): Promise<void> {
-    const total = expense.amount + expense.taxAmount;
+    // Sale el neto: lo retenido se queda para pagárselo a la DIAN.
+    const total =
+      expense.amount + expense.taxAmount - (expense.withholdingAmount ?? 0);
     if (
       expense.status === 'paid' &&
       expense.paymentMethod &&
@@ -530,6 +542,9 @@ export class FinanceService {
     if (dto.concept !== undefined) exp.concept = dto.concept;
     if (dto.amount !== undefined) exp.amount = cop(dto.amount);
     if (dto.taxAmount !== undefined) exp.taxAmount = cop(dto.taxAmount);
+    if (dto.withholdingAmount !== undefined) {
+      exp.withholdingAmount = cop(dto.withholdingAmount);
+    }
     if (dto.date !== undefined) exp.date = dto.date;
     if (dto.status !== undefined) exp.status = dto.status;
     if (dto.paymentMethod !== undefined) exp.paymentMethod = dto.paymentMethod;
