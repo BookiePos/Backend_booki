@@ -322,4 +322,15 @@ describe('InvoiceScanService.apply', () => {
     const expense = deps.finance.createExpense.mock.calls[0][0] as { status: string };
     expect(expense.status).toBe('paid');
   });
+
+  it('frena un unitario que no cuadra con el total del renglón, sin tocar nada', async () => {
+    // Separadores mal leídos: 1.200 entró como 1.200.000 con el total en 28.800.
+    scan.draft.lines[0]!.unitCost = 1_200_000;
+
+    await expect(
+      TenantContext.run(ctx, () => service.apply(scan.id, user)),
+    ).rejects.toThrow(/no cuadra/);
+    expect(deps.purchasing.create).not.toHaveBeenCalled();
+    expect(deps.products.create).not.toHaveBeenCalled();
+  });
 });
