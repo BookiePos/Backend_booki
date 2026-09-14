@@ -38,7 +38,7 @@ describe('InvoiceScanService · texto del PDF vs OCR', () => {
       status: 'uploaded',
       pages: [{ imageUrl: 'https://blob/f.jpg', imagePathname: 'f.jpg', text }],
       lineDecisions: [],
-      history: [],
+      history: [] as { detail?: string }[],
       appliedTo: { expenseIds: [], createdProductIds: [] },
       save: vi.fn().mockResolvedValue(undefined),
       markModified: vi.fn(),

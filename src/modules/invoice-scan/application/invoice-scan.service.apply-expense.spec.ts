@@ -216,6 +216,34 @@ describe('InvoiceScanService.applyAsExpense', () => {
     expect(scan.status).toBe('applied');
   });
 
+  it('un borrador guardado sin proveedor pide elegirlo en vez de reventar', async () => {
+    // Caso real: Mongoose borra `supplier: {}` al guardar un borrador donde el
+    // modelo no leyó proveedor, y `draft.supplier.name` tumbaba la API con 500.
+    scan.supplierId = undefined;
+    scan.draft = {
+      invoice: { issueDate: '2026-09-09' },
+      lines: [],
+      totals: { subtotal: 157500, total: 157500 },
+    };
+
+    await expect(run(dto({ status: 'paid', paymentMethod: 'cash' }))).rejects.toThrow(
+      /proveedor/,
+    );
+    expect(deps.finance.createExpense).not.toHaveBeenCalled();
+  });
+
+  it('un borrador sin proveedor ni número se aplica si ya hay proveedor elegido', async () => {
+    scan.draft = { totals: { total: 157500 } };
+
+    await run(dto({ status: 'paid', paymentMethod: 'cash' }));
+
+    expect(deps.finance.createExpense).toHaveBeenCalledTimes(1);
+    expect(deps.finance.createExpense.mock.calls[0]?.[0]).toMatchObject({
+      supplierName: 'Mantenimientos Andinos',
+    });
+    expect(scan.status).toBe('applied');
+  });
+
   it('una factura ya aplicada se devuelve tal cual', async () => {
     scan.status = 'applied';
 

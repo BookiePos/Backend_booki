@@ -33,7 +33,7 @@ import {
 import {
   ExtractedInvoice,
   ExtractedLine,
-  emptyInvoice,
+  normalizeDraft,
 } from '../domain/invoice-extraction';
 import { qtyFitsPurchaseLine } from '../domain/line-classification';
 import { INVOICE_EXTRACTOR, InvoiceExtractor } from './invoice-extractor';
@@ -261,8 +261,8 @@ export class InvoiceScanService {
     source: InvoiceScanDocument,
     user: JwtUser,
   ): Promise<InvoiceScanDocument> {
-    const targetDraft = (target.draft as ExtractedInvoice) ?? emptyInvoice();
-    const sourceDraft = (source.draft as ExtractedInvoice) ?? emptyInvoice();
+    const targetDraft = normalizeDraft(target.draft);
+    const sourceDraft = normalizeDraft(source.draft);
 
     target.pages.push(...source.pages);
     // Las líneas se concatenan; la cabecera y los totales se quedan con los de
@@ -410,7 +410,7 @@ export class InvoiceScanService {
     const scan = await this.getOrFail(id);
     if (scan.status === 'applied') return scan;
 
-    const draft = (scan.draft as ExtractedInvoice) ?? emptyInvoice();
+    const draft = normalizeDraft(scan.draft);
     const plan = this.planApplication(scan, draft);
 
     // 1. Proveedor.
@@ -554,7 +554,7 @@ export class InvoiceScanService {
   ): Promise<InvoiceScanDocument> {
     const scan = await this.getOrFail(id);
     if (scan.status === 'applied') return scan;
-    const draft = (scan.draft as ExtractedInvoice) ?? emptyInvoice();
+    const draft = normalizeDraft(scan.draft);
 
     const amount = cop(dto.amount);
     const taxAmount = cop(dto.taxAmount ?? 0);
