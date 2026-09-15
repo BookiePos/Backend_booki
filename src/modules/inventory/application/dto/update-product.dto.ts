@@ -20,6 +20,11 @@ export class UpdateProductDto {
   @IsIn(ITEM_TYPES as readonly string[])
   itemType?: ItemType;
 
+  /** Es empaque (bolsa, vaso, caja): se administra en su propia sección. */
+  @IsOptional()
+  @IsBoolean()
+  isPackaging?: boolean;
+
   @IsOptional()
   @IsString()
   @MinLength(1)

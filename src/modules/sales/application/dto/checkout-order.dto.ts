@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
   IsMongoId,
   IsNumber,
   IsOptional,
@@ -68,6 +69,11 @@ export class CheckoutOrderDto {
   @ValidateNested({ each: true })
   @Type(() => SalePackagingDto)
   packaging?: SalePackagingDto[];
+
+  /** `packaging` es TODO el empaque, no un añadido. Ver `CreateSaleDto`. */
+  @IsOptional()
+  @IsBoolean()
+  packagingExplicit?: boolean;
 
   /** Quién vendió. Sin este campo, el vendedor es quien cobra. */
   @IsOptional()

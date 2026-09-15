@@ -116,6 +116,28 @@ class SaleComponent {
 }
 const SaleComponentSchema = SchemaFactory.createForClass(SaleComponent);
 
+/**
+ * Empaque con el que salió la venta: la bolsa, el vaso, la caja.
+ *
+ * Es un duplicado a propósito de lo que ya está dentro de `components` —ahí va
+ * mezclado con la harina y el azúcar, sin forma de volver a distinguirlo— y el
+ * costo NO se cuenta dos veces: el del COGS sigue siendo el de `components`.
+ * Esto es la memoria de la decisión, y es lo único que permite contestar "¿con
+ * qué suele salir esto?" la próxima vez que se venda lo mismo.
+ */
+@Schema({ _id: false })
+class SalePackaging {
+  @Prop({ type: Types.ObjectId, ref: 'Product', required: true })
+  productId!: Types.ObjectId;
+
+  @Prop({ required: true })
+  name!: string;
+
+  @Prop({ required: true, min: 0 })
+  qty!: number;
+}
+const SalePackagingSchema = SchemaFactory.createForClass(SalePackaging);
+
 /** Descuento aplicado a la venta (descriptor + monto resuelto). */
 @Schema({ _id: false })
 class SaleDiscount {
@@ -267,6 +289,23 @@ export class Sale {
   /** Salidas de inventario que originó la venta (para stock y costo). */
   @Prop({ type: [SaleComponentSchema], default: [] })
   components!: SaleComponent[];
+
+  /**
+   * Con qué empaque salió. Vacío en las ventas anteriores a esta versión y en
+   * las que salieron sin empaque, que son cosas distintas pero se parecen: por
+   * eso la sugerencia solo aprende de ventas con `packagingExplicit`.
+   */
+  @Prop({ type: [SalePackagingSchema], default: [] })
+  packaging!: SalePackaging[];
+
+  /**
+   * Quien cobró decidió el empaque a mano en esta venta (aunque fuera para
+   * dejarla sin ninguno). Distingue "salió sin empaque" de "esta venta es de
+   * antes de que se pudiera elegir", que es justo lo que no se puede deducir
+   * de una lista vacía.
+   */
+  @Prop({ default: false })
+  packagingExplicit!: boolean;
 
   @Prop({ required: true, min: 0 })
   subtotal!: number;

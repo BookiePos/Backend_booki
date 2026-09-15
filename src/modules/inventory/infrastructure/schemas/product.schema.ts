@@ -14,6 +14,20 @@ export class Product {
   @Prop({ required: true, enum: ITEM_TYPES, default: 'product' })
   itemType!: ItemType;
 
+  /**
+   * Es empaque: la bolsa, el vaso, la caja, la cuchara.
+   *
+   * Va como marca aparte y no como un `itemType` nuevo a propósito. Un empaque
+   * se compra, entra por lotes, se cuenta y se merma exactamente igual que un
+   * insumo: toda esa maquinaria ya funciona, y meter un cuarto tipo obligaba a
+   * cada sitio que mira el tipo (importación, factura por foto, informes) a
+   * aprenderse un caso nuevo sin ganar nada. Lo único que cambia de verdad es
+   * DÓNDE se administra —su propia sección de Inventario— y que el POS puede
+   * ofrecerlo al cobrar.
+   */
+  @Prop({ default: false })
+  isPackaging!: boolean;
+
   @Prop({ required: true, trim: true })
   name!: string;
 
@@ -87,6 +101,22 @@ export class Product {
   @Prop({ min: 0 })
   salePrice?: number;
 
+  /**
+   * URL pública de la foto (Supabase Storage). Es lo que deja reconocer una
+   * bolsa de un vistazo, que es justo lo que nadie hace leyendo "BOL-KRAFT-22":
+   * la usa la sección de Empaques y el selector del POS al cobrar.
+   */
+  @Prop({ trim: true })
+  imageUrl?: string;
+
+  /**
+   * Ruta del archivo dentro del store. Se guarda además de la URL porque es lo
+   * que hace falta para BORRAR el archivo al reemplazar la foto; sin esto cada
+   * cambio dejaría el anterior huérfano y ocupando.
+   */
+  @Prop({ trim: true })
+  imagePathname?: string;
+
   @Prop({ default: true })
   active!: boolean;
 
@@ -132,3 +162,6 @@ export const ProductSchema = SchemaFactory.createForClass(Product);
 ProductSchema.index({ name: 'text' });
 ProductSchema.index({ barcode: 1 }, { sparse: true });
 ProductSchema.index({ variantOf: 1 }, { sparse: true });
+// La sección de Empaques y el selector del POS filtran por esta marca, y el POS
+// la consulta en cada cobro: sin índice sería un recorrido completo por venta.
+ProductSchema.index({ isPackaging: 1 }, { sparse: true });

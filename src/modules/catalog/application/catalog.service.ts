@@ -22,7 +22,8 @@ import {
   PRODUCT_IMAGE_MAX_BYTES,
   PRODUCT_IMAGE_TYPES_LABEL,
   imageExtension,
-} from '../domain/product-image';
+  type UploadedImage,
+} from '../../../shared/storage/product-image';
 import { StorageService } from '../../../shared/storage/storage.service';
 import { ProductsService } from '../../inventory/application/products.service';
 import { Product } from '../../inventory/infrastructure/schemas/product.schema';
@@ -32,16 +33,11 @@ import { TenantContext } from '../../../shared/tenancy/tenant-context';
 const PRODUCT_POPULATE = 'name sku unit';
 
 /**
- * Lo que necesitamos de un archivo subido. Se declara aquí en vez de usar
- * `Express.Multer.File` para no añadir `@types/multer` al proyecto por cuatro
- * campos: multer viene con `@nestjs/platform-express`, sus tipos no.
+ * Se re-exporta desde `shared/storage` —donde vive ahora, porque la foto del
+ * empaque en inventario usa exactamente la misma forma— para no romper a quien
+ * ya la importaba de aquí.
  */
-export interface UploadedImage {
-  buffer: Buffer;
-  mimetype: string;
-  size: number;
-  originalname?: string;
-}
+export type { UploadedImage };
 
 /**
  * Resuelve el id de una referencia que puede estar poblada (documento con `_id`)
@@ -399,6 +395,71 @@ export class CatalogService {
   }
 
   /**
+   * Empaque que declaran las fichas de estos vendibles, sumado por ítem y con
+   * nombre. Es lo que el POS propone mientras la venta no tenga historial.
+   *
+   * Una sola consulta con `packaging.productId` poblado, y no un `getOrFail`
+   * por línea: esto se llama al abrir la pantalla de cobro, con el cliente
+   * delante, y un carrito de diez productos serían veinte viajes a la base.
+   */
+  async packagingSeedFor(
+    lines: { productId: string; qty: number }[],
+  ): Promise<{ productId: string; name: string; qty: number }[]> {
+    const ids = lines
+      .map((l) => l.productId)
+      .filter((id) => Types.ObjectId.isValid(id))
+      .map((id) => new Types.ObjectId(id));
+    if (ids.length === 0) return [];
+
+    const products = await this.model
+      .find({ _id: { $in: ids } })
+      .select('packaging')
+      .populate({
+        path: 'packaging.productId',
+        select: PRODUCT_POPULATE,
+        model: this.productModel,
+      })
+      .exec();
+    const byId = new Map(products.map((p) => [String(p._id), p]));
+
+    const qty = new Map<string, number>();
+    const names = new Map<string, string>();
+    for (const line of lines) {
+      const product = byId.get(line.productId);
+      if (!product) continue;
+      for (const packLine of product.packaging ?? []) {
+        const id = refId(packLine.productId);
+        qty.set(id, (qty.get(id) ?? 0) + packLine.qty * line.qty);
+        const ref = packLine.productId as unknown as { name?: string } | null;
+        if (ref?.name) names.set(id, ref.name);
+      }
+    }
+    return [...qty.entries()].map(([productId, total]) => ({
+      productId,
+      name: names.get(productId) ?? '',
+      qty: total,
+    }));
+  }
+
+  /**
+   * Ítems de inventario que alguna ficha de producto declara como su empaque,
+   * sin repetidos. Lo usa Inventario para adoptarlos en la sección de Empaques:
+   * si una bolsa ya figura como empaque de la galleta, es un empaque, y no hay
+   * por qué obligar a nadie a volver a decirlo.
+   */
+  async packagingProductIds(): Promise<string[]> {
+    const products = await this.model
+      .find({ 'packaging.0': { $exists: true } })
+      .select('packaging')
+      .exec();
+    const ids = new Set<string>();
+    for (const product of products) {
+      for (const line of product.packaging ?? []) ids.add(refId(line.productId));
+    }
+    return [...ids];
+  }
+
+  /**
    * Código de barras del ítem de inventario vinculado (solo productos de fuente
    * inventario y solo si `inventoryProductId` viene poblado, p. ej. desde
    * `listSellable`). Lo usa el POS para escanear. Las recetas no tienen barcode.
@@ -592,7 +653,13 @@ export class CatalogService {
     const isParent = Boolean(
       product.variantAxes && product.variantAxes.length > 0,
     );
-    const sellable = product.active && price > 0 && !isParent;
+    // El empaque es la única excepción a "lo decide el precio de venta": una
+    // bolsa con precio escrito por error no tiene por qué aparecer como plato
+    // en la caja, y su precio en la ficha de inventario es el de COMPRA de un
+    // paquete de cien. Si de verdad se vende la bolsa suelta, se crea su
+    // producto a mano en /productos, que es donde se declara esa intención.
+    const sellable =
+      product.active && price > 0 && !isParent && !product.isPackaging;
 
     const existingAuto = await this.model
       .findOne({ inventoryProductId: productId, autoFromInventory: true })

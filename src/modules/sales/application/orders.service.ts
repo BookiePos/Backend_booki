@@ -270,6 +270,7 @@ export class OrdersService {
           customer: dto.customer,
           tip: dto.tip,
           packaging: dto.packaging,
+          packagingExplicit: dto.packagingExplicit,
           seller: dto.seller,
         },
         user,

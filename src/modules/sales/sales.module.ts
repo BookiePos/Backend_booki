@@ -25,6 +25,7 @@ import {
 import { SalesService } from './application/sales.service';
 import { SaleReturnsService } from './application/sale-returns.service';
 import { OrdersService } from './application/orders.service';
+import { PackagingService } from './application/packaging.service';
 import { SalesController } from './infrastructure/sales.controller';
 import { OrdersController } from './infrastructure/orders.controller';
 import { InventoryModule } from '../inventory/inventory.module';
@@ -72,7 +73,7 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
     ]),
   ],
   controllers: [SalesController, OrdersController],
-  providers: [SalesService, OrdersService, SaleReturnsService],
+  providers: [SalesService, OrdersService, SaleReturnsService, PackagingService],
   exports: [SalesService, OrdersService, SaleReturnsService],
 })
 export class SalesModule {}

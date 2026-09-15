@@ -266,4 +266,103 @@ describe('SalesService.create · empaque', () => {
     expect(vendido).toHaveLength(1);
     expect(gastado(INV_GALLETA)).toBe(2);
   });
+
+  /**
+   * Desde que el empaque se elige al cobrar, lo que baja del inventario es lo
+   * que quien cobra confirma, no lo que dice la ficha. La bandera es lo que
+   * distingue "el POS opinó" de "este cliente es viejo y no sabe opinar", y sin
+   * esa distinción "sin empaques" no podría significar nada: una lista vacía
+   * llega igual en los dos casos.
+   */
+  describe('el empaque elegido al cobrar manda (packagingExplicit)', () => {
+    it('"sin empaques" no descuenta el empaque de la ficha', async () => {
+      build(
+        { [INV_GALLETA.toString()]: 100, [BOLSA.toString()]: 50 },
+        [{ productId: BOLSA.toString(), qty: 1 }],
+      );
+
+      await service.create(
+        venta({ packaging: [], packagingExplicit: true }),
+        user,
+      );
+
+      expect(gastado(INV_GALLETA)).toBe(2);
+      expect(gastado(BOLSA)).toBe(0);
+    });
+
+    it('lo elegido reemplaza a la ficha en vez de sumarse', async () => {
+      build(
+        {
+          [INV_GALLETA.toString()]: 100,
+          [BOLSA.toString()]: 50,
+          [STICKER.toString()]: 10,
+        },
+        [{ productId: BOLSA.toString(), qty: 1 }],
+      );
+
+      await service.create(
+        venta({
+          packaging: [{ productId: STICKER.toString(), qty: 1 }],
+          packagingExplicit: true,
+        }),
+        user,
+      );
+
+      expect(gastado(STICKER)).toBe(1);
+      expect(gastado(BOLSA)).toBe(0); // la ficha ya no descuenta sola
+    });
+
+    it('sin la bandera sigue mandando la ficha (POS anterior)', async () => {
+      // El backend se despliega antes que el frontend: mientras tanto el POS
+      // viejo tiene que seguir cobrando exactamente igual que ayer.
+      build(
+        { [INV_GALLETA.toString()]: 100, [BOLSA.toString()]: 50 },
+        [{ productId: BOLSA.toString(), qty: 1 }],
+      );
+
+      await service.create(venta({ packaging: [] }), user);
+
+      expect(gastado(BOLSA)).toBe(2);
+    });
+
+    it('guarda en la venta con qué empaque salió, para poder sugerirlo luego', async () => {
+      build(
+        { [INV_GALLETA.toString()]: 100, [BOLSA.toString()]: 50 },
+        [{ productId: BOLSA.toString(), qty: 1 }],
+      );
+
+      const sale = await service.create(
+        venta({
+          packaging: [{ productId: BOLSA.toString(), qty: 1 }],
+          packagingExplicit: true,
+        }),
+        user,
+      );
+
+      expect(sale.packagingExplicit).toBe(true);
+      expect(sale.packaging).toHaveLength(1);
+      expect(sale.packaging[0].productId.toString()).toBe(BOLSA.toString());
+      expect(sale.packaging[0].qty).toBe(1);
+    });
+
+    it('guarda lo PEDIDO aunque no alcance el inventario', async () => {
+      // La venta salió en bolsa aunque el sistema creyera que no había: eso es
+      // lo que hay que recordar, no el cero que quedó en el kardex.
+      build(
+        { [INV_GALLETA.toString()]: 100, [BOLSA.toString()]: 0 },
+        [],
+      );
+
+      const sale = await service.create(
+        venta({
+          packaging: [{ productId: BOLSA.toString(), qty: 2 }],
+          packagingExplicit: true,
+        }),
+        user,
+      );
+
+      expect(gastado(BOLSA)).toBe(0); // no había de dónde descontar
+      expect(sale.packaging[0].qty).toBe(2); // pero así salió
+    });
+  });
 });

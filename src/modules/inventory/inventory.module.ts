@@ -27,10 +27,13 @@ import { ProductMergeService } from './application/product-merge.service';
 import { InventoryController } from './infrastructure/inventory.controller';
 import { SedesModule } from '../sedes/sedes.module';
 import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
+import { StorageModule } from '../../shared/storage/storage.module';
 
 @Module({
   imports: [
     SedesModule,
+    // Fotos de la ficha de inventario (las de los empaques, sobre todo).
+    StorageModule,
     // forwardRef: el catálogo importa a su vez el inventario (ciclo controlado).
     // ProductsService usa CatalogService para reflejar en el POS los ítems con
     // precio de venta.
