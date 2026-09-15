@@ -49,61 +49,32 @@ export interface InvoiceExtractor {
  * revisión. Lo segundo, porque las conversiones (IVA incluido, descuentos
  * prorrateados, cajas a unidades) las hace nuestro código con reglas fijas y
  * auditables, no el modelo con criterio propio.
+ *
+ * Y pide **solo lo que la app usa, en una sola línea**: el tiempo de lectura lo
+ * pone lo que el modelo ESCRIBE (~100 tokens por segundo), no lo que lee.
+ * Quitar los campos que nada consume (código de barras, descuento, dirección)
+ * y la sangría bajó una factura de 60 renglones de ~63 s a ~39 s.
+ *
+ * Las reglas de `unitCost` y `lineTotal` están escritas así porque el modelo
+ * confundía el total del renglón con el precio de UNA unidad con IVA ("V.
+ * Item"). Medido con facturas reales, 3 repeticiones: la precisión pasó de
+ * 87 % a 97 %, y la factura de 60 renglones de 79 % a 100 %.
  */
 export const EXTRACTION_PROMPT = [
   'Eres un asistente que lee facturas de compra colombianas y devuelve JSON.',
-  'Devuelve ÚNICAMENTE un objeto JSON válido, sin explicaciones ni markdown.',
-  '',
-  'Reglas estrictas:',
-  '- Copia los valores TAL CUAL aparecen impresos. No calcules, no conviertas, no completes.',
-  '- Si un dato no aparece o no se lee con certeza, omite la clave. NUNCA inventes un valor.',
-  '- Los importes van como TEXTO, copiados tal cual aparecen impresos ("4.450", "7.425"). No los conviertas a número ni les quites los puntos.',
-  '- Las fechas en formato AAAA-MM-DD.',
-  '- El NIT sin puntos ni dígito de verificación.',
-  '- Una línea por renglón de producto o servicio de la factura.',
-  '- No incluyas como líneas los renglones de subtotal, IVA, descuento global ni total: esos van en "totals".',
-  '- "ivaRate" solo puede ser 0, 5 o 19.',
-  '',
-  'Estructura exacta:',
-  JSON.stringify(
-    {
-      supplier: {
-        name: 'string',
-        docNumber: 'string',
-        docType: 'NIT|CC|CE',
-        phone: 'string',
-        address: 'string',
-        city: 'string',
-      },
-      invoice: {
-        number: 'string',
-        issueDate: 'AAAA-MM-DD',
-        dueDate: 'AAAA-MM-DD',
-        paymentTerms: 'contado|credito',
-      },
-      lines: [
-        {
-          description: 'string',
-          code: 'string',
-          barcode: 'string',
-          qty: 'string',
-          unit: 'string',
-          unitCost: 'string tal cual impreso',
-          discount: 'string',
-          ivaRate: 0,
-          lineTotal: 'string tal cual impreso',
-        },
-      ],
-      totals: {
-        subtotal: 'string',
-        iva: 'string',
-        retentions: 'string',
-        total: 'string tal cual impreso',
-      },
-    },
-    null,
-    2,
-  ),
+  'Devuelve ÚNICAMENTE un objeto JSON válido en UNA sola línea, sin espacios de sobra, sin explicaciones ni markdown.',
+  'Solo estos datos (omite la clave si no aparece; NUNCA inventes):',
+  '{"supplier":{"name":"","docNumber":""},"invoice":{"number":"","issueDate":"AAAA-MM-DD","dueDate":"AAAA-MM-DD","paymentTerms":"contado|credito"},"lines":[{"description":"","code":"","qty":"","unit":"","unitCost":"","ivaRate":0,"lineTotal":""}],"totals":{"subtotal":"","iva":"","retentions":"","total":""}}',
+  'Reglas:',
+  '- supplier es quien EMITE y vende, nunca el cliente. docNumber sin puntos ni dígito de verificación.',
+  '- number: el número de la factura con su prefijo, tal cual (p. ej. "EL-230118", "FM-457", "EN1266582").',
+  '- Fechas escritas día/mes/año ("8/09/2026" es 8 de septiembre).',
+  '- Una línea por renglón de producto o servicio, en orden. No incluyas subtotales, IVA, descuentos globales ni totales como líneas.',
+  '- Importes y cantidades como TEXTO, tal cual impresos. No calcules.',
+  '- unitCost: el valor de UNA unidad antes de IVA ("V. Unit", "Precio unitario").',
+  '- lineTotal: el valor TOTAL del renglón, el de todas las unidades juntas; suele ser la última columna ("Total", "Importe", "Total Iva Incl", "Valor total"). NUNCA el precio de una sola unidad, aunque ya incluya IVA ("V. Item").',
+  '- ivaRate solo 0, 5 o 19.',
+  '- Ignora textos legales, CUFE, QR, firmas y resoluciones.',
 ].join('\n');
 
 /** Esquema plano para los modelos que aceptan `result_schema` (Qwen). */
