@@ -20,7 +20,13 @@ const DEFAULT_CHAT_URL = 'https://api.z.ai/api/paas/v4/chat/completions';
 const DEFAULT_OCR_MODEL = 'glm-ocr';
 /** Modelo de texto de la segunda pasada. GLM-5.2 no ve imágenes, pero sí lee. */
 const DEFAULT_TEXT_MODEL = 'glm-5.2';
-const DEFAULT_TIMEOUT_MS = 60_000;
+/**
+ * Corte por llamada. Sin razonamiento, una factura normal se lee en ~5 s; una
+ * de 60 renglones escribe ~3.300 tokens y tarda ~47 s. Con 60 s de corte las
+ * facturas grandes quedaban justo en el borde, y una de más de 70 renglones
+ * fallaba siempre.
+ */
+const DEFAULT_TIMEOUT_MS = 120_000;
 
 /**
  * Extractor sobre los modelos de Z.ai, en dos pasadas:
@@ -137,6 +143,14 @@ export class GlmExtractorService implements InvoiceExtractor {
     return this.post(this.chatUrl, {
       model: this.textModel,
       temperature: 0,
+      // Sin razonamiento. GLM-5.2 "piensa" por defecto y en esta tarea es puro
+      // gasto: de ~2.200 tokens de salida, ~2.000 eran razonamiento. Medido con
+      // facturas reales: misma precisión (97,1 %), 34 s → 6 s en promedio, y la
+      // factura que se cortaba a los 60 s (PriceSmart, 3 renglones) sale en 6 s.
+      thinking: { type: 'disabled' },
+      // Techo de salida alto: una factura de 60 renglones escribe ~5.000
+      // tokens, y quedarse corto la dejaría truncada a mitad del JSON.
+      max_tokens: 16000,
       messages: [
         { role: 'system', content: EXTRACTION_PROMPT },
         {

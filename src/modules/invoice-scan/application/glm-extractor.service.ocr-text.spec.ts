@@ -81,6 +81,24 @@ describe('GlmExtractorService · texto del OCR para el segundo paso', () => {
     expect(result.parsed.totals.total).toBe(945660);
   });
 
+  it('pide la lectura sin razonamiento: es lo que la saca de 34 s a 6 s', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(ocrResponse), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(chatResponse), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await makeService().extract(Buffer.from('foto'), 'image/jpeg');
+
+    const chatBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {
+      thinking?: { type: string };
+      max_tokens?: number;
+    };
+    expect(chatBody.thinking).toEqual({ type: 'disabled' });
+    // Una factura grande no puede quedar truncada a mitad del JSON.
+    expect(chatBody.max_tokens).toBeGreaterThanOrEqual(16000);
+  });
+
   it('sin md_results sigue encontrando el texto del documento, no los metadatos', async () => {
     const { md_results: _omitido, ...sinMarkdown } = ocrResponse;
     const fetchMock = vi
