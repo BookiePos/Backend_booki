@@ -72,7 +72,16 @@ export class InvoiceScanController {
   @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
   @Post()
   @UseInterceptors(
-    FileInterceptor('file', { limits: { fileSize: INVOICE_IMAGE_MAX_BYTES } }),
+    FileInterceptor('file', {
+      limits: {
+        fileSize: INVOICE_IMAGE_MAX_BYTES,
+        // Los campos de texto del multipart (texto del PDF, XML de la factura
+        // electrónica) tienen por defecto un tope de 1 MB en multer. Un XML
+        // firmado de la DIAN, con su respuesta de validación adentro, puede
+        // pasarlo y la subida fallaba con "Field value too long".
+        fieldSize: 3 * 1024 * 1024,
+      },
+    }),
   )
   upload(
     @UploadedFile() file: UploadedInvoiceImage | undefined,
@@ -83,11 +92,17 @@ export class InvoiceScanController {
      * OCR, que es más exacto y más barato.
      */
     @Body('text') text?: string,
+    /**
+     * XML de la factura electrónica (el que llega en el ZIP del correo). Con él
+     * la factura queda leída en la misma subida, con los datos exactos y sin
+     * IA; la imagen queda como soporte visible.
+     */
+    @Body('xml') xml?: string,
   ) {
     if (!file) {
       throw new BadRequestException('Adjunta la imagen en el campo "file"');
     }
-    return this.scans.upload(file, user, text);
+    return this.scans.upload(file, user, text, xml);
   }
 
   /** Lee la factura con el modelo. Se puede reintentar si falla. */
