@@ -20,6 +20,49 @@ es decidir "esto ya es lo que va a usar el negocio".
 
 ---
 
+## 1.4.0 — 14 de septiembre de 2026
+
+Sale del primer día de carga real de datos. Sin variables de entorno nuevas y
+sin migración: el campo que se añade nace en `false`, que es justo el
+comportamiento de antes.
+
+> Se despliega **ANTES** que el frontend 1.4.0. La pantalla de roles nueva
+> guarda permisos de Dueño y Administrador, y el backend viejo los rechaza.
+
+### Todos los roles se pueden editar
+
+Dueño y Administrador no se podían tocar. La razón era buena y sigue en pie: sus
+permisos se leen de `SYSTEM_ROLES` (código) y no de la fila de `roles`, para que
+una función nueva le llegue sola a todos los dueños al desplegar, sin correr una
+semilla contra la base de cada empresa. El efecto colateral era que "Gerente" o
+"Administrador" significaban lo que decidiera el sistema, y un rol que no se
+puede ajustar convierte la pantalla de roles en un adorno.
+
+Ahora esa resolución es **condicional**, con la bandera `permissionsCustomized`
+en la fila del rol:
+
+- Mientras está en `false`, manda el código y las capacidades nuevas llegan
+  solas, exactamente como hasta ahora.
+- En cuanto alguien guarda permisos pasa a `true` y manda la fila **para
+  siempre**: `ensureSystemRoles` deja de pisarla, así que ni un despliegue ni
+  una semilla deshacen el cambio en silencio.
+
+El precio —que la interfaz dice antes de dejar editar— es que un rol tocado a
+mano ya no recibe solo lo que se publique después.
+
+### Lo único que se sigue prohibiendo: dejarse fuera a uno mismo
+
+`update` rechaza quitar `roles.manage` o `users.manage` **del rol que tiene
+puesto quien está editando**. Guardarlo cerraría esa pantalla para siempre y no
+habría nadie que pudiera devolver el permiso, porque el único que podía era él:
+la cuenta solo se rescataría metiendo mano en la base. Sobre cualquier otro rol
+—incluido Dueño, si quien edita no es dueño— sí se puede, porque siempre
+quedaría alguien capaz de deshacerlo.
+
+7 pruebas nuevas (739 en total).
+
+---
+
 ## 1.2.0 — 12 de septiembre de 2026
 
 Empaque y vendedor en la venta. Sin variables de entorno nuevas, sin
