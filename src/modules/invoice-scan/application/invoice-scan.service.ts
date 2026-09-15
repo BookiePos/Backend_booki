@@ -36,6 +36,7 @@ import {
   normalizeDraft,
 } from '../domain/invoice-extraction';
 import { qtyFitsPurchaseLine } from '../domain/line-classification';
+import { UblInvoiceError, parseUblInvoice } from '../domain/ubl-invoice';
 import { newProductMissing } from '../domain/new-product-draft';
 import { INVOICE_EXTRACTOR, InvoiceExtractor } from './invoice-extractor';
 import { InvoiceMatchingService } from './invoice-matching.service';
@@ -83,6 +84,12 @@ export class InvoiceScanService {
     user: JwtUser,
     /** Texto del PDF, si el navegador lo pudo extraer. */
     text?: string,
+    /**
+     * XML de la factura electrónica DIAN (el `AttachedDocument` del correo o
+     * la `Invoice` suelta). Con él la factura sale leída de una vez, con los
+     * datos exactos del documento y sin pasar por la IA.
+     */
+    xml?: string,
   ): Promise<InvoiceScanDocument> {
     const extension = invoiceImageExtension(file.mimetype);
     if (!extension) {
@@ -94,6 +101,21 @@ export class InvoiceScanService {
       throw new BadRequestException(
         `La imagen supera los ${Math.round(INVOICE_IMAGE_MAX_BYTES / 1024 / 1024)} MB.`,
       );
+    }
+
+    // El XML se interpreta ANTES de cobrar y de subir nada: uno que no es una
+    // factura de la DIAN se rechaza sin costarle un escaneo al negocio.
+    let fromXml: ExtractedInvoice | undefined;
+    if (xml?.trim()) {
+      try {
+        fromXml = parseUblInvoice(xml);
+      } catch (err) {
+        throw new BadRequestException(
+          err instanceof UblInvoiceError
+            ? err.message
+            : 'El XML no se pudo leer como factura electrónica de la DIAN.',
+        );
+      }
     }
 
     // Antes de cobrar: si no hay almacenamiento la subida va a fallar igual, y
@@ -122,12 +144,33 @@ export class InvoiceScanService {
           at: new Date(),
           userEmail: user.email,
           action: 'uploaded',
-          detail: conTexto
-            ? 'PDF subido con su texto (se leerá sin OCR)'
-            : 'Imagen subida',
+          detail: fromXml
+            ? 'Factura electrónica subida con su XML'
+            : conTexto
+              ? 'PDF subido con su texto (se leerá sin OCR)'
+              : 'Imagen subida',
         },
       ],
     });
+    if (!fromXml) return scan;
+
+    // Con el XML no hay nada que leer con IA: el borrador sale del documento y
+    // se empareja con proveedores y productos igual que una lectura normal.
+    const page = scan.pages[0];
+    if (page) {
+      page.model = 'xml-dian';
+      page.extractedAt = new Date();
+    }
+    scan.draft = fromXml;
+    scan.status = 'extracted';
+    await this.hydrateMatches(scan, fromXml);
+    this.addHistory(
+      scan,
+      user,
+      'extracted',
+      `Leída del XML de la factura electrónica: ${fromXml.lines.length} renglón(es) con los datos exactos, sin IA`,
+    );
+    await scan.save();
     return scan;
   }
 
