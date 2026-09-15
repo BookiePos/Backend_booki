@@ -85,6 +85,17 @@ export class NewProductDraft {
   @Prop({ type: String })
   itemType?: 'ingredient' | 'product' | 'assembly';
 
+  /**
+   * Cómo llega del proveedor —"bulto", "caja", "bolsa"— y cuánto trae en
+   * unidades de consumo. Van juntos o no van: lo valida `normalizePurchase`
+   * al crear el producto, igual que en la ficha de inventario.
+   */
+  @Prop({ trim: true })
+  purchaseUnit?: string;
+
+  @Prop({ min: 0 })
+  purchaseFactor?: number;
+
   /** No se vende en el POS (un insumo): no necesita precio de venta. */
   @Prop()
   notSold?: boolean;

@@ -17,6 +17,10 @@ export interface NewProductFields {
   salePrice?: number;
   minStock?: number;
   itemType?: string;
+  /** Cómo llega del proveedor: "bulto", "caja", "bolsa". Opcional. */
+  purchaseUnit?: string;
+  /** Cuánto trae esa presentación, en unidades de consumo. */
+  purchaseFactor?: number;
   /** No se vende en el POS: no necesita precio de venta. */
   notSold?: boolean;
   /** La persona revisó contra la factura los datos que venían prellenados. */
@@ -44,6 +48,16 @@ export function newProductMissing(draft?: NewProductFields | null): string[] {
   }
   if (!ficha.notSold && !(typeof ficha.salePrice === 'number' && ficha.salePrice > 0)) {
     missing.push('el precio de venta (o marcar que no se vende en el POS)');
+  }
+  // La presentación es opcional, pero con nombre y sin contenido no sirve para
+  // nada: es la cuenta con la que "3 bultos" se vuelven 75.000 g. Se frena aquí
+  // y no al crear el producto para que la factura no muera a medio aplicar.
+  const presentacion = ficha.purchaseUnit?.trim();
+  if (
+    presentacion &&
+    !(typeof ficha.purchaseFactor === 'number' && ficha.purchaseFactor > 0)
+  ) {
+    missing.push(`cuánto trae un ${presentacion}`);
   }
   if (!ficha.reviewed) {
     missing.push('confirmar los datos que se leyeron de la factura');

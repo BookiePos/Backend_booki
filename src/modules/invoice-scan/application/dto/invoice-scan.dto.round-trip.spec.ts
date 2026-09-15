@@ -37,6 +37,34 @@ describe('UpdateInvoiceScanDto · ida y vuelta de las decisiones', () => {
     ]);
   });
 
+  it('acepta la ficha del producto nuevo con su presentación de compra', async () => {
+    // Mismo riesgo que el `matchedBy`: la pantalla manda estos dos campos y sin
+    // declararlos el pipe rechazaría con 400 el guardado —y con él "Aplicar"—.
+    const dto = await validate({
+      lineDecisions: [
+        {
+          lineIndex: 0,
+          target: 'inventory',
+          createProduct: true,
+          inPurchaseUnits: true,
+          newProduct: {
+            sku: '10001',
+            name: 'Harina de trigo',
+            unit: 'g',
+            purchaseUnit: 'bulto',
+            purchaseFactor: 25000,
+            reviewed: true,
+          },
+        },
+      ],
+    });
+
+    expect(dto.lineDecisions[0].newProduct).toMatchObject({
+      purchaseUnit: 'bulto',
+      purchaseFactor: 25000,
+    });
+  });
+
   it('rechaza un matchedBy que no es de los conocidos', async () => {
     await expect(
       validate({
