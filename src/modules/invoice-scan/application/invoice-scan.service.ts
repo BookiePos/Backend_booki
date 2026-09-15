@@ -36,6 +36,7 @@ import {
   normalizeDraft,
 } from '../domain/invoice-extraction';
 import { qtyFitsPurchaseLine } from '../domain/line-classification';
+import { newProductMissing } from '../domain/new-product-draft';
 import { INVOICE_EXTRACTOR, InvoiceExtractor } from './invoice-extractor';
 import { InvoiceMatchingService } from './invoice-matching.service';
 import { UpdateInvoiceScanDto } from './dto/invoice-scan.dto';
@@ -424,22 +425,23 @@ export class InvoiceScanService {
     const supplierName =
       draft.supplier.name ?? (await this.suppliers.getOrFail(supplierId)).name;
 
-    // 2. Productos que no existían. Se crean con lo que la persona completó en
-    //    la ficha de la revisión; lo que no tocó, con lo que dijo la factura.
+    // 2. Productos que no existían. La ficha llega completa y revisada (lo
+    //    exige `planApplication`), así que se crean EXACTAMENTE con lo que la
+    //    persona confirmó: nada se rellena con lo que leyó la foto.
     for (const item of plan.inventory) {
       if (item.productId) continue;
       const nuevo = item.newProduct ?? {};
       const created = await this.products.create({
         sku: item.sku,
-        name: nuevo.name || item.line.description,
-        unit: nuevo.unit || item.line.unit || 'und',
+        name: (nuevo.name ?? item.line.description).trim(),
+        unit: nuevo.unit ?? 'und',
         categoryId: nuevo.categoryId?.toString(),
         supplierId,
         supplier: supplierName,
         cost: nuevo.cost ?? item.unitCost,
-        salePrice: nuevo.salePrice,
+        salePrice: nuevo.notSold ? undefined : nuevo.salePrice,
         minStock: nuevo.minStock,
-        barcode: nuevo.barcode || item.line.barcode,
+        barcode: nuevo.barcode || undefined,
         itemType: nuevo.itemType,
       });
       item.productId = created.id as string;
@@ -708,23 +710,21 @@ export class InvoiceScanService {
           );
         }
         const newProduct = decision?.newProduct;
-        // Producto nuevo sin SKU: se pide en vez de inventarlo. Un código
-        // generado a la brava se queda para siempre en el catálogo y luego hay
-        // que adivinar a qué correspondía.
-        const sku = (newProduct?.sku || line.code || '').trim().toUpperCase();
-        if (!decision?.productId && !sku) {
-          throw new BadRequestException(
-            `El producto ${label} es nuevo y la factura no trae código. Complétale el SKU antes de aplicar.`,
-          );
+        // Un producto nuevo se crea SOLO con su ficha completa y revisada. Lo
+        // que la foto leyó puede venir mal —un SKU inventado, una unidad
+        // equivocada, un costo con los separadores cambiados— y un producto mal
+        // creado se queda para siempre en el catálogo. La persona completa lo
+        // que falta y confirma uno por uno los datos leídos; aquí se verifica
+        // por si alguien se salta la pantalla.
+        if (!decision?.productId) {
+          const missing = newProductMissing(newProduct);
+          if (missing.length > 0) {
+            throw new BadRequestException(
+              `Completa y revisa la ficha del producto nuevo ${label} antes de aplicar: falta ${missing.join(', ')}.`,
+            );
+          }
         }
-        // De una foto no se sabe si es un Producto o un Montaje, y cambia cómo
-        // lo trata el inventario (un montaje lleva lotes). Creado a ciegas
-        // quedaba con el tipo por defecto; se pide en vez de suponerlo.
-        if (!decision?.productId && !newProduct?.itemType) {
-          throw new BadRequestException(
-            `Elige si ${label} es un Producto o un Montaje antes de aplicar: define cómo se guarda en el inventario.`,
-          );
-        }
+        const sku = (newProduct?.sku ?? '').trim().toUpperCase();
         inventory.push({
           lineIndex,
           line,

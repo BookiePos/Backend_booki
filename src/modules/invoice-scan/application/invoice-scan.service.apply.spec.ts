@@ -78,7 +78,11 @@ describe('InvoiceScanService.apply', () => {
             itemType: 'ingredient',
             name: 'Arroz Diana 500 g',
             unit: 'und',
+            categoryId: new Types.ObjectId(),
+            cost: 2500,
+            minStock: 0,
             salePrice: 3500,
+            reviewed: true,
           },
         },
         { lineIndex: 2, target: 'expense', categoryId, createProduct: false },
@@ -223,14 +227,16 @@ describe('InvoiceScanService.apply', () => {
     expect(deps.purchasing.create).not.toHaveBeenCalled();
   });
 
-  it('usa el código de la factura como SKU cuando viene', async () => {
-    scan.lineDecisions[1].newProduct = { itemType: 'ingredient' } as never;
-    scan.draft.lines[1].code = 'ARZ-500';
+  it('no toma el código de la factura como SKU sin que la persona lo confirme', async () => {
+    // Antes el código impreso se usaba directo. Ahora el SKU sale de la ficha
+    // revisada: la pantalla lo propone desde ese código y alguien lo confirma.
+    Object.assign(scan.lineDecisions[1]!.newProduct as object, { sku: undefined });
+    scan.draft.lines[1]!.code = 'ARZ-500';
 
-    await TenantContext.run(ctx, () => service.apply(scan.id, user));
-
-    const created = deps.products.create.mock.calls[0][0] as { sku: string };
-    expect(created.sku).toBe('ARZ-500');
+    await expect(
+      TenantContext.run(ctx, () => service.apply(scan.id, user)),
+    ).rejects.toThrow(/SKU/);
+    expect(deps.products.create).not.toHaveBeenCalled();
   });
 
   it('aprende el alias para que la próxima factura empareje sola', async () => {
@@ -352,8 +358,55 @@ describe('InvoiceScanService.apply', () => {
 
     await expect(
       TenantContext.run(ctx, () => service.apply(scan.id, user)),
-    ).rejects.toThrow(/Producto o un Montaje/);
+    ).rejects.toThrow(/Producto o Montaje/);
     expect(deps.products.create).not.toHaveBeenCalled();
     expect(deps.purchasing.create).not.toHaveBeenCalled();
+  });
+
+  it('no crea el producto nuevo si la ficha no se revisó contra la factura', async () => {
+    (scan.lineDecisions[1]!.newProduct as unknown as { reviewed: boolean }).reviewed = false;
+
+    await expect(
+      TenantContext.run(ctx, () => service.apply(scan.id, user)),
+    ).rejects.toThrow(/confirmar los datos/);
+    expect(deps.products.create).not.toHaveBeenCalled();
+    expect(deps.purchasing.create).not.toHaveBeenCalled();
+  });
+
+  it('pide categoría, costo, stock mínimo y precio de venta antes de crear', async () => {
+    scan.lineDecisions[1]!.newProduct = {
+      sku: 'ARROZ-500',
+      name: 'Arroz Diana 500 g',
+      unit: 'und',
+      itemType: 'ingredient',
+      reviewed: true,
+    } as never;
+
+    const error = await TenantContext.run(ctx, () => service.apply(scan.id, user)).catch(
+      (e: unknown) => e,
+    );
+
+    expect(error).toBeInstanceOf(BadRequestException);
+    const message = (error as Error).message;
+    expect(message).toMatch(/la categoría/);
+    expect(message).toMatch(/el costo de compra/);
+    expect(message).toMatch(/el stock mínimo/);
+    expect(message).toMatch(/el precio de venta/);
+    expect(deps.products.create).not.toHaveBeenCalled();
+  });
+
+  it('un insumo que no se vende no necesita precio de venta', async () => {
+    Object.assign(scan.lineDecisions[1]!.newProduct as object, {
+      salePrice: undefined,
+      notSold: true,
+    });
+
+    await TenantContext.run(ctx, () => service.apply(scan.id, user));
+
+    expect(deps.products.create.mock.calls[0]?.[0]).toMatchObject({
+      salePrice: undefined,
+      cost: 2500,
+      minStock: 0,
+    });
   });
 });

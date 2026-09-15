@@ -84,6 +84,17 @@ export class NewProductDraft {
    */
   @Prop({ type: String })
   itemType?: 'ingredient' | 'product' | 'assembly';
+
+  /** No se vende en el POS (un insumo): no necesita precio de venta. */
+  @Prop()
+  notSold?: boolean;
+
+  /**
+   * La persona revisó uno por uno, contra la factura, los datos que venían
+   * prellenados. Sin esto el producto no se crea al aplicar.
+   */
+  @Prop()
+  reviewed?: boolean;
 }
 export const NewProductDraftSchema =
   SchemaFactory.createForClass(NewProductDraft);
