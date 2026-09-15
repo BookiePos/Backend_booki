@@ -20,6 +20,97 @@ es decidir "esto ya es lo que va a usar el negocio".
 
 ---
 
+## 1.5.0 — 15 de septiembre de 2026
+
+Los empaques dejan de ser un insumo más. Sin variables de entorno nuevas y sin
+migración: los dos campos que se añaden a `products` nacen vacíos, y la bandera
+nueva de la venta nace en `false`, que es exactamente el comportamiento de
+antes.
+
+> Se despliega **ANTES** que el frontend 1.5.0. El POS nuevo manda
+> `packagingExplicit` y llama a `POST /sales/packaging-suggestion`, y el backend
+> viejo —con `forbidNonWhitelisted`— rechazaría el cobro entero.
+
+### Un empaque es un ítem de inventario marcado, no un tipo nuevo
+
+`Product.isPackaging` marca las bolsas, los vasos y las cajas. Va como marca y
+no como un cuarto `itemType` a propósito: un empaque se compra, entra por lotes,
+se cuenta y se merma **igual** que un insumo, así que toda esa maquinaria ya
+sirve tal cual. Un tipo nuevo habría obligado a cada sitio que mira el tipo
+—importación por CSV, factura por foto, informes— a aprenderse un caso más sin
+ganar nada a cambio.
+
+Lo que sí cambia es que un empaque **no aparece en el POS aunque tenga precio**.
+Es la única excepción a "lo decide el precio de venta, no el `itemType`": el
+precio de una ficha de empaque es el de compra de un paquete de cien bolsas, y
+verlo como un plato en la caja no le sirve a nadie. Si de verdad se vende la
+bolsa suelta, se crea su producto a mano en el catálogo.
+
+- `GET /inventory/products?isPackaging=true|false` filtra por la marca. Sin el
+  parámetro devuelve todo junto, como siempre.
+- `POST /inventory/products/adopt-packaging` marca de golpe los ítems que ya
+  figuran como empaque en la ficha de algún vendible. Es idempotente y lo
+  dispara una persona desde la pantalla: marcar fichas ajenas en un despliegue,
+  en silencio, es justo lo que no se debe hacer.
+
+### Foto en la ficha de inventario
+
+`imageUrl` / `imagePathname` en `Product`, con `POST` y `DELETE` en
+`/inventory/products/:id/image`. Mismo procedimiento que la foto del vendible y
+el mismo orden, que es el que importa: primero se sube la nueva, luego se guarda
+la ficha y solo al final se borra la anterior. Al eliminar un producto ahora se
+borra también su archivo.
+
+Las reglas de la imagen (4 MB, JPG/PNG/WebP/AVIF) se mudan de
+`catalog/domain/product-image.ts` a `shared/storage/product-image.ts`: ya no son
+solo del catálogo, y tenerlas duplicadas era garantizar que un día una pantalla
+aceptara lo que la otra rechaza.
+
+### El empaque que baja del inventario es el que se confirma al cobrar
+
+Hasta ahora el empaque de la ficha del producto se descontaba siempre y lo que
+se anotara en el cobro se **sumaba** encima. Eso hacía imposible decir "esta
+venta sale sin empaque": una lista vacía no se distinguía de no haber opinado.
+
+`packagingExplicit` invierte quién manda. Con la bandera, `packaging` es **todo**
+el empaque de la venta —lista vacía incluida— y la ficha deja de descontar sola.
+Sin la bandera no cambia nada, y eso es deliberado: el backend se despliega
+primero, así que el POS anterior tiene que seguir cobrando exactamente igual que
+ayer.
+
+### La venta guarda con qué empaque salió
+
+`Sale.packaging` y `Sale.packagingExplicit`. Antes esa información no existía en
+ninguna parte: el empaque se fundía con la harina dentro de `components` y no
+había forma de volver a separarlo.
+
+Se guarda lo **pedido**, no lo que alcanzó a descontarse. Si las bolsas figuran
+en cero porque nadie registró la compra, la venta salió en bolsa igual, y es eso
+lo que hay que recordar. El costo sigue saliendo de `components`, así que no se
+cuenta dos veces.
+
+### Con qué empaque suele salir un carrito
+
+`POST /sales/packaging-suggestion` responde con las líneas de empaque a proponer,
+de dónde salieron (`historial` | `ficha` | `ninguno`) y cuántas ventas las
+respaldan. La regla vive en `sales/domain/packaging-suggestion.ts`, sin Mongo y
+con pruebas propias.
+
+La regla es **una sola**: lo mismo que la vez anterior que se vendió este mismo
+conjunto de productos; si no hay historial, lo que digan las fichas; y si
+tampoco, nada. No extrapola cantidades a propósito — aprender "una galleta = una
+bolsa" y proponer tres bolsas para tres galletas es peor que no proponer nada,
+porque las tres galletas van en la misma bolsa y quien cobra tendría que
+corregir a mano en cada venta.
+
+Dos detalles que parecen menores y no lo son: el carrito se reconoce por el
+**conjunto** de productos y no por las cantidades (si no, casi ninguna venta se
+parecería a otra y la memoria no llegaría a servir nunca), y "esto se ha vendido
+varias veces sin empaque" es una respuesta válida, no un hueco que se rellene
+volviendo a proponer la bolsa de la ficha.
+
+---
+
 ## 1.4.0 — 14 de septiembre de 2026
 
 Sale del primer día de carga real de datos. Sin variables de entorno nuevas y
