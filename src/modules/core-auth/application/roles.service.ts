@@ -12,7 +12,7 @@ import { Role, RoleDocument } from '../infrastructure/schemas/role.schema';
 import { User, UserDocument } from '../infrastructure/schemas/user.schema';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
-import { ALL_PERMISSIONS, Permission } from '../domain/permissions';
+import { ALL_PERMISSIONS, PERMISSIONS, Permission } from '../domain/permissions';
 import { SYSTEM_ROLES, ROLES } from '../domain/roles';
 
 /** Vista plana de un rol para la API (incluye conteo de usuarios). */
@@ -23,11 +23,16 @@ export interface RoleView {
   description: string;
   permissions: string[];
   isSystem: boolean;
+  /** Sus permisos se editaron a mano, así que ya no los marca el código. */
+  permissionsCustomized: boolean;
   userCount: number;
 }
 
-/** Roles de sistema cuyos permisos no se pueden alterar. */
-const LOCKED_PERMISSION_ROLES: string[] = [ROLES.OWNER, ROLES.ADMIN];
+/**
+ * Roles de sistema cuyos permisos se resuelven desde el código MIENTRAS nadie
+ * los haya editado. Ya no son intocables: ver `permisosVigentes`.
+ */
+const CODE_DRIVEN_ROLES: string[] = [ROLES.OWNER, ROLES.ADMIN];
 
 /** Definición en código de cada rol de sistema, por clave. */
 const SYSTEM_ROLE_BY_KEY = new Map(
@@ -35,27 +40,39 @@ const SYSTEM_ROLE_BY_KEY = new Map(
 );
 
 /**
- * Permisos vigentes de un rol de sistema BLOQUEADO, leídos del código.
+ * Los permisos que de verdad se aplican a un rol.
  *
- * Para Dueño y Administrador el código es la fuente de la verdad, no la fila de
- * `roles`. Nadie puede editarlos (lo impide `update`), así que esa fila solo
- * aspira a ser un espejo… y era un espejo que se quedaba viejo: los permisos se
- * escriben al REGISTRAR la empresa, de modo que toda función publicada después
- * nacía invisible para los dueños que ya existían. Había que correr una semilla
- * contra la base de cada empresa, y mientras tanto el Dueño —que por definición
- * puede todo— no veía el módulo nuevo.
+ * Dueño y Administrador se resuelven desde el CÓDIGO mientras nadie los haya
+ * tocado, y esa regla resuelve un problema concreto: los permisos se escriben
+ * al REGISTRAR la empresa, así que toda función publicada después nacía
+ * invisible para los dueños que ya existían. Había que correr una semilla
+ * contra la base de cada empresa y, mientras tanto, el Dueño —que por
+ * definición puede todo— no veía el módulo nuevo. Leyéndolos del código, una
+ * capacidad nueva le llega sola a todos los dueños al desplegar.
  *
- * Resolviéndolo desde el código, una capacidad nueva llega sola a todos los
- * dueños en cuanto se despliega: sin migración, sin semilla y sin tocar datos.
+ * Antes eso se conseguía prohibiendo editarlos, y ahí estaba el problema que
+ * levantó el dueño: "Administrador" o "Gerente" no significan lo mismo en una
+ * galletería que en un restaurante, y un rol que no se puede ajustar convierte
+ * la pantalla de roles en un adorno.
  *
- * Devuelve `null` si el rol no es uno de los bloqueados. Gerente y Cajero NO
- * entran aquí a propósito: SÍ se pueden editar, así que su fila es la verdad, y
- * regalarles en silencio cada permiso nuevo sería abrirles acceso que nadie
- * autorizó.
+ * Con `permissionsCustomized` se tienen las dos cosas. Sin tocar, manda el
+ * código y las funciones nuevas llegan solas. En cuanto alguien edita el rol,
+ * manda su fila y nadie se la vuelve a pisar.
+ *
+ * Gerente, Cajero y los roles a medida nunca leyeron del código, y sigue igual:
+ * son editables desde siempre, así que su fila es la verdad, y regalarles en
+ * silencio cada permiso nuevo sería abrir acceso que nadie autorizó.
  */
-function lockedRolePermissions(key: string): Permission[] | null {
-  if (!LOCKED_PERMISSION_ROLES.includes(key)) return null;
-  return SYSTEM_ROLE_BY_KEY.get(key)?.permissions ?? null;
+function permisosVigentes(role: {
+  key: string;
+  permissions: string[];
+  permissionsCustomized?: boolean;
+}): string[] {
+  if (role.permissionsCustomized) return role.permissions;
+  if (!CODE_DRIVEN_ROLES.includes(role.key)) return role.permissions;
+  const delCodigo: Permission[] | undefined =
+    SYSTEM_ROLE_BY_KEY.get(role.key)?.permissions;
+  return delCodigo ? [...delCodigo] : role.permissions;
 }
 
 @Injectable()
@@ -91,18 +108,23 @@ export class RolesService {
   }
 
   /**
-   * Permisos vigentes de un rol.
+   * Permisos vigentes de un rol. Vacío si el rol no existe.
    *
-   * Dueño y Administrador se resuelven desde el código (ver
-   * `lockedRolePermissions`); el resto, desde su fila en la base. Vacío si el
-   * rol no existe.
+   * Un Dueño o Administrador que NUNCA se ha editado se resuelve desde el
+   * código, para que las funciones nuevas le lleguen sin migración; en cuanto
+   * se edita, manda su fila. Ver `permisosVigentes`.
    */
   async permissionsForRole(key: string): Promise<string[]> {
     const normalized = key.toLowerCase();
-    const locked = lockedRolePermissions(normalized);
-    if (locked) return [...locked];
     const role = await this.findByKey(normalized);
-    return role ? role.permissions : [];
+    if (role) return permisosVigentes(role);
+    // Sin fila en la base, un Dueño o Administrador sigue resolviéndose desde
+    // el código. No es un caso teórico: si la semilla de la empresa no llegó a
+    // correr, la alternativa sería un dueño sin un solo permiso, incapaz de
+    // entrar a arreglarlo.
+    if (!CODE_DRIVEN_ROLES.includes(normalized)) return [];
+    const delCodigo = SYSTEM_ROLE_BY_KEY.get(normalized)?.permissions;
+    return delCodigo ? [...delCodigo] : [];
   }
 
   async create(dto: CreateRoleDto): Promise<RoleView> {
@@ -118,7 +140,15 @@ export class RolesService {
     return this.toView(created, 0);
   }
 
-  async update(id: string, dto: UpdateRoleDto): Promise<RoleView> {
+  /**
+   * `editor` es quien está haciendo el cambio. Se usa solo para una cosa: no
+   * dejar que se quite a sí mismo la llave con la que entró aquí.
+   */
+  async update(
+    id: string,
+    dto: UpdateRoleDto,
+    editor?: { role: string },
+  ): Promise<RoleView> {
     const role = await this.roleModel.findById(id).exec();
     if (!role) {
       throw new NotFoundException('Rol no encontrado');
@@ -130,13 +160,12 @@ export class RolesService {
       role.description = dto.description;
     }
     if (dto.permissions !== undefined) {
-      if (LOCKED_PERMISSION_ROLES.includes(role.key)) {
-        throw new ForbiddenException(
-          'No se pueden modificar los permisos de un rol de sistema base',
-        );
-      }
       this.assertValidPermissions(dto.permissions);
+      this.assertNoSelfLockout(role.key, dto.permissions, editor);
       role.permissions = dto.permissions;
+      // A partir de aquí manda esta fila y no el código: es lo que evita que el
+      // despliegue siguiente le deshaga el recorte en silencio.
+      role.permissionsCustomized = true;
     }
     await role.save();
     const userCount = await this.userModel
@@ -162,9 +191,32 @@ export class RolesService {
     await role.deleteOne();
   }
 
-  /** Upsert idempotente de los roles de sistema (usado por el seed). */
+  /**
+   * Upsert idempotente de los roles de sistema (usado por el seed).
+   *
+   * Los permisos solo se escriben si el rol NO se ha editado a mano. Sin ese
+   * filtro, cualquier semilla posterior le devolvería a un Administrador
+   * recortado todos los permisos que el dueño acababa de quitarle, y sin decir
+   * nada. Nombre y descripción sí se refrescan siempre: son cosméticos.
+   */
   async ensureSystemRoles(): Promise<void> {
     for (const def of SYSTEM_ROLES) {
+      const existente = await this.roleModel.findOne({ key: def.key }).exec();
+
+      // Rol editado a mano: no se toca nada suyo. Solo se reafirma que es de
+      // sistema, que es lo que impide borrarlo.
+      if (existente?.permissionsCustomized) {
+        if (!existente.isSystem) {
+          existente.isSystem = true;
+          await existente.save();
+        }
+        continue;
+      }
+
+      // El filtro va solo por `key` —la clave única— para que el upsert
+      // encuentre siempre la fila que existe. Filtrar además por
+      // `permissionsCustomized` dejaría el upsert sin coincidencia sobre un rol
+      // ya editado e intentaría INSERTARLO otra vez, con choque de clave.
       await this.roleModel
         .updateOne(
           { key: def.key },
@@ -180,6 +232,43 @@ export class RolesService {
         )
         .exec();
     }
+  }
+
+  /**
+   * La única puerta que no se puede cerrar: la propia.
+   *
+   * Los roles de sistema ya se pueden editar enteros —era lo que pedía el
+   * dueño, y con razón: un "Gerente" o un "Administrador" no significan lo
+   * mismo en una galletería que en un restaurante, y si el sistema decide por
+   * él, sobra la pantalla de roles—. Pero hay un movimiento que no tiene vuelta
+   * atrás: quitarle a MI PROPIO rol el permiso de gestionar roles o usuarios.
+   *
+   * En cuanto se guarda, esta pantalla deja de abrirse, y no hay nadie que
+   * pueda devolver el permiso porque el único que podía era yo. La cuenta queda
+   * muerta y solo se rescata metiendo mano en la base de datos.
+   *
+   * Por eso se bloquea solo ese caso, y solo sobre el rol que el editor tiene
+   * puesto. Sobre CUALQUIER otro rol —incluido Dueño, si quien edita no es
+   * dueño— se puede hacer lo que se quiera: siempre quedará alguien que pueda
+   * deshacerlo.
+   */
+  private assertNoSelfLockout(
+    roleKey: string,
+    permissions: string[],
+    editor?: { role: string },
+  ): void {
+    if (!editor || editor.role !== roleKey) return;
+    const next = new Set(permissions);
+    const perdidas = [
+      PERMISSIONS.ROLES_MANAGE,
+      PERMISSIONS.USERS_MANAGE,
+    ].filter((p) => !next.has(p));
+    if (perdidas.length === 0) return;
+    throw new ForbiddenException(
+      'No puedes quitarle a tu propio rol el permiso de gestionar roles o usuarios: ' +
+        'nadie podría devolvértelo y te quedarías fuera de esta pantalla para siempre. ' +
+        'Hazlo desde otra cuenta que tenga esos permisos.',
+    );
   }
 
   private assertValidPermissions(permissions: string[]): void {
@@ -217,11 +306,14 @@ export class RolesService {
       key: role.key,
       name: role.name,
       description: role.description,
-      // Los bloqueados se muestran como se aplican de verdad: si la pantalla
-      // pintara la fila guardada, un Dueño vería menos permisos de los que
-      // realmente tiene en cuanto se publique una función nueva.
-      permissions: lockedRolePermissions(role.key) ?? role.permissions,
+      // Se muestran como se aplican de verdad: si la pantalla pintara la fila
+      // guardada, un Dueño sin editar vería menos permisos de los que realmente
+      // tiene en cuanto se publique una función nueva.
+      permissions: permisosVigentes(role),
       isSystem: role.isSystem,
+      // Para que la pantalla pueda avisar de lo que cambia al editarlo: un rol
+      // sin tocar sigue recibiendo solo las funciones nuevas; uno tocado, no.
+      permissionsCustomized: role.permissionsCustomized ?? false,
       userCount,
     };
   }

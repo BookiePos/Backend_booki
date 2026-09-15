@@ -127,4 +127,124 @@ describe('RolesService · permisos vigentes de cada rol', () => {
     // El editable se sigue mostrando tal como está guardado.
     expect(manager?.permissions).toEqual([PERMISSIONS.POS_SELL]);
   });
+
+  /**
+   * Un rol de sistema ya se puede editar, y esa es justo la razón por la que el
+   * código deja de mandar en cuanto se toca: si siguiera mandando, el dueño
+   * recortaría a su Administrador, se desplegaría cualquier cosa y el recorte
+   * se desharía solo, sin avisar.
+   */
+  describe('cuando se editan a mano', () => {
+    /** Prepara un rol guardado como "ya editado" con los permisos que se pasen. */
+    function editado(key: string, permissions: string[]) {
+      stored[key] = {
+        ...storedRole(key, permissions),
+        permissionsCustomized: true,
+      } as never;
+    }
+
+    it('un Administrador recortado manda sobre el código', async () => {
+      editado(ROLES.ADMIN, [PERMISSIONS.POS_SELL]);
+
+      const perms = await service.permissionsForRole(ROLES.ADMIN);
+
+      expect(perms).toEqual([PERMISSIONS.POS_SELL]);
+      // Y ya no recibe solo lo que se publique después: es el precio de tocarlo.
+      expect(perms).not.toContain(PERMISSIONS.PRODUCTION_MANAGE);
+    });
+
+    it('la pantalla los muestra recortados, no como los pinta el código', async () => {
+      editado(ROLES.OWNER, [PERMISSIONS.POS_SELL]);
+
+      const views = await service.list();
+
+      expect(views.find((v) => v.key === ROLES.OWNER)?.permissions).toEqual([
+        PERMISSIONS.POS_SELL,
+      ]);
+    });
+
+    it('marca el rol como editado al guardar los permisos', async () => {
+      const fila: any = {
+        ...storedRole(ROLES.ADMIN, [...ALL_PERMISSIONS]),
+        save: vi.fn(() => Promise.resolve()),
+      };
+      roleModel.findById = vi.fn(() => ({ exec: () => Promise.resolve(fila) }));
+
+      await service.update('id-admin', { permissions: [PERMISSIONS.POS_SELL] });
+
+      expect(fila.permissionsCustomized).toBe(true);
+      expect(fila.permissions).toEqual([PERMISSIONS.POS_SELL]);
+    });
+  });
+
+  /**
+   * La única puerta que no se puede cerrar es la propia: quitarle a MI rol el
+   * permiso de gestionar roles o usuarios deja la cuenta muerta, porque el
+   * único que podía devolverlo era yo.
+   */
+  describe('candado contra dejarse fuera', () => {
+    function filaEditable(key: string) {
+      const fila: any = {
+        ...storedRole(key, [...ALL_PERMISSIONS]),
+        save: vi.fn(() => Promise.resolve()),
+      };
+      roleModel.findById = vi.fn(() => ({ exec: () => Promise.resolve(fila) }));
+      return fila;
+    }
+
+    it('no deja quitarse a uno mismo la gestión de roles', async () => {
+      filaEditable(ROLES.OWNER);
+      const sinRoles = ALL_PERMISSIONS.filter(
+        (p) => p !== PERMISSIONS.ROLES_MANAGE,
+      );
+
+      await expect(
+        service.update('id-owner', { permissions: sinRoles }, { role: ROLES.OWNER }),
+      ).rejects.toThrow(/tu propio rol/i);
+    });
+
+    it('no deja quitarse a uno mismo la gestión de usuarios', async () => {
+      filaEditable(ROLES.OWNER);
+      const sinUsuarios = ALL_PERMISSIONS.filter(
+        (p) => p !== PERMISSIONS.USERS_MANAGE,
+      );
+
+      await expect(
+        service.update('id-owner', { permissions: sinUsuarios }, { role: ROLES.OWNER }),
+      ).rejects.toThrow(/tu propio rol/i);
+    });
+
+    it('sí deja recortar ESE mismo permiso en un rol ajeno', async () => {
+      // Quien edita es dueño y toca Administrador: siempre quedará él para
+      // deshacerlo, así que aquí no hay nada que proteger.
+      const fila = filaEditable(ROLES.ADMIN);
+      const sinRoles = ALL_PERMISSIONS.filter(
+        (p) => p !== PERMISSIONS.ROLES_MANAGE,
+      );
+
+      await service.update(
+        'id-admin',
+        { permissions: sinRoles },
+        { role: ROLES.OWNER },
+      );
+
+      expect(fila.permissions).not.toContain(PERMISSIONS.ROLES_MANAGE);
+    });
+
+    it('deja recortar el propio rol en lo que no sea la puerta de salida', async () => {
+      const fila = filaEditable(ROLES.OWNER);
+      const sinProduccion = ALL_PERMISSIONS.filter(
+        (p) => p !== PERMISSIONS.PRODUCTION_MANAGE,
+      );
+
+      await service.update(
+        'id-owner',
+        { permissions: sinProduccion },
+        { role: ROLES.OWNER },
+      );
+
+      expect(fila.permissions).not.toContain(PERMISSIONS.PRODUCTION_MANAGE);
+      expect(fila.permissions).toContain(PERMISSIONS.ROLES_MANAGE);
+    });
+  });
 });

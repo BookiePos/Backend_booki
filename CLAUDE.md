@@ -76,12 +76,25 @@ Los permisos viven en `src/modules/core-auth/domain/permissions.ts` como cadenas
 estables `modulo.accion`. El frontend replica esa lista en `src/lib/access.ts`:
 si añades o renombras un permiso, ese archivo del repo hermano queda desincronizado.
 
-**Un permiso nuevo llega solo a Dueño y Administrador.** Sus permisos se
-resuelven desde `SYSTEM_ROLES` (código), no desde la fila de `roles`, porque
-`update` prohíbe editarlos y esa fila —escrita al registrar la empresa— envejecía:
+**Un permiso nuevo llega solo a Dueño y Administrador, mientras nadie los haya
+editado.** Sus permisos se resuelven desde `SYSTEM_ROLES` (código) y no desde la
+fila de `roles`, porque esa fila —escrita al registrar la empresa— envejecía:
 toda función publicada después nacía invisible para los dueños ya existentes y
 hacía falta correr una semilla contra la base de cada empresa. No hay migración
 que correr: basta con desplegar y que el usuario renueve su token.
+
+Desde que **todos los roles son editables**, esa resolución es condicional. La
+bandera es `permissionsCustomized` en la fila del rol: mientras es `false` manda
+el código; en cuanto alguien guarda permisos pasa a `true` y manda la fila para
+siempre, y `ensureSystemRoles` deja de pisarla. Es lo que permite que el negocio
+recorte a su Administrador sin que el despliegue siguiente le deshaga el cambio
+en silencio; el precio, que hay que decirlo en la UI, es que un rol tocado a
+mano ya no recibe las capacidades nuevas solo. Ver `permisosVigentes`.
+
+Lo único que `update` sigue prohibiendo es **dejarse fuera a uno mismo**: quitar
+`roles.manage` o `users.manage` del rol que tiene puesto quien edita. Nadie
+podría devolvérselo y la cuenta solo se rescataría desde la base. Sobre
+cualquier otro rol sí se puede.
 
 Gerente, Cajero y los roles a medida NO reciben nada automáticamente, y es a
 propósito: son editables, así que su fila es la verdad y regalarles cada
