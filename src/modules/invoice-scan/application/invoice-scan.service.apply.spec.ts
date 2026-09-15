@@ -215,6 +215,55 @@ describe('InvoiceScanService.apply', () => {
     expect(scan.appliedTo.createdProductIds).toHaveLength(1);
   });
 
+  it('el producto nuevo nace con su presentación y su renglón entra en bultos', async () => {
+    // La factura viene en lo que el proveedor despacha. Desde que la ficha de
+    // la revisión pide la presentación, un producto que nace con esta misma
+    // factura ya sabe cuánto trae un bulto: se crea en el paso 2, antes de que
+    // la orden de compra lo consulte en el 3.
+    Object.assign(scan.lineDecisions[1]!.newProduct as object, {
+      unit: 'g',
+      purchaseUnit: 'bulto',
+      purchaseFactor: 25000,
+    });
+    scan.lineDecisions[1]!.inPurchaseUnits = true;
+
+    await TenantContext.run(ctx, () => service.apply(scan.id, user));
+
+    expect(deps.products.create.mock.calls[0][0]).toMatchObject({
+      purchaseUnit: 'bulto',
+      purchaseFactor: 25000,
+    });
+    const order = deps.purchasing.create.mock.calls[0][0] as {
+      lines: { inPurchaseUnits?: boolean }[];
+    };
+    expect(order.lines[1]?.inPurchaseUnits).toBe(true);
+  });
+
+  it('sin presentación en la ficha, el renglón nuevo no puede venir en bultos', async () => {
+    // Sin cuánto trae un bulto no hay conversión posible: 10 entrarían como 10
+    // de la unidad que se le acabe de poner. Se ignora la marca en vez de
+    // inventar un factor.
+    scan.lineDecisions[1]!.inPurchaseUnits = true;
+
+    await TenantContext.run(ctx, () => service.apply(scan.id, user));
+
+    const order = deps.purchasing.create.mock.calls[0][0] as {
+      lines: { inPurchaseUnits?: boolean }[];
+    };
+    expect(order.lines[1]?.inPurchaseUnits).toBeUndefined();
+  });
+
+  it('una presentación sin contenido frena la factura entera', async () => {
+    Object.assign(scan.lineDecisions[1]!.newProduct as object, {
+      purchaseUnit: 'bulto',
+    });
+
+    await expect(
+      TenantContext.run(ctx, () => service.apply(scan.id, user)),
+    ).rejects.toThrow(/cuánto trae un bulto/);
+    expect(deps.products.create).not.toHaveBeenCalled();
+  });
+
   it('pide el SKU cuando el producto es nuevo y la factura no trae código', async () => {
     // Sin código en la factura ni ficha completada no hay SKU: antes se
     // generaba uno tipo FAC-XYZ que quedaba para siempre en el catálogo.

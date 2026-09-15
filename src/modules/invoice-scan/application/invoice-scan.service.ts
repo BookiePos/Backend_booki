@@ -486,6 +486,11 @@ export class InvoiceScanService {
         minStock: nuevo.minStock,
         barcode: nuevo.barcode || undefined,
         itemType: nuevo.itemType,
+        // Cómo se compra, tal como se escribió en la ficha de la revisión. El
+        // producto nace ya con su presentación, así que el renglón de abajo
+        // puede entrar en bultos y el inventario convierte solo.
+        purchaseUnit: nuevo.purchaseUnit || undefined,
+        purchaseFactor: nuevo.purchaseUnit ? nuevo.purchaseFactor : undefined,
       });
       item.productId = created.id as string;
       scan.appliedTo.createdProductIds.push(new Types.ObjectId(item.productId));
@@ -776,11 +781,16 @@ export class InvoiceScanService {
           productId: decision?.productId?.toString(),
           sku,
           newProduct,
-          // Un producto que se crea EN ESTA factura todavía no tiene
-          // presentación definida, así que la cantidad no puede venir en
-          // bultos: entraría en la unidad que se le acabe de poner.
+          // La cantidad puede venir en bultos si hay de dónde sacar cuánto
+          // trae uno: el producto ya emparejado, o la presentación que la
+          // persona acaba de escribir en la ficha del producto nuevo. El
+          // producto se crea antes que la orden de compra (paso 2 antes del
+          // 3), así que para cuando la compra lo consulte ya la tiene.
           inPurchaseUnits: Boolean(
-            decision?.inPurchaseUnits && decision?.productId,
+            decision?.inPurchaseUnits &&
+              (decision?.productId ||
+                (newProduct?.purchaseUnit &&
+                  (newProduct?.purchaseFactor ?? 0) > 0)),
           ),
         });
         return;

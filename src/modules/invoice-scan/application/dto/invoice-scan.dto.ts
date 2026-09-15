@@ -66,6 +66,25 @@ export class NewProductDto {
   @IsIn(ITEM_TYPES as readonly string[])
   itemType?: ItemType;
 
+  /**
+   * Presentación con la que el proveedor despacha: "bulto", "caja", "bolsa".
+   *
+   * Se captura en la misma revisión porque la factura es justo el momento en
+   * que se sabe —el papel dice "3 BULTOS HARINA"—. Sin ella, el producto nacía
+   * sin presentación y el renglón no podía marcarse como "viene en bultos":
+   * había que traducir la cantidad a mano antes de aplicar.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  purchaseUnit?: string;
+
+  /** Cuántas unidades de consumo trae esa presentación (25000 g el bulto). */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  purchaseFactor?: number;
+
   /** No se vende en el POS: no hace falta precio de venta. */
   @IsOptional()
   @IsBoolean()

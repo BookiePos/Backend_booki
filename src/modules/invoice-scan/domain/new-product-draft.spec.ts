@@ -48,6 +48,18 @@ describe('newProductMissing', () => {
     ).toEqual([]);
   });
 
+  it('la presentación es opcional, pero con nombre exige cuánto trae', () => {
+    // "bulto" a secas no sirve: es justo el número con el que "3 bultos" se
+    // vuelven 75.000 g. Sin él, la compra entraría como 3 gramos.
+    expect(
+      newProductMissing({ ...completa, purchaseUnit: 'bulto' }),
+    ).toEqual(['cuánto trae un bulto']);
+    expect(
+      newProductMissing({ ...completa, purchaseUnit: 'bulto', purchaseFactor: 25000 }),
+    ).toEqual([]);
+    expect(newProductMissing({ ...completa, purchaseFactor: 25000 })).toEqual([]);
+  });
+
   it('un costo en cero o espacios en blanco cuentan como faltantes', () => {
     expect(
       newProductMissing({ ...completa, cost: 0, sku: '  ', name: '' }),
