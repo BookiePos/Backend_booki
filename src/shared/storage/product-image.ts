@@ -1,6 +1,11 @@
 /**
- * Reglas de la imagen de un producto vendible. Puro dominio: sin Nest y sin
- * Mongoose, para poder probarlo y reusarlo desde donde haga falta.
+ * Reglas de la foto de un producto. Puro dominio: sin Nest y sin Mongoose.
+ *
+ * Vive en `shared/storage` y no dentro del catálogo porque ya no es solo del
+ * catálogo: la foto del vendible y la del empaque en inventario tienen el mismo
+ * límite, los mismos formatos y el mismo motivo para tenerlos. Duplicar estas
+ * constantes era garantizar que un día se aceptara en un sitio lo que el otro
+ * rechaza.
  */
 
 /**
@@ -32,4 +37,16 @@ export const PRODUCT_IMAGE_TYPES_LABEL = 'JPG, PNG, WebP o AVIF';
 /** Extensión con la que guardar un tipo MIME, o `null` si no se acepta. */
 export function imageExtension(mimetype: string): string | null {
   return PRODUCT_IMAGE_TYPES[mimetype.toLowerCase()] ?? null;
+}
+
+/**
+ * Lo que necesitamos de un archivo subido. Se declara aquí en vez de usar
+ * `Express.Multer.File` para no añadir `@types/multer` al proyecto por cuatro
+ * campos: multer viene con `@nestjs/platform-express`, sus tipos no.
+ */
+export interface UploadedImage {
+  buffer: Buffer;
+  mimetype: string;
+  size: number;
+  originalname?: string;
 }

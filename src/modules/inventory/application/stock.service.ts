@@ -780,6 +780,9 @@ export class StockService {
    */
   async removeProduct(productId: string) {
     const product = await this.products.getOrFail(productId);
+    // Se anota antes de borrar la ficha: después ya no habría de dónde sacar la
+    // ruta y el archivo se quedaría para siempre en el store, pagándose.
+    const imagePathname = product.imagePathname;
     const result = await this.withTransaction(async (session) => {
       await this.movementModel
         .deleteMany({ productId: product._id })
@@ -799,6 +802,9 @@ export class StockService {
     // Retira también su vendible automático del POS (fuera de la transacción:
     // el catálogo no participa del arrastre de inventario).
     await this.products.syncCatalogRemoved(product._id);
+    // Y su foto. Va después de borrar: si esto falla queda un archivo huérfano,
+    // no un producto que no se pudo eliminar.
+    if (imagePathname) await this.products.removeStoredImage(imagePathname);
     return result;
   }
 

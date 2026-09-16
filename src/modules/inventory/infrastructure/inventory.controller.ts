@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -7,7 +8,14 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import {
+  PRODUCT_IMAGE_MAX_BYTES,
+  type UploadedImage,
+} from '../../../shared/storage/product-image';
 import { ProductsService } from '../application/products.service';
 import { StockService } from '../application/stock.service';
 import { CreateProductDto } from '../application/dto/create-product.dto';
@@ -43,10 +51,31 @@ export class InventoryController {
 
   // ─── Catálogo de productos ─────────────────────────────────────────────────
 
+  /**
+   * `isPackaging=true` devuelve solo los empaques y `=false` solo lo que no lo
+   * es; sin el parámetro, todo junto, que es lo que esperan las pantallas que
+   * existían antes de que los empaques tuvieran sección propia.
+   */
   @RequirePermissions(PERMISSIONS.INVENTORY_VIEW)
   @Get('products')
-  listProducts(@Query('includeInactive') includeInactive?: string) {
-    return this.products.list(includeInactive === 'true');
+  listProducts(
+    @Query('includeInactive') includeInactive?: string,
+    @Query('isPackaging') isPackaging?: string,
+  ) {
+    const soloEmpaques =
+      isPackaging === 'true' ? true : isPackaging === 'false' ? false : undefined;
+    return this.products.list(includeInactive === 'true', soloEmpaques);
+  }
+
+  /**
+   * Marca como empaque los ítems que ya figuran como empaque en la ficha de
+   * algún producto vendible. Lo dispara el usuario desde la sección de
+   * Empaques; es idempotente, así que volver a pulsarlo no hace daño.
+   */
+  @RequirePermissions(PERMISSIONS.INVENTORY_ADJUST)
+  @Post('products/adopt-packaging')
+  adoptPackaging() {
+    return this.products.adoptPackagingFromCatalog();
   }
 
   @RequirePermissions(PERMISSIONS.INVENTORY_ADJUST)
@@ -73,6 +102,31 @@ export class InventoryController {
   @Patch('products/:id')
   updateProduct(@Param('id') id: string, @Body() dto: UpdateProductDto) {
     return this.products.update(id, dto);
+  }
+
+  /**
+   * Sube o reemplaza la foto de la ficha (multipart, campo `file`).
+   *
+   * El límite de multer corta la subida mientras llega, sin llenar memoria con
+   * un archivo que igual se iba a rechazar; el servicio revalida tamaño y
+   * formato porque son reglas de la ficha, no del transporte.
+   */
+  @RequirePermissions(PERMISSIONS.INVENTORY_ADJUST)
+  @Post('products/:id/image')
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: PRODUCT_IMAGE_MAX_BYTES } }),
+  )
+  setProductImage(@Param('id') id: string, @UploadedFile() file?: UploadedImage) {
+    if (!file) {
+      throw new BadRequestException('Adjunta la imagen en el campo "file"');
+    }
+    return this.products.setImage(id, file);
+  }
+
+  @RequirePermissions(PERMISSIONS.INVENTORY_ADJUST)
+  @Delete('products/:id/image')
+  removeProductImage(@Param('id') id: string) {
+    return this.products.removeImage(id);
   }
 
   /** Elimina el producto y todo su historial (existencias, lotes, kardex). */

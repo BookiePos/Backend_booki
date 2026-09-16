@@ -16,7 +16,7 @@ import {
   CatalogService,
   type UploadedImage,
 } from '../application/catalog.service';
-import { PRODUCT_IMAGE_MAX_BYTES } from '../domain/product-image';
+import { PRODUCT_IMAGE_MAX_BYTES } from '../../../shared/storage/product-image';
 import { CreateCatalogProductDto } from '../application/dto/create-catalog-product.dto';
 import { UpdateCatalogProductDto } from '../application/dto/update-catalog-product.dto';
 import { PriceListsService } from '../application/price-lists.service';

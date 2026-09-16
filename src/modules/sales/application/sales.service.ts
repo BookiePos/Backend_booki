@@ -399,9 +399,19 @@ export class SalesService {
     }
 
     /*
-     * 3b. Empaque: la bolsa, el vaso, la cuchara. Sale de dos sitios —lo que
-     * cada producto gasta por unidad, y lo que el cajero anotó a mano en este
-     * cobro— y se suma al consumo DESPUÉS del pre-chequeo, a propósito.
+     * 3b. Empaque: la bolsa, el vaso, la cuchara. Se suma al consumo DESPUÉS
+     * del pre-chequeo, a propósito.
+     *
+     * De dónde sale depende de `packagingExplicit`:
+     *
+     * - Con la bandera, manda EXCLUSIVAMENTE la lista que llegó del cobro, y
+     *   una lista vacía significa "sin empaques": lo que cada producto declara
+     *   en su ficha no se descuenta solo. Es la decisión de producto —el
+     *   empaque que baja es el que se confirma al cobrar— y es la única forma
+     *   de que "sin empaques" quiera decir algo.
+     * - Sin la bandera (POS anterior a esta versión, o una cuenta que se
+     *   liquida desde otro sitio), sigue el comportamiento de siempre: la
+     *   ficha descuenta sola y la lista se suma encima.
      *
      * El empaque NUNCA puede tumbar una venta. Si el sistema cree que no hay
      * bolsas, casi siempre es que alguien no registró la compra, y las bolsas
@@ -414,13 +424,15 @@ export class SalesService {
      * veía cuando el empaque solo bajaba con ajustes a mano.
      */
     const packagingDemand = new Map<string, number>();
-    for (const line of dto.lines) {
-      const product = catalogById.get(line.productId)!;
-      for (const p of this.catalog.packagingOf(product, line.qty)) {
-        packagingDemand.set(
-          p.productId,
-          (packagingDemand.get(p.productId) ?? 0) + p.qty,
-        );
+    if (!dto.packagingExplicit) {
+      for (const line of dto.lines) {
+        const product = catalogById.get(line.productId)!;
+        for (const p of this.catalog.packagingOf(product, line.qty)) {
+          packagingDemand.set(
+            p.productId,
+            (packagingDemand.get(p.productId) ?? 0) + p.qty,
+          );
+        }
       }
     }
     for (const p of dto.packaging ?? []) {
@@ -429,6 +441,33 @@ export class SalesService {
         (packagingDemand.get(p.productId) ?? 0) + p.qty,
       );
     }
+    /*
+     * Memoria de la decisión, para poder sugerirla la próxima vez.
+     *
+     * Se guarda lo PEDIDO, no lo que alcanzó a descontarse: si las bolsas
+     * figuran en cero porque nadie registró la compra, la venta salió igual en
+     * bolsa y eso es lo que hay que recordar. El costo sigue saliendo de
+     * `components`, así que guardar esto aparte no lo cuenta dos veces.
+     */
+    const packagingSnapshot: { productId: Types.ObjectId; name: string; qty: number }[] =
+      [];
+    for (const [productId, qty] of packagingDemand) {
+      // El nombre es para poder leer la venta después; que no se pueda resolver
+      // —ficha borrada, referencia vieja— no puede tumbar el cobro. Esto es
+      // memoria, no contabilidad: el costo sale de `components`.
+      let name = '';
+      try {
+        name = (await this.products.getOrFail(productId)).name;
+      } catch {
+        /* el ítem ya no existe: se guarda la cantidad sin nombre */
+      }
+      packagingSnapshot.push({
+        productId: new Types.ObjectId(productId),
+        name,
+        qty,
+      });
+    }
+
     for (const [productId, pedida] of packagingDemand) {
       const disponible =
         (stockByProduct.get(productId) ?? 0) - (demand.get(productId) ?? 0);
@@ -480,6 +519,7 @@ export class SalesService {
         orderId,
         openCaja,
         components,
+        packagingSnapshot,
         linesWithTax,
         subtotal,
         discount,
@@ -569,6 +609,8 @@ export class SalesService {
       cost: number;
       consumedLots: { lotId?: Types.ObjectId; qty: number; unitCost: number }[];
     }[];
+    /** Con qué empaque salió, tal como se pidió (ver dónde se arma). */
+    packagingSnapshot: { productId: Types.ObjectId; name: string; qty: number }[];
     linesWithTax: {
       product: { _id: Types.ObjectId; sku: string; name: string };
       qty: number;
@@ -622,6 +664,7 @@ export class SalesService {
       received,
       change,
       isCredit,
+      packagingSnapshot,
     } = ctx;
 
     const saleNumber = await this.nextSaleNumber(dto.sedeId);
@@ -649,6 +692,8 @@ export class SalesService {
         taxAmount: l.taxAmount,
       })),
       components,
+      packaging: packagingSnapshot,
+      packagingExplicit: dto.packagingExplicit ?? false,
       subtotal,
       discount,
       discountTotal,

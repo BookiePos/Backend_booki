@@ -8,7 +8,9 @@ import {
   Query,
 } from '@nestjs/common';
 import { SalesService } from '../application/sales.service';
+import { PackagingService } from '../application/packaging.service';
 import { CreateSaleDto } from '../application/dto/create-sale.dto';
+import { PackagingSuggestionDto } from '../application/dto/packaging-suggestion.dto';
 import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
 import { SaleReturnsService } from '../application/sale-returns.service';
 import { CreateSaleReturnDto } from '../application/dto/create-sale-return.dto';
@@ -22,6 +24,7 @@ export class SalesController {
   constructor(
     private readonly sales: SalesService,
     private readonly returns: SaleReturnsService,
+    private readonly packaging: PackagingService,
   ) {}
 
   /** Catálogo vendible con stock de la sede (antes de :id). */
@@ -30,6 +33,20 @@ export class SalesController {
   posProducts(@Query('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
     if (!sedeId) throw new BadRequestException('sedeId es obligatorio');
     return this.sales.posProducts(sedeId, user);
+  }
+
+  /**
+   * Con qué empaque suele salir este carrito. Solo lee (POST por el tamaño del
+   * cuerpo, no porque escriba): lo llama el POS al abrir la pantalla de cobro
+   * para dejar la lista ya marcada.
+   */
+  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @Post('packaging-suggestion')
+  packagingSuggestion(
+    @Body() dto: PackagingSuggestionDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.packaging.sugerir(dto.sedeId, dto.lines, user);
   }
 
   @RequirePermissions(PERMISSIONS.POS_SELL)

@@ -8,7 +8,16 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import { randomBytes } from 'crypto';
 import { CatalogService } from '../../catalog/application/catalog.service';
+import {
+  PRODUCT_IMAGE_MAX_BYTES,
+  PRODUCT_IMAGE_TYPES_LABEL,
+  imageExtension,
+  type UploadedImage,
+} from '../../../shared/storage/product-image';
+import { StorageService } from '../../../shared/storage/storage.service';
+import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import {
   Product,
   ProductDocument,
@@ -63,6 +72,7 @@ export class ProductsService {
     // reflejar en el POS (catálogo) los ítems con precio de venta.
     @Inject(forwardRef(() => CatalogService))
     private readonly catalog: CatalogService,
+    private readonly storage: StorageService,
   ) {}
 
   /**
@@ -124,8 +134,28 @@ export class ProductsService {
 
   // ─── Productos ─────────────────────────────────────────────────────────────
 
-  list(includeInactive = false): Promise<ProductDocument[]> {
-    const filter = includeInactive ? {} : { active: true };
+  /**
+   * Ítems de inventario.
+   *
+   * `isPackaging` filtra por la marca de empaque: `true` para la sección de
+   * Empaques y el selector del POS, `false` para "Insumos y mercancía", y sin
+   * valor para todo junto (que es lo que pedía todo el mundo antes de que los
+   * empaques tuvieran sitio propio, y lo que sigue usando la fusión, la factura
+   * por foto y la actualización de precios).
+   *
+   * El filtro se escribe `{ $ne: true }` y no `{ isPackaging: false }` porque
+   * las fichas creadas antes de esta versión no tienen el campo: buscar por
+   * `false` las dejaría fuera de su propia pantalla.
+   */
+  list(
+    includeInactive = false,
+    isPackaging?: boolean,
+  ): Promise<ProductDocument[]> {
+    const filter: Record<string, unknown> = includeInactive
+      ? {}
+      : { active: true };
+    if (isPackaging === true) filter.isPackaging = true;
+    else if (isPackaging === false) filter.isPackaging = { $ne: true };
     return this.productModel
       .find(filter)
       .populate({ path: 'categoryId', select: 'name', model: this.categoryModel })
@@ -139,6 +169,102 @@ export class ProductsService {
       : null;
     if (!product) throw new NotFoundException('Producto no encontrado');
     return product;
+  }
+
+  /**
+   * Guarda (o reemplaza) la foto de la ficha de inventario.
+   *
+   * Es el mismo procedimiento que el de la foto del vendible, con el mismo
+   * orden a propósito: primero se sube la nueva, luego se guarda la ficha y
+   * solo al final se borra la anterior. Al revés, un fallo a mitad dejaría la
+   * ficha apuntando a un archivo que ya no existe.
+   */
+  async setImage(id: string, file: UploadedImage): Promise<ProductDocument> {
+    const product = await this.getOrFail(id);
+
+    const extension = imageExtension(file.mimetype);
+    if (!extension) {
+      throw new BadRequestException(
+        `Formato de imagen no admitido. Usa ${PRODUCT_IMAGE_TYPES_LABEL}.`,
+      );
+    }
+    if (file.size > PRODUCT_IMAGE_MAX_BYTES) {
+      throw new BadRequestException(
+        `La imagen supera los ${Math.round(PRODUCT_IMAGE_MAX_BYTES / 1024 / 1024)} MB.`,
+      );
+    }
+
+    // Prefijo propio (`inventario/`) y no el del catálogo: son fichas distintas
+    // y conviene poder mirar el bucket y saber de quién es cada archivo. La
+    // empresa va delante por lo mismo que allí, y el sufijo aleatorio evita que
+    // la CDN sirva la foto vieja cacheada al reemplazarla.
+    const { businessId } = TenantContext.currentOrThrow();
+    const pathname = `inventario/${businessId}/${product.id}-${randomBytes(6).toString('hex')}.${extension}`;
+    const stored = await this.storage.upload(
+      pathname,
+      file.buffer,
+      file.mimetype,
+    );
+
+    const previous = product.imagePathname;
+    product.imageUrl = stored.url;
+    product.imagePathname = stored.pathname;
+    await product.save();
+
+    if (previous && previous !== stored.pathname) {
+      await this.storage.remove(previous);
+    }
+    return product;
+  }
+
+  /**
+   * Borra un archivo del store por su ruta, sin tocar ninguna ficha. Lo usa el
+   * borrado de productos, que ya no tiene ficha desde la que llamar a
+   * `removeImage`. Mejor esfuerzo: un huérfano en el store molesta, un 500 al
+   * borrar un producto ya borrado molesta más.
+   */
+  async removeStoredImage(pathname: string): Promise<void> {
+    try {
+      await this.storage.remove(pathname);
+    } catch {
+      /* el producto ya se borró; un fallo aquí no debe propagarse */
+    }
+  }
+
+  /** Quita la foto de la ficha de inventario (y el archivo del store). */
+  async removeImage(id: string): Promise<ProductDocument> {
+    const product = await this.getOrFail(id);
+    const previous = product.imagePathname;
+    product.imageUrl = undefined;
+    product.imagePathname = undefined;
+    await product.save();
+    if (previous) await this.storage.remove(previous);
+    return product;
+  }
+
+  /**
+   * Marca como empaque los ítems que ya se usaban de empaque en la ficha de
+   * algún producto vendible, y devuelve cuántos cambió.
+   *
+   * Existe para que la sección de Empaques no nazca vacía para quien ya había
+   * configurado "cada galleta gasta una bolsa" antes de que los empaques
+   * tuvieran sitio propio: esas bolsas están ahí, revueltas entre los insumos,
+   * y nadie se acuerda de cuáles eran. Es idempotente —solo toca las que aún no
+   * están marcadas— y lo dispara una persona desde la pantalla, no un
+   * despliegue: marcar fichas ajenas sin avisar es justo lo que no se debe
+   * hacer solo.
+   */
+  async adoptPackagingFromCatalog(): Promise<{ marcados: number }> {
+    const ids = await this.catalog.packagingProductIds();
+    if (ids.length === 0) return { marcados: 0 };
+    const res = await this.productModel
+      .updateMany(
+        { _id: { $in: ids.map((id) => new Types.ObjectId(id)) },
+          isPackaging: { $ne: true } },
+        { $set: { isPackaging: true } },
+      )
+      .exec();
+    return { marcados: res.modifiedCount ?? 0 };
   }
 
   /**
@@ -385,6 +511,7 @@ export class ProductsService {
     if (dto.perishable !== undefined) product.perishable = dto.perishable;
     if (dto.trackLots !== undefined) product.trackLots = dto.trackLots;
     if (dto.itemType !== undefined) product.itemType = dto.itemType;
+    if (dto.isPackaging !== undefined) product.isPackaging = dto.isPackaging;
     // Invariante: perecedero o montaje implica control de lotes.
     if (product.perishable || product.itemType === 'assembly')
       product.trackLots = true;
@@ -449,6 +576,8 @@ export class ProductsService {
         if (existing) {
           if (name) existing.name = name;
           if (row.itemType !== undefined) existing.itemType = row.itemType;
+          if (row.isPackaging !== undefined)
+            existing.isPackaging = row.isPackaging;
           if (row.brand !== undefined) existing.brand = row.brand || undefined;
           if (row.supplier !== undefined)
             existing.supplier = row.supplier || undefined;
@@ -501,6 +630,7 @@ export class ProductsService {
           const created = await this.productModel.create({
             sku,
             itemType,
+            isPackaging: row.isPackaging ?? false,
             name,
             brand: row.brand || undefined,
             supplier: row.supplier || undefined,

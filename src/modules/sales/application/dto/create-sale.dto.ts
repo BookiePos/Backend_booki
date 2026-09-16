@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayNotEmpty,
   IsArray,
+  IsBoolean,
   IsIn,
   IsInt,
   IsMongoId,
@@ -218,18 +219,39 @@ export class CreateSaleDto {
   orderType?: OrderType;
 
   /**
-   * Empaque gastado en ESTE cobro, además del que cada producto ya descuenta
-   * por su cuenta: la bolsa grande porque el cliente se llevó todo junto, la
-   * cuchara de más que pidió.
+   * Empaque gastado en ESTE cobro.
    *
    * No se le cobra al cliente —no suma al total— pero sí sale del inventario y
    * entra al costo de la venta.
+   *
+   * Qué significa exactamente depende de `packagingExplicit`; ver ahí.
    */
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => SalePackagingDto)
   packaging?: SalePackagingDto[];
+
+  /**
+   * `packaging` es TODO el empaque de la venta, no un añadido.
+   *
+   * Con esta bandera, lo que cada producto declara en su ficha deja de
+   * descontarse solo y manda exclusivamente la lista de arriba —vacía
+   * incluida, que es lo que significa "sin empaques"—. Es la decisión de
+   * producto: el empaque que baja del inventario es el que se confirma al
+   * cobrar, y la ficha pasa a ser solo la semilla de la sugerencia.
+   *
+   * Existe como bandera y no como "si viene `packaging`, manda" porque hay que
+   * distinguir tres cosas que si no se confunden: el POS nuevo diciendo "sin
+   * empaques" (bandera con lista vacía), el POS nuevo diciendo "estos"
+   * (bandera con lista), y un cliente viejo que no opina (sin bandera), donde
+   * hay que seguir descontando la ficha y sumando el extra como siempre. El
+   * backend se despliega antes que el frontend: mientras tanto el POS viejo
+   * sigue cobrando igual.
+   */
+  @IsOptional()
+  @IsBoolean()
+  packagingExplicit?: boolean;
 
   /**
    * A dónde se lleva. Solo se tiene en cuenta con `orderType: 'domicilio'`.

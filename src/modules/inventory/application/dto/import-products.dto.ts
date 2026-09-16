@@ -32,6 +32,11 @@ export class ImportProductRow {
   @IsIn(ITEM_TYPES as readonly string[])
   itemType?: ItemType;
 
+  /** Es empaque (bolsa, vaso, caja): columna "empaque" del archivo. */
+  @IsOptional()
+  @IsBoolean()
+  isPackaging?: boolean;
+
   @IsOptional()
   @IsString()
   brand?: string;
