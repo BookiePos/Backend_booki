@@ -52,12 +52,28 @@ export class BillOfMaterials {
   lines!: BomLine[];
 
   /**
-   * Costo de conversión por lote (mano de obra, energía, empaque) en COP
-   * entero. Sin él el terminado sale más barato de lo que costó y el margen
-   * del POS queda inflado desde el primer día.
+   * Mano de obra e indirectos del lote (energía, gas, arriendo) en COP entero.
+   * Sin él el terminado sale más barato de lo que costó y el margen del POS
+   * queda inflado desde el primer día.
    */
   @Prop({ default: 0, min: 0 })
   extraCost!: number;
+
+  /**
+   * Empaque del lote escrito EN DINERO, en COP entero.
+   *
+   * Va aparte de `extraCost` —donde antes se escondía— porque es el costo que
+   * más se mueve y el que el dueño negocia por su lado: la bolsa la cambia de
+   * proveedor sin que el trabajo de hornear cambie. Mezclados, subir el precio
+   * de la bolsa se veía como si la mano de obra hubiera subido.
+   *
+   * Es dinero y no una línea de insumo a propósito: quien lleva las bolsas en
+   * el inventario las pone como insumo y esto se queda en cero; quien no las
+   * lleva —lo normal al arrancar— escribe aquí lo que le cuestan y el costo
+   * del terminado deja de mentir. Por eso es opcional.
+   */
+  @Prop({ default: 0, min: 0 })
+  packagingCost!: number;
 
   @Prop({ trim: true })
   note?: string;
