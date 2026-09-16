@@ -42,6 +42,9 @@ describe('BillingService.handleWebhook', () => {
   let wompi: any;
   let subs: any;
   let payments: any;
+  let paymentMethods: any;
+  /** Tarjeta guardada de la empresa; `null` = nunca registró una. */
+  let tarjetaGuardada: any;
   let service: BillingService;
 
   /** Pago pendiente a la espera de que la pasarela confirme. */
@@ -87,11 +90,18 @@ describe('BillingService.handleWebhook', () => {
     subs = { findOne: vi.fn(() => ({ exec: () => Promise.resolve(sub) })) };
     payments = { findOne: vi.fn(() => ({ exec: () => Promise.resolve(doc) })) };
 
+    tarjetaGuardada = tarjetaGuardada ?? null;
+    paymentMethods = {
+      findOne: vi.fn(() => ({ exec: () => Promise.resolve(tarjetaGuardada) })),
+      updateOne: vi.fn(() => ({ exec: () => Promise.resolve(undefined) })),
+    };
+
     service = new BillingService(
       businesses as never,
       wompi as never,
       subs as never,
       payments as never,
+      paymentMethods as never,
     );
     return { doc, sub };
   }

@@ -36,6 +36,9 @@ describe('BillingService · documentos, estado y cancelación', () => {
   let wompi: any;
   let subs: any;
   let payments: any;
+  let paymentMethods: any;
+  /** Tarjeta guardada de la empresa; `null` = nunca registró una. */
+  let tarjetaGuardada: any;
   let service: BillingService;
   let pago: any;
 
@@ -79,6 +82,7 @@ describe('BillingService · documentos, estado y cancelación', () => {
     subs = {
       findOne: vi.fn(() => ({ exec: () => Promise.resolve(sub) })),
       findOneAndUpdate: vi.fn(),
+      updateOne: vi.fn(() => ({ exec: () => Promise.resolve(undefined) })),
     };
     payments = {
       create: vi.fn((doc: any) => {
@@ -90,11 +94,18 @@ describe('BillingService · documentos, estado y cancelación', () => {
       })),
     };
 
+    tarjetaGuardada = tarjetaGuardada ?? null;
+    paymentMethods = {
+      findOne: vi.fn(() => ({ exec: () => Promise.resolve(tarjetaGuardada) })),
+      updateOne: vi.fn(() => ({ exec: () => Promise.resolve(undefined) })),
+    };
+
     service = new BillingService(
       businesses as never,
       wompi as never,
       subs as never,
       payments as never,
+      paymentMethods as never,
     );
   }
 
@@ -310,7 +321,9 @@ describe('BillingService · documentos, estado y cancelación', () => {
       for (const fila of lista) {
         const sub = suscripcion();
         build(sub);
-        wompi.createPaymentSource = vi.fn().mockResolvedValue(1);
+        wompi.createPaymentSource = vi
+          .fn()
+          .mockResolvedValue({ id: 1, brand: 'VISA', lastFour: '4242' });
         subs.findOneAndUpdate = vi.fn((_f: unknown, doc: any) =>
           Promise.resolve({ ...sub, ...doc }),
         );

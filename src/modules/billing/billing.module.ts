@@ -7,6 +7,10 @@ import {
   SubscriptionSchema,
 } from './infrastructure/schemas/subscription.schema';
 import { Payment, PaymentSchema } from './infrastructure/schemas/payment.schema';
+import {
+  PaymentMethod,
+  PaymentMethodSchema,
+} from './infrastructure/schemas/payment-method.schema';
 import { WompiClient } from './infrastructure/wompi.client';
 import { BillingService } from './application/billing.service';
 import { BillingScheduler } from './application/billing.scheduler';
@@ -24,6 +28,7 @@ import { BillingController } from './infrastructure/billing.controller';
       [
         { name: Subscription.name, schema: SubscriptionSchema },
         { name: Payment.name, schema: PaymentSchema },
+        { name: PaymentMethod.name, schema: PaymentMethodSchema },
       ],
       CONTROL_CONNECTION,
     ),

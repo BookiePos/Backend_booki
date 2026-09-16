@@ -29,8 +29,13 @@ import {
   Payment,
   PaymentDocument,
 } from '../infrastructure/schemas/payment.schema';
-import { WompiClient } from '../infrastructure/wompi.client';
+import {
+  PaymentMethod,
+  PaymentMethodDocument,
+} from '../infrastructure/schemas/payment-method.schema';
+import { WompiCardSource, WompiClient } from '../infrastructure/wompi.client';
 import { SubscribeDto } from './dto/subscribe.dto';
+import { SavePaymentMethodDto } from './dto/save-payment-method.dto';
 import {
   BILLING_CYCLES,
   BillingCycle,
@@ -43,7 +48,10 @@ import {
 
 const DOCS_PACKAGE_PRICE = ADD_ONS.docPackage.price;
 
-/** Resultado que devuelve el frontend para hacer polling del estado del cobro. */
+/**
+ * Resultado que devuelve el frontend para hacer polling del estado del cobro,
+ * consultando `GET /billing/payments/:reference` con esta `reference`.
+ */
 export interface ChargeResult {
   reference: string;
   transactionId: string;
@@ -67,6 +75,8 @@ export class BillingService {
     private readonly subs: Model<SubscriptionDocument>,
     @InjectModel(Payment.name, CONTROL_CONNECTION)
     private readonly payments: Model<PaymentDocument>,
+    @InjectModel(PaymentMethod.name, CONTROL_CONNECTION)
+    private readonly paymentMethods: Model<PaymentMethodDocument>,
   ) {}
 
   /**
@@ -151,12 +161,13 @@ export class BillingService {
     const addOns = this.sanitizeAddOns(dto.addOns);
     const email = dto.customerEmail ?? business.ownerEmail;
 
-    const paymentSourceId = await this.wompi.createPaymentSource({
-      token: dto.cardToken,
-      customerEmail: email,
-      acceptanceToken: dto.acceptanceToken,
-      acceptPersonalAuth: dto.acceptPersonalAuth,
-    });
+    // O llega una tarjeta nueva del widget, o se cobra contra la que la empresa
+    // ya registró. Antes solo existía el primer camino: el token de Wompi es de
+    // un solo uso, así que cada cambio de plan obligaba a escribir la tarjeta
+    // otra vez aunque estuviera guardada.
+    const paymentSourceId = dto.cardToken
+      ? (await this.registerCard(businessId, email, dto.cardToken, dto)).id
+      : await this.savedPaymentSourceId(businessId);
 
     const amountInCents = this.recurringAmountCents(plan, cycle, addOns);
     const reference = `sub-${businessId}-${Date.now()}`;
@@ -202,6 +213,79 @@ export class BillingService {
     await this.syncTransaction(payment, tx.status);
 
     return { reference, transactionId: tx.id, status: tx.status };
+  }
+
+  /**
+   * Registra la tarjeta SIN cobrar nada y la deja guardada para la empresa.
+   *
+   * Existe porque el token que devuelve el widget de Wompi es de un solo uso y
+   * vive en la pestaña del navegador: mientras no se cambiara por una fuente de
+   * pago en Wompi, la tarjeta "guardada" desaparecía al recargar la página.
+   */
+  async savePaymentMethod(
+    businessId: string,
+    dto: SavePaymentMethodDto,
+  ): Promise<PaymentMethodDocument> {
+    this.ensureConfigured();
+    const business = await this.businesses.findById(businessId);
+    if (!business) throw new NotFoundException('Empresa no encontrada');
+    const email = dto.customerEmail ?? business.ownerEmail;
+    await this.registerCard(businessId, email, dto.cardToken, dto);
+
+    const saved = await this.paymentMethods.findOne({ businessId }).exec();
+    // `registerCard` acaba de hacer el upsert, así que esto no puede faltar.
+    return saved!;
+  }
+
+  /** Tarjeta guardada de una empresa, o `null` si nunca registró una. */
+  async findPaymentMethod(businessId: string): Promise<PaymentMethodDocument | null> {
+    return this.paymentMethods.findOne({ businessId }).exec();
+  }
+
+  /**
+   * Resuelve AHORA el estado de un cobro preguntándole a Wompi, en vez de
+   * esperar al webhook.
+   *
+   * Wompi responde `PENDING` al crear la transacción SIEMPRE —el cobro se
+   * procesa asíncrono, también en sandbox— y la aprobación llega por webhook.
+   * Cuando el webhook no llega (desarrollo local, un despliegue sin URL
+   * pública, un evento perdido), el pago se quedaba pendiente hasta el barrido
+   * del cron: seis horas mirando "pago en proceso" con la plata ya cobrada.
+   * Esto le da al frontend una forma de cerrar el ciclo en segundos.
+   */
+  async syncPayment(
+    businessId: string,
+    reference: string,
+  ): Promise<{ reference: string; status: string; applied: boolean }> {
+    const payment = await this.payments
+      .findOne({ businessId, reference })
+      .exec();
+    if (!payment) throw new NotFoundException('Pago no encontrado');
+
+    if (
+      this.wompi.configured &&
+      payment.status === 'pending' &&
+      payment.wompiTransactionId
+    ) {
+      try {
+        const tx = await this.wompi.getTransaction(payment.wompiTransactionId);
+        await this.syncTransaction(payment, tx.status);
+      } catch (err) {
+        // Consultar es un extra sobre el webhook: si la pasarela no responde se
+        // devuelve lo que hay guardado y el cron reintenta más tarde.
+        this.logger.error(
+          `No se pudo consultar la transacción ${payment.wompiTransactionId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    return {
+      reference,
+      status: payment.status,
+      applied: payment.applied ?? false,
+    };
   }
 
   /** Compra única de paquetes de documentos contra la tarjeta ya guardada. */
@@ -274,11 +358,13 @@ export class BillingService {
   /** Estado de facturación de una empresa (para el panel). */
   async status(businessId: string): Promise<{
     subscription: SubscriptionDocument | null;
+    paymentMethod: PaymentMethodDocument | null;
     payments: PaymentDocument[];
     documents: { used: number; base: number; credits: number; period: string };
   }> {
-    const [subscription, payments, documents] = await Promise.all([
+    const [subscription, paymentMethod, payments, documents] = await Promise.all([
       this.subs.findOne({ businessId }).exec(),
+      this.paymentMethods.findOne({ businessId }).exec(),
       this.payments
         .find({ businessId })
         .sort({ createdAt: -1 })
@@ -286,7 +372,7 @@ export class BillingService {
         .exec(),
       this.businesses.documentUsage(businessId),
     ]);
-    return { subscription, payments, documents };
+    return { subscription, paymentMethod, payments, documents };
   }
 
   /**
@@ -558,6 +644,65 @@ export class BillingService {
       sub.lastTransactionId = payment.wompiTransactionId;
       await sub.save();
     }
+  }
+
+  /**
+   * Cambia el token de un uso del widget por una fuente de pago permanente en
+   * Wompi y la guarda como la tarjeta de la empresa.
+   *
+   * También apunta la suscripción existente a la tarjeta nueva: las
+   * renovaciones se cobran contra `Subscription.paymentSourceId`, así que sin
+   * esto quien cambiaba de tarjeta seguía viendo la nueva en pantalla mientras
+   * el cron cobraba a la vieja.
+   */
+  private async registerCard(
+    businessId: string,
+    customerEmail: string,
+    cardToken: string,
+    acceptance: { acceptanceToken?: string; acceptPersonalAuth?: string },
+  ): Promise<WompiCardSource> {
+    if (!acceptance.acceptanceToken) {
+      throw new BadRequestException(
+        'Para registrar la tarjeta hay que aceptar los términos de Wompi.',
+      );
+    }
+    const card = await this.wompi.createPaymentSource({
+      token: cardToken,
+      customerEmail,
+      acceptanceToken: acceptance.acceptanceToken,
+      acceptPersonalAuth: acceptance.acceptPersonalAuth,
+    });
+
+    await this.paymentMethods
+      .updateOne(
+        { businessId },
+        {
+          businessId,
+          paymentSourceId: card.id,
+          customerEmail,
+          brand: card.brand ?? null,
+          lastFour: card.lastFour ?? null,
+        },
+        { upsert: true, setDefaultsOnInsert: true },
+      )
+      .exec();
+
+    await this.subs
+      .updateOne({ businessId }, { paymentSourceId: card.id, customerEmail })
+      .exec();
+
+    return card;
+  }
+
+  /** Fuente de pago guardada de la empresa; falla claro si no hay tarjeta. */
+  private async savedPaymentSourceId(businessId: string): Promise<number> {
+    const saved = await this.paymentMethods.findOne({ businessId }).exec();
+    if (!saved) {
+      throw new BadRequestException(
+        'No hay una tarjeta registrada. Agrega una antes de contratar el plan.',
+      );
+    }
+    return saved.paymentSourceId;
   }
 
   private ensureConfigured(): void {

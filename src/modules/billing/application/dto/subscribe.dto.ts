@@ -46,13 +46,20 @@ export class SubscribeDto {
   @IsIn(BILLING_CYCLES as readonly string[])
   billingCycle?: string;
 
+  /**
+   * Tarjeta nueva del widget de Wompi. Opcional: si no viene, se cobra contra
+   * la tarjeta que la empresa ya tenga registrada (`POST /billing/payment-method`).
+   */
+  @IsOptional()
   @IsString()
   @MinLength(3)
-  cardToken!: string;
+  cardToken?: string;
 
+  /** Aceptación de términos. Obligatoria solo si se envía una tarjeta nueva. */
+  @IsOptional()
   @IsString()
   @MinLength(3)
-  acceptanceToken!: string;
+  acceptanceToken?: string;
 
   /**
    * Autorización de tratamiento de datos personales. Opcional para no romper
