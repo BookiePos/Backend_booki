@@ -105,6 +105,8 @@ export interface ProductionOutput {
   name: string;
   outputQty: number;
   extraCost: number;
+  /** Empaque del lote escrito en dinero en la receta. */
+  packagingCost: number;
   lines: {
     productId: string;
     sku: string;
@@ -234,6 +236,7 @@ export class ProductionService {
       outputQty: dto.outputQty,
       lines,
       extraCost: cop(dto.extraCost ?? 0),
+      packagingCost: cop(dto.packagingCost ?? 0),
       note: dto.note,
       active: true,
     });
@@ -250,6 +253,9 @@ export class ProductionService {
     if (dto.name !== undefined) bom.name = dto.name.trim();
     if (dto.outputQty !== undefined) bom.outputQty = dto.outputQty;
     if (dto.extraCost !== undefined) bom.extraCost = cop(dto.extraCost);
+    if (dto.packagingCost !== undefined) {
+      bom.packagingCost = cop(dto.packagingCost);
+    }
     if (dto.note !== undefined) bom.note = dto.note;
     if (dto.active !== undefined) bom.active = dto.active;
     if (dto.lines) {
@@ -360,11 +366,12 @@ export class ProductionService {
       throw new BadRequestException('El terminado está inactivo');
     }
 
-    const { lines, extraCost, bomId } = await this.resolveLines(
+    const { lines, extraCost, packagingCost, bomId } = await this.resolveLines(
       output,
       dto.plannedQty,
       dto.lines,
       dto.extraCost,
+      dto.packagingCost,
     );
 
     return this.orders.create({
@@ -380,6 +387,7 @@ export class ProductionService {
       producedQty: 0,
       lines,
       extraCost,
+      packagingCost,
       materialsCost: 0,
       totalCost: 0,
       unitCost: 0,
@@ -406,19 +414,27 @@ export class ProductionService {
     // insumos no es una orden válida, y dejar que se guarde así es fabricar un
     // costo unitario falso que después nadie sabe de dónde salió.
     const nextQty = dto.plannedQty ?? order.plannedQty;
-    if (dto.plannedQty !== undefined || dto.lines || dto.extraCost !== undefined) {
+    if (
+      dto.plannedQty !== undefined ||
+      dto.lines ||
+      dto.extraCost !== undefined ||
+      dto.packagingCost !== undefined
+    ) {
       const output = await this.products.getOrFail(order.productId.toString());
-      const { lines, extraCost, bomId } = await this.resolveLines(
-        output,
-        nextQty,
-        dto.lines,
-        // Con insumos explícitos no hay receta de la que prorratear la mano de
-        // obra, así que se conserva la que ya tenía la orden en vez de dejarla
-        // en cero por omisión y falsear el costo del lote.
-        dto.extraCost ?? (dto.lines ? order.extraCost : undefined),
-      );
+      const { lines, extraCost, packagingCost, bomId } =
+        await this.resolveLines(
+          output,
+          nextQty,
+          dto.lines,
+          // Con insumos explícitos no hay receta de la que prorratear la mano de
+          // obra, así que se conserva la que ya tenía la orden en vez de dejarla
+          // en cero por omisión y falsear el costo del lote.
+          dto.extraCost ?? (dto.lines ? order.extraCost : undefined),
+          dto.packagingCost ?? (dto.lines ? order.packagingCost : undefined),
+        );
       order.lines = lines as unknown as typeof order.lines;
       order.extraCost = extraCost;
+      order.packagingCost = packagingCost;
       order.bomId = bomId;
     }
     order.plannedQty = qtyRound(nextQty);
@@ -500,6 +516,7 @@ export class ProductionService {
     }
     const sedeId = order.sedeId.toString();
     const extraCost = cop(dto.extraCost ?? order.extraCost);
+    const packagingCost = cop(dto.packagingCost ?? order.packagingCost);
 
     // 1. Disponibilidad de todos los insumos (ver el docblock).
     await this.assertMaterialsAvailable(order, sedeId);
@@ -515,6 +532,7 @@ export class ProductionService {
             status: 'done',
             producedQty,
             extraCost,
+            packagingCost,
             lotCode,
             expiresAt: dto.expiresAt,
             note: dto.note ?? order.note,
@@ -556,14 +574,14 @@ export class ProductionService {
     }
 
     // Costeo: materiales al costo REAL de los lotes que salieron (no a un
-    // promedio del catálogo), más el costo de conversión del lote.
+    // promedio del catálogo), más la mano de obra y el empaque del lote.
     const lineCosts = consumed.map((line) =>
       sumBy(line.portions, (portion) =>
         cop(portion.qty * (portion.lot?.unitCost ?? line.product.cost ?? 0)),
       ),
     );
     const materialsCost = sumCop(lineCosts);
-    const totalCost = cop(materialsCost + extraCost);
+    const totalCost = cop(materialsCost + extraCost + packagingCost);
     const unitCost = cop(totalCost / producedQty);
 
     try {
@@ -634,7 +652,13 @@ export class ProductionService {
     plannedQty: number,
     explicit: ProductionLineDto[] | undefined,
     extraCost: number | undefined,
-  ): Promise<{ lines: BuiltLine[]; extraCost: number; bomId?: Types.ObjectId }> {
+    packagingCost: number | undefined,
+  ): Promise<{
+    lines: BuiltLine[];
+    extraCost: number;
+    packagingCost: number;
+    bomId?: Types.ObjectId;
+  }> {
     const build = async (
       raw: { productId: string; qty: number }[],
     ): Promise<BuiltLine[]> => {
@@ -678,7 +702,11 @@ export class ProductionService {
     };
 
     if (explicit && explicit.length > 0) {
-      return { lines: await build(explicit), extraCost: cop(extraCost ?? 0) };
+      return {
+        lines: await build(explicit),
+        extraCost: cop(extraCost ?? 0),
+        packagingCost: cop(packagingCost ?? 0),
+      };
     }
 
     const bom = await this.bomForProduct(output._id.toString());
@@ -702,6 +730,9 @@ export class ProductionService {
     return {
       lines,
       extraCost: cop(extraCost ?? bom.extraCost * factor),
+      // El empaque se prorratea como la mano de obra: media tanda gasta la
+      // mitad de las bolsas.
+      packagingCost: cop(packagingCost ?? (bom.packagingCost ?? 0) * factor),
       bomId: bom._id,
     };
   }
@@ -756,7 +787,10 @@ export class ProductionService {
       const materialsCost = sumBy(lines, (l) => l.subtotal);
       const estimatedUnitCost =
         bom.outputQty > 0
-          ? cop((materialsCost + bom.extraCost) / bom.outputQty)
+          ? cop(
+              (materialsCost + bom.extraCost + (bom.packagingCost ?? 0)) /
+                bom.outputQty,
+            )
           : 0;
 
       const lastOrder = lastOrders.get(productId);
@@ -769,6 +803,9 @@ export class ProductionService {
         name: bom.name,
         outputQty: bom.outputQty,
         extraCost: bom.extraCost,
+        // Las recetas de antes de esta versión no traen el campo: en dinero,
+        // "no lo escribí" es cero, no "no se sabe".
+        packagingCost: bom.packagingCost ?? 0,
         lines,
         product: {
           _id: productId,

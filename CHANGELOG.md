@@ -109,6 +109,30 @@ parecería a otra y la memoria no llegaría a servir nunca), y "esto se ha vendi
 varias veces sin empaque" es una respuesta válida, no un hueco que se rellene
 volviendo a proponer la bolsa de la ficha.
 
+### El empaque también se puede escribir en dinero
+
+Llevar cada bolsa en el inventario es lo correcto, pero exige tenerlas cargadas
+con su precio y contarlas. Quien todavía no está ahí —o compra servilletas por
+paquete y no las cuenta— se quedaba sin poder costear la receta. Ahora hay dos
+campos nuevos, los dos opcionales, los dos en COP entero y los dos con
+`default: 0`, así que nada cambia para quien no los use:
+
+- `CatalogProduct.laborCost` y `CatalogProduct.packagingCost` — por unidad
+  vendida. Conviven con la lista `packaging`: si están las dos, **suman**. Son
+  información de costeo y precio, y **no tocan el inventario ni el libro
+  contable**: el COGS de una venta sigue saliendo de lo que de verdad se
+  consumió, así que un costo escrito a mano no puede acreditar existencias que
+  nunca se movieron ni duplicar lo que ya paga la nómina.
+- `BillOfMaterials.packagingCost` y `ProductionOrder.packagingCost` — por lote.
+  Aquí sí entran al costo del terminado, igual que la mano de obra: se
+  prorratean al crear la orden, se congelan en ella y se suman al `totalCost` al
+  cerrarla, que es lo que valora el lote que entra a bodega.
+
+`extraCost` deja de significar "mano de obra, energía **y empaque**" y pasa a
+ser solo lo primero. Las recetas que ya existen no se tocan: lo que esté escrito
+ahí sigue contando igual, y el campo nuevo arranca en cero. Por eso no hay
+migración ni script.
+
 ---
 
 ## 1.4.0 — 14 de septiembre de 2026

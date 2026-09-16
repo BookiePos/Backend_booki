@@ -84,6 +84,18 @@ export class UpdateCatalogProductDto {
   @Type(() => RecipeLineDto)
   packaging?: RecipeLineDto[];
 
+  /** Mano de obra por unidad vendida, en pesos. Cero la quita. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  laborCost?: number;
+
+  /** Empaque por unidad vendida escrito en pesos. Cero lo quita. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  packagingCost?: number;
+
   @IsOptional()
   @IsBoolean()
   active?: boolean;

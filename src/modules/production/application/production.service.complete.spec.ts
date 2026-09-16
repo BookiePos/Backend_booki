@@ -68,6 +68,9 @@ describe('ProductionService.complete', () => {
       plannedQty: 120,
       producedQty: 0,
       extraCost: 30_000,
+      // Sin escribir, como las órdenes creadas antes de que el empaque se
+      // separara de la mano de obra.
+      packagingCost: undefined as number | undefined,
       lines: [
         {
           productId: harinaId,
@@ -179,6 +182,27 @@ describe('ProductionService.complete', () => {
     // Cada renglón queda con su costo real, no con el del catálogo.
     expect(result.lines[0]?.subtotal).toBe(78_000);
     expect(result.lines[1]?.subtotal).toBe(10_000);
+  });
+
+  it('suma el empaque del lote al costo del terminado', async () => {
+    // La receta cobra 24.000 de bolsas por lote, aparte de la mano de obra.
+    order.packagingCost = 24_000;
+
+    const result = await service.complete(orderId.toString(), {}, user);
+
+    // 88.000 de materiales + 30.000 de mano de obra + 24.000 de empaque.
+    expect(result.totalCost).toBe(142_000);
+    expect(result.unitCost).toBe(Math.round(142_000 / 120));
+  });
+
+  it('cuesta igual que antes si la receta no trae empaque escrito', async () => {
+    // Las recetas de antes de esta versión no tienen el campo. Que eso valga
+    // cero es lo que deja intactos los costos que ya estaban calculados.
+    expect(order.packagingCost).toBeUndefined();
+
+    const result = await service.complete(orderId.toString(), {}, user);
+
+    expect(result.totalCost).toBe(118_000);
   });
 
   it('reparte el costo entre la salida REAL, no entre la planeada', async () => {

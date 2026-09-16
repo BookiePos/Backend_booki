@@ -65,6 +65,12 @@ export class CreateBomDto {
   @Min(0)
   extraCost?: number;
 
+  /** Empaque del lote en dinero. Opcional: cero es una respuesta válida. */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  packagingCost?: number;
+
   @IsOptional()
   @IsString()
   note?: string;
@@ -91,6 +97,11 @@ export class UpdateBomDto {
   @IsInt()
   @Min(0)
   extraCost?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  packagingCost?: number;
 
   @IsOptional()
   @IsString()
@@ -144,6 +155,11 @@ export class CreateProductionOrderDto {
   extraCost?: number;
 
   @IsOptional()
+  @IsInt()
+  @Min(0)
+  packagingCost?: number;
+
+  @IsOptional()
   @IsString()
   note?: string;
 
@@ -176,6 +192,11 @@ export class UpdateProductionOrderDto {
   extraCost?: number;
 
   @IsOptional()
+  @IsInt()
+  @Min(0)
+  packagingCost?: number;
+
+  @IsOptional()
   @IsString()
   note?: string;
 }
@@ -204,6 +225,12 @@ export class CompleteProductionOrderDto {
   @IsInt()
   @Min(0)
   extraCost?: number;
+
+  /** Empaque real del lote, si al cerrar resultó distinto del de la receta. */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  packagingCost?: number;
 
   @IsOptional()
   @IsString()
