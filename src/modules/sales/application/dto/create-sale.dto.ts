@@ -107,6 +107,20 @@ export class SaleCustomerDto {
   @IsString()
   @MaxLength(120)
   email?: string;
+
+  /**
+   * Tipo de documento con su código DIAN: 13 cédula, 31 NIT, 22 cédula de
+   * extranjería, 41 pasaporte. Sin él se deduce del número.
+   */
+  @IsOptional()
+  @IsIn(['11', '12', '13', '21', '22', '31', '41', '42', '50', '91'])
+  idType?: string;
+
+  /** Dirección: la DIAN la exige para facturar a un cliente identificado. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  address?: string;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // SWC emite `Object` como metadata para los @Prop() con uniones de literales y
 // @nestjs/mongoose revienta al importar los esquemas. Mismo patrón que el resto
@@ -22,22 +22,22 @@ import { PlanUpgradeRequiredException } from '../domain/plan-upgrade.exception';
 /**
  * Cupo de documentos electrónicos: cuántas facturas puede emitir una empresa.
  *
- * Es cupo que el cliente PAGA, de dos formas distintas que no se pueden
- * confundir: el cupo mensual del plan, que se reinicia cada mes, y los paquetes
- * comprados, que no expiran. El orden importa —primero el mensual, después los
- * comprados—; al revés, un cliente gastaría paquetes que compró teniendo cupo
- * gratis disponible.
+ * Hoy TODOS los planes son ilimitados (`documentsPerMonth: null`): la factura
+ * sale en cada venta y un tope dejaría al negocio sin poder vender. Aun así se
+ * lleva la cuenta del mes, que es lo que se muestra en el panel.
  *
- * Y todo esto lo ejecutan peticiones concurrentes: dos facturas emitidas a la
- * vez no pueden pasar ambas por el último cupo. Por eso el descuento es un
- * `findOneAndUpdate` condicional y no un leer-y-después-escribir.
+ * El camino con tope se conserva (por si un plan vuelve a tenerlo) y se prueba
+ * fijando un tope a mano: primero el cupo mensual, después los paquetes
+ * comprados, y todo con `findOneAndUpdate` condicional para que dos facturas
+ * simultáneas no pasen ambas por el último cupo.
  *
  * El servicio se instancia DIRECTAMENTE con el modelo mockeado. El constructor
  * es: (businesses).
  */
 describe('BusinessService · cupo de documentos electrónicos', () => {
   const BIZ = '68b0f3c2a1d4e5f6a7b8c9d0';
-  const CUPO_PUNTO = PLAN_QUOTAS.punto.documentsPerMonth;
+  /** Tope de prueba para el camino con cupo (ningún plan real lo tiene hoy). */
+  const CUPO_PRUEBA = 400;
 
   let businesses: any;
   let service: BusinessService;
@@ -76,67 +76,84 @@ describe('BusinessService · cupo de documentos electrónicos', () => {
     vi.clearAllMocks();
   });
 
-  it('consume primero el cupo mensual del plan, sin tocar los créditos', async () => {
-    build(true, true);
+  describe('planes ilimitados (todos, hoy)', () => {
+    it('ningún plan tiene tope de documentos', () => {
+      for (const cupo of Object.values(PLAN_QUOTAS)) {
+        expect(cupo.documentsPerMonth).toBeNull();
+      }
+    });
 
-    await service.consumeDocument(BIZ, 'punto');
+    it('emitir solo suma al conteo del mes, sin condición de tope', async () => {
+      build(false, false);
 
-    expect(incrementos()).toEqual([{ docsThisMonth: 1 }]);
-  });
+      await service.consumeDocument(BIZ, 'punto');
 
-  it('el descuento mensual va condicionado al tope del plan', async () => {
-    build(true, false);
+      expect(businesses.findOneAndUpdate).not.toHaveBeenCalled();
+      const incs = businesses.updateOne.mock.calls.map((c: any[]) => c[1]);
+      expect(incs).toContainEqual({ $inc: { docsThisMonth: 1 } });
+    });
 
-    await service.consumeDocument(BIZ, 'punto');
+    it('nunca pide mejorar el plan ni gasta créditos comprados', async () => {
+      build(false, true);
 
-    const filtro = businesses.findOneAndUpdate.mock.calls[0][0];
-    expect(filtro.docsThisMonth).toEqual({ $lt: CUPO_PUNTO });
-  });
-
-  it('agotado el mes, tira de un crédito comprado', async () => {
-    build(false, true);
-
-    await service.consumeDocument(BIZ, 'punto');
-
-    expect(incrementos()).toEqual([
-      { docsThisMonth: 1 },
-      { docCredits: -1, docsThisMonth: 1 },
-    ]);
-  });
-
-  it('sin cupo mensual ni créditos, pide mejorar el plan', async () => {
-    build(false, false);
-
-    await expect(service.consumeDocument(BIZ, 'punto')).rejects.toBeInstanceOf(
-      PlanUpgradeRequiredException,
-    );
-  });
-
-  it('el mensaje de tope nombra el cupo real del plan', async () => {
-    build(false, false);
-
-    await expect(service.consumeDocument(BIZ, 'cadena')).rejects.toThrow(
-      String(PLAN_QUOTAS.cadena.documentsPerMonth),
-    );
-  });
-
-  it('cada plan tiene su propio tope', async () => {
-    build(true, false);
-    await service.consumeDocument(BIZ, 'cadena');
-
-    expect(businesses.findOneAndUpdate.mock.calls[0][0].docsThisMonth).toEqual({
-      $lt: PLAN_QUOTAS.cadena.documentsPerMonth,
+      await expect(service.consumeDocument(BIZ, 'cadena')).resolves.toBeUndefined();
+      expect(incrementos()).toEqual([]);
     });
   });
 
-  it('una empresa sin plan cae en el plan base, no en cupo infinito', async () => {
-    build(true, false);
+  describe('camino con tope (si un plan vuelve a tenerlo)', () => {
+    let original: number | null;
+    beforeEach(() => {
+      original = PLAN_QUOTAS.punto.documentsPerMonth;
+      PLAN_QUOTAS.punto.documentsPerMonth = CUPO_PRUEBA;
+    });
+    afterEach(() => {
+      PLAN_QUOTAS.punto.documentsPerMonth = original;
+    });
 
-    await service.consumeDocument(BIZ, null);
+    it('consume primero el cupo mensual del plan, sin tocar los créditos', async () => {
+      build(true, true);
 
-    const tope = businesses.findOneAndUpdate.mock.calls[0][0].docsThisMonth.$lt;
-    expect(typeof tope).toBe('number');
-    expect(tope).toBeGreaterThan(0);
+      await service.consumeDocument(BIZ, 'punto');
+
+      expect(incrementos()).toEqual([{ docsThisMonth: 1 }]);
+    });
+
+    it('el descuento mensual va condicionado al tope del plan', async () => {
+      build(true, false);
+
+      await service.consumeDocument(BIZ, 'punto');
+
+      const filtro = businesses.findOneAndUpdate.mock.calls[0][0];
+      expect(filtro.docsThisMonth).toEqual({ $lt: CUPO_PRUEBA });
+    });
+
+    it('agotado el mes, tira de un crédito comprado', async () => {
+      build(false, true);
+
+      await service.consumeDocument(BIZ, 'punto');
+
+      expect(incrementos()).toEqual([
+        { docsThisMonth: 1 },
+        { docCredits: -1, docsThisMonth: 1 },
+      ]);
+    });
+
+    it('sin cupo mensual ni créditos, pide mejorar el plan', async () => {
+      build(false, false);
+
+      await expect(service.consumeDocument(BIZ, 'punto')).rejects.toBeInstanceOf(
+        PlanUpgradeRequiredException,
+      );
+    });
+
+    it('el mensaje de tope nombra el cupo real del plan', async () => {
+      build(false, false);
+
+      await expect(service.consumeDocument(BIZ, 'punto')).rejects.toThrow(
+        String(CUPO_PRUEBA),
+      );
+    });
   });
 
   describe('reinicio mensual', () => {
@@ -244,7 +261,8 @@ describe('BusinessService · cupo de documentos electrónicos', () => {
       const uso = await service.documentUsage(BIZ);
 
       expect(uso.used).toBe(0);
-      expect(uso.base).toBe(CUPO_PUNTO);
+      // Ilimitado: el panel muestra el uso sin tope.
+      expect(uso.base).toBeNull();
       expect(uso.credits).toBe(100);
     });
 

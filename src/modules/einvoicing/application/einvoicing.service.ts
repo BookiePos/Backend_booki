@@ -2,7 +2,9 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -27,15 +29,28 @@ import {
 } from '../../core-auth/domain/sede-access';
 import {
   CONSUMIDOR_FINAL_NIT,
+  CREDIT_NOTE_PREFIX,
   MEDIO_PAGO_BY_METHOD,
+  RETRY_DELAYS_MS,
 } from '../domain/einvoicing.constants';
-import { computeCufe, dianVerificationUrl } from '../domain/cufe';
+import { dianVerificationUrl } from '../domain/cufe';
 import {
   computeResolutionStatus,
   type ResolutionStatus,
 } from '../domain/resolution-status';
+import { missingCustomerData } from '../domain/apidian-mapper';
+import type { EinvoiceDocument } from '../domain/einvoice-document';
+import type { SendOutcome } from '../domain/send-outcome';
+import {
+  EinvoiceConnection,
+  EinvoicingAccountsService,
+  normalizeNit,
+} from './einvoicing-accounts.service';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** Cuántos pendientes se reintentan por empresa en cada barrido. */
+const RETRY_BATCH = 50;
 
 /** Una sede con su resolución y su estado, para la pantalla de control. */
 export interface ResolutionRow {
@@ -74,8 +89,17 @@ const startOfDay = (d: Date) =>
 const endOfDay = (d: Date) =>
   new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
 
+/**
+ * Factura electrónica de venta y nota crédito, emitidas ante la DIAN.
+ *
+ * Quién firma y transmite (APIDIAN, o el simulado en desarrollo) lo decide el
+ * módulo; este servicio solo habla con la interfaz `EinvoiceProvider` a
+ * través de la conexión del NIT.
+ */
 @Injectable()
 export class EinvoicingService {
+  private readonly logger = new Logger(EinvoicingService.name);
+
   constructor(
     @InjectModel(ElectronicDocument.name)
     private readonly model: Model<ElectronicDocumentDocument>,
@@ -84,12 +108,13 @@ export class EinvoicingService {
     private readonly sales: SalesService,
     private readonly sedes: SedesService,
     private readonly businesses: BusinessService,
+    private readonly accounts: EinvoicingAccountsService,
   ) {}
 
   /**
-   * Descuenta un documento del cupo del plan (o de los créditos comprados).
-   * Se llama ANTES de quemar el consecutivo DIAN: si no hay cupo, aborta con 402
-   * sin consumir folio. Fail-open si la request no trae empresa en contexto.
+   * Cuenta el documento en el uso del mes. Los planes ya no tienen tope de
+   * documentos, pero el mecanismo se conserva por si alguno vuelve a tenerlo.
+   * Se llama ANTES de quemar el consecutivo DIAN.
    */
   private async consumeDocQuota(): Promise<void> {
     const ctx = TenantContext.current();
@@ -114,7 +139,29 @@ export class EinvoicingService {
     return doc;
   }
 
-  /** Genera (o devuelve si ya existe) la factura electrónica de una venta. */
+  /**
+   * Conexión con la DIAN para el NIT de la sede, o 400 claro si no la hay.
+   *
+   * Se pide ANTES de reservar el consecutivo: sin conexión el documento no
+   * podría salir, y el número autorizado se habría gastado en nada.
+   */
+  private async connectionOrFail(sede: SedeDocument): Promise<EinvoiceConnection> {
+    const conn = await this.accounts.connectionFor(sede.nit);
+    if (!conn) {
+      throw new BadRequestException(
+        'Este NIT todavía no está conectado con la DIAN. Configúralo en Facturación electrónica > Conexión DIAN.',
+      );
+    }
+    return conn;
+  }
+
+  /**
+   * Genera la factura electrónica de una venta y la envía a la DIAN.
+   *
+   * El número se reserva primero y el documento queda guardado como `pending`
+   * ANTES de enviarlo: si el envío falla a mitad de camino, el documento sigue
+   * ahí con su número y se reintenta con el MISMO número, en vez de quemar otro.
+   */
   async createFromSale(
     saleId: string,
     user: JwtUser,
@@ -135,22 +182,28 @@ export class EinvoicingService {
 
     const sede = await this.sedes.findOrFail(sedeId);
 
-    // No quemar folio en un documento inválido: sin clave técnica no se puede
-    // calcular el CUFE (ni el QR), y el consecutivo del rango autorizado por la
-    // DIAN es un recurso escaso. Validamos ANTES de incrementar el contador; si
-    // falta, se aborta sin consumir número.
+    // Nada de lo que sigue quema folio: el consecutivo autorizado por la DIAN
+    // es un recurso escaso y no se gasta en un documento que no puede salir.
     if (!sede.resolucionFe?.claveTecnica) {
       throw new BadRequestException(
-        'No se puede emitir: falta la clave técnica DIAN de la sede para calcular el CUFE.',
+        'No se puede emitir: falta la clave técnica DIAN de la resolución de la sede.',
       );
     }
-
-    // La vigencia también se comprueba antes de tocar nada. Una resolución
-    // vencida no autoriza a facturar, y sin esto el sistema seguía emitiendo
-    // con normalidad e imprimiendo en cada factura una vigencia ya expirada.
     this.assertResolucionVigente(sede);
+    const adquiriente = this.buildAdquiriente(sale);
+    const faltan = missingCustomerData({
+      docNumber: adquiriente.docNumber,
+      name: adquiriente.name,
+      phone: adquiriente.phone,
+      address: adquiriente.address,
+    });
+    if (faltan.length) {
+      throw new BadRequestException(
+        `Para facturar con los datos del cliente falta: ${faltan.join(', ')}. Complétalos o factura a consumidor final.`,
+      );
+    }
+    const conn = await this.connectionOrFail(sede);
 
-    // Cupo de documentos del plan (antes de quemar folio: si no hay cupo, 402).
     await this.consumeDocQuota();
 
     const prefix = sede.resolucionFe.prefijo ?? '';
@@ -159,70 +212,76 @@ export class EinvoicingService {
       sede.resolucionFe.rangoDesde ?? 1,
       sede.resolucionFe.rangoHasta,
     );
-    const fullNumber = `${prefix}${number}`;
     const { issueDate, issueTime } = this.now();
 
-    const lines = sale.lines.map((l) => {
-      const net = round2(l.taxBase + l.taxAmount);
-      return {
-        code: l.sku,
-        description: l.name,
-        qty: l.qty,
+    const lines = sale.lines.map((l) => ({
+      code: l.sku,
+      description: l.name,
+      qty: l.qty,
+      unitCode: '94',
+      unitPrice: l.unitPrice,
+      discountAmount: l.discountAmount ?? 0,
+      base: l.taxBase ?? 0,
+      taxKind: 'iva' as const,
+      ivaRate: l.ivaRate ?? 0,
+      ivaAmount: l.taxAmount ?? 0,
+      total: round2((l.taxBase ?? 0) + (l.taxAmount ?? 0)),
+    }));
+    // El domicilio hace parte de la base gravable (DIAN, Oficio 664 de 2022):
+    // va como una línea por cada tarifa en que se repartió.
+    for (const p of sale.deliveryTaxes ?? []) {
+      const gross = round2(p.base + p.amount);
+      lines.push({
+        code: 'DOMICILIO',
+        description: 'Servicio de domicilio',
+        qty: 1,
         unitCode: '94',
-        unitPrice: l.unitPrice,
-        discountAmount: l.discountAmount ?? 0,
-        base: l.taxBase ?? 0,
-        ivaRate: l.ivaRate ?? 0,
-        ivaAmount: l.taxAmount ?? 0,
-        total: net,
-      };
-    });
+        unitPrice: gross,
+        discountAmount: 0,
+        base: p.base,
+        taxKind: 'iva' as const,
+        ivaRate: p.rate,
+        ivaAmount: p.amount,
+        total: gross,
+      });
+    }
 
-    const adquiriente = this.buildAdquiriente(sale);
-    const emisor = this.buildEmisor(sede);
-    const medioPago = MEDIO_PAGO_BY_METHOD[sale.payment.method] ?? '10';
-
-    // CUFE (Anexo 1.9). La clave técnica ya se validó arriba (folio no quemado).
-    const cufe = computeCufe({
-      numFac: fullNumber,
-      fecFac: issueDate,
-      horFac: issueTime,
-      valFac: sale.taxableBase ?? 0,
-      valIva: sale.taxTotal ?? 0,
-      valTot: sale.total,
-      nitOFE: (sede.nit ?? '').replace(/\D/g, ''),
-      numAdq: adquiriente.docNumber ?? CONSUMIDOR_FINAL_NIT,
-      claveTecnica: sede.resolucionFe.claveTecnica,
-    });
-    const qrUrl = dianVerificationUrl(cufe);
-
-    return this.model.create({
+    const doc = await this.model.create({
       type: 'invoice',
       saleId: sale._id,
       sedeId: new Types.ObjectId(sedeId),
       prefix: prefix || undefined,
       number,
-      fullNumber,
+      fullNumber: `${prefix}${number}`,
       issueDate,
       issueTime,
-      emisor,
+      emisor: this.buildEmisor(sede),
       adquiriente,
       lines,
       taxableBase: sale.taxableBase ?? 0,
       ivaTotal: sale.taxTotal ?? 0,
       discountTotal: sale.discountTotal ?? 0,
-      total: sale.total,
-      formaPago: '1',
-      medioPago,
+      // Lo facturado: las líneas más el domicilio. La propina va aparte.
+      total: round2(sale.total + (sale.deliveryFee ?? 0)),
+      tip: sale.tip ?? 0,
+      formaPago: sale.payment.method === 'credit' ? '2' : '1',
+      medioPago: MEDIO_PAGO_BY_METHOD[sale.payment.method] ?? '10',
       resolution: this.buildResolution(sede),
-      cufe,
-      qrUrl,
-      dianStatus: 'draft',
+      dianStatus: 'pending',
+      environment: conn.environment,
+      technicalProvider: conn.provider.name,
       createdByEmail: user.email,
     });
+
+    return this.transmit(doc, conn);
   }
 
-  /** Genera la nota crédito que anula/corrige una factura ya emitida. */
+  /**
+   * Genera la nota crédito que anula una factura y la envía a la DIAN.
+   *
+   * Solo sobre facturas ACEPTADAS: la nota referencia el CUFE oficial, y una
+   * factura que la DIAN nunca validó no se anula, se corrige y se reenvía.
+   */
   async createCreditNote(
     invoiceId: string,
     reason: string,
@@ -234,44 +293,35 @@ export class EinvoicingService {
     if (invoice.type !== 'invoice') {
       throw new BadRequestException('Solo se puede anular una factura de venta');
     }
-
-    const sede = await this.sedes.findOrFail(sedeId);
-
-    // Igual que en la factura: sin clave técnica no hay CUFE, así que no se
-    // consume el consecutivo de la nota crédito. Validar ANTES de nextNumber.
-    if (!sede.resolucionFe?.claveTecnica) {
+    if (invoice.dianStatus !== 'accepted' || !invoice.cufe) {
       throw new BadRequestException(
-        'No se puede emitir: falta la clave técnica DIAN de la sede para calcular el CUFE.',
+        'Solo se anula con nota crédito una factura que la DIAN ya aceptó. Si fue rechazada, corrígela y reenvíala.',
       );
     }
+    const already = await this.model
+      .findOne({ referenceId: invoice._id, type: 'credit_note' })
+      .exec();
+    if (already) return already;
 
-    // Una nota crédito también es un documento electrónico: cuenta al cupo.
+    const sede = await this.sedes.findOrFail(sedeId);
+    const conn = await this.connectionOrFail(sede);
+
+    // Una nota crédito también es un documento electrónico: cuenta al uso.
     await this.consumeDocQuota();
 
-    const number = await this.nextNumber(`nc:${sedeId}`, 1, undefined);
-    const fullNumber = `NC${number}`;
+    // La numeración de notas es del NIT (así la registra el facturador), no de
+    // la sede: dos sedes del mismo NIT no pueden emitir ambas la NC1.
+    const nit = normalizeNit(sede.nit);
+    const number = await this.nextNumber(`nc:nit:${nit}`, 1, undefined);
     const { issueDate, issueTime } = this.now();
 
-    const cufe = computeCufe({
-      numFac: fullNumber,
-      fecFac: issueDate,
-      horFac: issueTime,
-      valFac: invoice.taxableBase,
-      valIva: invoice.ivaTotal,
-      valTot: invoice.total,
-      nitOFE: (sede.nit ?? '').replace(/\D/g, ''),
-      numAdq: invoice.adquiriente?.docNumber ?? CONSUMIDOR_FINAL_NIT,
-      claveTecnica: sede.resolucionFe.claveTecnica,
-    });
-    const qrUrl = dianVerificationUrl(cufe);
-
-    return this.model.create({
+    const doc = await this.model.create({
       type: 'credit_note',
       saleId: invoice.saleId,
       sedeId: invoice.sedeId,
-      prefix: 'NC',
+      prefix: CREDIT_NOTE_PREFIX,
       number,
-      fullNumber,
+      fullNumber: `${CREDIT_NOTE_PREFIX}${number}`,
       issueDate,
       issueTime,
       emisor: invoice.emisor,
@@ -281,6 +331,7 @@ export class EinvoicingService {
       ivaTotal: invoice.ivaTotal,
       discountTotal: invoice.discountTotal,
       total: invoice.total,
+      tip: invoice.tip ?? 0,
       formaPago: invoice.formaPago,
       medioPago: invoice.medioPago,
       resolution: invoice.resolution,
@@ -288,11 +339,250 @@ export class EinvoicingService {
       referenceNumber: invoice.fullNumber,
       referenceCufe: invoice.cufe,
       referenceId: invoice._id,
-      cufe,
-      qrUrl,
-      dianStatus: 'draft',
+      // La fecha de la factura viaja en la referencia de la nota.
+      referenceIssueDate: invoice.issueDate,
+      dianStatus: 'pending',
+      environment: conn.environment,
+      technicalProvider: conn.provider.name,
       createdByEmail: user.email,
     });
+
+    return this.transmit(doc, conn);
+  }
+
+  /**
+   * Reenvía un documento pendiente, rechazado o fallido, con su MISMO número.
+   *
+   * Antes de reenviar uno rechazado o fallido se refrescan los datos del
+   * emisor desde la sede: si la DIAN lo rechazó por un dato fiscal mal
+   * escrito, se corrige en la sede y se reintenta sin quemar otro consecutivo.
+   */
+  async retry(id: string, user: JwtUser): Promise<ElectronicDocumentDocument> {
+    const doc = await this.get(id, user);
+    if (doc.dianStatus === 'accepted') return doc;
+    if (doc.dianStatus === 'draft') {
+      throw new BadRequestException(
+        'Este documento es de antes de la conexión con la DIAN y no se puede enviar.',
+      );
+    }
+    const sede = await this.sedes.findOrFail(doc.sedeId.toString());
+    if (doc.dianStatus !== 'pending') {
+      doc.emisor = this.buildEmisor(sede);
+    }
+    const conn = await this.connectionOrFail(sede);
+    return this.transmit(doc, conn);
+  }
+
+  /**
+   * Reintenta los pendientes cuya hora llegó. Lo llama el barrido periódico por
+   * cada empresa, dentro de su contexto.
+   */
+  async retryDue(): Promise<{ retried: number; accepted: number }> {
+    const due = await this.model
+      .find({ dianStatus: 'pending', nextAttemptAt: { $lte: new Date() } })
+      .sort({ nextAttemptAt: 1 })
+      .limit(RETRY_BATCH)
+      .exec();
+    let accepted = 0;
+    for (const doc of due) {
+      try {
+        const sede = await this.sedes.findOrFail(doc.sedeId.toString());
+        const conn = await this.accounts.connectionFor(sede.nit);
+        if (!conn) {
+          await this.applyOutcome(doc, undefined, {
+            status: 'failed',
+            message: 'El NIT perdió la conexión con la DIAN.',
+            errors: [],
+          });
+          continue;
+        }
+        const out = await this.transmit(doc, conn);
+        if (out.dianStatus === 'accepted') accepted++;
+      } catch (err) {
+        this.logger.error(
+          `Reintento de ${doc.fullNumber} falló: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    return { retried: due.length, accepted };
+  }
+
+  /** PDF o XML del documento, tal como lo dejó el facturador. */
+  async downloadFile(
+    id: string,
+    kind: 'pdf' | 'xml',
+    user: JwtUser,
+  ): Promise<{ data: Buffer; contentType: string; fileName: string }> {
+    const doc = await this.get(id, user);
+    const fileName = kind === 'pdf' ? doc.pdfFile : doc.xmlUrl;
+    if (doc.dianStatus !== 'accepted' || !fileName) {
+      throw new NotFoundException(
+        'Este documento todavía no tiene archivo: la DIAN no lo ha aceptado.',
+      );
+    }
+    const conn = await this.accounts.connectionFor(doc.emisor?.nit);
+    if (!conn) {
+      throw new ServiceUnavailableException('No hay conexión con el facturador.');
+    }
+    try {
+      const file = await conn.provider.downloadFile(
+        conn.token,
+        normalizeNit(doc.emisor?.nit),
+        fileName,
+      );
+      return { ...file, fileName };
+    } catch (err) {
+      throw new ServiceUnavailableException(
+        err instanceof Error ? err.message : 'No se pudo descargar el archivo.',
+      );
+    }
+  }
+
+  // ── Envío ─────────────────────────────────────────────────────────────────────
+
+  /**
+   * Envía el documento y guarda lo que pasó. Nunca lanza por un problema de la
+   * DIAN o del facturador: el resultado queda en el documento (aceptado,
+   * rechazado, pendiente o fallido) y es lo que se devuelve.
+   */
+  private async transmit(
+    doc: ElectronicDocumentDocument,
+    conn: EinvoiceConnection,
+  ): Promise<ElectronicDocumentDocument> {
+    let outcome: SendOutcome;
+    try {
+      const payload = this.toEinvoiceDocument(doc);
+      const opts = conn.testSetId ? { testSetId: conn.testSetId } : undefined;
+      outcome =
+        doc.type === 'invoice'
+          ? await conn.provider.sendInvoice(conn.token, payload, opts)
+          : await conn.provider.sendCreditNote(conn.token, payload, opts);
+      // Ya había entrado: lo que vale es lo que la DIAN tiene, no reenviarlo.
+      if (outcome.status === 'duplicate' && outcome.cufe) {
+        outcome = await conn.provider.getStatus(conn.token, outcome.cufe);
+      } else if (outcome.status === 'duplicate') {
+        outcome = { ...outcome, status: 'pending' };
+      }
+    } catch (err) {
+      outcome = {
+        status: 'failed',
+        message: err instanceof Error ? err.message : String(err),
+        errors: [],
+      };
+    }
+    return this.applyOutcome(doc, conn, outcome);
+  }
+
+  private async applyOutcome(
+    doc: ElectronicDocumentDocument,
+    conn: EinvoiceConnection | undefined,
+    outcome: SendOutcome,
+  ): Promise<ElectronicDocumentDocument> {
+    const attempts = (doc.attempts ?? 0) + 1;
+    doc.attempts = attempts;
+    doc.lastAttemptAt = new Date();
+    doc.dianMessage = outcome.message;
+    doc.dianErrors = outcome.errors;
+    if (conn) {
+      doc.technicalProvider = conn.provider.name;
+      doc.environment = conn.environment;
+    }
+
+    switch (outcome.status) {
+      case 'accepted':
+        doc.dianStatus = 'accepted';
+        doc.cufe = outcome.cufe ?? doc.cufe;
+        doc.qrUrl =
+          outcome.qrUrl ??
+          (doc.cufe ? dianVerificationUrl(doc.cufe, doc.environment) : undefined);
+        doc.pdfFile = outcome.files?.pdf ?? doc.pdfFile;
+        doc.xmlUrl = outcome.files?.xml ?? doc.xmlUrl;
+        doc.validatedAt = new Date();
+        doc.nextAttemptAt = undefined;
+        break;
+      case 'rejected':
+      case 'failed':
+        doc.dianStatus = outcome.status;
+        if (outcome.cufe) doc.cufe = outcome.cufe;
+        doc.nextAttemptAt = undefined;
+        break;
+      default: {
+        // Pendiente (o duplicado sin CUFE): espera creciente y, agotada la
+        // lista, queda quieto hasta que alguien lo reenvíe a mano.
+        doc.dianStatus = 'pending';
+        if (outcome.cufe) doc.cufe = outcome.cufe;
+        const delay = RETRY_DELAYS_MS[attempts - 1];
+        doc.nextAttemptAt =
+          delay !== undefined ? new Date(Date.now() + delay) : undefined;
+      }
+    }
+    await doc.save();
+    if (doc.dianStatus !== 'accepted') {
+      this.logger.warn(
+        `${doc.fullNumber} quedó ${doc.dianStatus}: ${outcome.message} ${outcome.errors.join(' | ')}`,
+      );
+    }
+    return doc;
+  }
+
+  /** El documento guardado, en la forma que se le entrega al proveedor. */
+  private toEinvoiceDocument(doc: ElectronicDocumentDocument): EinvoiceDocument {
+    const a = doc.adquiriente;
+    const consumidorFinal = !a?.docNumber || a.docNumber === CONSUMIDOR_FINAL_NIT;
+    const method =
+      Object.entries(MEDIO_PAGO_BY_METHOD).find(
+        ([, code]) => code === doc.medioPago,
+      )?.[0] ?? 'cash';
+    return {
+      kind: doc.type,
+      prefix: doc.prefix ?? '',
+      number: doc.number,
+      resolutionNumber:
+        doc.type === 'invoice' ? doc.resolution?.numero : undefined,
+      issueDate: doc.issueDate,
+      issueTime: doc.issueTime.slice(0, 8),
+      issuer: {
+        nit: normalizeNit(doc.emisor?.nit),
+        dv: doc.emisor?.nitDv,
+        name: doc.emisor?.name ?? '',
+        address: doc.emisor?.address,
+        phone: doc.emisor?.phone,
+        email: doc.emisor?.email,
+        departamento: doc.emisor?.departamento,
+        ciudad: doc.emisor?.ciudad,
+      },
+      customer: consumidorFinal
+        ? {}
+        : {
+            docType: a?.docType,
+            docNumber: a?.docNumber,
+            name: a?.name,
+            phone: a?.phone,
+            email: a?.email,
+            address: a?.address,
+          },
+      lines: doc.lines.map((l) => ({
+        code: l.code ?? '',
+        description: l.description,
+        qty: l.qty,
+        grossTotal: round2(l.qty * l.unitPrice),
+        base: l.base,
+        taxKind: l.taxKind ?? 'iva',
+        taxRate: l.ivaRate ?? 0,
+        taxAmount: l.ivaAmount ?? 0,
+      })),
+      paymentMethod: doc.formaPago === '2' ? 'credit' : method,
+      tip: doc.tip ?? 0,
+      reference:
+        doc.type === 'credit_note' && doc.referenceCufe
+          ? {
+              fullNumber: doc.referenceNumber ?? '',
+              cufe: doc.referenceCufe,
+              issueDate: doc.referenceIssueDate ?? doc.issueDate,
+            }
+          : undefined,
+      reason: doc.reason,
+    };
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -310,7 +600,6 @@ export class EinvoicingService {
     return (raw._id ?? (sale.sedeId as unknown as Types.ObjectId)).toString();
   }
 
-  /** Consecutivo dentro del rango autorizado (o libre para notas). */
   /**
    * Rechaza la emisión si la resolución no está vigente hoy.
    *
@@ -381,6 +670,10 @@ export class EinvoicingService {
    * rango 1-2000, renovabas a 2001-4000 y la siguiente salía 2500, comiéndose
    * 499 números autorizados). Fijando `seq` al registrar, la próxima factura
    * sale con el número que se pide.
+   *
+   * Si el NIT ya está conectado con la DIAN, la resolución nueva también se
+   * registra en el facturador; si eso falla, la resolución queda guardada aquí
+   * y se puede volver a sincronizar desde la conexión.
    */
   async registerResolution(
     sedeId: string,
@@ -422,6 +715,18 @@ export class EinvoicingService {
       )
       .exec();
 
+    if (await this.accounts.connectionFor(sede.nit).catch(() => undefined)) {
+      try {
+        await this.accounts.syncResolutions(sedeId, user);
+      } catch (err) {
+        this.logger.warn(
+          `La resolución de la sede ${sede.code} quedó guardada pero no se pudo registrar en el facturador: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
     return this.resolutionStatus(user);
   }
 
@@ -440,6 +745,7 @@ export class EinvoicingService {
     return (rangoDesde ?? 1) + (counter?.seq ?? 0);
   }
 
+  /** Consecutivo dentro del rango autorizado (o libre para notas). */
   private async nextNumber(
     counterId: string,
     desde: number,
@@ -483,14 +789,19 @@ export class EinvoicingService {
       return { docType: '13', docNumber: CONSUMIDOR_FINAL_NIT, name: 'Consumidor final' };
     }
     const num = (c.idNumber ?? '').replace(/\s/g, '');
-    // Heurística simple: > 10 dígitos ⇒ NIT (31); si no, cédula (13).
-    const docType = num.replace(/\D/g, '').length > 10 ? '31' : '13';
+    // Si el POS no mandó el tipo, se deduce: un número con DV ("900…-7") o de
+    // 9 dígitos que empieza por 8 o 9 es NIT; lo demás, cédula.
+    const digits = (num.split('-')[0] ?? '').replace(/\D/g, '');
+    const pareceNit =
+      num.includes('-') || (digits.length === 9 && /^[89]/.test(digits));
+    const docType = c.idType ?? (pareceNit ? '31' : '13');
     return {
       docType,
       docNumber: num || CONSUMIDOR_FINAL_NIT,
       name: c.name || 'Consumidor final',
       phone: c.phone,
       email: c.email,
+      address: c.address,
     };
   }
 

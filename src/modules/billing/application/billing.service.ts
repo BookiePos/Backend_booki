@@ -46,7 +46,6 @@ import {
   mapWompiStatus,
 } from '../domain/billing.constants';
 
-const DOCS_PACKAGE_PRICE = ADD_ONS.docPackage.price;
 
 /**
  * Resultado que devuelve el frontend para hacer polling del estado del cobro,
@@ -288,36 +287,20 @@ export class BillingService {
     };
   }
 
-  /** Compra única de paquetes de documentos contra la tarjeta ya guardada. */
-  async purchaseDocs(businessId: string, packages: number): Promise<ChargeResult> {
-    this.ensureConfigured();
-    const sub = await this.subs.findOne({ businessId }).exec();
-    if (!sub || sub.status === 'canceled') {
-      throw new BadRequestException(
-        'Necesitas una suscripción activa con tarjeta registrada para comprar documentos.',
-      );
-    }
-    const amountInCents = DOCS_PACKAGE_PRICE * packages * 100;
-    const reference = `doc-${businessId}-${Date.now()}`;
-    const payment = await this.payments.create({
-      businessId,
-      subscriptionId: sub._id.toString(),
-      reference,
-      kind: 'docPackage',
-      amountInCents,
-      status: 'pending',
-      docPackages: packages,
-    });
-    const tx = await this.wompi.createTransaction({
-      amountInCents,
-      reference,
-      customerEmail: sub.customerEmail,
-      paymentSourceId: sub.paymentSourceId,
-    });
-    payment.wompiTransactionId = tx.id;
-    await payment.save();
-    await this.syncTransaction(payment, tx.status);
-    return { reference, transactionId: tx.id, status: tx.status };
+  /**
+   * Compra de paquetes de documentos: ya no se vende.
+   *
+   * Los documentos electrónicos son ilimitados en todos los planes, así que un
+   * paquete no compraría nada. Se rechaza en vez de cobrar, por si alguna
+   * pantalla vieja (o una llamada directa) todavía lo intenta.
+   */
+  async purchaseDocs(
+    _businessId: string,
+    _packages: number,
+  ): Promise<ChargeResult> {
+    throw new BadRequestException(
+      'Los documentos electrónicos ya son ilimitados en todos los planes: no hace falta comprar paquetes.',
+    );
   }
 
   /** Procesa un evento del webhook de Wompi (`transaction.updated`). */
@@ -360,7 +343,7 @@ export class BillingService {
     subscription: SubscriptionDocument | null;
     paymentMethod: PaymentMethodDocument | null;
     payments: PaymentDocument[];
-    documents: { used: number; base: number; credits: number; period: string };
+    documents: { used: number; base: number | null; credits: number; period: string };
   }> {
     const [subscription, paymentMethod, payments, documents] = await Promise.all([
       this.subs.findOne({ businessId }).exec(),

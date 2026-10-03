@@ -50,14 +50,12 @@ describe('effectiveEntitlements', () => {
       expect(e.quotas.payrollEmployees).toBe(0);
     });
 
-    it('los cupos crecen con el plan, nunca al revés', () => {
+    it('los documentos electrónicos son ilimitados en todos los planes', () => {
       const planes = ['punto', 'negocio', 'control', 'cadena'] as const;
-      const documentos = planes.map(
-        (p) => effectiveEntitlements(p).quotas.documentsPerMonth,
-      );
 
-      const ordenado = [...documentos].sort((a, b) => a - b);
-      expect(documentos).toEqual(ordenado);
+      for (const p of planes) {
+        expect(effectiveEntitlements(p).quotas.documentsPerMonth).toBeNull();
+      }
     });
   });
 

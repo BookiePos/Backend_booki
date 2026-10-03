@@ -5,7 +5,10 @@ import {
   DianStatus,
   DOC_TYPES,
   DocType,
+  EINVOICE_ENVIRONMENTS,
+  EinvoiceEnvironmentName,
 } from '../../domain/einvoicing.constants';
+import type { EinvoiceTaxKind } from '../../domain/einvoice-document';
 
 /** Datos fiscales del emisor congelados al emitir. */
 @Schema({ _id: false })
@@ -33,6 +36,8 @@ export class DocAdquiriente {
   @Prop() name?: string;
   @Prop() phone?: string;
   @Prop() email?: string;
+  /** Exigida por la DIAN a todo cliente identificado (no al consumidor final). */
+  @Prop() address?: string;
 }
 const DocAdquirienteSchema = SchemaFactory.createForClass(DocAdquiriente);
 
@@ -48,6 +53,12 @@ export class DocLine {
   @Prop({ default: 0, min: 0 }) discountAmount!: number;
   /** Base gravable (sin IVA). */
   @Prop({ required: true, min: 0 }) base!: number;
+  /**
+   * Tributo de la línea. Hoy el POS solo produce IVA; `inc` queda listo para
+   * el impuesto al consumo de restaurantes y `none` para lo excluido.
+   */
+  @Prop({ type: String, enum: ['iva', 'inc', 'none'], default: 'iva' })
+  taxKind!: EinvoiceTaxKind;
   @Prop({ default: 0, min: 0 }) ivaRate!: number;
   @Prop({ default: 0, min: 0 }) ivaAmount!: number;
   /** Total de la línea (neto, IVA incluido). */
@@ -71,8 +82,11 @@ export type ElectronicDocumentDocument = HydratedDocument<ElectronicDocument>;
 
 /**
  * Documento electrónico (factura de venta o nota crédito). Contiene TODO lo que
- * la ley exige, más los campos que el proveedor tecnológico rellena al validar
- * ante la DIAN (cufe, firma, xml, estado). Sin PT queda en estado 'draft'.
+ * la ley exige, más lo que devuelve la DIAN al validarlo (CUFE, QR, estado).
+ *
+ * Nace `pending` con su número ya reservado y pasa a `accepted` cuando la DIAN
+ * lo valida. Si la DIAN no responde, se reintenta solo con el MISMO número; si
+ * lo rechaza, se corrige y se reenvía, también con el mismo número.
  */
 @Schema({ timestamps: true, collection: 'electronic_documents' })
 export class ElectronicDocument {
@@ -124,6 +138,10 @@ export class ElectronicDocument {
   @Prop({ required: true, min: 0 })
   total!: number;
 
+  /** Propina voluntaria: va como cargo, fuera de la base gravable. */
+  @Prop({ default: 0, min: 0 })
+  tip!: number;
+
   /** Forma de pago: '1' contado, '2' crédito. */
   @Prop({ default: '1' })
   formaPago!: string;
@@ -145,11 +163,15 @@ export class ElectronicDocument {
   @Prop()
   referenceCufe?: string;
 
+  /** Fecha de emisión de la factura que corrige (la DIAN la exige). */
+  @Prop()
+  referenceIssueDate?: string;
+
   @Prop({ type: Types.ObjectId, ref: 'ElectronicDocument' })
   referenceId?: Types.ObjectId;
 
-  // ── DIAN / proveedor tecnológico (se rellenan al validar) ────────────────────
-  /** CUFE (facturas) / CUDE (notas). SHA-384 del Anexo 1.9. */
+  // ── DIAN (se rellenan al validar) ──────────────────────────────────────────
+  /** CUFE (facturas) / CUDE (notas), el que devolvió la DIAN. */
   @Prop()
   cufe?: string;
 
@@ -159,14 +181,46 @@ export class ElectronicDocument {
   @Prop()
   signature?: string;
 
-  @Prop({ required: true, enum: DIAN_STATUS, default: 'draft' })
+  @Prop({ required: true, enum: DIAN_STATUS, default: 'pending' })
   dianStatus!: DianStatus;
 
+  /** Mensaje corto del último intento ("Aceptada por la DIAN", "Rechazada…"). */
+  @Prop()
+  dianMessage?: string;
+
+  /** Reglas incumplidas o notificaciones de la DIAN, una por renglón. */
+  @Prop({ type: [String], default: [] })
+  dianErrors!: string[];
+
+  /** Cuándo la aceptó la DIAN. */
+  @Prop()
+  validatedAt?: Date;
+
+  /** Ambiente en que se emitió: lo de habilitación no vale fiscalmente. */
+  @Prop({ enum: EINVOICE_ENVIRONMENTS })
+  environment?: EinvoiceEnvironmentName;
+
+  /** Quién lo transmitió (apidian | simulado). */
   @Prop()
   technicalProvider?: string;
 
+  /** Archivos que dejó el facturador (nombres, se descargan por la API). */
+  @Prop()
+  pdfFile?: string;
+
   @Prop()
   xmlUrl?: string;
+
+  // ── Reintentos ─────────────────────────────────────────────────────────────
+  @Prop({ default: 0, min: 0 })
+  attempts!: number;
+
+  @Prop()
+  lastAttemptAt?: Date;
+
+  /** Próximo reintento automático. Sin valor: no se reintenta solo. */
+  @Prop({ index: true })
+  nextAttemptAt?: Date;
 
   @Prop({ required: true })
   createdByEmail!: string;

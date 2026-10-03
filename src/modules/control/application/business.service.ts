@@ -91,6 +91,14 @@ export class BusinessService {
       )
       .exec();
 
+    // Plan ilimitado: solo se lleva la cuenta del mes, para mostrar el uso.
+    if (base === null) {
+      await this.businesses
+        .updateOne({ _id: id }, { $inc: { docsThisMonth: 1 } })
+        .exec();
+      return;
+    }
+
     // 1) Consumir del cupo mensual del plan.
     const monthly = await this.businesses
       .findOneAndUpdate(
@@ -164,7 +172,13 @@ export class BusinessService {
   /** Uso de documentos del mes en curso (para el panel de facturación). */
   async documentUsage(
     id: string,
-  ): Promise<{ used: number; base: number; credits: number; period: string }> {
+  ): Promise<{
+    used: number;
+    /** `null` = ilimitado. */
+    base: number | null;
+    credits: number;
+    period: string;
+  }> {
     const period = this.currentDocsPeriod();
     const business = await this.findById(id);
     const base = PLAN_QUOTAS[normalizePlan(business?.plan)].documentsPerMonth;
