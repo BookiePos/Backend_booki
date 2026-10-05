@@ -445,6 +445,18 @@ describe('interpretApidianResponse', () => {
     expect(out.status).toBe('pending');
   });
 
+  it('error 500 con explicación de APIDIAN: falla de configuración, no se reintenta', () => {
+    // Visto con APIDIAN real: empresa creada pero sin software registrado.
+    const out = interpretApidianResponse(500, {
+      success: false,
+      message: 'Error interno del servidor',
+      error: 'Attempt to read property "url" on null',
+    });
+
+    expect(out.status).toBe('failed');
+    expect(out.errors).toEqual(['Attempt to read property "url" on null']);
+  });
+
   it('sin respuesta (red o timeout) o error 5xx: pendiente', () => {
     expect(interpretApidianResponse(0, undefined).status).toBe('pending');
     expect(interpretApidianResponse(502, '<html>').status).toBe('pending');

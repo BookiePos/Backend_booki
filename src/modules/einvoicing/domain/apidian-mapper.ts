@@ -349,6 +349,17 @@ export function interpretApidianResponse(
         : undefined,
   };
 
+  // Un 500 CON explicación de APIDIAN es un error suyo o de configuración
+  // (p. ej. la empresa sin software registrado): reintentar no lo arregla.
+  // Sin explicación (página de error, caída) sí es transitorio.
+  if (httpStatus >= 500 && json.success === false && (json.error || json.message)) {
+    return {
+      ...base,
+      status: 'failed',
+      message: `El facturador no pudo procesar el documento: ${String(json.message ?? 'error interno')}.`,
+      errors: [String(json.error ?? json.message)],
+    };
+  }
   if (httpStatus === 0 || httpStatus >= 500) {
     return {
       ...base,

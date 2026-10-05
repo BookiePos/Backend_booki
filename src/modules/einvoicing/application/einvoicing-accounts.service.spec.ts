@@ -176,9 +176,17 @@ describe('EinvoicingAccountsService', () => {
       expect(await svc.connectionFor('900123456')).toBeUndefined();
     });
 
-    it('con cuenta entrega el token descifrado y el ambiente', async () => {
+    it('con la empresa creada pero sin certificado ni software, todavía no emite', async () => {
       const svc = build();
       await svc.registerCompany('s1', user);
+
+      expect(await svc.connectionFor('900123456')).toBeUndefined();
+    });
+
+    it('con la habilitación hecha entrega el token descifrado y el ambiente', async () => {
+      const svc = build();
+      await svc.registerCompany('s1', user);
+      cuentas['900123456'].step = 'set_pruebas';
 
       const conn = await svc.connectionFor('900.123.456-8');
 

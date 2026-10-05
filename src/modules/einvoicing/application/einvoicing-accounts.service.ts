@@ -124,7 +124,10 @@ export class EinvoicingAccountsService {
     const nit = normalizeNit(rawNit);
     if (!nit) return undefined;
     const account = await this.accounts.findOne({ nit }).exec();
-    if (!account?.tokenSealed || account.step === 'empresa') return undefined;
+    // Solo se emite con la empresa, el certificado y el software ya cargados:
+    // antes de eso el facturador no tiene con qué firmar ni a dónde enviar.
+    const ready = account?.step === 'set_pruebas' || account?.step === 'produccion';
+    if (!account?.tokenSealed || !ready) return undefined;
     return {
       provider: this.provider,
       token: this.box().open(account.tokenSealed),
