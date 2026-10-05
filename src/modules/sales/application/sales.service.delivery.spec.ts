@@ -219,7 +219,7 @@ describe('SalesService.create · domicilio', () => {
     await service.create(
       venta({
         orderType: 'domicilio',
-        tip: 2_000,
+        tip: 1_000,
         delivery: { address: 'Calle 33', zoneId: ZONA.toString() },
       }),
       user,
@@ -234,19 +234,29 @@ describe('SalesService.create · domicilio', () => {
   it('lo cobrado de más se le exige al cliente: total + propina + domicilio', async () => {
     build({ id: ZONA.toString(), name: 'Laureles', fee: 5_000 });
 
-    // 11.900 + 2.000 de propina + 5.000 de domicilio = 18.900. Con 18.000 no
+    // 11.900 + 1.000 de propina + 5.000 de domicilio = 17.900. Con 17.000 no
     // alcanza y la venta no se puede registrar.
     await expect(
       service.create(
         venta({
           orderType: 'domicilio',
-          tip: 2_000,
-          payment: { method: 'cash', received: 18_000 },
+          tip: 1_000,
+          payment: { method: 'cash', received: 17_000 },
           delivery: { address: 'Calle 33', zoneId: ZONA.toString() },
         }),
         user,
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('una propina de más del 10 % del consumo se rechaza (Ley 1935 de 2018)', async () => {
+    build();
+
+    // La arepa vale 11.900: el tope es 1.190.
+    await expect(
+      service.create(venta({ tip: 1_191 }), user),
+    ).rejects.toThrow(/10 %/);
+    await expect(service.create(venta({ tip: 1_190 }), user)).resolves.toBeDefined();
   });
 
   it('sin zona vale el valor escrito a mano', async () => {

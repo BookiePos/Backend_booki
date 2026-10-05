@@ -59,6 +59,16 @@ export const ACCOUNT_STEPS = [
 ] as const;
 export type AccountStep = (typeof ACCOUNT_STEPS)[number];
 
+/** Días antes del vencimiento del certificado en que se empieza a avisar. */
+export const CERT_WARN_DAYS = 45;
+/** Desde aquí el aviso del certificado es urgente. */
+export const CERT_DANGER_DAYS = 15;
+/**
+ * Horas tras las que una factura pendiente deja de ser "la DIAN está lenta" y
+ * pasa a ser algo que alguien debe mirar.
+ */
+export const PENDING_ALERT_HOURS = 2;
+
 /**
  * Reintentos de un documento pendiente: espera creciente para no golpear a la
  * DIAN cuando está caída. Tras el último, queda pendiente hasta que alguien lo

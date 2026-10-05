@@ -271,16 +271,17 @@ describe('SalesService.create (IVA incluido + prorrateo de descuento)', () => {
         sedeId: sedeId.toString(),
         lines: [{ productId: PROD_GRAVADO.toString(), qty: 1 }],
         payment: { method: 'cash', received: 15_000 },
-        tip: 2_000,
+        // Dentro del tope legal del 10 % (Ley 1935 de 2018).
+        tip: 1_000,
       } as any,
       user,
     );
 
     // El total de la venta no incluye la propina.
     expect(createdSale.total).toBe(11_900);
-    expect(createdSale.tip).toBe(2_000);
-    // El grandTotal cobrado (total + tip = 13.900) es lo que valida el efectivo:
-    // received 15.000 > 13.900 no lanza. La propina no cambia base ni IVA.
+    expect(createdSale.tip).toBe(1_000);
+    // El grandTotal cobrado (total + tip = 12.900) es lo que valida el efectivo:
+    // received 15.000 > 12.900 no lanza. La propina no cambia base ni IVA.
     expect(
       Math.abs(createdSale.taxableBase + createdSale.taxTotal - createdSale.total),
     ).toBeLessThanOrEqual(1);

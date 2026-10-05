@@ -61,6 +61,16 @@ export class EinvoicingController {
     return this.einvoicing.registerResolution(sedeId, dto, user);
   }
 
+  /**
+   * Lo que necesita atención: certificados por vencer, facturas pendientes hace
+   * rato y rechazadas. Lo muestra el panel de facturación.
+   */
+  @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
+  @Get('alerts')
+  alerts(@CurrentUser() user: JwtUser) {
+    return this.einvoicing.alerts(user);
+  }
+
   // ── Conexión con la DIAN (habilitación) ─────────────────────────────────────
   // Declaradas antes de `:id` para que "connection" no se tome por un id.
 

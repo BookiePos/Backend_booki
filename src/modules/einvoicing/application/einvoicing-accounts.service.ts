@@ -101,6 +101,25 @@ export class EinvoicingAccountsService {
     return this.boxCache;
   }
 
+  /**
+   * Descifra el token de la empresa. Si no se puede (casi siempre porque
+   * cambió o se perdió EINVOICING_SECRET_KEY), lo dice con claridad en vez de
+   * un "error interno": la única salida es volver a conectar la empresa.
+   */
+  private openToken(account: EinvoicingAccountDocument): string {
+    try {
+      return this.box().open(account.tokenSealed ?? '');
+    } catch (err) {
+      if (err instanceof ServiceUnavailableException) throw err;
+      this.logger.error(
+        `No se pudo descifrar el token del NIT ${account.nit}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw new ServiceUnavailableException(
+        `La conexión del NIT ${account.nit} con la DIAN no se puede leer (¿cambió la llave EINVOICING_SECRET_KEY del servidor?). Hay que volver a crear la empresa en Facturación > Conexión DIAN.`,
+      );
+    }
+  }
+
   private assertProviderEnabled(): void {
     if (!this.provider.enabled) {
       throw new ServiceUnavailableException(
@@ -130,7 +149,7 @@ export class EinvoicingAccountsService {
     if (!account?.tokenSealed || !ready) return undefined;
     return {
       provider: this.provider,
-      token: this.box().open(account.tokenSealed),
+      token: this.openToken(account),
       environment: account.environment,
       testSetId:
         account.environment === 'habilitacion' ? account.testSetId : undefined,
@@ -274,7 +293,7 @@ export class EinvoicingAccountsService {
     this.assertProviderEnabled();
     await this.sedesOfNit(nit, user);
     const account = await this.accountOrFail(nit);
-    const token = this.box().open(account.tokenSealed!);
+    const token = this.openToken(account);
     const { expiresAt } = await this.step(account, () =>
       this.provider.configureCertificate(token, certificateBase64, password),
     );
@@ -295,7 +314,7 @@ export class EinvoicingAccountsService {
     this.assertProviderEnabled();
     await this.sedesOfNit(nit, user);
     const account = await this.accountOrFail(nit);
-    const token = this.box().open(account.tokenSealed!);
+    const token = this.openToken(account);
     await this.step(account, () =>
       this.provider.configureSoftware(token, input.softwareId, input.pin),
     );
@@ -324,7 +343,7 @@ export class EinvoicingAccountsService {
         'La resolución de la sede está incompleta: hacen falta número, rango y clave técnica.',
       );
     }
-    const token = this.box().open(account.tokenSealed!);
+    const token = this.openToken(account);
     const ymd = (d?: Date) => (d ? new Date(d).toISOString().slice(0, 10) : undefined);
     await this.step(account, async () => {
       await this.provider.configureResolution(token, {
@@ -357,7 +376,7 @@ export class EinvoicingAccountsService {
     if (!account.softwareId) {
       throw new BadRequestException('Primero registra el software propio.');
     }
-    const token = this.box().open(account.tokenSealed!);
+    const token = this.openToken(account);
     return this.step(account, () =>
       this.provider.getNumberingRanges(token, account.softwareId!),
     );
@@ -377,7 +396,7 @@ export class EinvoicingAccountsService {
         'Antes de producción hay que cargar el certificado y el software, y pasar el set de pruebas.',
       );
     }
-    const token = this.box().open(account.tokenSealed!);
+    const token = this.openToken(account);
     await this.step(account, () => this.provider.setEnvironment(token, environment));
     account.environment = environment;
     if (environment === 'produccion') account.step = 'produccion';

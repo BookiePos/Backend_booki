@@ -54,6 +54,7 @@ import {
   splitDeliveryTax,
   type DeliveryTaxPart,
 } from '../domain/delivery-tax';
+import { maxTip } from '../domain/tip-limit';
 
 @Injectable()
 export class SalesService {
@@ -313,6 +314,14 @@ export class SalesService {
     // Propina voluntaria (restaurante): se cobra ENCIMA del total. No es venta
     // ni base gravable; el monto a pagar por el cliente es total + tip.
     const tip = Math.max(0, Math.round((dto.tip ?? 0) * 100) / 100);
+    // Tope legal: la propina que va en la factura no puede pasar del 10 % del
+    // consumo (Ley 1935 de 2018, art. 3). El POS ya lo impide; esto cubre a
+    // cualquier otro cliente de la API.
+    if (tip > maxTip(total)) {
+      throw new BadRequestException(
+        `La propina no puede pasar del 10 % del consumo (${maxTip(total)}). Así lo exige la Ley 1935 de 2018.`,
+      );
+    }
 
     /*
      * Cobro del domicilio. Se suma ENCIMA del total (como la propina) pero, a

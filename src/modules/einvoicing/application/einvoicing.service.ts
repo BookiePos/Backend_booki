@@ -28,9 +28,12 @@ import {
   assertSedeAccess,
 } from '../../core-auth/domain/sede-access';
 import {
+  CERT_DANGER_DAYS,
+  CERT_WARN_DAYS,
   CONSUMIDOR_FINAL_NIT,
   CREDIT_NOTE_PREFIX,
   MEDIO_PAGO_BY_METHOD,
+  PENDING_ALERT_HOURS,
   RETRY_DELAYS_MS,
 } from '../domain/einvoicing.constants';
 import { dianVerificationUrl } from '../domain/cufe';
@@ -81,6 +84,17 @@ export interface RegisterResolutionInput {
   claveTecnica?: string;
   /** Número por el que arranca el consecutivo. Por defecto, el inicio del rango. */
   empezarEn?: number;
+}
+
+/** Algo de la facturación electrónica que alguien tiene que mirar. */
+export interface EinvoicingAlert {
+  kind: 'certificate' | 'pending' | 'rejected';
+  severity: 'warning' | 'danger';
+  message: string;
+  /** Documentos afectados (pendientes o rechazados). */
+  count?: number;
+  /** NIT afectado (certificado). */
+  nit?: string;
 }
 
 /** Inicio y fin del día, para comparar vigencias sin que la hora estorbe. */
@@ -405,6 +419,77 @@ export class EinvoicingService {
       }
     }
     return { retried: due.length, accepted };
+  }
+
+  /**
+   * Lo que necesita atención, de lo más grave a lo menos: certificados por
+   * vencer o vencidos (sin certificado no se factura), facturas pendientes
+   * hace rato y facturas rechazadas o sin enviar.
+   *
+   * Solo mira las sedes que el usuario ve.
+   */
+  async alerts(user: JwtUser, now = new Date()): Promise<EinvoicingAlert[]> {
+    const out: EinvoicingAlert[] = [];
+    const MS_DIA = 24 * 60 * 60 * 1000;
+
+    for (const a of await this.accounts.list(user)) {
+      if (!a.certificateExpiresAt) continue;
+      const restante = new Date(a.certificateExpiresAt).getTime() - now.getTime();
+      // Hacia arriba mientras no vence ("vence en 10 días" aunque falten unas
+      // horas menos) y hacia abajo una vez vencido.
+      const dias = Math.ceil(restante / MS_DIA);
+      if (restante < 0) {
+        out.push({
+          kind: 'certificate',
+          severity: 'danger',
+          nit: a.nit,
+          message: `El certificado digital del NIT ${a.nit} venció hace ${Math.floor(-restante / MS_DIA)} día(s): no se puede facturar hasta renovarlo.`,
+        });
+      } else if (dias <= CERT_WARN_DAYS) {
+        out.push({
+          kind: 'certificate',
+          severity: dias <= CERT_DANGER_DAYS ? 'danger' : 'warning',
+          nit: a.nit,
+          message: `El certificado digital del NIT ${a.nit} vence en ${dias} día(s). Renuévalo antes para no quedarse sin facturar.`,
+        });
+      }
+    }
+
+    const ids = allowedSedeIds(user);
+    const scope = ids ? { sedeId: { $in: ids.map((id) => new Types.ObjectId(id)) } } : {};
+    const [pendientes, rechazados] = await Promise.all([
+      this.model
+        .countDocuments({
+          ...scope,
+          dianStatus: 'pending',
+          createdAt: { $lt: new Date(now.getTime() - PENDING_ALERT_HOURS * 3600 * 1000) },
+        })
+        .exec(),
+      this.model
+        .countDocuments({ ...scope, dianStatus: { $in: ['rejected', 'failed'] } })
+        .exec(),
+    ]);
+    if (rechazados > 0) {
+      out.push({
+        kind: 'rejected',
+        severity: 'danger',
+        count: rechazados,
+        message: `${rechazados} factura(s) rechazada(s) o sin enviar a la DIAN. Revisa el motivo y reenvíalas.`,
+      });
+    }
+    if (pendientes > 0) {
+      out.push({
+        kind: 'pending',
+        severity: 'warning',
+        count: pendientes,
+        message: `${pendientes} factura(s) llevan más de ${PENDING_ALERT_HOURS} horas sin confirmación de la DIAN. Se siguen reintentando solas.`,
+      });
+    }
+
+    // Lo más grave primero.
+    return out.sort(
+      (x, y) => (x.severity === y.severity ? 0 : x.severity === 'danger' ? -1 : 1),
+    );
   }
 
   /** PDF o XML del documento, tal como lo dejó el facturador. */

@@ -193,6 +193,17 @@ describe('EinvoicingAccountsService', () => {
       expect(conn).toMatchObject({ token: 'token-secreto-123', environment: 'habilitacion' });
     });
 
+    it('token ilegible (llave cambiada): error claro, no un 500 genérico', async () => {
+      const svc = build();
+      await svc.registerCompany('s1', user);
+      cuentas['900123456'].step = 'set_pruebas';
+      cuentas['900123456'].tokenSealed = 'v1:basura:basura:basura';
+
+      await expect(svc.connectionFor('900123456')).rejects.toThrow(
+        /no se puede leer.*volver a crear la empresa/,
+      );
+    });
+
     it('el proveedor simulado no exige cuenta', async () => {
       const svc = build({ requiresAccount: false });
 
