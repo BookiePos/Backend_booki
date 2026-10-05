@@ -536,12 +536,13 @@ export class EinvoicingService {
   ): Promise<ElectronicDocumentDocument> {
     let outcome: SendOutcome;
     try {
+      // Siempre por el envío síncrono: el set de pruebas de la DIAN lo manda
+      // solo el asistente de habilitación, con sus propios documentos.
       const payload = this.toEinvoiceDocument(doc);
-      const opts = conn.testSetId ? { testSetId: conn.testSetId } : undefined;
       outcome =
         doc.type === 'invoice'
-          ? await conn.provider.sendInvoice(conn.token, payload, opts)
-          : await conn.provider.sendCreditNote(conn.token, payload, opts);
+          ? await conn.provider.sendInvoice(conn.token, payload)
+          : await conn.provider.sendCreditNote(conn.token, payload);
       // Ya había entrado: lo que vale es lo que la DIAN tiene, no reenviarlo.
       if (outcome.status === 'duplicate' && outcome.cufe) {
         outcome = await conn.provider.getStatus(conn.token, outcome.cufe);

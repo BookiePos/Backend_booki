@@ -1,4 +1,5 @@
 import {
+  APIDIAN_DEBIT_DISCREPANCY,
   APIDIAN_DISCREPANCY,
   APIDIAN_ID_TYPE_BY_DIAN_CODE,
   APIDIAN_ITEM_ID_ESTANDAR,
@@ -288,6 +289,34 @@ export function toApidianCreditNote(
   };
 }
 
+/**
+ * Nota débito (POST /ubl2.1/debit-note). Solo la pide el set de pruebas de la
+ * DIAN; el POS no las emite. Usa `requested_monetary_totals` en vez de
+ * `legal_monetary_totals`: así la define el anexo técnico.
+ */
+export function toApidianDebitNote(
+  doc: EinvoiceDocument,
+): Record<string, unknown> {
+  if (!doc.reference) {
+    throw new Error('Una nota débito necesita la factura que ajusta.');
+  }
+  const { body, lines } = buildBody(doc);
+  const { legal_monetary_totals, ...rest } = body as Record<string, unknown>;
+  return {
+    ...rest,
+    type_document_id: APIDIAN_TYPE_DOCUMENT.DEBIT_NOTE,
+    billing_reference: {
+      number: doc.reference.fullNumber,
+      uuid: doc.reference.cufe,
+      issue_date: doc.reference.issueDate,
+    },
+    discrepancyresponsecode: APIDIAN_DEBIT_DISCREPANCY.CAMBIO_VALOR,
+    discrepancyresponsedescription: doc.reason ?? 'Ajuste de valor',
+    requested_monetary_totals: legal_monetary_totals,
+    debit_note_lines: lines,
+  };
+}
+
 function addDays(isoDate: string, days: number): string {
   const d = new Date(`${isoDate}T12:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
@@ -301,11 +330,22 @@ type Json = Record<string, any>;
 /** Resultado de la DIAN dentro de la respuesta de APIDIAN, sea envío o consulta. */
 function dianResult(body: Json): Json | undefined {
   const b = body?.ResponseDian?.Envelope?.Body;
+  const zip = b?.GetStatusZipResponse?.GetStatusZipResult?.DianResponse;
   return (
     b?.SendBillSyncResponse?.SendBillSyncResult ??
     b?.GetStatusResponse?.GetStatusResult ??
-    b?.GetStatusZipResponse?.GetStatusZipResult?.DianResponse
+    // Un zip puede traer varios documentos; el set manda uno por zip.
+    (Array.isArray(zip) ? zip[0] : zip)
   );
+}
+
+/** Llave del envío asíncrono (set de pruebas). */
+function zipKeyOf(body: Json): string | undefined {
+  const r =
+    body?.ResponseDian?.Envelope?.Body?.SendTestSetAsyncResponse
+      ?.SendTestSetAsyncResult;
+  const key = r?.ZipKey;
+  return typeof key === 'string' && key.trim() ? key.trim() : undefined;
 }
 
 /** Los mensajes de error de la DIAN llegan como texto o como lista. */
@@ -421,6 +461,17 @@ export function interpretApidianResponse(
         result.StatusDescription ?? result.StatusMessage ?? 'Rechazada por la DIAN.',
       ),
       errors,
+    };
+  }
+
+  const zipKey = zipKeyOf(json);
+  if (zipKey) {
+    return {
+      ...base,
+      zipKey,
+      status: 'pending',
+      message: 'Recibido por la DIAN; falta consultar el resultado.',
+      errors: [],
     };
   }
 

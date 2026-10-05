@@ -9,6 +9,37 @@ import {
 
 export type EinvoicingAccountDocument = HydratedDocument<EinvoicingAccount>;
 
+/** Un documento del set de pruebas y lo que respondió la DIAN. */
+@Schema({ _id: false })
+export class TestSetDocEntry {
+  @Prop({ required: true, enum: ['invoice', 'credit_note', 'debit_note'] })
+  kind!: 'invoice' | 'credit_note' | 'debit_note';
+
+  @Prop({ required: true })
+  prefix!: string;
+
+  @Prop({ required: true })
+  number!: number;
+
+  @Prop()
+  cufe?: string;
+
+  /** Llave para consultar el resultado del envío asíncrono. */
+  @Prop()
+  zipKey?: string;
+
+  @Prop({ required: true, enum: ['pending', 'accepted', 'rejected'], default: 'pending' })
+  status!: 'pending' | 'accepted' | 'rejected';
+
+  @Prop()
+  message?: string;
+
+  /** Reglas incumplidas. No se llama `errors`: Mongoose reserva ese nombre. */
+  @Prop({ type: [String], default: [] })
+  dianErrors!: string[];
+}
+const TestSetDocEntrySchema = SchemaFactory.createForClass(TestSetDocEntry);
+
 /**
  * Conexión de un NIT con el facturador (APIDIAN).
  *
@@ -52,6 +83,24 @@ export class EinvoicingAccount {
 
   @Prop()
   certificateExpiresAt?: Date;
+
+  // ── Set de pruebas (habilitación) ──────────────────────────────────────────
+  /** Documentos del último envío del set, con su estado ante la DIAN. */
+  @Prop({ type: [TestSetDocEntrySchema], default: [] })
+  testSetDocs!: TestSetDocEntry[];
+
+  @Prop()
+  testSetSentAt?: Date;
+
+  /**
+   * Números de prueba ya usados. Cada envío del set usa números nuevos: la
+   * DIAN rechaza un número que ya recibió ("procesado anteriormente").
+   */
+  @Prop({ default: 0, min: 0 })
+  testSetInvoiceSeq!: number;
+
+  @Prop({ default: 0, min: 0 })
+  testSetNoteSeq!: number;
 
   /** Último error de configuración, para mostrarlo en el asistente. */
   @Prop()

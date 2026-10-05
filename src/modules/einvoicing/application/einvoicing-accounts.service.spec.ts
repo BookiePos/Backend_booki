@@ -62,6 +62,20 @@ describe('EinvoicingAccountsService', () => {
       configureCertificate: vi.fn().mockResolvedValue({ expiresAt: '2027-10-01T00:00:00' }),
       configureSoftware: vi.fn(),
       setEnvironment: vi.fn(),
+      configureResolution: vi.fn(),
+      // El set es asíncrono: cada envío devuelve su CUFE y una llave.
+      sendInvoice: vi.fn((_t: string, d: any) =>
+        Promise.resolve({ status: 'pending', cufe: `cufe-${d.number}`, zipKey: `zip-${d.number}`, message: '', errors: [] }),
+      ),
+      sendCreditNote: vi.fn((_t: string, d: any) =>
+        Promise.resolve({ status: 'pending', cufe: `cude-nc-${d.number}`, zipKey: `zip-nc-${d.number}`, message: '', errors: [] }),
+      ),
+      sendDebitNote: vi.fn((_t: string, d: any) =>
+        Promise.resolve({ status: 'pending', cufe: `cude-nd-${d.number}`, zipKey: `zip-nd-${d.number}`, message: '', errors: [] }),
+      ),
+      getZipStatus: vi.fn((_t: string, zipKey: string) =>
+        Promise.resolve({ status: 'accepted', zipKey, message: 'ok', errors: [] }),
+      ),
     };
     const doc = (nit: string) => {
       const d = cuentas[nit];
@@ -167,6 +181,100 @@ describe('EinvoicingAccountsService', () => {
       svc.setEnvironment('900123456', 'produccion', user),
     ).rejects.toThrow(/set de pruebas/);
     expect(provider.setEnvironment).not.toHaveBeenCalled();
+  });
+
+  describe('set de pruebas', () => {
+    /** Empresa con certificado y software: lista para el set. */
+    async function lista() {
+      const svc = build();
+      await svc.registerCompany('s1', user);
+      Object.assign(cuentas['900123456'], {
+        step: 'set_pruebas',
+        testSetId: '85d66719-3d34-4a53-9dca-e1a38a2a63fd',
+      });
+      return svc;
+    }
+
+    it('manda 8 facturas, 1 nota crédito y 1 débito al set, con la numeración de pruebas', async () => {
+      const svc = await lista();
+
+      const set = await svc.runTestSet('900123456', user);
+
+      expect(provider.sendInvoice).toHaveBeenCalledTimes(8);
+      expect(provider.sendCreditNote).toHaveBeenCalledOnce();
+      expect(provider.sendDebitNote).toHaveBeenCalledOnce();
+      // Todo va al set (asíncrono), no al envío normal.
+      expect(provider.sendInvoice.mock.calls[0][2]).toEqual({
+        testSetId: '85d66719-3d34-4a53-9dca-e1a38a2a63fd',
+      });
+      expect(provider.sendInvoice.mock.calls.map((c: any[]) => c[1].number)).toEqual([
+        990000001, 990000002, 990000003, 990000004, 990000005, 990000006, 990000007, 990000008,
+      ]);
+      expect(set.summary).toMatchObject({ sent: 10, pending: 10, complete: false });
+    });
+
+    it('las notas usan el CUFE de facturas del mismo envío', async () => {
+      const svc = await lista();
+
+      await svc.runTestSet('900123456', user);
+
+      expect(provider.sendCreditNote.mock.calls[0][1].reference.cufe).toBe('cufe-990000001');
+      expect(provider.sendDebitNote.mock.calls[0][1].reference.cufe).toBe('cufe-990000002');
+    });
+
+    it('registra antes la numeración de pruebas: factura, crédito y débito', async () => {
+      const svc = await lista();
+
+      await svc.runTestSet('900123456', user);
+
+      expect(provider.configureResolution.mock.calls.map((c: any[]) => [c[1].kind, c[1].prefix])).toEqual([
+        ['invoice', 'SETP'],
+        ['credit_note', 'NC'],
+        ['debit_note', 'ND'],
+      ]);
+    });
+
+    it('repetirlo usa números nuevos (la DIAN rechaza los ya recibidos)', async () => {
+      const svc = await lista();
+      await svc.runTestSet('900123456', user);
+      provider.sendInvoice.mockClear();
+
+      await svc.runTestSet('900123456', user);
+
+      expect(provider.sendInvoice.mock.calls[0][1].number).toBe(990000009);
+    });
+
+    it('sin software ni set registrado no se puede mandar', async () => {
+      const svc = build();
+      await svc.registerCompany('s1', user);
+
+      await expect(svc.runTestSet('900123456', user)).rejects.toThrow(/certificado.*software/);
+    });
+
+    it('consultar actualiza los pendientes con el veredicto de la DIAN', async () => {
+      const svc = await lista();
+      await svc.runTestSet('900123456', user);
+
+      const set = await svc.checkTestSet('900123456', user);
+
+      expect(provider.getZipStatus).toHaveBeenCalledTimes(10);
+      expect(set.summary).toMatchObject({ accepted: 10, complete: true });
+    });
+
+    it('a producción solo con el set completo aceptado', async () => {
+      const svc = await lista();
+      await svc.runTestSet('900123456', user);
+
+      await expect(svc.setEnvironment('900123456', 'produccion', user)).rejects.toThrow(
+        /set de pruebas/,
+      );
+
+      await svc.checkTestSet('900123456', user);
+      await svc.setEnvironment('900123456', 'produccion', user);
+
+      expect(provider.setEnvironment).toHaveBeenCalledWith('token-secreto-123', 'produccion');
+      expect(cuentas['900123456'].step).toBe('produccion');
+    });
   });
 
   describe('conexión para emitir', () => {

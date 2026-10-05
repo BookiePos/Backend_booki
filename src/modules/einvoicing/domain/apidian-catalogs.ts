@@ -22,6 +22,7 @@ export const APIDIAN_TAX = {
 export const APIDIAN_TYPE_DOCUMENT = {
   INVOICE: 1,
   CREDIT_NOTE: 4,
+  DEBIT_NOTE: 5,
 } as const;
 
 /** Unidad de medida "Unidad" (código DIAN 94) en `unit_measures.csv`. */
@@ -87,6 +88,30 @@ export const APIDIAN_LIABILITY = {
   AGENTE_RETENCION_IVA: 14, // O-23
   REGIMEN_SIMPLE: 112, // O-47
   NO_APLICA: 117, // R-99-PN
+} as const;
+
+/** Motivo de nota débito (`debit_note_discrepancy_responses.csv`). */
+export const APIDIAN_DEBIT_DISCREPANCY = {
+  INTERESES: 1,
+  GASTOS: 2,
+  CAMBIO_VALOR: 3,
+  OTROS: 4,
+} as const;
+
+/**
+ * Numeración de pruebas que la DIAN asigna a TODO facturador en habilitación
+ * (es pública e igual para todos). El set de pruebas se envía con ella; la
+ * resolución real de la sede solo se usa en producción.
+ */
+export const DIAN_HABILITACION_RESOLUTION = {
+  prefix: 'SETP',
+  resolutionNumber: '18760000001',
+  resolutionDate: '2019-01-19',
+  technicalKey: 'fc8eac422eba16e22ffd8c6f94b3f40a6e38162c',
+  from: 990000000,
+  to: 995000000,
+  dateFrom: '2019-01-19',
+  dateTo: '2030-01-19',
 } as const;
 
 /** Ambiente (`type_environments.csv`). */

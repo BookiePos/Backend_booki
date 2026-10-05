@@ -13,6 +13,7 @@ import {
   interpretApidianResponse,
   toApidianCompany,
   toApidianCreditNote,
+  toApidianDebitNote,
   toApidianInvoice,
 } from '../domain/apidian-mapper';
 import {
@@ -146,6 +147,37 @@ export class ApidianClient implements EinvoiceProvider {
     return interpretApidianResponse(status, json);
   }
 
+  async sendDebitNote(
+    token: string | undefined,
+    doc: EinvoiceDocument,
+    opts?: { testSetId?: string },
+  ): Promise<SendOutcome> {
+    const path = opts?.testSetId
+      ? `/ubl2.1/debit-note/${encodeURIComponent(opts.testSetId)}`
+      : '/ubl2.1/debit-note';
+    const { status, json } = await this.call('POST', path, {
+      token,
+      body: toApidianDebitNote(doc),
+      timeoutMs: SEND_TIMEOUT_MS,
+    });
+    return interpretApidianResponse(status, json);
+  }
+
+  async getZipStatus(token: string | undefined, zipKey: string): Promise<SendOutcome> {
+    const { status, json } = await this.call(
+      'POST',
+      `/ubl2.1/status/zip/${encodeURIComponent(zipKey)}`,
+      {
+        token,
+        body: { sendmail: false, sendmailtome: false, is_payroll: false, is_eqdoc: false },
+        timeoutMs: SEND_TIMEOUT_MS,
+      },
+    );
+    const out = interpretApidianResponse(status, json);
+    // Sin veredicto todavía, la DIAN sigue procesando: se consulta otra vez.
+    return { ...out, zipKey };
+  }
+
   async getStatus(token: string | undefined, cufe: string): Promise<SendOutcome> {
     const { status, json } = await this.call(
       'POST',
@@ -205,7 +237,9 @@ export class ApidianClient implements EinvoiceProvider {
       type_document_id:
         r.kind === 'invoice'
           ? APIDIAN_TYPE_DOCUMENT.INVOICE
-          : APIDIAN_TYPE_DOCUMENT.CREDIT_NOTE,
+          : r.kind === 'credit_note'
+            ? APIDIAN_TYPE_DOCUMENT.CREDIT_NOTE
+            : APIDIAN_TYPE_DOCUMENT.DEBIT_NOTE,
       prefix: r.prefix,
       from: r.from,
       to: r.to,

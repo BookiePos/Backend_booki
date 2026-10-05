@@ -122,6 +122,20 @@ export class EinvoicingController {
     return this.accounts.syncResolutions(sedeId, user);
   }
 
+  /** Paso 4: manda el set de pruebas (8 facturas, 1 nota crédito, 1 débito). */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CONFIGURE)
+  @Post('connection/:nit/test-set')
+  runTestSet(@Param('nit') nit: string, @CurrentUser() user: JwtUser) {
+    return this.accounts.runTestSet(nitParam(nit), user);
+  }
+
+  /** Consulta a la DIAN cómo va el set de pruebas. */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CONFIGURE)
+  @Post('connection/:nit/test-set/check')
+  checkTestSet(@Param('nit') nit: string, @CurrentUser() user: JwtUser) {
+    return this.accounts.checkTestSet(nitParam(nit), user);
+  }
+
   /** Rangos que la DIAN asoció al software, con su clave técnica. */
   @RequirePermissions(PERMISSIONS.EINVOICING_CONFIGURE)
   @Get('connection/:nit/numbering-ranges')

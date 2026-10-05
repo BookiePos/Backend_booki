@@ -32,6 +32,16 @@ import {
   CREDIT_NOTE_RANGE,
   EinvoiceEnvironmentName,
 } from '../domain/einvoicing.constants';
+import { DIAN_HABILITACION_RESOLUTION } from '../domain/apidian-catalogs';
+import {
+  buildTestInvoices,
+  buildTestNote,
+  summarizeTestSet,
+  TEST_NOTE_PREFIX,
+  type TestSetDoc,
+} from '../domain/test-set';
+import type { EinvoiceDocument } from '../domain/einvoice-document';
+import type { SendOutcome } from '../domain/send-outcome';
 
 /** Lo que el servicio de emisión necesita para hablar con el facturador. */
 export interface EinvoiceConnection {
@@ -39,8 +49,13 @@ export interface EinvoiceConnection {
   /** Token de la empresa; ausente con el proveedor simulado. */
   token?: string;
   environment: EinvoiceEnvironmentName;
-  /** Set de pruebas de la DIAN: solo mientras se habilita. */
-  testSetId?: string;
+}
+
+/** Estado del set de pruebas para el asistente. */
+export interface TestSetView {
+  sentAt?: Date;
+  docs: TestSetDoc[];
+  summary: ReturnType<typeof summarizeTestSet>;
 }
 
 /** Vista de una conexión para el asistente: nunca incluye el token. */
@@ -55,6 +70,18 @@ export interface AccountView {
   certificateExpiresAt?: Date;
   lastError?: string;
   connected: boolean;
+  testSet: TestSetView;
+}
+
+/** Documento del set en la forma en que se guarda. */
+function toEntry({ errors, ...rest }: TestSetDoc) {
+  return { ...rest, dianErrors: errors };
+}
+
+/** Fecha y hora en Colombia (UTC-5, sin horario de verano). */
+function colombiaNow(): { issueDate: string; issueTime: string } {
+  const shifted = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
+  return { issueDate: shifted.slice(0, 10), issueTime: shifted.slice(11, 19) };
 }
 
 /** NIT sin DV, puntos ni espacios: "900.123.456-7" → "900123456". */
@@ -151,8 +178,6 @@ export class EinvoicingAccountsService {
       provider: this.provider,
       token: this.openToken(account),
       environment: account.environment,
-      testSetId:
-        account.environment === 'habilitacion' ? account.testSetId : undefined,
     };
   }
 
@@ -184,6 +209,7 @@ export class EinvoicingAccountsService {
         certificateExpiresAt: a?.certificateExpiresAt,
         lastError: a?.lastError,
         connected: Boolean(a?.tokenSealed),
+        testSet: this.testSetView(a),
       };
     });
   }
@@ -382,6 +408,189 @@ export class EinvoicingAccountsService {
     );
   }
 
+  private testSetView(a: EinvoicingAccountDocument | null | undefined): TestSetView {
+    const docs: TestSetDoc[] = (a?.testSetDocs ?? []).map((d) => ({
+      kind: d.kind,
+      prefix: d.prefix,
+      number: d.number,
+      cufe: d.cufe,
+      zipKey: d.zipKey,
+      status: d.status,
+      message: d.message,
+      errors: d.dianErrors ?? [],
+    }));
+    return { sentAt: a?.testSetSentAt, docs, summary: summarizeTestSet(docs) };
+  }
+
+  /** Lo que respondió la DIAN, en el estado de un documento del set. */
+  private toTestDoc(base: Omit<TestSetDoc, 'status' | 'errors'>, out: SendOutcome): TestSetDoc {
+    const status: TestSetDoc['status'] =
+      out.status === 'accepted'
+        ? 'accepted'
+        : out.status === 'rejected' || out.status === 'failed'
+          ? 'rejected'
+          : 'pending';
+    return {
+      ...base,
+      cufe: out.cufe ?? base.cufe,
+      zipKey: out.zipKey ?? base.zipKey,
+      status,
+      message: out.message,
+      errors: out.errors,
+    };
+  }
+
+  /**
+   * Paso 4: manda el set de pruebas de la DIAN (8 facturas, 1 nota crédito y
+   * 1 nota débito) con la numeración de pruebas. El resultado llega después:
+   * se consulta con `checkTestSet`.
+   *
+   * Cada envío usa números nuevos, así que se puede repetir si algo falló.
+   */
+  async runTestSet(nit: string, user: JwtUser): Promise<TestSetView> {
+    this.assertProviderEnabled();
+    const sedes = await this.sedesOfNit(nit, user);
+    const account = await this.accountOrFail(nit);
+    if (account.step !== 'set_pruebas' || !account.testSetId) {
+      throw new BadRequestException(
+        'Antes del set de pruebas hay que cargar el certificado y registrar el software con su ID de set de pruebas.',
+      );
+    }
+    const token = this.openToken(account);
+    const testSetId = account.testSetId;
+    const sede = sedes[0]!;
+    const issuer = {
+      nit,
+      dv: account.dv ?? sede.nitDv,
+      name: sede.businessName || sede.name,
+      address: sede.address,
+      phone: sede.phone,
+      email: sede.emailFacturacion,
+      departamento: sede.departamento,
+      ciudad: sede.ciudad,
+    };
+    const r = DIAN_HABILITACION_RESOLUTION;
+
+    // Numeración de pruebas en el facturador: factura, nota crédito y débito.
+    await this.step(account, async () => {
+      await this.provider.configureResolution(token, {
+        kind: 'invoice',
+        prefix: r.prefix,
+        from: r.from,
+        to: r.to,
+        resolutionNumber: r.resolutionNumber,
+        resolutionDate: r.resolutionDate,
+        technicalKey: r.technicalKey,
+        dateFrom: r.dateFrom,
+        dateTo: r.dateTo,
+      });
+      await this.provider.configureResolution(token, {
+        kind: 'credit_note',
+        prefix: TEST_NOTE_PREFIX.credit_note,
+        from: CREDIT_NOTE_RANGE.from,
+        to: CREDIT_NOTE_RANGE.to,
+      });
+      await this.provider.configureResolution(token, {
+        kind: 'debit_note',
+        prefix: TEST_NOTE_PREFIX.debit_note,
+        from: CREDIT_NOTE_RANGE.from,
+        to: CREDIT_NOTE_RANGE.to,
+      });
+    });
+
+    const { issueDate, issueTime } = colombiaNow();
+    const first = r.from + 1 + (account.testSetInvoiceSeq ?? 0);
+    const invoices = buildTestInvoices(issuer, first, issueDate, issueTime);
+    const docs: TestSetDoc[] = [];
+    const send = async (doc: EinvoiceDocument): Promise<TestSetDoc> => {
+      const base = { kind: doc.kind, prefix: doc.prefix, number: doc.number };
+      try {
+        const out =
+          doc.kind === 'invoice'
+            ? await this.provider.sendInvoice(token, doc, { testSetId })
+            : doc.kind === 'credit_note'
+              ? await this.provider.sendCreditNote(token, doc, { testSetId })
+              : await this.provider.sendDebitNote(token, doc, { testSetId });
+        return this.toTestDoc(base, out);
+      } catch (err) {
+        return {
+          ...base,
+          status: 'rejected',
+          message: err instanceof Error ? err.message : String(err),
+          errors: [],
+        };
+      }
+    };
+
+    // En orden: las notas necesitan el CUFE de facturas ya enviadas.
+    for (const inv of invoices) docs.push(await send(inv));
+    const notes: [('credit_note' | 'debit_note'), number][] = [
+      ['credit_note', 0],
+      ['debit_note', 1],
+    ];
+    let noteSeq = account.testSetNoteSeq ?? 0;
+    for (const [kind, idx] of notes) {
+      const inv = invoices[idx]!;
+      const cufe = docs[idx]?.cufe;
+      noteSeq += 1;
+      if (!cufe) {
+        docs.push({
+          kind,
+          prefix: TEST_NOTE_PREFIX[kind],
+          number: noteSeq,
+          status: 'rejected',
+          message: 'No se envió: la factura que corrige no obtuvo CUFE.',
+          errors: [],
+        });
+        continue;
+      }
+      docs.push(await send(buildTestNote(kind, inv, cufe, noteSeq, issueDate, issueTime)));
+    }
+
+    account.testSetDocs = docs.map(toEntry);
+    account.testSetSentAt = new Date();
+    account.testSetInvoiceSeq = (account.testSetInvoiceSeq ?? 0) + invoices.length;
+    account.testSetNoteSeq = noteSeq;
+    account.updatedByEmail = user.email;
+    await account.save();
+    this.logger.log(`Set de pruebas del NIT ${nit} enviado por ${user.email}.`);
+    return this.testSetView(account);
+  }
+
+  /** Consulta a la DIAN el resultado de los documentos del set aún pendientes. */
+  async checkTestSet(nit: string, user: JwtUser): Promise<TestSetView> {
+    this.assertProviderEnabled();
+    await this.sedesOfNit(nit, user);
+    const account = await this.accountOrFail(nit);
+    const token = this.openToken(account);
+    const docs: TestSetDoc[] = [];
+    for (const d of account.testSetDocs ?? []) {
+      const current: TestSetDoc = {
+        kind: d.kind,
+        prefix: d.prefix,
+        number: d.number,
+        cufe: d.cufe,
+        zipKey: d.zipKey,
+        status: d.status,
+        message: d.message,
+        errors: d.dianErrors ?? [],
+      };
+      if (current.status !== 'pending' || !current.zipKey) {
+        docs.push(current);
+        continue;
+      }
+      try {
+        const out = await this.provider.getZipStatus(token, current.zipKey);
+        docs.push(this.toTestDoc(current, out));
+      } catch (err) {
+        docs.push({ ...current, message: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    account.testSetDocs = docs.map(toEntry);
+    await account.save();
+    return this.testSetView(account);
+  }
+
   /** Cambia el ambiente. Pasar a producción es el último paso. */
   async setEnvironment(
     nit: string,
@@ -391,10 +600,13 @@ export class EinvoicingAccountsService {
     this.assertProviderEnabled();
     await this.sedesOfNit(nit, user);
     const account = await this.accountOrFail(nit);
-    if (environment === 'produccion' && account.step !== 'set_pruebas' && account.step !== 'produccion') {
-      throw new BadRequestException(
-        'Antes de producción hay que cargar el certificado y el software, y pasar el set de pruebas.',
-      );
+    if (environment === 'produccion' && account.step !== 'produccion') {
+      const set = summarizeTestSet(this.testSetView(account).docs);
+      if (account.step !== 'set_pruebas' || !set.complete) {
+        throw new BadRequestException(
+          'Antes de producción hay que pasar el set de pruebas: la DIAN debe aceptar las 8 facturas, la nota crédito y la nota débito.',
+        );
+      }
     }
     const token = this.openToken(account);
     await this.step(account, () => this.provider.setEnvironment(token, environment));

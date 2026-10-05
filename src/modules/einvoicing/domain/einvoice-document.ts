@@ -53,7 +53,8 @@ export interface EinvoiceCustomer {
 }
 
 export interface EinvoiceDocument {
-  kind: 'invoice' | 'credit_note';
+  /** La nota débito solo la usa el set de pruebas de la DIAN. */
+  kind: 'invoice' | 'credit_note' | 'debit_note';
   prefix: string;
   number: number;
   /** Número de la resolución DIAN (solo facturas). */
@@ -70,7 +71,7 @@ export interface EinvoiceDocument {
   /** Propina voluntaria: va como cargo, fuera de la base gravable. */
   tip: number;
   notes?: string;
-  /** Nota crédito: la factura que corrige y por qué. */
+  /** Nota crédito o débito: la factura que corrige y por qué. */
   reference?: { fullNumber: string; cufe: string; issueDate: string };
   reason?: string;
 }

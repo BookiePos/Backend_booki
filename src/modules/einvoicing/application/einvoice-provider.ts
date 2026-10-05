@@ -10,7 +10,7 @@ export type EinvoiceEnvironment = 'habilitacion' | 'produccion';
 
 /** Resolución tal como se registra en el proveedor. */
 export interface ProviderResolution {
-  kind: 'invoice' | 'credit_note';
+  kind: 'invoice' | 'credit_note' | 'debit_note';
   prefix: string;
   from: number;
   to: number;
@@ -67,6 +67,16 @@ export interface EinvoiceProvider {
     doc: EinvoiceDocument,
     opts?: { testSetId?: string },
   ): Promise<SendOutcome>;
+
+  /** Nota débito. Solo la usa el set de pruebas de la DIAN. */
+  sendDebitNote(
+    token: string | undefined,
+    doc: EinvoiceDocument,
+    opts?: { testSetId?: string },
+  ): Promise<SendOutcome>;
+
+  /** Resultado de un envío asíncrono (set de pruebas) por su llave. */
+  getZipStatus(token: string | undefined, zipKey: string): Promise<SendOutcome>;
 
   /** Consulta por CUFE/CUDE lo que la DIAN tiene de un documento. */
   getStatus(token: string | undefined, cufe: string): Promise<SendOutcome>;

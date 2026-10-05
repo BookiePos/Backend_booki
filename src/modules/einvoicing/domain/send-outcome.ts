@@ -38,6 +38,11 @@ export interface SendOutcome {
   errors: string[];
   /** Archivos que dejó el proveedor (para descargar luego). */
   files?: { pdf?: string; xml?: string; attached?: string };
+  /**
+   * Envíos asíncronos (set de pruebas): la DIAN no responde de una vez sino
+   * con una llave para consultar después el resultado.
+   */
+  zipKey?: string;
   /** Días que le quedan al certificado, si el proveedor lo informa. */
   certificateDaysLeft?: number;
 }

@@ -6,7 +6,11 @@ import type {
 } from '../application/einvoice-provider';
 import type { EinvoiceDocument } from '../domain/einvoice-document';
 import type { SendOutcome } from '../domain/send-outcome';
-import { toApidianCreditNote, toApidianInvoice } from '../domain/apidian-mapper';
+import {
+  toApidianCreditNote,
+  toApidianDebitNote,
+  toApidianInvoice,
+} from '../domain/apidian-mapper';
 
 /**
  * Proveedor de mentiras para desarrollo, demos y pruebas.
@@ -48,6 +52,14 @@ export class FakeEinvoiceProvider implements EinvoiceProvider {
 
   async sendCreditNote(_token: string | undefined, doc: EinvoiceDocument) {
     return this.accept(doc, toApidianCreditNote(doc));
+  }
+
+  async sendDebitNote(_token: string | undefined, doc: EinvoiceDocument) {
+    return this.accept(doc, toApidianDebitNote(doc));
+  }
+
+  async getZipStatus(_token: string | undefined, zipKey: string): Promise<SendOutcome> {
+    return { status: 'accepted', zipKey, message: 'Aceptada (simulación).', errors: [] };
   }
 
   async getStatus(_token: string | undefined, cufe: string): Promise<SendOutcome> {
