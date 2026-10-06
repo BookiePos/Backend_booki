@@ -15,6 +15,18 @@ export interface WompiTransaction {
   amount_in_cents: number;
 }
 
+/**
+ * Fuente de pago (tarjeta tokenizada) creada en Wompi. Además del id contra el
+ * que se cobra, trae los datos PÚBLICOS de la tarjeta (marca y últimos cuatro
+ * dígitos) para poder mostrarle al dueño cuál tiene registrada sin volver a
+ * pedírsela. Wompi nunca devuelve el número completo y nosotros no lo pedimos.
+ */
+export interface WompiCardSource {
+  id: number;
+  brand?: string;
+  lastFour?: string;
+}
+
 interface WompiEvent {
   event?: string;
   data?: Record<string, unknown>;
@@ -132,7 +144,7 @@ export class WompiClient {
     customerEmail: string;
     acceptanceToken: string;
     acceptPersonalAuth?: string;
-  }): Promise<number> {
+  }): Promise<WompiCardSource> {
     const json = await this.request('/payment_sources', {
       method: 'POST',
       headers: {
@@ -151,7 +163,26 @@ export class WompiClient {
           : {}),
       }),
     });
-    return Number(this.data(json).id);
+    return this.cardSource(this.data(json));
+  }
+
+  /** Consulta una fuente de pago ya creada (para recuperar marca y últimos 4). */
+  async getPaymentSource(id: number): Promise<WompiCardSource> {
+    const json = await this.request(`/payment_sources/${id}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${this.cfg.privateKey}` },
+    });
+    return this.cardSource(this.data(json));
+  }
+
+  /** Extrae id y datos públicos de la tarjeta de una respuesta de Wompi. */
+  private cardSource(data: Record<string, unknown>): WompiCardSource {
+    const publicData = (data.public_data ?? {}) as Record<string, unknown>;
+    const brand = publicData.brand ? String(publicData.brand) : undefined;
+    const lastFour = publicData.last_four
+      ? String(publicData.last_four)
+      : undefined;
+    return { id: Number(data.id), brand, lastFour };
   }
 
   /** Firma de integridad: SHA256(reference + amount + currency + secret). */

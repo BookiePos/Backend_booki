@@ -39,6 +39,9 @@ describe('BillingService.runBillingCycle · cobro y mora', () => {
   let wompi: any;
   let subs: any;
   let payments: any;
+  let paymentMethods: any;
+  /** Tarjeta guardada de la empresa; `null` = nunca registró una. */
+  let tarjetaGuardada: any;
   let service: BillingService;
 
   /** Suscripción de una empresa, en el estado que pida cada caso. */
@@ -120,11 +123,18 @@ describe('BillingService.runBillingCycle · cobro y mora', () => {
       })),
     };
 
+    tarjetaGuardada = tarjetaGuardada ?? null;
+    paymentMethods = {
+      findOne: vi.fn(() => ({ exec: () => Promise.resolve(tarjetaGuardada) })),
+      updateOne: vi.fn(() => ({ exec: () => Promise.resolve(undefined) })),
+    };
+
     service = new BillingService(
       businesses as never,
       wompi as never,
       subs as never,
       payments as never,
+      paymentMethods as never,
     );
   }
 

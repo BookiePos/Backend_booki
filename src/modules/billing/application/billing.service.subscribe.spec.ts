@@ -36,7 +36,7 @@ import {
  * autorización y se pierde al cliente.
  *
  * El servicio se instancia DIRECTAMENTE con dependencias mockeadas. El
- * constructor es: (businesses, wompi, subs, payments).
+ * constructor es: (businesses, wompi, subs, payments, paymentMethods).
  */
 describe('BillingService.subscribe', () => {
   const BIZ = '68b0f3c2a1d4e5f6a7b8c9d0';
@@ -45,13 +45,19 @@ describe('BillingService.subscribe', () => {
   let wompi: any;
   let subs: any;
   let payments: any;
+  let paymentMethods: any;
+  /** Tarjeta guardada de la empresa; `null` = nunca registró una. */
+  let tarjetaGuardada: any;
   let service: BillingService;
   /** Suscripción resultante del upsert. */
   let suscripcion: any;
   /** Pago creado para el primer cobro. */
   let pago: any;
 
-  function build(over: { estadoPasarela?: string; empresa?: any } = {}) {
+  function build(
+    over: { estadoPasarela?: string; empresa?: any; tarjeta?: any } = {},
+  ) {
+    tarjetaGuardada = over.tarjeta ?? null;
     suscripcion = { _id: 'sub1', businessId: BIZ, billingCycle: 'monthly' };
     businesses = {
       updatePlan: vi.fn().mockResolvedValue(undefined),
@@ -64,7 +70,9 @@ describe('BillingService.subscribe', () => {
     };
     wompi = {
       configured: true,
-      createPaymentSource: vi.fn().mockResolvedValue(4321),
+      createPaymentSource: vi
+        .fn()
+        .mockResolvedValue({ id: 4321, brand: 'VISA', lastFour: '4242' }),
       createTransaction: vi.fn().mockResolvedValue({
         id: 'tx-1',
         status: over.estadoPasarela ?? 'PENDING',
@@ -76,6 +84,7 @@ describe('BillingService.subscribe', () => {
         return Promise.resolve(suscripcion);
       }),
       findOne: vi.fn(() => ({ exec: () => Promise.resolve(suscripcion) })),
+      updateOne: vi.fn(() => ({ exec: () => Promise.resolve(undefined) })),
     };
     payments = {
       create: vi.fn((doc: any) => {
@@ -84,11 +93,18 @@ describe('BillingService.subscribe', () => {
       }),
     };
 
+    tarjetaGuardada = tarjetaGuardada ?? null;
+    paymentMethods = {
+      findOne: vi.fn(() => ({ exec: () => Promise.resolve(tarjetaGuardada) })),
+      updateOne: vi.fn(() => ({ exec: () => Promise.resolve(undefined) })),
+    };
+
     service = new BillingService(
       businesses as never,
       wompi as never,
       subs as never,
       payments as never,
+      paymentMethods as never,
     );
   }
 

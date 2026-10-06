@@ -2,12 +2,14 @@ import {
   Body,
   Controller,
   Get,
+  Param,
   Post,
   UnauthorizedException,
 } from '@nestjs/common';
 import { BillingService } from '../application/billing.service';
 import { SubscribeDto } from '../application/dto/subscribe.dto';
 import { PurchaseDocsDto } from '../application/dto/purchase-docs.dto';
+import { SavePaymentMethodDto } from '../application/dto/save-payment-method.dto';
 import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
 import { Public } from '../../core-auth/infrastructure/decorators/public.decorator';
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
@@ -40,6 +42,28 @@ export class BillingController {
   @Get('status')
   status(@CurrentUser() user: JwtUser) {
     return this.billing.status(this.businessId(user));
+  }
+
+  /**
+   * Estado real de un cobro, consultándolo a la pasarela si sigue pendiente.
+   * Es lo que consulta el frontend mientras espera: el webhook puede tardar o
+   * no llegar nunca (desarrollo local), y sin esto la pantalla se queda en
+   * "pago en proceso" hasta el barrido del cron.
+   */
+  @RequirePermissions(PERMISSIONS.PARAMS_MANAGE)
+  @Get('payments/:reference')
+  payment(@CurrentUser() user: JwtUser, @Param('reference') reference: string) {
+    return this.billing.syncPayment(this.businessId(user), reference);
+  }
+
+  /** Registra la tarjeta sin cobrar: queda guardada para los cobros siguientes. */
+  @RequirePermissions(PERMISSIONS.PARAMS_MANAGE)
+  @Post('payment-method')
+  savePaymentMethod(
+    @CurrentUser() user: JwtUser,
+    @Body() dto: SavePaymentMethodDto,
+  ) {
+    return this.billing.savePaymentMethod(this.businessId(user), dto);
   }
 
   @RequirePermissions(PERMISSIONS.PARAMS_MANAGE)
