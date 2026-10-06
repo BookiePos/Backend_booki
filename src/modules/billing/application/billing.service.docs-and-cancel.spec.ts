@@ -17,7 +17,6 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
 });
 
 import { BillingService } from './billing.service';
-import { ADD_ONS, DOCS_PER_PACKAGE } from '../../control/domain/plans';
 
 /**
  * Compra de paquetes de documentos, consulta de estado y cancelación.
@@ -113,115 +112,26 @@ describe('BillingService · documentos, estado y cancelación', () => {
     vi.clearAllMocks();
   });
 
-  describe('compra de documentos', () => {
-    it('cobra el precio del paquete por la cantidad, en centavos', async () => {
+  describe('compra de documentos (ya no se vende)', () => {
+    // Los documentos electrónicos son ilimitados en todos los planes. Cobrar un
+    // paquete sería cobrar por nada, así que el servicio lo rechaza antes de
+    // tocar la pasarela, aunque la empresa tenga tarjeta y suscripción al día.
+    it('se rechaza aunque la suscripción esté activa', async () => {
       build(suscripcion());
 
-      await service.purchaseDocs(BIZ, 3);
-
-      expect(wompi.createTransaction.mock.calls[0][0].amountInCents).toBe(
-        ADD_ONS.docPackage.price * 3 * 100,
-      );
-    });
-
-    it('un solo paquete cuesta exactamente su precio', async () => {
-      build(suscripcion());
-
-      await service.purchaseDocs(BIZ, 1);
-
-      expect(wompi.createTransaction.mock.calls[0][0].amountInCents).toBe(
-        ADD_ONS.docPackage.price * 100,
-      );
-    });
-
-    it('cobra contra la tarjeta ya guardada, sin pedirla de nuevo', async () => {
-      build(suscripcion());
-
-      await service.purchaseDocs(BIZ, 1);
-
-      expect(wompi.createTransaction.mock.calls[0][0]).toMatchObject({
-        paymentSourceId: 4321,
-        customerEmail: 'duena@negocio.com',
-      });
-    });
-
-    it('registra el pago como compra de documentos, con la cantidad', async () => {
-      build(suscripcion());
-
-      await service.purchaseDocs(BIZ, 2);
-
-      expect(payments.create.mock.calls[0][0]).toMatchObject({
-        kind: 'docPackage',
-        docPackages: 2,
-        businessId: BIZ,
-        status: 'pending',
-      });
-    });
-
-    it('al aprobarse acredita mil documentos por paquete', async () => {
-      build(suscripcion());
-
-      await service.purchaseDocs(BIZ, 2);
-
-      expect(businesses.addDocCredits).toHaveBeenCalledWith(
-        BIZ,
-        DOCS_PER_PACKAGE * 2,
-      );
-    });
-
-    it('comprar documentos no cambia el plan de la empresa', async () => {
-      build(suscripcion());
-
-      await service.purchaseDocs(BIZ, 1);
-
-      expect(businesses.updatePlan).not.toHaveBeenCalled();
-    });
-
-    it('si el cobro se rechaza no se acredita nada', async () => {
-      build(suscripcion(), 'DECLINED');
-
-      await service.purchaseDocs(BIZ, 5);
-
-      expect(businesses.addDocCredits).not.toHaveBeenCalled();
-      expect(pago.status).toBe('declined');
-    });
-
-    it('sin suscripción no hay tarjeta contra la cual cobrar', async () => {
-      build(null);
-
-      await expect(service.purchaseDocs(BIZ, 1)).rejects.toBeInstanceOf(
+      await expect(service.purchaseDocs(BIZ, 3)).rejects.toBeInstanceOf(
         BadRequestException,
       );
+    });
+
+    it('no cobra ni registra ningún pago', async () => {
+      build(suscripcion());
+
+      await service.purchaseDocs(BIZ, 1).catch(() => undefined);
+
       expect(wompi.createTransaction).not.toHaveBeenCalled();
-    });
-
-    it('con la suscripción cancelada tampoco se puede comprar', async () => {
-      build(suscripcion({ status: 'canceled' }));
-
-      await expect(service.purchaseDocs(BIZ, 1)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
-      expect(wompi.createTransaction).not.toHaveBeenCalled();
-    });
-
-    it('sin pasarela configurada no se intenta el cobro', async () => {
-      build(suscripcion());
-      wompi.configured = false;
-
-      await expect(service.purchaseDocs(BIZ, 1)).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
       expect(payments.create).not.toHaveBeenCalled();
-    });
-
-    it('cada compra lleva su propia referencia, con prefijo propio', async () => {
-      build(suscripcion());
-
-      await service.purchaseDocs(BIZ, 1);
-
-      expect(payments.create.mock.calls[0][0].reference).toContain(
-        `doc-${BIZ}-`,
-      );
+      expect(businesses.addDocCredits).not.toHaveBeenCalled();
     });
   });
 

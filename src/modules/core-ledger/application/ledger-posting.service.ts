@@ -83,9 +83,10 @@ export class LedgerPostingService {
     tax: number;
     cogs: number;
     /**
-     * Cobro del domicilio. Es ingreso del negocio pero NO lleva IVA, así que
-     * entra entero a Ingresos sin nada que separar. La propina no aparece aquí
-     * a propósito: esa es del personal, no del negocio.
+     * Cobro del domicilio, impuesto incluido. Es ingreso del negocio; su
+     * impuesto ya viene sumado en `tax`, así que aquí solo se suma al cobro y
+     * al ingreso bruto (Ingresos = total − tax + domicilio). La propina no
+     * aparece a propósito: esa es del personal, no del negocio.
      */
     deliveryFee?: number;
     paymentMethod?: string;

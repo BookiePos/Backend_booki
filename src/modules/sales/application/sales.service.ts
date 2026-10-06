@@ -50,6 +50,11 @@ import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import { CreateSaleDto } from './dto/create-sale.dto';
+import {
+  splitDeliveryTax,
+  type DeliveryTaxPart,
+} from '../domain/delivery-tax';
+import { maxTip } from '../domain/tip-limit';
 
 @Injectable()
 export class SalesService {
@@ -303,22 +308,27 @@ export class SalesService {
       const iva = Math.round((finalNet - base) * 100) / 100;
       return { ...l, ivaRate: rate, taxBase: base, taxAmount: iva };
     });
-    const taxableBase =
-      Math.round(linesWithTax.reduce((s, l) => s + l.taxBase, 0) * 100) / 100;
-    const taxTotal =
-      Math.round(linesWithTax.reduce((s, l) => s + l.taxAmount, 0) * 100) / 100;
-
     // El IVA está incluido en los precios: el total NO lo vuelve a sumar.
     const total = subtotal - discountTotal;
 
     // Propina voluntaria (restaurante): se cobra ENCIMA del total. No es venta
     // ni base gravable; el monto a pagar por el cliente es total + tip.
     const tip = Math.max(0, Math.round((dto.tip ?? 0) * 100) / 100);
+    // Tope legal: la propina que va en la factura no puede pasar del 10 % del
+    // consumo (Ley 1935 de 2018, art. 3). El POS ya lo impide; esto cubre a
+    // cualquier otro cliente de la API.
+    if (tip > maxTip(total)) {
+      throw new BadRequestException(
+        `La propina no puede pasar del 10 % del consumo (${maxTip(total)}). Así lo exige la Ley 1935 de 2018.`,
+      );
+    }
 
     /*
-     * Cobro del domicilio. Como la propina, se suma ENCIMA del total y no entra
-     * a la base gravable —decisión tomada con el dueño—. A diferencia de la
-     * propina sí es ingreso del negocio, así que sí va al libro contable.
+     * Cobro del domicilio. Se suma ENCIMA del total (como la propina) pero, a
+     * diferencia de ella, HACE PARTE DE LA BASE GRAVABLE: la DIAN lo considera
+     * parte del precio de la venta (Oficio 664 de 2022). Su valor ya incluye el
+     * impuesto y se discrimina con la tarifa de lo que se lleva; ver
+     * `splitDeliveryTax`. Es ingreso del negocio, así que va al libro.
      *
      * La tarifa la pone el SERVIDOR a partir de la zona; del navegador solo
      * viaja el id. El valor a mano existe para el pedido que no cae en ninguna
@@ -347,6 +357,24 @@ export class SalesService {
       );
     }
     const deliveryFee = delivery?.fee ?? 0;
+    const deliveryTaxes = splitDeliveryTax(
+      deliveryFee,
+      linesWithTax.map((l) => ({ net: l.taxBase + l.taxAmount, rate: l.ivaRate })),
+    );
+
+    // Base e impuesto de la venta: los de las líneas más los del domicilio.
+    const taxableBase =
+      Math.round(
+        (linesWithTax.reduce((s, l) => s + l.taxBase, 0) +
+          deliveryTaxes.reduce((s, p) => s + p.base, 0)) *
+          100,
+      ) / 100;
+    const taxTotal =
+      Math.round(
+        (linesWithTax.reduce((s, l) => s + l.taxAmount, 0) +
+          deliveryTaxes.reduce((s, p) => s + p.amount, 0)) *
+          100,
+      ) / 100;
 
     const grandTotal =
       Math.round((total + tip + deliveryFee) * 100) / 100;
@@ -530,6 +558,7 @@ export class SalesService {
         tip,
         orderType,
         deliveryFee,
+        deliveryTaxes,
         delivery: delivery
           ? {
               ...delivery,
@@ -631,6 +660,7 @@ export class SalesService {
     tip: number;
     orderType: OrderType;
     deliveryFee: number;
+    deliveryTaxes: DeliveryTaxPart[];
     delivery?: {
       zoneId?: Types.ObjectId;
       zoneName?: string;
@@ -660,6 +690,7 @@ export class SalesService {
       tip,
       orderType,
       deliveryFee,
+      deliveryTaxes,
       delivery,
       received,
       change,
@@ -703,6 +734,11 @@ export class SalesService {
       tip,
       orderType,
       deliveryFee,
+      deliveryTaxes: deliveryTaxes.map(({ rate, base, amount }) => ({
+        rate,
+        base,
+        amount,
+      })),
       delivery,
       payment: { method: dto.payment.method, received, change },
       customer: this.cleanCustomer(dto.customer),
@@ -771,7 +807,8 @@ export class SalesService {
       tax: Math.round(taxTotal),
       cogs: Math.round(cogs),
       // El domicilio es ingreso del negocio (a diferencia de la propina, que
-      // es del personal y por eso no aparece aquí), pero sin IVA que separar.
+      // es del personal y por eso no aparece aquí). Su impuesto ya viene
+      // sumado en `tax`, así que el libro separa base e impuesto solo.
       deliveryFee: Math.round(deliveryFee),
       paymentMethod: dto.payment.method,
       onCredit: isCredit,
@@ -804,7 +841,9 @@ export class SalesService {
   /** Descarta un customer vacío (sin ningún dato) para no guardar {} . */
   private cleanCustomer(customer?: CreateSaleDto['customer']) {
     if (!customer) return undefined;
-    const entries = (['name', 'idNumber', 'phone', 'email'] as const)
+    const entries = (
+      ['name', 'idNumber', 'idType', 'phone', 'email', 'address'] as const
+    )
       .map((k) => [k, customer[k]?.trim()] as const)
       .filter(([, v]) => v);
     return entries.length > 0 ? Object.fromEntries(entries) : undefined;

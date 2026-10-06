@@ -49,6 +49,12 @@ export const PERMISSIONS = {
   // Facturación electrónica (DIAN)
   EINVOICING_ISSUE: 'einvoicing.issue',
   EINVOICING_VOID: 'einvoicing.void',
+  /**
+   * Conectar el NIT con la DIAN: certificado digital, software y ambiente.
+   * Delicado (quien lo tiene decide con qué firma la empresa), así que solo lo
+   * reciben Dueño y Administrador.
+   */
+  EINVOICING_CONFIGURE: 'einvoicing.configure',
   // Restaurante (comandas y mesas)
   RESTAURANT_OPERATE: 'restaurant.operate',
 } as const;
@@ -124,6 +130,10 @@ export const PERMISSION_GROUPS: {
     items: [
       { key: PERMISSIONS.EINVOICING_ISSUE, label: 'Emitir factura electrónica' },
       { key: PERMISSIONS.EINVOICING_VOID, label: 'Emitir nota crédito (anular)' },
+      {
+        key: PERMISSIONS.EINVOICING_CONFIGURE,
+        label: 'Configurar la conexión con la DIAN (certificado y habilitación)',
+      },
     ],
   },
   {

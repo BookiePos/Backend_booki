@@ -168,6 +168,20 @@ class SalePayment {
 }
 const SalePaymentSchema = SchemaFactory.createForClass(SalePayment);
 
+/** Porción del domicilio que corresponde a una tarifa de impuesto. */
+@Schema({ _id: false })
+class SaleDeliveryTax {
+  @Prop({ required: true, min: 0 })
+  rate!: number;
+
+  @Prop({ required: true, min: 0 })
+  base!: number;
+
+  @Prop({ required: true, min: 0 })
+  amount!: number;
+}
+const SaleDeliveryTaxSchema = SchemaFactory.createForClass(SaleDeliveryTax);
+
 /** Datos del cliente para la factura (todos opcionales). */
 @Schema({ _id: false })
 class SaleCustomer {
@@ -183,6 +197,14 @@ class SaleCustomer {
 
   @Prop({ trim: true })
   email?: string;
+
+  /** Tipo de documento, código DIAN (13 cédula, 31 NIT…). */
+  @Prop({ trim: true })
+  idType?: string;
+
+  /** Dirección: la DIAN la exige para facturar a un cliente identificado. */
+  @Prop({ trim: true })
+  address?: string;
 }
 const SaleCustomerSchema = SchemaFactory.createForClass(SaleCustomer);
 
@@ -318,11 +340,11 @@ export class Sale {
   @Prop({ default: 0, min: 0 })
   discountTotal!: number;
 
-  /** Base gravable total (Σ bases de línea sin IVA). */
+  /** Base gravable total (Σ bases de línea sin IVA + base del domicilio). */
   @Prop({ default: 0, min: 0 })
   taxableBase!: number;
 
-  /** IVA total (incluido en los precios). Informativo para la factura. */
+  /** IVA total (incluido en los precios), con el del domicilio. */
   @Prop({ default: 0, min: 0 })
   taxTotal!: number;
 
@@ -341,15 +363,23 @@ export class Sale {
   orderType!: OrderType;
 
   /**
-   * Cobro del domicilio. Se cobra ENCIMA del total y NO entra a la base
-   * gravable —decisión tomada con el dueño— así que va en su propio campo y no
+   * Cobro del domicilio. Se cobra ENCIMA del total, en su propio campo y no
    * como una línea más. El monto a pagar = total + tip + deliveryFee.
    *
-   * A diferencia de la propina, sí es ingreso del negocio y por eso sí va al
-   * libro contable.
+   * A diferencia de la propina, es ingreso del negocio y HACE PARTE DE LA BASE
+   * GRAVABLE (DIAN, Oficio 664 de 2022): su valor ya incluye el impuesto, que
+   * se discrimina en `deliveryTaxes` y está sumado en `taxableBase`/`taxTotal`.
    */
   @Prop({ default: 0, min: 0 })
   deliveryFee!: number;
+
+  /**
+   * Impuesto del domicilio por tarifa: el cobro se reparte entre las tarifas de
+   * lo que se lleva (ver `splitDeliveryTax`). Vacío si no hay domicilio. Las
+   * ventas anteriores al cambio no lo traen: su domicilio quedó sin impuesto.
+   */
+  @Prop({ type: [SaleDeliveryTaxSchema], default: [] })
+  deliveryTaxes!: SaleDeliveryTax[];
 
   /** A dónde se lleva y quién lo lleva. Solo en `orderType: 'domicilio'`. */
   @Prop({ type: SaleDeliverySchema })

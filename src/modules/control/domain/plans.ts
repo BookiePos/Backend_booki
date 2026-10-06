@@ -79,7 +79,13 @@ export const PLAN_FEATURES_BY_PLAN: Record<BusinessPlan, PlanFeature[]> = {
 export interface PlanQuotas {
   sedes: number;
   users: number | null;
-  documentsPerMonth: number;
+  /**
+   * Documentos electrónicos (facturas y notas) al mes. `null` = ilimitado, que
+   * es lo que rige hoy en todos los planes: la factura se emite en CADA venta
+   * y la emisión corre en infraestructura propia (APIDIAN), así que un tope
+   * solo serviría para dejar a un negocio sin poder vender a mitad de mes.
+   */
+  documentsPerMonth: number | null;
   payrollEmployees: number;
   /**
    * Facturas de compra que se pueden cargar por foto al mes.
@@ -92,10 +98,10 @@ export interface PlanQuotas {
 }
 
 export const PLAN_QUOTAS: Record<BusinessPlan, PlanQuotas> = {
-  punto: { sedes: 1, users: 3, documentsPerMonth: 400, payrollEmployees: 0, invoiceScansPerMonth: 30 },
-  negocio: { sedes: 1, users: null, documentsPerMonth: 2_000, payrollEmployees: 0, invoiceScansPerMonth: 150 },
-  control: { sedes: 1, users: null, documentsPerMonth: 5_000, payrollEmployees: 10, invoiceScansPerMonth: 400 },
-  cadena: { sedes: 3, users: null, documentsPerMonth: 12_000, payrollEmployees: 25, invoiceScansPerMonth: 1_000 },
+  punto: { sedes: 1, users: 3, documentsPerMonth: null, payrollEmployees: 0, invoiceScansPerMonth: 30 },
+  negocio: { sedes: 1, users: null, documentsPerMonth: null, payrollEmployees: 0, invoiceScansPerMonth: 150 },
+  control: { sedes: 1, users: null, documentsPerMonth: null, payrollEmployees: 10, invoiceScansPerMonth: 400 },
+  cadena: { sedes: 3, users: null, documentsPerMonth: null, payrollEmployees: 25, invoiceScansPerMonth: 1_000 },
 };
 
 /**
@@ -184,7 +190,6 @@ export const ADD_ONS = {
   payroll: { id: 'payroll', name: 'Nómina hasta 10 empleados', price: 34_900, unit: '/mes', note: 'Incluida en Control y Cadena.' },
   extraEmployee: { id: 'extraEmployee', name: 'Empleado adicional', price: 2_900, unit: '/mes' },
   extraSede: { id: 'extraSede', name: 'Sede adicional', price: 89_900, unit: '/mes', note: 'Sobre Cadena, sin límite de sedes.' },
-  docPackage: { id: 'docPackage', name: 'Paquete de 1.000 documentos', price: 29_900, unit: 'único', note: 'No expira. Se consume solo al pasar el cupo del plan.' },
   migration: { id: 'migration', name: 'Migración desde Siigo, Alegra o Excel', price: 0, unit: 'sin costo', note: 'El importador de catálogo y existencias por CSV ya está construido.' },
   training: { id: 'training', name: 'Capacitación adicional en sitio', price: 180_000, unit: '/sesión', note: 'Por sesión, solo Bogotá.' },
 } satisfies Record<string, AddOnMeta>;
@@ -209,7 +214,12 @@ export interface Entitlements {
 
 /** Empleados que habilita el complemento de nómina. */
 const PAYROLL_ADDON_EMPLOYEES = 10;
-/** Documentos electrónicos por paquete comprado. */
+/**
+ * Documentos electrónicos por paquete comprado.
+ *
+ * El paquete ya no se vende (los documentos son ilimitados), pero se conserva
+ * para acreditar los pagos de paquetes que se aprobaron antes del cambio.
+ */
 export const DOCS_PER_PACKAGE = 1_000;
 
 /**

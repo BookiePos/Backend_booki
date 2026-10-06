@@ -23,13 +23,13 @@ import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 /**
  * El cobro del domicilio dentro de la venta.
  *
- * La regla que lo define, decidida con el dueño: el domicilio **no lleva IVA** y
- * se cobra **encima del total**, igual que la propina. Meterlo en la base
- * gravable saldría mal en la factura electrónica ante la DIAN, y eso no se
- * arregla solo.
+ * Se cobra **encima del total**, igual que la propina, pero a diferencia de
+ * ella **hace parte de la base gravable**: la DIAN lo considera parte del
+ * precio de la venta (Oficio 664 de 2022). Su valor ya incluye el impuesto, que
+ * se discrimina con la tarifa de lo que se lleva.
  *
- * Pero a diferencia de la propina, el domicilio **sí es ingreso del negocio**:
- * la propina es del personal. Por eso uno va al libro contable y la otra no.
+ * Y el domicilio **es ingreso del negocio**: la propina es del personal. Por
+ * eso uno va al libro contable y la otra no.
  *
  * Y lo tercero: la tarifa la pone el SERVIDOR a partir de la zona. Si viajara
  * desde el navegador, cualquiera podría cobrarse el envío a cero.
@@ -173,10 +173,9 @@ describe('SalesService.create · domicilio', () => {
     expect(creada.orderType).toBe('domicilio');
   });
 
-  it('el domicilio NO entra a la base gravable ni al IVA', async () => {
-    // Es la regla que se acordó con el dueño. Meterlo dentro saldría mal en la
-    // factura electrónica.
-    build({ id: ZONA.toString(), name: 'Laureles', fee: 5_000 });
+  it('el domicilio entra a la base gravable con la tarifa de lo que se lleva', async () => {
+    // DIAN, Oficio 664 de 2022: el domicilio hace parte del precio de la venta.
+    build({ id: ZONA.toString(), name: 'Laureles', fee: 5_950 });
 
     await service.create(
       venta({
@@ -186,12 +185,32 @@ describe('SalesService.create · domicilio', () => {
       user,
     );
 
-    // La arepa: 11.900 con IVA = 10.000 de base + 1.900 de IVA.
-    expect(Math.round(creada.taxableBase)).toBe(10_000);
-    expect(Math.round(creada.taxTotal)).toBe(1_900);
+    // La arepa: 11.900 con IVA = 10.000 + 1.900. El domicilio, 5.950 con IVA
+    // del 19 % incluido = 5.000 + 950.
+    expect(creada.deliveryTaxes).toEqual([{ rate: 19, base: 5_000, amount: 950 }]);
+    expect(Math.round(creada.taxableBase)).toBe(15_000);
+    expect(Math.round(creada.taxTotal)).toBe(2_850);
+    // El total de la venta sigue siendo el de las líneas; el domicilio se
+    // cobra aparte, y por el mismo valor de antes.
     expect(Math.round(creada.total)).toBe(11_900);
-    // Y el domicilio va aparte.
-    expect(creada.deliveryFee).toBe(5_000);
+    expect(creada.deliveryFee).toBe(5_950);
+  });
+
+  it('el libro separa el impuesto del domicilio del ingreso', async () => {
+    build({ id: ZONA.toString(), name: 'Laureles', fee: 5_950 });
+
+    await service.create(
+      venta({
+        orderType: 'domicilio',
+        delivery: { address: 'Calle 33', zoneId: ZONA.toString() },
+      }),
+      user,
+    );
+
+    const asiento = ledger.postSale.mock.calls[0][0];
+    // El impuesto del asiento ya trae el del domicilio: 1.900 + 950.
+    expect(asiento.tax).toBe(2_850);
+    expect(asiento.deliveryFee).toBe(5_950);
   });
 
   it('sí es ingreso del negocio: va al libro, a diferencia de la propina', async () => {
@@ -200,7 +219,7 @@ describe('SalesService.create · domicilio', () => {
     await service.create(
       venta({
         orderType: 'domicilio',
-        tip: 2_000,
+        tip: 1_000,
         delivery: { address: 'Calle 33', zoneId: ZONA.toString() },
       }),
       user,
@@ -215,19 +234,29 @@ describe('SalesService.create · domicilio', () => {
   it('lo cobrado de más se le exige al cliente: total + propina + domicilio', async () => {
     build({ id: ZONA.toString(), name: 'Laureles', fee: 5_000 });
 
-    // 11.900 + 2.000 de propina + 5.000 de domicilio = 18.900. Con 18.000 no
+    // 11.900 + 1.000 de propina + 5.000 de domicilio = 17.900. Con 17.000 no
     // alcanza y la venta no se puede registrar.
     await expect(
       service.create(
         venta({
           orderType: 'domicilio',
-          tip: 2_000,
-          payment: { method: 'cash', received: 18_000 },
+          tip: 1_000,
+          payment: { method: 'cash', received: 17_000 },
           delivery: { address: 'Calle 33', zoneId: ZONA.toString() },
         }),
         user,
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('una propina de más del 10 % del consumo se rechaza (Ley 1935 de 2018)', async () => {
+    build();
+
+    // La arepa vale 11.900: el tope es 1.190.
+    await expect(
+      service.create(venta({ tip: 1_191 }), user),
+    ).rejects.toThrow(/10 %/);
+    await expect(service.create(venta({ tip: 1_190 }), user)).resolves.toBeDefined();
   });
 
   it('sin zona vale el valor escrito a mano', async () => {
