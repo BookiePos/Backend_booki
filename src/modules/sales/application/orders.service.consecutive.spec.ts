@@ -86,7 +86,7 @@ describe('OrdersService.nextOrderNumber (consecutivo SEDE-C-000012)', () => {
       cajaSessionModel,
       sedes,
       {} as any, // catalog (sin líneas → no se usa)
-      {} as any, // sales,
+      {} as any, // sales
       {} as any, // sedeModel: solo lo recibe populate, que aquí está simulado
     );
   }
