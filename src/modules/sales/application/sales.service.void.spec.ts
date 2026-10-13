@@ -102,7 +102,8 @@ describe('SalesService.void (anulación atómica)', () => {
       {} as any, // payroll
       {} as any, // params
       ledgerPosting, // ledgerPosting
-      treasury, // treasury
+      treasury, // treasury,
+      {} as any, // sedeModel: solo lo recibe populate, que aquí está simulado
     );
   });
 

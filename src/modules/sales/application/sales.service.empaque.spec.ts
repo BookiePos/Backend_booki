@@ -137,6 +137,7 @@ describe('SalesService.create · empaque', () => {
       {} as never, // params
       { postSale: vi.fn().mockResolvedValue(undefined) } as never,
       { post: vi.fn().mockResolvedValue(undefined) } as never,
+      {} as any, // sedeModel: solo lo recibe populate, que aquí está simulado
     );
   }
 
@@ -341,8 +342,8 @@ describe('SalesService.create · empaque', () => {
 
       expect(sale.packagingExplicit).toBe(true);
       expect(sale.packaging).toHaveLength(1);
-      expect(sale.packaging[0].productId.toString()).toBe(BOLSA.toString());
-      expect(sale.packaging[0].qty).toBe(1);
+      expect(sale.packaging[0]!.productId.toString()).toBe(BOLSA.toString());
+      expect(sale.packaging[0]!.qty).toBe(1);
     });
 
     it('guarda lo PEDIDO aunque no alcance el inventario', async () => {
@@ -362,7 +363,7 @@ describe('SalesService.create · empaque', () => {
       );
 
       expect(gastado(BOLSA)).toBe(0); // no había de dónde descontar
-      expect(sale.packaging[0].qty).toBe(2); // pero así salió
+      expect(sale.packaging[0]!.qty).toBe(2); // pero así salió
     });
   });
 });

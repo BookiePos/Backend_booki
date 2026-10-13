@@ -176,6 +176,7 @@ describe('SalesService.create (IVA incluido + prorrateo de descuento)', () => {
       {} as any, // params
       ledgerPosting,
       treasury,
+      {} as any, // sedeModel: solo lo recibe populate, que aquí está simulado
     );
   });
 

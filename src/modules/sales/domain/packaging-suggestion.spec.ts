@@ -132,7 +132,7 @@ describe('sugerirEmpaque', () => {
     const historial = [venta([GALLETA], [BOLSA])];
 
     const r = sugerirEmpaque([GALLETA], historial, []);
-    r.lineas[0].qty = 99;
+    r.lineas[0]!.qty = 99;
 
     expect(BOLSA.qty).toBe(1);
   });

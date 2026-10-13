@@ -163,6 +163,7 @@ describe('ProductionService.complete', () => {
       products,
       stock,
       {} as any,
+      {} as any, // productModel: solo lo recibe populate, que aquí está simulado
     );
   });
 

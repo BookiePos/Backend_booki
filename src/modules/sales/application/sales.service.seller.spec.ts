@@ -117,6 +117,7 @@ describe('SalesService.create · vendedor', () => {
       {} as never, // params
       { postSale: vi.fn().mockResolvedValue(undefined) } as never,
       { post: vi.fn().mockResolvedValue(undefined) } as never,
+      {} as any, // sedeModel: solo lo recibe populate, que aquí está simulado
     );
   });
 

@@ -94,12 +94,12 @@ describe('PasswordResetService', () => {
 
     await service.request('Due@Negocio.com ');
 
-    const guardado = deps.resets.create.mock.calls[0][0] as {
+    const guardado = deps.resets.create.mock.calls[0]![0] as {
       tokenHash: string;
       businessId: string;
       userId: string;
     };
-    const enviado = deps.mail.sendPasswordReset.mock.calls[0][0] as {
+    const enviado = deps.mail.sendPasswordReset.mock.calls[0]![0] as {
       resetUrl: string;
     };
     const token = enviado.resetUrl.split('/recuperar/')[1];
