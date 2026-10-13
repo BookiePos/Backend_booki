@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import {
+  InternalServerErrorException,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 
 // Mismo patrón que el resto de specs: los decoradores de @nestjs/mongoose
 // revientan al importar esquemas (los schedulers arrastran servicios).
@@ -26,8 +30,9 @@ describe('secretoDeCronValido', () => {
 });
 
 describe('CronController.diario', () => {
-  const billing = { sweep: vi.fn().mockResolvedValue(undefined) };
-  const recurrentes = { sweep: vi.fn().mockResolvedValue(undefined) };
+  const ok = { estado: 'ok' };
+  const billing = { sweep: vi.fn() };
+  const recurrentes = { sweep: vi.fn() };
   const conSecreto = (secreto?: string) =>
     new CronController(
       { get: () => secreto } as never,
@@ -35,7 +40,11 @@ describe('CronController.diario', () => {
       recurrentes as never,
     );
 
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    billing.sweep.mockResolvedValue(ok);
+    recurrentes.sweep.mockResolvedValue(ok);
+  });
 
   it('con el secreto correcto corre los dos barridos', async () => {
     const r = await conSecreto('s3cr3t').diario('Bearer s3cr3t');
@@ -58,5 +67,39 @@ describe('CronController.diario', () => {
       ServiceUnavailableException,
     );
     expect(billing.sweep).not.toHaveBeenCalled();
+  });
+
+  it('el 503 no le cuenta a quien llama qué falta en el despliegue', async () => {
+    const err = await conSecreto(undefined)
+      .diario(undefined)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ServiceUnavailableException);
+    expect(JSON.stringify((err as ServiceUnavailableException).getResponse())).not.toMatch(
+      /CRON_SECRET/,
+    );
+  });
+
+  it('si un barrido falla responde 500 (rojo en Vercel) y aun así corre el otro', async () => {
+    billing.sweep.mockResolvedValue({ estado: 'error', detalle: 'pasarela caída' });
+
+    const err = await conSecreto('s3cr3t')
+      .diario('Bearer s3cr3t')
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(InternalServerErrorException);
+    expect(recurrentes.sweep).toHaveBeenCalledTimes(1);
+    expect((err as InternalServerErrorException).getResponse()).toMatchObject({
+      ok: false,
+      tareas: { cobros: { estado: 'error', detalle: 'pasarela caída' } },
+    });
+  });
+
+  it('un barrido omitido (otro en marcha) no es un fallo', async () => {
+    recurrentes.sweep.mockResolvedValue({ estado: 'omitido' });
+
+    const r = await conSecreto('s3cr3t').diario('Bearer s3cr3t');
+
+    expect(r.ok).toBe(true);
+    expect(r.tareas['gastos-recurrentes']).toEqual({ estado: 'omitido' });
   });
 });
