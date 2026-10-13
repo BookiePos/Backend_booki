@@ -19,12 +19,12 @@ y anota aquí el resultado.
 
 ## Qué está a medias
 
-- **`feat/factura-electronica-apidian`** (medido tras `git fetch`, 2026-10-12): lleva 6 commits
-  sobre `origin/main` en Backend y 4 en Frontend, y le falta 1 commit de `main` en cada uno.
-  Cuando se mezcle, sus gates van a pedir subir techos o arreglar deuda: en `main` hay 2
-  errores de lint (la rama tiene 4), `einvoicing` redondea a mano 4 veces (la rama 7) y
-  `sales` 21 (la rama 22), y la rama añade el permiso `einvoicing.configure`, así que hay que
-  regenerar `Frontend/scripts/permisos-backend.json` con `--actualizar`.
+- **Facturación electrónica (APIDIAN): en pausa.** La rama `feat/factura-electronica-apidian`
+  se borró el 2026-10-12 por decisión del dueño (no se usará todavía). Su trabajo no se perdió:
+  los PR #49 (Backend) y #44 (Frontend) se mezclaron en `fix/cobros-pendientes-y-tarjeta-guardada`,
+  que sigue en GitHub y **no está en `main`**. Cuando se retome, esa rama va a pedir subir techos
+  o arreglar deuda (lint 4 vs 2 en `main`, `einvoicing` 7 redondeos vs 4, `sales` 22 vs 21) y
+  regenerar `Frontend/scripts/permisos-backend.json` (añade `einvoicing.configure`).
 
 ## Gates en `chore/metodologia` (2026-10-12)
 
@@ -39,7 +39,7 @@ diff del PR. Su primera corrida es la de estos PR.
 ## Siguiente paso
 
 1. CI verde en los dos PR de `chore/metodologia` y mezclarlos.
-2. Rebasar `feat/factura-electronica-apidian` sobre el nuevo `main` y ajustar techos/permisos.
+2. Decidir qué hacer con `fix/cobros-pendientes-y-tarjeta-guardada` (trae la facturación en pausa).
 3. Atacar los hallazgos abiertos, empezando por (a): bajar `tscConTests` es la deuda que
    más miente.
 
