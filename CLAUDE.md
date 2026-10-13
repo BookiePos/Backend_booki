@@ -33,6 +33,10 @@ Gestor de paquetes: **pnpm** (existe un `package-lock.json` residual: no lo uses
   defecto, `--empresa`/`--todas`, `--aplicar` solo tras revisar el conteo antes/después.
 - **Despliegue**: backend primero, frontend después; luego `node scripts/sonda-prod.mjs`
   (solo lectura). Al cerrar, `/cerrar-sesion` sobrescribe `docs/ESTADO.md`.
+- **Barridos periódicos**: en Vercel (serverless) un `setInterval` no corre. Los dispara
+  Vercel Cron llamando `GET /cron/diario` (`vercel.json`, protegido por `CRON_SECRET`;
+  el plan Hobby solo permite uno al día). Un barrido nuevo se engancha en
+  `modules/cron/infrastructure/cron.controller.ts`, no solo a un temporizador.
 - **Auditores** (`.claude/agents/`, opus): `auditor-dinero`, `auditor-permisos` y
   `auditor-tenancy` en todo cambio de dinero, permisos o tenancy. Cada uno intenta
   refutar sus hallazgos antes de entregarlos; si se aplica un arreglo, se audita ese diff.
