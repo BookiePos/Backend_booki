@@ -38,6 +38,9 @@ export class RecurringExpenseScheduler implements OnModuleInit, OnModuleDestroy 
   ) {}
 
   onModuleInit(): void {
+    // En Vercel la función se congela entre peticiones y estos temporizadores no
+    // corren: ahí el barrido lo dispara Vercel Cron vía `GET /cron/diario`.
+    if (process.env.VERCEL) return;
     // Barrido inicial de puesta al día, luego cada SWEEP_INTERVAL_MS.
     this.startupTimer = setTimeout(() => {
       void this.sweep();

@@ -84,6 +84,7 @@ import { FinanceController } from './infrastructure/finance.controller';
   providers: [FinanceService, RecurringExpenseScheduler],
   // Lo usa el módulo de facturas por foto para registrar los renglones que no
   // son mercancía (fletes, servicios).
-  exports: [FinanceService],
+  // El scheduler se exporta para que CronModule lo dispare desde Vercel Cron.
+  exports: [FinanceService, RecurringExpenseScheduler],
 })
 export class FinanceModule {}

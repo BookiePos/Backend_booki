@@ -102,6 +102,8 @@ const PUBLICOS_PERMITIDOS = [
   'modules/core-auth/infrastructure/auth.controller.ts#validateReset',
   'modules/core-auth/infrastructure/invitations.controller.ts#accept',
   'modules/core-auth/infrastructure/invitations.controller.ts#getByToken',
+  // Sin usuario: lo llama Vercel Cron y lo protege CRON_SECRET (ver cron-auth.ts).
+  'modules/cron/infrastructure/cron.controller.ts#diario',
   'modules/health/infrastructure/health.controller.ts#check',
 ];
 

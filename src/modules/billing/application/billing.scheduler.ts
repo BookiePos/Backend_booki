@@ -28,6 +28,9 @@ export class BillingScheduler implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly billing: BillingService) {}
 
   onModuleInit(): void {
+    // En Vercel la función se congela entre peticiones y estos temporizadores no
+    // corren: ahí el barrido lo dispara Vercel Cron vía `GET /cron/diario`.
+    if (process.env.VERCEL) return;
     this.startupTimer = setTimeout(() => {
       void this.sweep();
       this.interval = setInterval(() => void this.sweep(), SWEEP_INTERVAL_MS);
