@@ -332,7 +332,7 @@ Se recogen los archivos `src/**/*.spec.ts`. La suite actual cubre los flujos cr�
 
 ## Despliegue
 
-El servicio se despliega en **Vercel**. No hay `vercel.json` en el repositorio: la configuración vive en el panel de Vercel.
+El servicio se despliega en **Vercel** (preset NestJS; el resto de la configuración vive en el panel). El `vercel.json` del repositorio solo declara el cron diario: Vercel Cron llama `GET /cron/diario` con `Authorization: Bearer <CRON_SECRET>` y ese endpoint corre los barridos periódicos (cobro de renovaciones y gastos recurrentes), porque en serverless los temporizadores internos no corren. Sin `CRON_SECRET` en el entorno el endpoint responde 503 y no se cobra nada.
 
 ```bash
 pnpm install
