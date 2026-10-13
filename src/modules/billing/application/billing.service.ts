@@ -418,9 +418,11 @@ export class BillingService {
     charged: number;
     suspended: number;
     reconciled: number;
+    /** `false` = no se hizo nada porque la pasarela no está configurada. */
+    configured: boolean;
   }> {
     if (!this.wompi.configured) {
-      return { charged: 0, suspended: 0, reconciled: 0 };
+      return { charged: 0, suspended: 0, reconciled: 0, configured: false };
     }
     const now = new Date();
     let charged = 0;
@@ -433,8 +435,7 @@ export class BillingService {
       .exec();
     for (const sub of due) {
       try {
-        await this.chargeRenewal(sub);
-        charged++;
+        if (await this.chargeRenewal(sub, now)) charged++;
       } catch (err) {
         this.logger.error(
           `Fallo cobrando renovación de ${sub.businessId}: ${
@@ -460,8 +461,7 @@ export class BillingService {
       const last = sub.lastChargeAttemptAt?.getTime() ?? 0;
       if (now.getTime() - last < RETRY_COOLDOWN_MS) continue;
       try {
-        await this.chargeRenewal(sub);
-        charged++;
+        if (await this.chargeRenewal(sub, now)) charged++;
       } catch (err) {
         this.logger.error(
           `Fallo reintentando cobro de ${sub.businessId}: ${
@@ -473,7 +473,7 @@ export class BillingService {
 
     suspended += await this.revokeEndedSubscriptions(now);
 
-    return { charged, suspended, reconciled };
+    return { charged, suspended, reconciled, configured: true };
   }
 
   /**
@@ -545,16 +545,46 @@ export class BillingService {
     return retirados;
   }
 
-  private async chargeRenewal(sub: SubscriptionDocument): Promise<void> {
-    const reference = `ren-${sub.businessId}-${Date.now()}`;
-    // Optimista: adelanta el próximo cobro para no re-cobrar en el siguiente
-    // barrido antes de que resuelva el webhook. Si declina, syncTransaction lo
-    // pasa a past_due y el reintento lo maneja el cooldown.
-    sub.lastChargeAttemptAt = new Date();
+  /**
+   * Cobra una renovación (o su reintento en mora). Devuelve `false` si otro
+   * barrido ya reservó este intento y aquí no se cobró nada.
+   */
+  private async chargeRenewal(
+    sub: SubscriptionDocument,
+    now: Date,
+  ): Promise<boolean> {
+    // Reserva atómica del intento. El cerrojo del scheduler es en memoria y por
+    // instancia: dos llamadas a /cron/diario (Vercel puede entregar el evento
+    // dos veces, o alguien pulsa «Run») leen la misma suscripción vencida. Solo
+    // cobra quien logra cambiar `lastChargeAttemptAt` desde el valor que leyó.
+    // De paso adelanta el próximo cobro de las activas (optimista: si declina,
+    // syncTransaction la pasa a past_due y el reintento lo maneja el cooldown).
+    const attemptAt = new Date();
+    const filtro: Record<string, unknown> = {
+      _id: sub._id,
+      status: sub.status,
+      lastChargeAttemptAt: sub.lastChargeAttemptAt ?? null,
+    };
+    const cambios: Record<string, unknown> = { lastChargeAttemptAt: attemptAt };
     if (sub.status === 'active') {
-      sub.nextChargeAt = this.nextChargeFrom(sub);
+      filtro.nextChargeAt = { $lte: now };
+      cambios.nextChargeAt = this.nextChargeFrom(sub);
     }
-    await sub.save();
+    const reserva = await this.subs.updateOne(filtro, { $set: cambios }).exec();
+    if (reserva.modifiedCount !== 1) {
+      this.logger.warn(
+        `Cobro de ${sub.businessId} omitido: otro barrido ya lo reservó.`,
+      );
+      return false;
+    }
+    Object.assign(sub, cambios);
+
+    // Segunda defensa: referencia determinista por día e intento. Si dos
+    // procesos llegaran aquí con el mismo intento, el índice único de
+    // `reference` hace fallar el segundo `payments.create` antes de llamar a
+    // Wompi. Un reintento (otro `failedAttempts`) u otro día llevan otra.
+    const dia = attemptAt.toISOString().slice(0, 10).replace(/-/g, '');
+    const reference = `ren-${sub.businessId}-${dia}-${sub.failedAttempts ?? 0}`;
 
     const payment = await this.payments.create({
       businessId: sub.businessId,
@@ -575,6 +605,7 @@ export class BillingService {
     payment.wompiTransactionId = tx.id;
     await payment.save();
     await this.syncTransaction(payment, tx.status);
+    return true;
   }
 
   // ── Internos ────────────────────────────────────────────────────────────────
