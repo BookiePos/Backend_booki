@@ -1,0 +1,24 @@
+{
+  "tscCodigo": 0,
+  "tscConTests": 54,
+  "lintErrores": 2,
+  "dineroPorModulo": {
+    "attendance": 2,
+    "billing": 1,
+    "caja": 2,
+    "catalog": 5,
+    "control": 1,
+    "core-ledger": 16,
+    "core-reports": 2,
+    "core-tax": 2,
+    "delivery": 3,
+    "einvoicing": 4,
+    "inventory": 2,
+    "invoice-scan": 8,
+    "payroll": 8,
+    "production": 2,
+    "purchasing": 2,
+    "restaurant": 3,
+    "sales": 21
+  }
+}

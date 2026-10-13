@@ -1,0 +1,4 @@
+# Los hooks son scripts sh: con CRLF (core.autocrlf=true en Windows) el `\r` final rompe
+# el `exec` y el pre-commit deja de proteger sin avisar. Se fijan a LF en cualquier sistema.
+.githooks/* text eol=lf
+*.sh text eol=lf
