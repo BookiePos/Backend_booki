@@ -13,7 +13,33 @@ Gestor de paquetes: **pnpm** (existe un `package-lock.json` residual: no lo uses
 | `pnpm test:watch` | Vitest en watch |
 | `pnpm seed` / `seed:demo` / `seed:payroll` | Semillas (compilan antes con tsc) |
 | `pnpm eval:facturas [carpeta]` | Compara los extractores de facturas (Qwen vs GLM) sobre imágenes reales |
-| `pnpm lint` | **Placeholder**: hoy es `echo "TODO: eslint"`. No hay linter real todavía. |
+| `pnpm lint` | ESLint (`eslint.config.mjs`). La deuda que ya había está congelada en `scripts/techos.json` |
+| `pnpm gates` | Todos los gates con su cifra (`--build` añade el build). Antes de cada PR |
+
+## Cómo se trabaja
+
+- **Al empezar**: lee `docs/ESTADO.md` y comprueba con `git rev-parse --short HEAD`
+  (aquí y en `../Frontend`) que el HEAD coincide con el anotado. Si no, para y avisa.
+- **Gates antes de cada PR**: `node scripts/gates.mjs --build` (skill `gates`). Un gate
+  sin cifra es `SIN MEDIR`, nunca verde. CI (`.github/workflows/ci.yml`) es obligatorio.
+- **Techos** (`scripts/techos.json`): deuda congelada que solo baja. Si una cuenta baja,
+  baja el techo en el mismo PR; subirlo exige justificarlo en el PR.
+- **Guardianes** (`src/shared/guards/invariantes.guard.spec.ts`): cada handler con una
+  política y lista cerrada de `@Public()`; redondeos a mano con techo por módulo (usa
+  `cop()`/`sumCop()`); nada de modelos en constructor/`onModuleInit` ni `biz_` a mano.
+- **Secretos**: `scripts/check-no-secrets.mjs` + hook `.githooks/pre-commit`
+  (`git config core.hooksPath .githooks`). Un falso positivo se marca con `secretos-ok`.
+- **Datos de producción** (`src/datos/`, `docs/DATOS-PRODUCCION.md`): en seco por
+  defecto, `--empresa`/`--todas`, `--aplicar` solo tras revisar el conteo antes/después.
+- **Despliegue**: backend primero, frontend después; luego `node scripts/sonda-prod.mjs`
+  (solo lectura). Al cerrar, `/cerrar-sesion` sobrescribe `docs/ESTADO.md`.
+- **Auditores** (`.claude/agents/`, opus): `auditor-dinero`, `auditor-permisos` y
+  `auditor-tenancy` en todo cambio de dinero, permisos o tenancy. Cada uno intenta
+  refutar sus hallazgos antes de entregarlos; si se aplica un arreglo, se audita ese diff.
+- **Skills**: `gates`, `cerrar-sesion`, `nuevo-endpoint`, `nuevo-modulo` y
+  `security-audit` (auditoría de seguridad completa o revisión enfocada). En el
+  Frontend: `componente-ui`, `nueva-vista-erp`, `design-taste-frontend` (web pública y
+  marketing) y `emil-design-eng` (animación y pulido).
 
 ## Invariantes no negociables
 
@@ -73,8 +99,11 @@ Todo handler necesita exactamente uno de:
 - `@NoPermissionRequired()` — autenticado pero sin permiso concreto (p. ej. "mi perfil").
 
 Los permisos viven en `src/modules/core-auth/domain/permissions.ts` como cadenas
-estables `modulo.accion`. El frontend replica esa lista en `src/lib/access.ts`:
-si añades o renombras un permiso, ese archivo del repo hermano queda desincronizado.
+estables `modulo.accion`. El frontend replica esa lista en `src/lib/access.ts`, y su gate
+`check-permisos` (`Frontend/scripts/check-permisos.mjs`) la compara contra el snapshot
+`Frontend/scripts/permisos-backend.json`: si añades o renombras un permiso, regenera
+ese snapshot con `node scripts/check-permisos.mjs --actualizar` desde el Frontend y
+ajusta `access.ts` en el mismo cambio; si no, el gate del Frontend se pone en rojo.
 
 **Un permiso nuevo llega solo a Dueño y Administrador, mientras nadie los haya
 editado.** Sus permisos se resuelven desde `SYSTEM_ROLES` (código) y no desde la

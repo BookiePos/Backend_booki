@@ -1,0 +1,51 @@
+name: CI — gates del backend
+
+# Corre los mismos gates que `node scripts/gates.mjs` en local (tsc código y tests contra
+# sus techos, vitest, eslint contra su techo, secretos en todo el árbol) más `pnpm build`.
+# En un PR, además, revisa que las líneas añadidas respecto a la rama base no traigan secretos.
+# NO despliega.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: Gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Historial completo: `--desde origin/<base>` necesita la base de fusión.
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Gates (con build)
+        run: node scripts/gates.mjs --build
+
+      - name: Secretos en las líneas añadidas del PR
+        if: github.event_name == 'pull_request'
+        run: node scripts/check-no-secrets.mjs --desde origin/${{ github.base_ref }}
