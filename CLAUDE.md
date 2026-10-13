@@ -36,6 +36,9 @@ Gestor de paquetes: **pnpm** (existe un `package-lock.json` residual: no lo uses
 - **Auditores** (`.claude/agents/`, opus): `auditor-dinero`, `auditor-permisos` y
   `auditor-tenancy` en todo cambio de dinero, permisos o tenancy. Cada uno intenta
   refutar sus hallazgos antes de entregarlos; si se aplica un arreglo, se audita ese diff.
+- **Contador** (`contador-colombia`, opus): toda decisión contable o tributaria (cuentas,
+  asientos del ledger, IVA/INC, SIMPLE, propinas, costeo, nómina), con la norma citada.
+  No revisa redondeos: eso es `auditor-dinero`.
 - **Skills**: `gates`, `cerrar-sesion`, `nuevo-endpoint`, `nuevo-modulo` y
   `security-audit` (auditoría de seguridad completa o revisión enfocada). En el
   Frontend: `componente-ui`, `nueva-vista-erp`, `design-taste-frontend` (web pública y
