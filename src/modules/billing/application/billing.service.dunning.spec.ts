@@ -104,6 +104,10 @@ describe('BillingService.runBillingCycle · cobro y mora', () => {
       findOne: vi.fn(() => ({
         exec: () => Promise.resolve([...vencidas, ...enMora][0] ?? null),
       })),
+      // Reserva atómica del intento: por defecto siempre la gana este barrido.
+      updateOne: vi.fn(() => ({
+        exec: () => Promise.resolve({ modifiedCount: 1 }),
+      })),
     };
     payments = {
       create: vi.fn((doc: any) =>
@@ -148,7 +152,7 @@ describe('BillingService.runBillingCycle · cobro y mora', () => {
 
     const r = await service.runBillingCycle();
 
-    expect(r).toMatchObject({ charged: 0, suspended: 0 });
+    expect(r).toMatchObject({ charged: 0, suspended: 0, configured: false });
     expect(wompi.createTransaction).not.toHaveBeenCalled();
   });
 
@@ -307,6 +311,138 @@ describe('BillingService.runBillingCycle · cobro y mora', () => {
       expect(businesses.updatePlan).not.toHaveBeenCalledWith('biz1', {
         status: 'suspended',
       });
+    });
+  });
+
+  describe('dos barridos a la vez (Vercel Cron entrega dos veces, o alguien pulsa «Run»)', () => {
+    /**
+     * Simula la base: cada barrido lee su PROPIA copia de la suscripción (como
+     * dos procesos) y `updateOne` solo modifica si `lastChargeAttemptAt` sigue
+     * valiendo lo que ese barrido leyó.
+     */
+    function baseCompartida(original: any) {
+      let guardado: Date | null = original.lastChargeAttemptAt ?? null;
+      subs.find = vi.fn((filter: any) => ({
+        exec: () =>
+          Promise.resolve(
+            filter.status === original.status ? [{ ...original }] : [],
+          ),
+      }));
+      subs.updateOne = vi.fn((filtro: any, update: any) => ({
+        exec: async () => {
+          const leido = filtro.lastChargeAttemptAt as Date | null;
+          if ((leido?.getTime() ?? null) !== (guardado?.getTime() ?? null)) {
+            return { modifiedCount: 0 };
+          }
+          guardado = update.$set.lastChargeAttemptAt;
+          return { modifiedCount: 1 };
+        },
+      }));
+    }
+
+    it('una renovación vencida se cobra una sola vez', async () => {
+      build([suscripcion()], []);
+      baseCompartida(suscripcion());
+
+      const [a, b] = await Promise.all([
+        service.runBillingCycle(),
+        service.runBillingCycle(),
+      ]);
+
+      expect(wompi.createTransaction).toHaveBeenCalledOnce();
+      expect(payments.create).toHaveBeenCalledOnce();
+      expect(a.charged + b.charged).toBe(1);
+    });
+
+    it('un reintento en mora se cobra una sola vez', async () => {
+      const enMora = suscripcion({
+        status: 'past_due',
+        failedAttempts: 1,
+        lastChargeAttemptAt: new Date(Date.now() - RETRY_COOLDOWN_MS - 1_000),
+      });
+      build([], [enMora]);
+      baseCompartida(enMora);
+
+      await Promise.all([service.runBillingCycle(), service.runBillingCycle()]);
+
+      expect(wompi.createTransaction).toHaveBeenCalledOnce();
+    });
+
+    it('si la reserva la ganó otro barrido, no crea pago ni llama a la pasarela', async () => {
+      build([suscripcion()], []);
+      subs.updateOne = vi.fn(() => ({
+        exec: () => Promise.resolve({ modifiedCount: 0 }),
+      }));
+
+      const r = await service.runBillingCycle();
+
+      expect(r.charged).toBe(0);
+      expect(payments.create).not.toHaveBeenCalled();
+      expect(wompi.createTransaction).not.toHaveBeenCalled();
+    });
+
+    it('la reserva exige el valor leído y, en activas, que el cobro siga vencido', async () => {
+      const antes = new Date(Date.now() - 40 * 86_400_000);
+      build([suscripcion({ lastChargeAttemptAt: antes })], []);
+
+      await service.runBillingCycle();
+
+      const [filtro, update] = subs.updateOne.mock.calls[0];
+      expect(filtro).toMatchObject({
+        _id: 'sub1',
+        status: 'active',
+        lastChargeAttemptAt: antes,
+      });
+      expect(filtro.nextChargeAt.$lte).toBeInstanceOf(Date);
+      expect(update.$set.lastChargeAttemptAt).toBeInstanceOf(Date);
+      expect(update.$set.nextChargeAt.getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('la referencia es determinista por día e intento: un duplicado choca con el índice único', async () => {
+      build([suscripcion()], []);
+      await service.runBillingCycle();
+      const primera = payments.create.mock.calls[0][0].reference;
+
+      build([suscripcion()], []);
+      await service.runBillingCycle();
+
+      expect(payments.create.mock.calls[0][0].reference).toBe(primera);
+      expect(primera).toMatch(/^ren-biz1-\d{8}-0$/);
+    });
+
+    it('un reintento lleva otra referencia que el intento que falló', async () => {
+      const enMora = suscripcion({
+        status: 'past_due',
+        failedAttempts: 1,
+        lastChargeAttemptAt: new Date(Date.now() - RETRY_COOLDOWN_MS - 1_000),
+      });
+      build([], [enMora]);
+
+      await service.runBillingCycle();
+
+      expect(payments.create.mock.calls[0][0].reference).toMatch(/-1$/);
+    });
+  });
+
+  describe('espera entre reintentos con un barrido diario', () => {
+    it('es menor que un día: el cron de mañana puede dispararse antes de la misma hora', () => {
+      expect(RETRY_COOLDOWN_MS).toBeLessThan(24 * 60 * 60 * 1000);
+      expect(RETRY_COOLDOWN_MS).toBeGreaterThanOrEqual(12 * 60 * 60 * 1000);
+    });
+
+    it('reintenta al día siguiente aunque hayan pasado algo menos de 24 h', async () => {
+      // Hoy el cron corrió a las 11:59 y mañana a las 11:02: 23 h y pico.
+      const enMora = suscripcion({
+        status: 'past_due',
+        failedAttempts: 1,
+        lastChargeAttemptAt: new Date(Date.now() - 23 * 60 * 60 * 1000),
+      });
+      build([], [enMora]);
+
+      const r = await service.runBillingCycle();
+
+      expect(wompi.createTransaction).toHaveBeenCalledOnce();
+      expect(r.charged).toBe(1);
     });
   });
 

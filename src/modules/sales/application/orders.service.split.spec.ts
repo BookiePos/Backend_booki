@@ -87,6 +87,7 @@ describe('OrdersService.checkout · cuenta dividida', () => {
       {} as never,
       {} as never,
       sales,
+      {} as any, // sedeModel: solo lo recibe populate, que aquí está simulado
     );
   }
 

@@ -90,6 +90,7 @@ describe('OrdersService.checkout (guarda de concurrencia)', () => {
       sedes,
       catalog,
       sales,
+      {} as any, // sedeModel: solo lo recibe populate, que aquí está simulado
     );
   });
 

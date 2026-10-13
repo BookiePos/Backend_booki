@@ -43,7 +43,7 @@ describe('BillingScheduler', () => {
     billing = {
       runBillingCycle: vi
         .fn()
-        .mockResolvedValue({ charged: 0, suspended: 0 }),
+        .mockResolvedValue({ charged: 0, suspended: 0, reconciled: 0, configured: true }),
     };
     scheduler = new BillingScheduler(billing as never);
   });
@@ -90,7 +90,7 @@ describe('BillingScheduler', () => {
 
     expect(billing.runBillingCycle).toHaveBeenCalledOnce();
 
-    resolver({ charged: 0, suspended: 0 });
+    resolver({ charged: 0, suspended: 0, reconciled: 0, configured: true });
     await vi.advanceTimersByTimeAsync(SEIS_HORAS);
     expect(billing.runBillingCycle).toHaveBeenCalledTimes(2);
   });
@@ -122,6 +122,55 @@ describe('BillingScheduler', () => {
     await vi.advanceTimersByTimeAsync(ARRANQUE * 10);
 
     expect(billing.runBillingCycle).not.toHaveBeenCalled();
+  });
+
+  describe('resultado de sweep() (lo usa /cron/diario)', () => {
+    it('un ciclo completo devuelve ok con sus cifras', async () => {
+      billing.runBillingCycle.mockResolvedValue({
+        charged: 2,
+        suspended: 1,
+        reconciled: 0,
+        configured: true,
+      });
+
+      await expect(scheduler.sweep()).resolves.toEqual({
+        estado: 'ok',
+        cifras: { charged: 2, suspended: 1, reconciled: 0 },
+      });
+    });
+
+    it('un ciclo que lanza devuelve error en vez de tragárselo', async () => {
+      billing.runBillingCycle.mockRejectedValue(new Error('pasarela caída'));
+
+      await expect(scheduler.sweep()).resolves.toEqual({
+        estado: 'error',
+        detalle: 'pasarela caída',
+      });
+    });
+
+    it('sin pasarela configurada no cobró nada: es error, no ok', async () => {
+      billing.runBillingCycle.mockResolvedValue({
+        charged: 0,
+        suspended: 0,
+        reconciled: 0,
+        configured: false,
+      });
+
+      await expect(scheduler.sweep()).resolves.toMatchObject({ estado: 'error' });
+    });
+
+    it('si ya hay un ciclo en marcha devuelve omitido, no ok', async () => {
+      let resolver: (v: unknown) => void = () => undefined;
+      billing.runBillingCycle.mockImplementation(
+        () => new Promise((r) => (resolver = r)),
+      );
+      const primero = scheduler.sweep();
+
+      await expect(scheduler.sweep()).resolves.toMatchObject({ estado: 'omitido' });
+
+      resolver({ charged: 0, suspended: 0, reconciled: 0, configured: true });
+      await expect(primero).resolves.toMatchObject({ estado: 'ok' });
+    });
   });
 
   it('el temporizador no impide que el proceso termine', () => {

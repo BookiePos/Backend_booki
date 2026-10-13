@@ -7,6 +7,7 @@ import {
 import { BusinessService } from '../../control/application/business.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { FinanceService } from './finance.service';
+import type { ResultadoBarrido } from '../../../shared/barridos/resultado-barrido';
 
 /** Cada cuánto se revisa si hay gastos recurrentes por generar. */
 const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 h
@@ -38,6 +39,9 @@ export class RecurringExpenseScheduler implements OnModuleInit, OnModuleDestroy 
   ) {}
 
   onModuleInit(): void {
+    // En Vercel la función se congela entre peticiones y estos temporizadores no
+    // corren: ahí el barrido lo dispara Vercel Cron vía `GET /cron/diario`.
+    if (process.env.VERCEL) return;
     // Barrido inicial de puesta al día, luego cada SWEEP_INTERVAL_MS.
     this.startupTimer = setTimeout(() => {
       void this.sweep();
@@ -52,13 +56,20 @@ export class RecurringExpenseScheduler implements OnModuleInit, OnModuleDestroy 
     if (this.interval) clearInterval(this.interval);
   }
 
-  /** Recorre las empresas activas y genera lo pendiente de cada una. */
-  async sweep(): Promise<void> {
-    if (this.running) return; // evita solapamiento
+  /**
+   * Recorre las empresas activas y genera lo pendiente de cada una. Nunca
+   * lanza (el temporizador lo llama con `void`): si alguna empresa falla, el
+   * resto sigue y el fallo se devuelve para que `/cron/diario` lo vea.
+   */
+  async sweep(): Promise<ResultadoBarrido> {
+    if (this.running) {
+      return { estado: 'omitido', detalle: 'ya hay un barrido de gastos recurrentes en marcha' };
+    }
     this.running = true;
     try {
       const businesses = await this.businesses.listActive();
       let total = 0;
+      const fallidas: string[] = [];
       for (const biz of businesses) {
         const businessId = biz._id.toString();
         try {
@@ -73,6 +84,7 @@ export class RecurringExpenseScheduler implements OnModuleInit, OnModuleDestroy 
             );
           }
         } catch (err) {
+          fallidas.push(businessId);
           this.logger.error(
             `Fallo generando gastos recurrentes de ${businessId}: ${
               err instanceof Error ? err.message : String(err)
@@ -83,6 +95,15 @@ export class RecurringExpenseScheduler implements OnModuleInit, OnModuleDestroy 
       if (total > 0) {
         this.logger.log(`Barrido recurrente: ${total} gasto(s) en total.`);
       }
+      const cifras = { empresas: businesses.length, generados: total, fallidas: fallidas.length };
+      if (fallidas.length > 0) {
+        return { estado: 'error', detalle: `falló en ${fallidas.length} empresa(s)`, cifras };
+      }
+      return { estado: 'ok', cifras };
+    } catch (err) {
+      const detalle = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Fallo en el barrido de gastos recurrentes: ${detalle}`);
+      return { estado: 'error', detalle };
     } finally {
       this.running = false;
     }

@@ -108,11 +108,11 @@ describe('CatalogService · imagen del producto', () => {
     const service = makeService(deps);
 
     await TenantContext.run(ctx, () => service.setImage(productId, jpg));
-    const primera = deps.storage.upload.mock.calls[0][0] as string;
+    const primera = deps.storage.upload.mock.calls[0]![0] as string;
 
     orden.length = 0;
     await TenantContext.run(ctx, () => service.setImage(productId, jpg));
-    const segunda = deps.storage.upload.mock.calls[1][0] as string;
+    const segunda = deps.storage.upload.mock.calls[1]![0] as string;
 
     expect(primera).toMatch(
       new RegExp(`^catalogo/b1/${productId}-[0-9a-f]{12}\\.jpg$`),

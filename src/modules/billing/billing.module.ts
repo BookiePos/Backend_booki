@@ -35,6 +35,7 @@ import { BillingController } from './infrastructure/billing.controller';
   ],
   controllers: [BillingController],
   providers: [WompiClient, BillingService, BillingScheduler],
-  exports: [BillingService],
+  // El scheduler se exporta para que CronModule lo dispare desde Vercel Cron.
+  exports: [BillingService, BillingScheduler],
 })
 export class BillingModule {}

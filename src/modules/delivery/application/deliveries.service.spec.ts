@@ -18,6 +18,7 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
 });
 
 import { DeliveriesService } from './deliveries.service';
+import type { SaleDelivery } from '../../sales/infrastructure/schemas/sale.schema';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 
 /**
@@ -65,11 +66,13 @@ describe('DeliveriesService · seguimiento y cuadre', () => {
       deliveryFee: opts.fee ?? 5_000,
       payment: { method: opts.method ?? 'cash' },
       createdAt: new Date(),
+      // Tipado con el esquema real: así el test puede afirmar los campos que el
+      // servicio escribe después (dispatchedAt, deliveredAt, failureReason).
       delivery: {
         address: 'Calle 33 #70-20',
         courier: opts.courier,
         status: opts.status ?? 'pendiente',
-      },
+      } as Partial<SaleDelivery>,
       markModified: vi.fn(),
       save: vi.fn().mockResolvedValue(undefined),
     };

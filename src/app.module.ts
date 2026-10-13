@@ -33,6 +33,7 @@ import { InvoiceScanModule } from './modules/invoice-scan/invoice-scan.module';
 import { RestaurantModule } from './modules/restaurant/restaurant.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { BillingModule } from './modules/billing/billing.module';
+import { CronModule } from './modules/cron/cron.module';
 
 /**
  * URI de la base de control. Por defecto reusa el mismo servidor de
@@ -121,6 +122,7 @@ function controlUri(): string {
     RestaurantModule,
     CustomersModule,
     BillingModule,
+    CronModule,
     // La auditoría va de último: su interceptor global envuelve al resto.
     CoreAuditModule,
   ],

@@ -136,6 +136,7 @@ describe('SalesService.create · domicilio', () => {
       {} as never, // params
       ledger as never,
       treasury as never,
+      {} as any, // sedeModel: solo lo recibe populate, que aquí está simulado
     );
   }
 

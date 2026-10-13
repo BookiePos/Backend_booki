@@ -20,6 +20,8 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
 import { InvoiceScanService } from './invoice-scan.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
+import type { ExtractedInvoice } from '../domain/invoice-extraction';
+import type { AppliedRefs, LineDecision } from '../infrastructure/schemas/invoice-scan.schema';
 
 /**
  * Aplicar una factura es la operación irreversible del módulo: crea productos,
@@ -46,7 +48,9 @@ describe('InvoiceScanService.apply', () => {
   const user = { userId: 'u1', email: 'due@negocio.com' } as unknown as JwtUser;
 
   /** Factura del ejemplo: dos productos y un flete. */
-  function draft() {
+  // Tipados con las clases reales: así los tests pueden tocar los campos opcionales
+  // (code, inPurchaseUnits, purchaseOrderId...) que el servicio sí lee.
+  function draft(): ExtractedInvoice {
     return {
       supplier: { name: 'Distribuidora El Sol', docNumber: '900123456', docType: 'NIT' },
       invoice: { number: 'FV-4821', issueDate: '2026-08-30', paymentTerms: 'credito' },
@@ -65,9 +69,9 @@ describe('InvoiceScanService.apply', () => {
       _id: new Types.ObjectId(),
       status: 'extracted',
       draft: draft(),
-      supplierId,
-      sedeId: new Types.ObjectId(sedeId),
-      lineDecisions: [
+      supplierId: supplierId as Types.ObjectId | undefined,
+      sedeId: new Types.ObjectId(sedeId) as Types.ObjectId | undefined,
+      lineDecisions: <Partial<LineDecision>[]>[
         { lineIndex: 0, target: 'inventory', productId, createProduct: false },
         {
           lineIndex: 1,
@@ -87,7 +91,7 @@ describe('InvoiceScanService.apply', () => {
         },
         { lineIndex: 2, target: 'expense', categoryId, createProduct: false },
       ],
-      appliedTo: { expenseIds: [], createdProductIds: [] },
+      appliedTo: { expenseIds: [], createdProductIds: [] } as Partial<AppliedRefs>,
       history: [],
       pages: [],
       save: vi.fn().mockResolvedValue(undefined),
@@ -152,7 +156,7 @@ describe('InvoiceScanService.apply', () => {
     await TenantContext.run(ctx, () => service.apply(scan.id, user));
 
     // Compra: solo las dos líneas de mercancía, con su código de impuesto.
-    const order = deps.purchasing.create.mock.calls[0][0] as {
+    const order = deps.purchasing.create.mock.calls[0]![0] as {
       sedeId: string;
       lines: { description: string; qty: number; unitCost: number; taxCode: string }[];
     };
@@ -167,7 +171,7 @@ describe('InvoiceScanService.apply', () => {
     expect(order.lines[1]?.taxCode).toBe('IVA_5');
 
     // Recepción: es lo que mete el stock, crea la CxP y postea el asiento.
-    const receipt = deps.purchasing.receive.mock.calls[0][1] as {
+    const receipt = deps.purchasing.receive.mock.calls[0]![1] as {
       generatePayable: boolean;
       docNumber: string;
       lines: { lineIndex: number; qty: number }[];
@@ -181,7 +185,7 @@ describe('InvoiceScanService.apply', () => {
 
     // Gasto: solo el transporte.
     expect(deps.finance.createExpense).toHaveBeenCalledTimes(1);
-    const expense = deps.finance.createExpense.mock.calls[0][0] as {
+    const expense = deps.finance.createExpense.mock.calls[0]![0] as {
       concept: string;
       amount: number;
       status: string;
@@ -199,7 +203,7 @@ describe('InvoiceScanService.apply', () => {
     await TenantContext.run(ctx, () => service.apply(scan.id, user));
 
     expect(deps.products.create).toHaveBeenCalledTimes(1);
-    const created = deps.products.create.mock.calls[0][0] as {
+    const created = deps.products.create.mock.calls[0]![0] as {
       sku: string;
       name: string;
       cost: number;
@@ -229,11 +233,11 @@ describe('InvoiceScanService.apply', () => {
 
     await TenantContext.run(ctx, () => service.apply(scan.id, user));
 
-    expect(deps.products.create.mock.calls[0][0]).toMatchObject({
+    expect(deps.products.create.mock.calls[0]![0]).toMatchObject({
       purchaseUnit: 'bulto',
       purchaseFactor: 25000,
     });
-    const order = deps.purchasing.create.mock.calls[0][0] as {
+    const order = deps.purchasing.create.mock.calls[0]![0] as {
       lines: { inPurchaseUnits?: boolean }[];
     };
     expect(order.lines[1]?.inPurchaseUnits).toBe(true);
@@ -247,7 +251,7 @@ describe('InvoiceScanService.apply', () => {
 
     await TenantContext.run(ctx, () => service.apply(scan.id, user));
 
-    const order = deps.purchasing.create.mock.calls[0][0] as {
+    const order = deps.purchasing.create.mock.calls[0]![0] as {
       lines: { inPurchaseUnits?: boolean }[];
     };
     expect(order.lines[1]?.inPurchaseUnits).toBeUndefined();
@@ -267,7 +271,7 @@ describe('InvoiceScanService.apply', () => {
   it('pide el SKU cuando el producto es nuevo y la factura no trae código', async () => {
     // Sin código en la factura ni ficha completada no hay SKU: antes se
     // generaba uno tipo FAC-XYZ que quedaba para siempre en el catálogo.
-    scan.lineDecisions[1].newProduct = undefined;
+    scan.lineDecisions[1]!.newProduct = undefined;
 
     await expect(
       TenantContext.run(ctx, () => service.apply(scan.id, user)),
@@ -298,7 +302,7 @@ describe('InvoiceScanService.apply', () => {
   });
 
   it('rechaza la factura entera si una cantidad no es entera, sin tocar nada', async () => {
-    scan.draft.lines[0].qty = 2.5;
+    scan.draft.lines[0]!.qty = 2.5;
 
     await expect(
       TenantContext.run(ctx, () => service.apply(scan.id, user)),
@@ -310,7 +314,7 @@ describe('InvoiceScanService.apply', () => {
   });
 
   it('exige categoría en la línea de gasto antes de aplicar nada', async () => {
-    scan.lineDecisions[2].categoryId = undefined;
+    scan.lineDecisions[2]!.categoryId = undefined;
 
     await expect(
       TenantContext.run(ctx, () => service.apply(scan.id, user)),
@@ -329,8 +333,8 @@ describe('InvoiceScanService.apply', () => {
     // Estado de un intento anterior que murió después de crear la compra.
     scan.appliedTo.purchaseOrderId = new Types.ObjectId();
     scan.appliedTo.supplierId = supplierId;
-    scan.lineDecisions[1].productId = new Types.ObjectId();
-    scan.lineDecisions[1].createProduct = false;
+    scan.lineDecisions[1]!.productId = new Types.ObjectId();
+    scan.lineDecisions[1]!.createProduct = false;
 
     await TenantContext.run(ctx, () => service.apply(scan.id, user));
 
@@ -356,7 +360,7 @@ describe('InvoiceScanService.apply', () => {
     await TenantContext.run(ctx, () => service.apply(scan.id, user));
 
     expect(deps.suppliers.findByDocNumber).toHaveBeenCalledWith('NIT', '900123456');
-    const created = deps.suppliers.create.mock.calls[0][0] as {
+    const created = deps.suppliers.create.mock.calls[0]![0] as {
       name: string;
       docNumber: string;
     };
@@ -371,11 +375,11 @@ describe('InvoiceScanService.apply', () => {
 
     await TenantContext.run(ctx, () => service.apply(scan.id, user));
 
-    const receipt = deps.purchasing.receive.mock.calls[0][1] as {
+    const receipt = deps.purchasing.receive.mock.calls[0]![1] as {
       generatePayable: boolean;
     };
     expect(receipt.generatePayable).toBe(false);
-    const expense = deps.finance.createExpense.mock.calls[0][0] as { status: string };
+    const expense = deps.finance.createExpense.mock.calls[0]![0] as { status: string };
     expect(expense.status).toBe('paid');
   });
 

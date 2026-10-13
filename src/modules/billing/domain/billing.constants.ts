@@ -44,8 +44,15 @@ export const WOMPI_CURRENCY = 'COP';
 /** Reintentos de cobro antes de suspender la cuenta (dunning). */
 export const MAX_CHARGE_RETRIES = 3;
 
-/** Espera mínima entre reintentos de cobro de una suscripción en mora. */
-export const RETRY_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 h
+/**
+ * Espera mínima entre reintentos de cobro de una suscripción en mora.
+ *
+ * Menos de 24 h a propósito: en Vercel el barrido corre una vez al día y el cron
+ * del plan Hobby puede dispararse en cualquier minuto de su hora, así que entre
+ * un intento y el del día siguiente pueden pasar algo menos de 24 h. Con 24 h
+ * justas se saltaría ese reintento y los tres intentos tardarían ~6 días.
+ */
+export const RETRY_COOLDOWN_MS = 20 * 60 * 60 * 1000; // 20 h
 
 /**
  * Antigüedad a partir de la cual un cobro que sigue "pendiente" se consulta
