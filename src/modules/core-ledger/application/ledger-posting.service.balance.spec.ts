@@ -520,6 +520,64 @@ describe('LedgerPostingService · asientos automáticos', () => {
     });
   });
 
+  describe('orden de producción (ítem 1.20)', () => {
+    it('capitaliza mano de obra y empaque: débito 1435 contra costos absorbidos', async () => {
+      // Lote de 142.000: 88.000 de insumos, 40.000 de mano de obra y 14.000 de
+      // empaque; entra a bodega a 1.183 x 120 = 141.960 (residuo de -40).
+      await service.postProductionOrder({
+        orderId: 'op1',
+        number: 'OP-000001',
+        date: '2026-10-15',
+        sedeId: SEDE,
+        valorTerminado: 141_960,
+        materiales: 88_000,
+        manoDeObra: 40_000,
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      // Los insumos ya estaban en la 1435: solo entra lo que se agregó.
+      expect(amountOn(ACC.INVENTARIO, 'debit')).toBe(53_960);
+      expect(amountOn(ACC.MANO_OBRA_ABSORBIDA, 'credit')).toBe(40_000);
+      // Empaque (14.000) menos el residuo del redondeo (40).
+      expect(amountOn(ACC.COSTOS_INDIRECTOS_ABSORBIDOS, 'credit')).toBe(13_960);
+      expect(ledger.post.mock.calls.at(-1)?.[0]).toMatchObject({
+        sourceType: 'production_order',
+        sourceId: 'op1',
+      });
+    });
+
+    it('sin mano de obra ni empaque y residuo negativo: el residuo va al débito de 7305', async () => {
+      // 1.000 de insumos en 3 unidades: 333 x 3 = 999 entra a bodega.
+      await service.postProductionOrder({
+        orderId: 'op2',
+        number: 'OP-000002',
+        date: '2026-10-15',
+        sedeId: SEDE,
+        valorTerminado: 999,
+        materiales: 1_000,
+        manoDeObra: 0,
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.INVENTARIO, 'credit')).toBe(1);
+      expect(amountOn(ACC.COSTOS_INDIRECTOS_ABSORBIDOS, 'debit')).toBe(1);
+    });
+
+    it('si el terminado vale lo mismo que los insumos no postea nada', async () => {
+      await service.postProductionOrder({
+        orderId: 'op3',
+        number: 'OP-000003',
+        date: '2026-10-15',
+        sedeId: SEDE,
+        valorTerminado: 5_000,
+        materiales: 5_000,
+        manoDeObra: 0,
+      });
+
+      expect(ledger.post).not.toHaveBeenCalled();
+    });
+  });
+
   describe('idempotencia y tolerancia a fallos', () => {
     it('no vuelve a postear un evento que ya tiene asiento', async () => {
       ledger.findBySource.mockResolvedValue({ number: 'AS-000001' });

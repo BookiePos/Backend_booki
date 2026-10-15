@@ -1,3 +1,4 @@
+import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
 import { Module } from '@nestjs/common';
 import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import { InventoryModule } from '../inventory/inventory.module';
@@ -40,6 +41,8 @@ import { ProductionController } from './infrastructure/production.controller';
 @Module({
   imports: [
     InventoryModule,
+    // El cierre de una orden asienta los costos absorbidos (ítem 1.20).
+    CoreLedgerModule,
     // El catálogo vendible es el otro extremo del puente: producción consulta
     // si el terminado ya se vende y puede publicarlo.
     CatalogModule,

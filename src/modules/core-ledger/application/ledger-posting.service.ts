@@ -488,4 +488,52 @@ export class LedgerPostingService {
       userEmail: input.userEmail,
     });
   }
+
+  // ── Producción ────────────────────────────────────────────────────────────────
+
+  /**
+   * Cierre de una orden de producción (ítem 1.20). Los insumos pasan de
+   * materia prima a terminado dentro de la misma 1435, así que solo se asienta
+   * lo que el terminado vale de más: la mano de obra y el empaque del lote, que
+   * ya están en gastos y se trasladan al inventario acreditando costos
+   * absorbidos. Sin esto, al vender el terminado la 6135 sumaba otra vez la
+   * mano de obra que la nómina ya llevó al gasto, y la 1435 quedaba por debajo
+   * del kardex.
+   *
+   *   Débito 1435  valorTerminado − materiales
+   *   Crédito 7205 mano de obra
+   *   Crédito 7305 el resto (empaque y residuo del redondeo del lote)
+   */
+  async postProductionOrder(input: {
+    orderId: string;
+    number: string;
+    date: string;
+    sedeId: string;
+    valorTerminado: number;
+    materiales: number;
+    manoDeObra: number;
+    userEmail?: string;
+  }): Promise<void> {
+    const agregado = cop(input.valorTerminado) - cop(input.materiales);
+    const manoDeObra = cop(input.manoDeObra);
+    const indirectos = agregado - manoDeObra;
+    const lines: PostLine[] = [];
+    const lado = (accountCode: string, monto: number, natural: 'debit' | 'credit') => {
+      if (monto === 0) return;
+      const side = monto > 0 ? natural : natural === 'debit' ? 'credit' : 'debit';
+      lines.push({ accountCode, [side]: Math.abs(monto), sedeId: input.sedeId });
+    };
+    lado(ACC.INVENTARIO, agregado, 'debit');
+    lado(ACC.MANO_OBRA_ABSORBIDA, manoDeObra, 'credit');
+    lado(ACC.COSTOS_INDIRECTOS_ABSORBIDOS, indirectos, 'credit');
+    if (lines.length === 0) return;
+    await this.safePost({
+      date: input.date,
+      sourceType: 'production_order',
+      sourceId: input.orderId,
+      memo: `Producción ${input.number}`,
+      lines,
+      userEmail: input.userEmail,
+    });
+  }
 }

@@ -67,6 +67,14 @@ export const ACC = {
   GASTOS_SERVICIOS: '5135',
   GASTOS_DIVERSOS: '5195',
   COSTO_VENTA: '6135',
+  /**
+   * Costos absorbidos por la producción (ítem 1.20). La mano de obra y el
+   * empaque ya están en gastos (nómina, compras); al capitalizarlos en el
+   * terminado se acreditan aquí para no contarlos dos veces (NIIF Pymes 13.5 y
+   * 13.8; PUC clase 7).
+   */
+  MANO_OBRA_ABSORBIDA: '7205',
+  COSTOS_INDIRECTOS_ABSORBIDOS: '7305',
 } as const;
 
 export interface SeedAccount {
@@ -111,6 +119,9 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   { code: '5135', name: 'Servicios (arriendo, públicos)', type: 'expense' },
   { code: '5195', name: 'Gastos diversos', type: 'expense' },
   { code: '6135', name: 'Costo de mercancía vendida', type: 'expense' },
+  // Costos de producción absorbidos (saldo crédito: restan del gasto).
+  { code: '7205', name: 'Mano de obra directa absorbida', type: 'expense' },
+  { code: '7305', name: 'Costos indirectos absorbidos', type: 'expense' },
 ];
 
 /**
