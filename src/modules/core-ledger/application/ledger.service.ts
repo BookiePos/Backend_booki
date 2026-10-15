@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -18,8 +19,29 @@ import {
   AccountType,
   NATURAL_SIDE,
   SEED_ACCOUNTS,
+  ACC,
+  ORIGENES_IVA_INC_VIEJO,
+  cuentaVigente,
 } from '../domain/ledger.constants';
+import { sumBy } from '../../finance/domain/money.util';
+import {
+  INDICE_ORIGEN_VIVO,
+  INDICE_UNA_REVERSA,
+  esDuplicadoEn,
+  esOrigenReservado,
+} from '../domain/journal-entry.indices';
 import { CreateAccountDto, CreateJournalEntryDto } from './dto/ledger.dto';
+import {
+  Counter,
+  CounterDocument,
+} from '../../sales/infrastructure/schemas/counter.schema';
+import { fechaColombia, fechaDeReversa } from '../domain/fecha-contable';
+
+/** Clave del consecutivo de asientos en `counters` (uno por empresa). */
+const CONTADOR_ASIENTOS = 'ledger:asiento';
+/** Choques seguidos sobre `number` antes de rendirse. */
+const INTENTOS_NUMERO = 5;
+const INDICE_NUMERO = { keys: { number: 1 }, options: { name: 'number_1' } };
 
 /** Renglón normalizado para postear un asiento (uso programático). */
 export interface PostLine {
@@ -39,6 +61,16 @@ export interface PostEntryInput {
   createdByEmail?: string;
 }
 
+/**
+ * El asiento ya tiene su contra-asiento. Es un 400 para la API, pero quien
+ * reversa por origen (anular una venta, editar un gasto) lo toma como hecho.
+ */
+export class AsientoYaReversadoException extends BadRequestException {
+  constructor() {
+    super('Este asiento ya fue reversado');
+  }
+}
+
 export interface TrialBalanceRow {
   code: string;
   name: string;
@@ -56,21 +88,49 @@ export class LedgerService {
     private readonly accounts: Model<LedgerAccountDocument>,
     @InjectModel(JournalEntry.name)
     private readonly entries: Model<JournalEntryDocument>,
+    @InjectModel(Counter.name)
+    private readonly counters: Model<CounterDocument>,
   ) {}
 
   // ── Plan de cuentas ─────────────────────────────────────────────────────────
 
+  /**
+   * Asegura que el plan base exista, cuenta por cuenta. Antes solo sembraba si
+   * la empresa no tenía ninguna cuenta `system`, así que una empresa creada
+   * con un plan anterior nunca recibía las cuentas nuevas (2408/2495) y `post`
+   * fallaba con «Cuentas inexistentes», error que `safePost` se traga: la venta
+   * quedaba sin asiento en silencio.
+   *
+   * Upsert por código con `$setOnInsert`: inserta solo lo que falta y nunca
+   * pisa una cuenta existente (nombre, tipo ni estado). Es idempotente y
+   * tolera dos requests sembrando a la vez (el `code` es único).
+   */
   private async seedAccounts(): Promise<void> {
-    const existing = await this.accounts.countDocuments({ system: true }).exec();
-    if (existing > 0) return;
-    await this.accounts.insertMany(
-      SEED_ACCOUNTS.map((a) => ({
-        code: a.code,
-        name: a.name,
-        type: a.type,
-        system: true,
-        active: true,
+    const codes = SEED_ACCOUNTS.map((a) => a.code);
+    const found = await this.accounts
+      .find({ code: { $in: codes } })
+      .select('code')
+      .exec();
+    const have = new Set(found.map((a) => a.code));
+    const missing = SEED_ACCOUNTS.filter((a) => !have.has(a.code));
+    if (missing.length === 0) return;
+    await this.accounts.bulkWrite(
+      missing.map((a) => ({
+        updateOne: {
+          filter: { code: a.code },
+          update: {
+            $setOnInsert: {
+              code: a.code,
+              name: a.name,
+              type: a.type,
+              system: true,
+              active: true,
+            },
+          },
+          upsert: true,
+        },
       })),
+      { ordered: false },
     );
   }
 
@@ -96,17 +156,93 @@ export class LedgerService {
 
   // ── Asientos ────────────────────────────────────────────────────────────────
 
+  /**
+   * Siguiente consecutivo AS-n, de un contador atómico por empresa ($inc). El
+   * conteo de documentos que se usaba antes daba el mismo número a dos posteos
+   * simultáneos. La primera vez el contador arranca en el mayor consecutivo
+   * existente, así no repite números de asientos anteriores.
+   */
   private async nextNumber(): Promise<string> {
-    const n = (await this.entries.estimatedDocumentCount().exec()) + 1;
-    return `AS-${String(n).padStart(6, '0')}`;
+    const siguiente = () =>
+      this.counters
+        .findOneAndUpdate(
+          { _id: CONTADOR_ASIENTOS },
+          { $inc: { seq: 1 } },
+          { new: true },
+        )
+        .exec();
+    let c = await siguiente();
+    if (!c) {
+      try {
+        await this.counters.create({
+          _id: CONTADOR_ASIENTOS,
+          seq: await this.mayorConsecutivo(),
+        });
+      } catch (err) {
+        // Otro posteo lo inicializó a la vez: sirve el suyo.
+        if ((err as { code?: number }).code !== 11000) throw err;
+      }
+      c = await siguiente();
+    }
+    if (!c) throw new Error('No se pudo reservar el consecutivo del asiento');
+    return `AS-${String(c.seq).padStart(6, '0')}`;
+  }
+
+  /** Mayor n de los AS-n existentes (0 si no hay). Solo al estrenar el contador. */
+  private async mayorConsecutivo(): Promise<number> {
+    const [r] = await this.entries
+      .aggregate<{ max: number }>([
+        { $match: { number: { $regex: '^AS-[0-9]+$' } } },
+        {
+          $group: {
+            _id: null,
+            max: { $max: { $toInt: { $substrCP: ['$number', 3, 20] } } },
+          },
+        },
+      ])
+      .exec();
+    return r?.max ?? 0;
+  }
+
+  /**
+   * Crea el asiento con un consecutivo nuevo. Si el número ya está tomado
+   * (un asiento creado antes de que existiera el contador, o el contador
+   * quedó atrás), pide el siguiente: el índice único de `number` es quien
+   * avisa.
+   */
+  private async crearConNumero(
+    doc: Omit<JournalEntry, 'number'>,
+  ): Promise<JournalEntryDocument> {
+    for (let intento = 1; ; intento++) {
+      const number = await this.nextNumber();
+      try {
+        return await this.entries.create({ ...doc, number });
+      } catch (err) {
+        if (!esDuplicadoEn(err, INDICE_NUMERO) || intento >= INTENTOS_NUMERO) {
+          throw err;
+        }
+      }
+    }
   }
 
   /**
    * Postea un asiento validando balance y existencia de cuentas. Es el único
    * punto de entrada para escribir en el ledger (desde la API o desde otros
    * módulos). No edita jamás un asiento existente.
+   *
+   * Idempotente por (sourceType, sourceId): si ya hay un asiento vivo de ese
+   * origen, el índice único rechaza el nuevo y se devuelve el existente. Dos
+   * posteos simultáneos del mismo origen los separa el índice (no una búsqueda
+   * previa); y cada uno saca su propio consecutivo del contador atómico.
    */
-  async post(input: PostEntryInput): Promise<JournalEntryDocument> {
+  post(input: PostEntryInput): Promise<JournalEntryDocument> {
+    return this.escribir(input, 'idempotente');
+  }
+
+  private async escribir(
+    input: PostEntryInput,
+    siDuplicado: 'idempotente' | 'conflicto',
+  ): Promise<JournalEntryDocument> {
     await this.seedAccounts();
     if (!input.lines || input.lines.length < 2) {
       throw new BadRequestException('Un asiento requiere al menos 2 renglones');
@@ -154,32 +290,54 @@ export class LedgerService {
       );
     }
 
-    const number = await this.nextNumber();
-    return this.entries.create({
-      number,
-      date: input.date,
-      sourceType: input.sourceType,
-      sourceId: input.sourceId,
-      memo: input.memo,
-      lines,
-      totalDebit,
-      totalCredit,
-      createdByEmail: input.createdByEmail,
-    });
+    try {
+      return await this.crearConNumero({
+        date: input.date,
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        memo: input.memo,
+        lines,
+        totalDebit,
+        totalCredit,
+        createdByEmail: input.createdByEmail,
+      });
+    } catch (err) {
+      if (!input.sourceId || !esDuplicadoEn(err, INDICE_ORIGEN_VIVO)) throw err;
+      if (siDuplicado === 'conflicto') {
+        throw new ConflictException(
+          `Ya hay un asiento vigente con el origen ${input.sourceType} ${input.sourceId}. Revérsalo o usa otra referencia.`,
+        );
+      }
+      const existente = await this.findBySource(
+        input.sourceType,
+        input.sourceId,
+      );
+      if (!existente) throw err;
+      return existente;
+    }
   }
 
   async postFromDto(
     dto: CreateJournalEntryDto,
     userEmail?: string,
   ): Promise<JournalEntryDocument> {
-    return this.post({
-      date: dto.date,
-      sourceType: dto.sourceType ?? 'manual',
-      sourceId: dto.sourceId,
-      memo: dto.memo,
-      lines: dto.lines,
-      createdByEmail: userEmail,
-    });
+    const sourceType = dto.sourceType ?? 'manual';
+    if (esOrigenReservado(sourceType)) {
+      throw new BadRequestException(
+        `El origen «${sourceType}» lo usa el sistema; un asiento manual no puede llevarlo.`,
+      );
+    }
+    return this.escribir(
+      {
+        date: dto.date,
+        sourceType,
+        sourceId: dto.sourceId,
+        memo: dto.memo,
+        lines: dto.lines,
+        createdByEmail: userEmail,
+      },
+      'conflicto',
+    );
   }
 
   async listEntries(query: {
@@ -188,8 +346,23 @@ export class LedgerService {
     sourceType?: string;
     accountCode?: string;
     limit?: number;
+    /**
+     * Alcance por sede: solo asientos cuyos renglones caen TODOS en estas sedes.
+     * Lista vacía (o sin ids válidos) devuelve [] sin consultar.
+     */
+    sedeIds?: readonly string[];
   }): Promise<JournalEntryDocument[]> {
     const filter: Record<string, unknown> = {};
+    if (query.sedeIds) {
+      const ids = query.sedeIds
+        .filter((id) => Types.ObjectId.isValid(id))
+        .map((id) => new Types.ObjectId(id));
+      if (ids.length === 0) return [];
+      // `$nin` también casa con renglones sin sedeId: esos (nivel empresa)
+      // quedan fuera, igual que un renglón de otra sede.
+      filter['lines.0'] = { $exists: true };
+      filter.lines = { $not: { $elemMatch: { sedeId: { $nin: ids } } } };
+    }
     if (query.from || query.to) {
       const range: Record<string, string> = {};
       if (query.from) range.$gte = query.from;
@@ -212,13 +385,45 @@ export class LedgerService {
     return entry;
   }
 
-  /** Asiento original (no contra-asiento) de un evento de negocio, si existe. */
+  /**
+   * IVA descontable de las recepciones de compra en el rango+sede: débitos
+   * menos créditos a la 2408 de `purchase_receipt` y de sus contra-asientos.
+   * Es la única constancia persistida del IVA de cada recepción. Lo lee el P&L.
+   */
+  async ivaDescontableDeCompras(
+    range: { from: string; to: string },
+    sedeIds: string[] | null,
+  ): Promise<number> {
+    const docs = await this.entries
+      .find({
+        date: { $gte: range.from, $lte: range.to },
+        sourceType: { $in: ['purchase_receipt', 'reversal:purchase_receipt'] },
+        'lines.accountCode': ACC.IVA_POR_PAGAR,
+      })
+      .select('lines')
+      .exec();
+    const sedes = sedeIds ? new Set(sedeIds) : null;
+    const lines = docs
+      .flatMap((e) => e.lines)
+      .filter(
+        (l) =>
+          l.accountCode === ACC.IVA_POR_PAGAR &&
+          (!sedes || (l.sedeId != null && sedes.has(l.sedeId.toString()))),
+      );
+    return sumBy(lines, (l) => (l.debit || 0) - (l.credit || 0));
+  }
+
+  /**
+   * Asiento VIVO de un evento de negocio (original y sin reversar), si existe.
+   * Un original reversado no cuenta: tras editar un gasto su asiento viejo
+   * queda reversado y el nuevo debe poder postearse.
+   */
   async findBySource(
     sourceType: string,
     sourceId: string,
   ): Promise<JournalEntryDocument | null> {
     return this.entries
-      .findOne({ sourceType, sourceId, reversalOf: null })
+      .findOne({ sourceType, sourceId, reversalOf: null, reversedBy: null })
       .exec();
   }
 
@@ -230,41 +435,94 @@ export class LedgerService {
   ): Promise<JournalEntryDocument | null> {
     const entry = await this.findBySource(sourceType, sourceId);
     if (!entry || entry.reversedBy) return null;
-    return this.reverse(entry._id.toString(), userEmail);
+    try {
+      return await this.reverse(entry._id.toString(), userEmail);
+    } catch (err) {
+      // Ya tiene su contra-asiento (otra reversa ganó la carrera, o una
+      // anterior lo creó y no alcanzó a marcar el original: `reverse` ya
+      // reparó el puntero). Si no se pudo reparar, el error sube y queda
+      // pendiente de conciliar.
+      if (err instanceof AsientoYaReversadoException) return null;
+      throw err;
+    }
   }
 
-  /** Reversa un asiento con un contra-asiento (débitos/créditos intercambiados). */
+  /**
+   * Reversa un asiento con un contra-asiento (débitos/créditos intercambiados).
+   *
+   * Su fecha la decide `fechaDeReversa`: la del original si es del mes en
+   * curso; hoy si es de un mes anterior (orden cronológico, C. Co. art. 57;
+   * E.T. art. 484), o la que se pida entre ambas. El P&L de finanzas no sigue
+   * ese criterio en todo: ver la nota de `finance/domain/actuals.ts`.
+   */
   async reverse(
     id: string,
     userEmail?: string,
+    fechaPedida?: string,
   ): Promise<JournalEntryDocument> {
     const original = await this.getEntry(id);
     if (original.reversalOf) {
       throw new BadRequestException('No se reversa un contra-asiento');
     }
     if (original.reversedBy) {
-      throw new BadRequestException('Este asiento ya fue reversado');
+      throw new AsientoYaReversadoException();
     }
-    const number = await this.nextNumber();
-    const contra = await this.entries.create({
-      number,
-      date: new Date().toLocaleDateString('en-CA'),
-      sourceType: `reversal:${original.sourceType}`,
-      sourceId: original.sourceId,
-      memo: `Reversa de ${original.number}${original.memo ? ` — ${original.memo}` : ''}`,
-      lines: original.lines.map((l) => ({
-        accountCode: l.accountCode,
-        accountName: l.accountName,
-        debit: l.credit,
-        credit: l.debit,
-        sedeId: l.sedeId,
-        memo: l.memo,
-      })),
-      totalDebit: original.totalCredit,
-      totalCredit: original.totalDebit,
-      reversalOf: original._id,
-      createdByEmail: userEmail,
-    });
+    const fecha = fechaDeReversa(original.date, fechaColombia(), fechaPedida);
+    if ('error' in fecha) throw new BadRequestException(fecha.error);
+    const contra = await this
+      .crearConNumero({
+        date: fecha.fecha,
+        sourceType: `reversal:${original.sourceType}`,
+        sourceId: original.sourceId,
+        memo: `Reversa de ${original.number} del ${original.date}${original.memo ? ` — ${original.memo}` : ''}`,
+        // Un asiento posteado con el plan viejo (IVA/INC en 2367/2368) se
+        // reversa contra la cuenta PUC vigente: la reclasificación ya movió ese
+        // saldo, y devolverlo a la vieja la dejaría con un saldo deudor falso.
+        // Solo los asientos automáticos de venta: en uno manual la 2367/2368 es
+        // ReteIVA/ReteICA real y se reversa contra la misma cuenta.
+        lines: original.lines.map((l) => {
+          const code = ORIGENES_IVA_INC_VIEJO.includes(original.sourceType)
+            ? cuentaVigente(l.accountCode)
+            : l.accountCode;
+          return {
+            accountCode: code,
+            accountName:
+              code === l.accountCode
+                ? l.accountName
+                : (SEED_ACCOUNTS.find((a) => a.code === code)?.name ??
+                  l.accountName),
+            debit: l.credit,
+            credit: l.debit,
+            sedeId: l.sedeId,
+            memo: l.memo,
+          };
+        }),
+        totalDebit: original.totalCredit,
+        totalCredit: original.totalDebit,
+        reversalOf: original._id,
+        reversedBy: null,
+        createdByEmail: userEmail,
+      })
+      .catch(async (err: unknown) => {
+        if (!esDuplicadoEn(err, INDICE_UNA_REVERSA)) throw err;
+        // El índice `una_reversa_por_asiento` rechazó un segundo
+        // contra-asiento: ya existe uno. Si el original quedó sin marcar (la
+        // reversa anterior falló entre crear y guardar), se repara el puntero
+        // para que deje de contar como vivo. Si la reparación falla, ese error
+        // sube.
+        const existente = await this.entries
+          .findOne({ reversalOf: original._id })
+          .exec();
+        if (existente) {
+          await this.entries
+            .updateOne(
+              { _id: original._id, reversedBy: null },
+              { $set: { reversedBy: existente._id } },
+            )
+            .exec();
+        }
+        throw new AsientoYaReversadoException();
+      });
     // Único puntero mutable permitido: marcar el original como reversado.
     original.reversedBy = contra._id;
     await original.save();

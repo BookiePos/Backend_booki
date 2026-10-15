@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { LedgerService, PostLine } from './ledger.service';
+import { LedgerConciliacionService } from './ledger-conciliacion.service';
 import { ACC } from '../domain/ledger.constants';
+import { cop } from '../../finance/domain/money.util';
 
 /**
  * Posteo automático al ledger desde los eventos de negocio (venta, gasto,
@@ -8,15 +10,21 @@ import { ACC } from '../domain/ledger.constants';
  *
  * Decisión pragmática: como Mongo corre standalone (sin transacciones
  * multi-documento) y el ledger es una PROYECCIÓN derivada de la operación, un
- * fallo al postear se registra como warning y NO tumba la operación de negocio
- * (la venta/gasto es la fuente de verdad; el asiento puede reconstruirse). El
- * posteo es idempotente por (sourceType, sourceId) para permitir reintentos.
+ * fallo al postear NO tumba la operación de negocio (la venta/gasto es la
+ * fuente de verdad; el asiento puede reconstruirse): queda como pendiente de
+ * conciliación de la empresa (`LedgerConciliacionService`) y lo resuelve
+ * `src/datos/2026-10-reconstruir-asientos.ts`. El posteo es idempotente por
+ * (sourceType, sourceId) —lo garantiza el índice único del libro— para
+ * permitir reintentos.
  */
 @Injectable()
 export class LedgerPostingService {
   private readonly logger = new Logger('LedgerPosting');
 
-  constructor(private readonly ledger: LedgerService) {}
+  constructor(
+    private readonly ledger: LedgerService,
+    private readonly conciliacion: LedgerConciliacionService,
+  ) {}
 
   private funding(method?: string): string {
     // Efectivo → Caja; débito/crédito/transferencia/Nequi/Daviplata → Bancos.
@@ -37,7 +45,7 @@ export class LedgerPostingService {
         input.sourceType,
         input.sourceId,
       );
-      if (existing) return; // ya posteado
+      if (existing) return; // ya posteado (atajo; el índice cubre la carrera)
       await this.ledger.post({
         date: input.date,
         sourceType: input.sourceType,
@@ -47,9 +55,16 @@ export class LedgerPostingService {
         createdByEmail: input.userEmail,
       });
     } catch (err) {
-      this.logger.warn(
-        `No se pudo postear ${input.sourceType} ${input.sourceId}: ${(err as Error).message}`,
+      const error = (err as Error).message;
+      this.logger.error(
+        `CONCILIAR: no se pudo postear el asiento ${input.sourceType} ${input.sourceId}: ${error}`,
       );
+      await this.conciliacion.registrar({
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        operacion: 'post',
+        error,
+      });
     }
   }
 
@@ -61,9 +76,19 @@ export class LedgerPostingService {
     try {
       await this.ledger.reverseBySource(sourceType, sourceId, userEmail);
     } catch (err) {
-      this.logger.warn(
-        `No se pudo reversar ${sourceType} ${sourceId}: ${(err as Error).message}`,
+      // Sigue siendo best-effort (las anulaciones de venta, gasto, CxP, etc.
+      // no se tumban por el libro), pero queda un asiento vivo de algo
+      // anulado: ERROR con los ids para conciliarlo a mano.
+      const error = (err as Error).message;
+      this.logger.error(
+        `CONCILIAR: no se pudo reversar el asiento ${sourceType} ${sourceId}: ${error}`,
       );
+      await this.conciliacion.registrar({
+        sourceType,
+        sourceId,
+        operacion: 'reverse',
+        error,
+      });
     }
   }
 
@@ -71,7 +96,8 @@ export class LedgerPostingService {
 
   /**
    * Venta completada. Débito a Caja/Bancos (o Clientes si es fiado) por el
-   * total; crédito a Ingresos por el neto y a IVA por pagar por el impuesto.
+   * total; crédito a Ingresos por el neto, a IVA por pagar (2408) por el IVA y
+   * a INC por pagar (2495) por el impuesto al consumo.
    * Si hay costo (COGS): débito Costo de venta, crédito Inventario.
    */
   async postSale(input: {
@@ -80,7 +106,10 @@ export class LedgerPostingService {
     date: string;
     sedeId: string;
     total: number;
+    /** IVA incluido en el total (cuenta 2408). */
     tax: number;
+    /** INC incluido en el total (cuenta 2495). Restaurantes y bares. */
+    consumptionTax?: number;
     cogs: number;
     /**
      * Cobro del domicilio. Es ingreso del negocio pero NO lleva IVA, así que
@@ -94,8 +123,9 @@ export class LedgerPostingService {
   }): Promise<void> {
     const total = Math.round(input.total);
     const tax = Math.round(input.tax);
+    const inc = cop(input.consumptionTax ?? 0);
     const delivery = Math.round(input.deliveryFee ?? 0);
-    const income = total - tax + delivery;
+    const income = total - tax - inc + delivery;
     const cogs = Math.round(input.cogs);
     const debitAccount = input.onCredit
       ? ACC.CLIENTES
@@ -111,6 +141,9 @@ export class LedgerPostingService {
     ];
     if (tax > 0) {
       lines.push({ accountCode: ACC.IVA_POR_PAGAR, credit: tax, sedeId: input.sedeId });
+    }
+    if (inc > 0) {
+      lines.push({ accountCode: ACC.INC_POR_PAGAR, credit: inc, sedeId: input.sedeId });
     }
     if (cogs > 0) {
       lines.push({ accountCode: ACC.COSTO_VENTA, debit: cogs, sedeId: input.sedeId });
@@ -153,7 +186,10 @@ export class LedgerPostingService {
     date: string;
     sedeId: string;
     refundTotal: number;
+    /** IVA incluido en lo devuelto (cuenta 2408). */
     tax: number;
+    /** INC incluido en lo devuelto (cuenta 2495). */
+    consumptionTax?: number;
     cogs: number;
     refundMethod: string;
     userEmail?: string;
@@ -161,7 +197,8 @@ export class LedgerPostingService {
     const total = Math.round(input.refundTotal);
     if (total <= 0 && input.cogs <= 0) return;
     const tax = Math.round(input.tax);
-    const income = total - tax;
+    const inc = cop(input.consumptionTax ?? 0);
+    const income = total - tax - inc;
     const cogs = Math.round(input.cogs);
 
     const contrapartida =
@@ -186,6 +223,13 @@ export class LedgerPostingService {
           sedeId: input.sedeId,
         });
       }
+      if (inc > 0) {
+        lines.push({
+          accountCode: ACC.INC_POR_PAGAR,
+          debit: inc,
+          sedeId: input.sedeId,
+        });
+      }
     }
     if (cogs > 0) {
       lines.push({ accountCode: ACC.INVENTARIO, debit: cogs, sedeId: input.sedeId });
@@ -205,8 +249,11 @@ export class LedgerPostingService {
   // ── Gastos ──────────────────────────────────────────────────────────────────
 
   /**
-   * Gasto. Débito a la cuenta de gasto por (base + impuesto); crédito a
-   * Caja/Bancos si está pagado, o a Proveedores (CxP) si queda por pagar.
+   * Gasto. Débito a la cuenta de gasto por la base y, si la sede descuenta el
+   * IVA, a la 2408 por el IVA descontable (igual que la recepción de compra);
+   * si no lo descuenta (no responsable o restaurante con INC, arts. 437 y 488
+   * ET) el IVA va al gasto. Crédito a Caja/Bancos si está pagado, o a
+   * Proveedores (CxP) si queda por pagar.
    */
   async postExpense(input: {
     expenseId: string;
@@ -214,6 +261,8 @@ export class LedgerPostingService {
     sedeId: string;
     amount: number;
     tax: number;
+    /** Parte de `tax` que es IVA descontable (débito 2408). Sin él, todo va al gasto. */
+    ivaDescontable?: number;
     status: 'paid' | 'payable';
     paymentMethod?: string;
     expenseAccount?: string;
@@ -233,14 +282,19 @@ export class LedgerPostingService {
       input.status === 'paid'
         ? this.funding(input.paymentMethod)
         : ACC.PROVEEDORES;
-    const lines: PostLine[] = [
-      {
+    const iva = Math.min(Math.max(cop(input.ivaDescontable ?? 0), 0), cop(input.tax));
+    const lines: PostLine[] = [];
+    if (gross - iva > 0) {
+      lines.push({
         accountCode: input.expenseAccount ?? ACC.GASTOS_DIVERSOS,
-        debit: gross,
+        debit: gross - iva,
         sedeId: input.sedeId,
-      },
-      { accountCode: credit, credit: gross - withholding, sedeId: input.sedeId },
-    ];
+      });
+    }
+    lines.push({ accountCode: credit, credit: gross - withholding, sedeId: input.sedeId });
+    if (iva > 0) {
+      lines.push({ accountCode: ACC.IVA_POR_PAGAR, debit: iva, sedeId: input.sedeId });
+    }
     if (withholding > 0) {
       lines.push({
         accountCode: ACC.RETENCION_FUENTE,
@@ -256,6 +310,15 @@ export class LedgerPostingService {
       lines,
       userEmail: input.userEmail,
     });
+  }
+
+  /**
+   * Reversa el asiento vivo de un gasto. Al editarlo se reversa y se vuelve a
+   * postear con los datos nuevos (el asiento no se edita); al borrarlo solo se
+   * reversa.
+   */
+  async reverseExpense(expenseId: string, userEmail?: string): Promise<void> {
+    await this.safeReverse('expense', expenseId, userEmail);
   }
 
   // ── Pagos de CxP / CxC ────────────────────────────────────────────────────────
@@ -310,31 +373,53 @@ export class LedgerPostingService {
 
   // ── Compras ───────────────────────────────────────────────────────────────────
 
-  /** Recepción de compra: débito Inventario, crédito Proveedores o Caja. */
+  /**
+   * Recepción de compra. Débito a Inventario por lo que entra al costo y, si el
+   * negocio lo descuenta, a IVA (2408) por el IVA descontable; crédito por el
+   * TOTAL de la factura a Proveedores (CxP) o, de contado, al medio con que se
+   * pagó (efectivo → Caja; transferencia/tarjeta → Bancos).
+   *
+   * El IVA descontable se debita en la misma 2408 del IVA generado: el plan no
+   * maneja auxiliares y esa es la dinámica de la cuenta en el PUC (Decreto
+   * 2650/93: la 2408 se debita por los impuestos descontables). Quien no lo
+   * descuenta (no responsable o restaurante con INC, arts. 437 y 488 ET) llega
+   * aquí con `ivaDescontable` en 0 y el IVA ya sumado a `amount`.
+   */
   async postPurchaseReceipt(input: {
     receiptId: string;
     date: string;
     sedeId: string;
+    /** Lo que entra al inventario: la base, más el IVA cuando no es descontable. */
     amount: number;
+    /** IVA descontable de la factura (débito 2408). */
+    ivaDescontable?: number;
     onCredit: boolean;
+    /** Medio de pago de contado. Sin él se asume efectivo (lo de antes). */
+    paymentMethod?: string;
     number: string;
     userEmail?: string;
   }): Promise<void> {
-    const amount = Math.round(input.amount);
-    if (amount <= 0) return;
+    const amount = cop(input.amount);
+    const iva = cop(input.ivaDescontable ?? 0);
+    const total = amount + iva;
+    if (total <= 0) return;
+    const credit = input.onCredit
+      ? ACC.PROVEEDORES
+      : this.funding(input.paymentMethod ?? 'cash');
+    const lines: PostLine[] = [];
+    if (amount > 0) {
+      lines.push({ accountCode: ACC.INVENTARIO, debit: amount, sedeId: input.sedeId });
+    }
+    if (iva > 0) {
+      lines.push({ accountCode: ACC.IVA_POR_PAGAR, debit: iva, sedeId: input.sedeId });
+    }
+    lines.push({ accountCode: credit, credit: total, sedeId: input.sedeId });
     await this.safePost({
       date: input.date,
       sourceType: 'purchase_receipt',
       sourceId: input.receiptId,
       memo: `Recepción ${input.number}`,
-      lines: [
-        { accountCode: ACC.INVENTARIO, debit: amount, sedeId: input.sedeId },
-        {
-          accountCode: input.onCredit ? ACC.PROVEEDORES : ACC.CAJA,
-          credit: amount,
-          sedeId: input.sedeId,
-        },
-      ],
+      lines,
       userEmail: input.userEmail,
     });
   }

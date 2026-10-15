@@ -1,5 +1,10 @@
+import { Logger } from '@nestjs/common';
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
+import {
+  INDICE_ORIGEN_VIVO,
+  INDICE_UNA_REVERSA,
+} from '../../domain/journal-entry.indices';
 
 /** Un renglón del asiento: cae sobre una cuenta por el débito o el crédito. */
 @Schema({ _id: false })
@@ -74,5 +79,43 @@ export class JournalEntry {
 export const JournalEntrySchema = SchemaFactory.createForClass(JournalEntry);
 
 JournalEntrySchema.index({ date: -1 });
-JournalEntrySchema.index({ sourceType: 1, sourceId: 1 });
+// Consultas por origen (findBySource, filtros por tipo y sus reversas). No es
+// único: los contra-asientos y los originales reversados comparten el origen.
+JournalEntrySchema.index({ sourceType: 1, sourceId: 1, reversalOf: 1 });
+// Únicos (checklist 1.13): ver `domain/journal-entry.indices.ts`.
+JournalEntrySchema.index(
+  { ...INDICE_ORIGEN_VIVO.keys },
+  {
+    ...INDICE_ORIGEN_VIVO.options,
+    partialFilterExpression: { ...INDICE_ORIGEN_VIVO.options.partialFilterExpression },
+  },
+);
+JournalEntrySchema.index(
+  { ...INDICE_UNA_REVERSA.keys },
+  {
+    ...INDICE_UNA_REVERSA.options,
+    partialFilterExpression: { ...INDICE_UNA_REVERSA.options.partialFilterExpression },
+  },
+);
 JournalEntrySchema.index({ 'lines.accountCode': 1 });
+
+/**
+ * Mongoose crea estos índices al compilar el modelo en la base de cada empresa
+ * y, si falla (duplicados previos, índice viejo en conflicto), lo calla: el
+ * libro quedaría sin la garantía de un asiento vivo por origen. Se deja en el
+ * log como error, con la base, para correr el informe de duplicados
+ * (`src/datos/2026-10-duplicados-libro-informe.ts`).
+ */
+// Los specs neutralizan `SchemaFactory` (CLAUDE.md, «Tests») y reciben un
+// esquema sin eventos; en ejecución real siempre es un Schema de Mongoose.
+JournalEntrySchema.on?.(
+  'init',
+  (model: { db?: { name?: string }; on(ev: 'index', fn: (err?: Error) => void): unknown }) => {
+    model.on('index', (err?: Error) => {
+      if (!err) return;
+      new Logger('Ledger').error(
+        `CONCILIAR: no se crearon los índices del libro en ${model.db?.name ?? '¿base?'}: ${err.message}`,
+      );
+    });
+  },
+);

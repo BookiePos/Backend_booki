@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Types } from 'mongoose';
 
 // SWC emite `Object` como metadata para los @Prop() con uniones de literales y
@@ -74,10 +78,48 @@ describe('FinanceService · abonos a cuentas por pagar y por cobrar', () => {
     };
   }
 
+  /**
+   * Simula el update atómico de Mongo: solo casa si la cuenta sigue sin anular
+   * y con el mismo abonado que se leyó. `enBase` es el estado real en la base
+   * cuando difiere del documento leído.
+   */
+  function updateAtomico(modelo: () => any, doc: any) {
+    return vi.fn((filter: any, update: any) => ({
+      exec: () => {
+        const actual = modelo().enBase ?? doc;
+        if (actual.status === 'void' || actual.paidAmount !== filter.paidAmount) {
+          return Promise.resolve(null);
+        }
+        actual.payments.push(update.$push.payments);
+        actual.paidAmount += update.$inc.paidAmount;
+        Object.assign(actual, update.$set);
+        return Promise.resolve(actual);
+      },
+    }));
+  }
+
   function build(doc: any) {
-    payables = { findById: vi.fn(() => ({ exec: () => Promise.resolve(doc) })) };
+    payables = {
+      findById: vi.fn(() => ({ exec: () => Promise.resolve(doc) })),
+      findOneAndUpdate: updateAtomico(() => payables, doc),
+    };
     receivables = {
       findById: vi.fn(() => ({ exec: () => Promise.resolve(doc) })),
+      findOneAndUpdate: vi.fn((filter: any, update: any) => ({
+        exec: () => {
+          const actual = receivables.enBase ?? doc;
+          if (
+            actual.status === 'void' ||
+            actual.paidAmount !== filter.paidAmount
+          ) {
+            return Promise.resolve(null);
+          }
+          actual.payments.push(update.$push.payments);
+          actual.paidAmount += update.$inc.paidAmount;
+          Object.assign(actual, update.$set);
+          return Promise.resolve(actual);
+        },
+      })),
     };
     ledgerPosting = {
       postPayablePayment: vi.fn().mockResolvedValue(undefined),
@@ -101,6 +143,9 @@ describe('FinanceService · abonos a cuentas por pagar y por cobrar', () => {
       {} as never,
       ledgerPosting as never,
       treasuryPosting as never,
+      {} as never,
+      {} as never,
+      {} as never,
       {} as never,
     );
     return doc;
@@ -249,6 +294,64 @@ describe('FinanceService · abonos a cuentas por pagar y por cobrar', () => {
         amount: 100_000,
       });
     });
+
+    // Atómico como el de CxC (checklist 1.13): leer, modificar y guardar
+    // dejaba que dos abonos simultáneos se pisaran (uno se perdía sin asiento
+    // que lo delatara) o que un abono resucitara una CxP recién anulada.
+    it('si la CxP se anula entre la lectura y el abono, rechaza y no la resucita', async () => {
+      const cxp = build(cuenta(1_000_000));
+      payables.enBase = { ...cxp, status: 'void', payments: [] };
+
+      await expect(
+        service.addPayablePayment(
+          cxp._id.toString(),
+          { date: '2026-09-10', amount: 200_000, method: 'cash' } as never,
+          user,
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(payables.enBase.status).toBe('void');
+      expect(payables.enBase.paidAmount).toBe(0);
+      expect(cxp.save).not.toHaveBeenCalled();
+      expect(ledgerPosting.postPayablePayment).not.toHaveBeenCalled();
+    });
+
+    it('si otro abono entró a la vez, rechaza en vez de pisarlo', async () => {
+      const cxp = build(cuenta(1_000_000));
+      payables.enBase = { ...cxp, paidAmount: 100_000, payments: [{}] };
+
+      await expect(
+        service.addPayablePayment(
+          cxp._id.toString(),
+          { date: '2026-09-10', amount: 200_000, method: 'cash' } as never,
+          user,
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(payables.enBase.paidAmount).toBe(100_000);
+      expect(payables.enBase.payments).toHaveLength(1);
+    });
+
+    it('el abono es un update condicionado (no un save del documento leído)', async () => {
+      const cxp = build(cuenta(1_000_000));
+
+      await service.addPayablePayment(
+        cxp._id.toString(),
+        { date: '2026-09-10', amount: 200_000, method: 'cash' } as never,
+        user,
+      );
+
+      const [filtro, update] = payables.findOneAndUpdate.mock.calls[0];
+      expect(filtro).toMatchObject({
+        _id: cxp._id,
+        status: { $ne: 'void' },
+        paidAmount: 0,
+      });
+      expect(update.$inc).toEqual({ paidAmount: 200_000 });
+      expect(cxp.save).not.toHaveBeenCalled();
+      expect(ledgerPosting.postPayablePayment.mock.calls[0][0].paymentId).toBe(
+        `${cxp._id.toString()}:0`,
+      );
+    });
   });
 
   describe('cuentas por cobrar', () => {
@@ -316,6 +419,60 @@ describe('FinanceService · abonos a cuentas por pagar y por cobrar', () => {
 
       expect(cxc.paidAmount).toBe(200_000);
       expect(Number.isInteger(cxc.paidAmount)).toBe(true);
+    });
+
+    it('si la CxC se anula entre la lectura y el abono, rechaza y no la resucita', async () => {
+      const cxc = build(cuenta(500_000));
+      // En la base ya está anulada (la anuló una anulación de la venta).
+      receivables.enBase = { ...cxc, status: 'void', payments: [] };
+
+      await expect(
+        service.addReceivablePayment(
+          cxc._id.toString(),
+          { date: '2026-09-10', amount: 200_000, method: 'cash' } as never,
+          user,
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(receivables.enBase.status).toBe('void');
+      expect(receivables.enBase.paidAmount).toBe(0);
+      expect(cxc.save).not.toHaveBeenCalled();
+      expect(ledgerPosting.postReceivablePayment).not.toHaveBeenCalled();
+    });
+
+    it('si otro abono entró a la vez, rechaza en vez de pisarlo', async () => {
+      const cxc = build(cuenta(500_000));
+      receivables.enBase = { ...cxc, paidAmount: 100_000, payments: [{}] };
+
+      await expect(
+        service.addReceivablePayment(
+          cxc._id.toString(),
+          { date: '2026-09-10', amount: 200_000, method: 'cash' } as never,
+          user,
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(receivables.enBase.paidAmount).toBe(100_000);
+    });
+
+    it('el abono es un update condicionado (no un save del documento leído)', async () => {
+      const cxc = build(cuenta(500_000));
+
+      await service.addReceivablePayment(
+        cxc._id.toString(),
+        { date: '2026-09-10', amount: 200_000, method: 'cash' } as never,
+        user,
+      );
+
+      const [filtro] = receivables.findOneAndUpdate.mock.calls[0];
+      expect(filtro).toMatchObject({
+        _id: cxc._id,
+        status: { $ne: 'void' },
+        paidAmount: 0,
+      });
+      expect(cxc.save).not.toHaveBeenCalled();
+      expect(ledgerPosting.postReceivablePayment.mock.calls[0][0].paymentId).toBe(
+        `${cxc._id.toString()}:0`,
+      );
     });
   });
 });

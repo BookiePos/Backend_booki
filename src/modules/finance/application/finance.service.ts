@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -54,9 +55,13 @@ import {
 import { CajaService } from '../../caja/application/caja.service';
 import { CustomersService } from '../../customers/application/customers.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
+import { LedgerService } from '../../core-ledger/application/ledger.service';
 import { TreasuryPostingService } from '../treasury/treasury-posting.service';
 import { ParamsService } from '../../core-params/application/params.service';
 import { ACC as LEDGER_ACC } from '../../core-ledger/domain/ledger.constants';
+import { Sede, SedeDocument } from '../../sedes/infrastructure/schemas/sede.schema';
+import { BusinessService } from '../../control/application/business.service';
+import { ivaDescontablePorSede } from '../../core-tax/application/perfil-fiscal';
 import {
   CategoryKind,
   ExpenseStatus,
@@ -64,10 +69,13 @@ import {
   ReceivableStatus,
   SEED_CATEGORIES,
 } from '../domain/finance.constants';
-import { clampNonNegative, cop } from '../domain/money.util';
+import { clampNonNegative, cop, sumBy } from '../domain/money.util';
 import {
   actualForCategory,
   actualsRange,
+  ivaEIncDeVentas,
+  ivaDescontableTotal,
+  costoDelGasto,
   ActualsModels,
   DateRange,
 } from '../domain/actuals';
@@ -122,9 +130,17 @@ export interface PLReport {
   gastos: PLRow[];
   gastosTotal: number;
   utilidadOperativa: number;
+  /** IVA generado por las ventas (sin el INC). */
   ivaGenerado: number;
   ivaDescontable: number;
   ivaPorPagar: number;
+  /** INC generado por las ventas de restaurante (cuenta 2495). */
+  incGenerado: number;
+  /**
+   * INC por pagar. Igual al generado: al INC no se le descuenta el IVA pagado
+   * en compras (art. 512-1 ET); se declara sobre lo causado.
+   */
+  incPorPagar: number;
 }
 
 /** Fila del P&L de un mes (o el total del año si month = -1). */
@@ -305,10 +321,32 @@ export class FinanceService {
     private readonly ledgerPosting: LedgerPostingService,
     private readonly treasuryPosting: TreasuryPostingService,
     private readonly params: ParamsService,
+    /** Responsabilidad de IVA de cada sede: decide si el IVA de los gastos descuenta. */
+    @InjectModel(Sede.name)
+    private readonly sedeModel: Model<SedeDocument>,
+    /** Control-plane: el giro del negocio cuando el token no lo trae. */
+    private readonly businesses: BusinessService,
+    /** Libro: el IVA descontable de las compras solo queda en su asiento (2408). */
+    private readonly ledger: LedgerService,
   ) {}
 
-  private actualsModels(): ActualsModels {
-    return { sales: this.sales, runs: this.runs, expenses: this.expenses };
+  /** Si cada sede descuenta el IVA de lo que paga (arts. 437 y 488 ET). */
+  private admiteIvaDescontable(): Promise<(sedeId?: string) => boolean> {
+    return ivaDescontablePorSede({
+      sedes: this.sedeModel,
+      businesses: this.businesses,
+    });
+  }
+
+  private async actualsModels(): Promise<ActualsModels> {
+    return {
+      sales: this.sales,
+      runs: this.runs,
+      expenses: this.expenses,
+      admiteIvaDescontable: await this.admiteIvaDescontable(),
+      ivaDescontableDeCompras: (range, sedeIds) =>
+        this.ledger.ivaDescontableDeCompras(range, sedeIds),
+    };
   }
 
   // ── Utilidades de sede / fechas ────────────────────────────────────────────
@@ -471,13 +509,16 @@ export class FinanceService {
       note: dto.note,
       createdByEmail: user.email,
     });
-    // Asiento contable del gasto (best-effort).
+    // Asiento contable del gasto (best-effort). El IVA va a la 2408 solo si la
+    // sede lo descuenta; si no, es mayor valor del gasto (arts. 437 y 488 ET).
+    const descuentaIva = (await this.admiteIvaDescontable())(dto.sedeId);
     await this.ledgerPosting.postExpense({
       expenseId: expense._id.toString(),
       date: expense.date,
       sedeId: dto.sedeId,
       amount: expense.amount,
       tax: expense.taxAmount,
+      ivaDescontable: descuentaIva ? expense.taxAmount : 0,
       status: expense.status,
       paymentMethod: expense.paymentMethod,
       expenseAccount: this.expenseAccountFor(cat.kind),
@@ -534,6 +575,18 @@ export class FinanceService {
     const exp = await this.expenses.findById(id).exec();
     if (!exp) throw new NotFoundException('Gasto no encontrado');
     assertSedeAccess(user, exp.sedeId.toString());
+    // Lo que entra al asiento, antes de editar: si cambia, el asiento se rehace.
+    const huellaContable = (e: FinanceExpenseDocument) =>
+      JSON.stringify([
+        e.categoryId.toString(),
+        e.amount,
+        e.taxAmount,
+        e.withholdingAmount ?? 0,
+        e.date,
+        e.status,
+        e.paymentMethod ?? null,
+      ]);
+    const antes = huellaContable(exp);
     if (dto.categoryId !== undefined) {
       const cat = await this.categoryOrThrow(dto.categoryId);
       exp.categoryId = cat._id;
@@ -557,6 +610,31 @@ export class FinanceService {
     if (dto.recurring !== undefined) exp.recurring = dto.recurring;
     if (dto.note !== undefined) exp.note = dto.note;
     await exp.save();
+    // El asiento no se edita: se reversa y se postea otro con los datos nuevos
+    // (best-effort, como al crear; un fallo queda por conciliar). Primero la
+    // reversa: mientras el viejo siga vivo, el índice único del libro tomaría
+    // el nuevo por «ya posteado».
+    if (huellaContable(exp) !== antes) {
+      const expenseId = exp._id.toString();
+      const sedeId = exp.sedeId.toString();
+      await this.ledgerPosting.reverseExpense(expenseId, user.email);
+      const cat = await this.categories.findById(exp.categoryId).exec();
+      const descuentaIva = (await this.admiteIvaDescontable())(sedeId);
+      await this.ledgerPosting.postExpense({
+        expenseId,
+        date: exp.date,
+        sedeId,
+        amount: exp.amount,
+        tax: exp.taxAmount,
+        ivaDescontable: descuentaIva ? exp.taxAmount : 0,
+        status: exp.status,
+        paymentMethod: exp.paymentMethod,
+        expenseAccount: cat ? this.expenseAccountFor(cat.kind) : undefined,
+        concept: exp.concept,
+        withholding: exp.withholdingAmount,
+        userEmail: user.email,
+      });
+    }
     // Reconcilia el auto-posteo a tesorería con el nuevo estado/medio/monto.
     await this.treasuryPosting.reverse('expense', exp._id.toString());
     await this.postExpenseTreasury(exp);
@@ -568,6 +646,9 @@ export class FinanceService {
     if (!exp) throw new NotFoundException('Gasto no encontrado');
     assertSedeAccess(user, exp.sedeId.toString());
     await exp.deleteOne();
+    // El gasto ya no existe: su asiento se reversa (best-effort; un fallo
+    // queda por conciliar).
+    await this.ledgerPosting.reverseExpense(exp._id.toString(), user.email);
     await this.treasuryPosting.reverse('expense', exp._id.toString());
     return { deleted: true };
   }
@@ -701,6 +782,8 @@ export class FinanceService {
     const categoryName = cat?.name ?? tpl.categoryName;
     const expenseAccount = cat ? this.expenseAccountFor(cat.kind) : undefined;
 
+    const descuentaIva = (await this.admiteIvaDescontable())(tpl.sedeId.toString());
+
     let created = 0;
     let lastDone = tpl.lastGeneratedDate ?? '';
     for (const date of dates) {
@@ -731,6 +814,7 @@ export class FinanceService {
           sedeId: tpl.sedeId.toString(),
           amount: expense.amount,
           tax: expense.taxAmount,
+          ivaDescontable: descuentaIva ? expense.taxAmount : 0,
           status: expense.status,
           paymentMethod: expense.paymentMethod,
           expenseAccount,
@@ -847,19 +931,41 @@ export class FinanceService {
         'El abono excede el saldo pendiente de la cuenta.',
       );
     }
-    payable.payments.push({
-      date: dto.date,
-      amount,
-      method: dto.method,
-      note: dto.note,
-      userEmail: user.email,
-    });
-    payable.paidAmount = newPaid;
-    payable.status = this.payableStatus(payable.amount, newPaid);
-    await payable.save();
-    // Asiento del pago a proveedor (best-effort). El id del abono es único por
-    // índice dentro de la CxP.
-    const paymentId = `${payable._id.toString()}:${payable.payments.length - 1}`;
+    // Update atómico condicionado a lo que se leyó, igual que en la CxC: si
+    // entre la lectura y aquí la CxP se anuló o entró otro abono, no casa. Un
+    // save() del documento leído resucitaría la CxP anulada o pisaría el otro
+    // abono (y su asiento quedaría huérfano).
+    const abonada = await this.payables
+      .findOneAndUpdate(
+        {
+          _id: payable._id,
+          status: { $ne: 'void' },
+          paidAmount: payable.paidAmount,
+        },
+        {
+          $push: {
+            payments: {
+              date: dto.date,
+              amount,
+              method: dto.method,
+              note: dto.note,
+              userEmail: user.email,
+            },
+          },
+          $inc: { paidAmount: amount },
+          $set: { status: this.payableStatus(payable.amount, newPaid) },
+        },
+        { new: true },
+      )
+      .exec();
+    if (!abonada) {
+      throw new ConflictException(
+        'La cuenta por pagar cambió mientras registrabas el abono (se anuló o entró otro abono). Vuelve a cargarla y revisa el saldo.',
+      );
+    }
+    // Asiento del pago a proveedor (best-effort). El id del abono es su
+    // posición en la CxP ya actualizada.
+    const paymentId = `${abonada._id.toString()}:${abonada.payments.length - 1}`;
     await this.ledgerPosting.postPayablePayment({
       paymentId,
       date: dto.date,
@@ -883,7 +989,7 @@ export class FinanceService {
         categoryId: payable.categoryId?.toString() ?? null,
       });
     }
-    return payable;
+    return abonada;
   }
 
   /** Recalcula el estado de una CxP según abonado vs total. */
@@ -965,18 +1071,40 @@ export class FinanceService {
         'El abono excede el saldo pendiente de la cuenta.',
       );
     }
-    receivable.payments.push({
-      date: dto.date,
-      amount,
-      method: dto.method,
-      note: dto.note,
-      userEmail: user.email,
-    });
-    receivable.paidAmount = newPaid;
-    receivable.status = this.receivableStatus(receivable.amount, newPaid);
-    await receivable.save();
+    // Update atómico condicionado a lo que se leyó: si entre la lectura y aquí
+    // la CxC se anuló (anulación de la venta) o entró otro abono, no casa. Un
+    // save() del documento leído resucitaría la CxC anulada o pisaría el otro
+    // abono.
+    const abonada = await this.receivables
+      .findOneAndUpdate(
+        {
+          _id: receivable._id,
+          status: { $ne: 'void' },
+          paidAmount: receivable.paidAmount,
+        },
+        {
+          $push: {
+            payments: {
+              date: dto.date,
+              amount,
+              method: dto.method,
+              note: dto.note,
+              userEmail: user.email,
+            },
+          },
+          $inc: { paidAmount: amount },
+          $set: { status: this.receivableStatus(receivable.amount, newPaid) },
+        },
+        { new: true },
+      )
+      .exec();
+    if (!abonada) {
+      throw new ConflictException(
+        'La cuenta por cobrar cambió mientras registrabas el abono (se anuló o entró otro abono). Vuelve a cargarla y revisa el saldo.',
+      );
+    }
     // Asiento del cobro a cliente (best-effort).
-    const paymentId = `${receivable._id.toString()}:${receivable.payments.length - 1}`;
+    const paymentId = `${abonada._id.toString()}:${abonada.payments.length - 1}`;
     await this.ledgerPosting.postReceivablePayment({
       paymentId,
       date: dto.date,
@@ -999,7 +1127,7 @@ export class FinanceService {
         concept: `Cobro CxC: ${receivable.customerName}`,
       });
     }
-    return receivable;
+    return abonada;
   }
 
   /** Recalcula el estado de una CxC según abonado vs total. */
@@ -1356,6 +1484,7 @@ export class FinanceService {
     const lines: BudgetVsActualLine[] = [];
     let totalBudget = 0;
     let totalActual = 0;
+    const models = await this.actualsModels();
 
     for (const line of budget.lines) {
       const monthlyBudget = this.normalizeMonthly(line.monthly);
@@ -1363,7 +1492,7 @@ export class FinanceService {
       for (let month = 0; month < 12; month += 1) {
         const range = this.monthRange(budget.fiscalYear, month);
         const actual = await actualForCategory(
-          this.actualsModels(),
+          models,
           line.kind,
           line.categoryId.toString(),
           range,
@@ -1415,7 +1544,7 @@ export class FinanceService {
     }
     const scope = this.resolveSedeScope(user, sedeId);
     const range: DateRange = { from, to };
-    const models = this.actualsModels();
+    const models = await this.actualsModels();
 
     const ingresos = await actualForCategory(models, 'income', null, range, scope);
     const cogs = await actualForCategory(models, 'cogs', null, range, scope);
@@ -1433,7 +1562,7 @@ export class FinanceService {
     }
     const expenseDocs = await this.expenses
       .find(expenseFilter)
-      .select('categoryId categoryName amount')
+      .select('categoryId categoryName amount taxAmount sedeId')
       .exec();
     const gastosMap = new Map<string, { label: string; amount: number }>();
     for (const e of expenseDocs) {
@@ -1442,7 +1571,8 @@ export class FinanceService {
         label: e.categoryName || 'Sin categoría',
         amount: 0,
       };
-      prev.amount += e.amount || 0;
+      // Con el IVA cuando la sede no lo descuenta: igual que su asiento.
+      prev.amount += costoDelGasto(models.admiteIvaDescontable, e);
       gastosMap.set(key, prev);
     }
     const gastos: PLRow[] = [];
@@ -1460,9 +1590,13 @@ export class FinanceService {
     }
     gastos.sort((a, b) => b.amount - a.amount);
 
-    // IVA: generado (ventas) y descontable (gastos) por separado, para el detalle.
-    const ivaGenerado = await this.ivaGenerado(range, scope);
-    const ivaDescontable = await this.ivaDescontable(range, scope);
+    // IVA: generado (ventas) y descontable (gastos y compras) por separado, para el
+    // detalle. El INC del restaurante va aparte: no es IVA ni se le resta nada.
+    // Quien no es responsable de IVA o causa INC no tiene IVA descontable
+    // (arts. 437 y 488 ET): su IVA por pagar no queda «a favor».
+    const generado = await ivaEIncDeVentas(models, range, scope);
+    const ivaGenerado = generado.iva;
+    const ivaDescontable = await ivaDescontableTotal(models, range, scope);
 
     const margenBruto = cop(ingresos - cogs);
     const utilidadOperativa = cop(margenBruto - nomina - gastosTotal);
@@ -1481,6 +1615,8 @@ export class FinanceService {
       ivaGenerado,
       ivaDescontable,
       ivaPorPagar: cop(ivaGenerado - ivaDescontable),
+      incGenerado: generado.inc,
+      incPorPagar: generado.inc,
     };
   }
 
@@ -1495,7 +1631,7 @@ export class FinanceService {
     sedeId?: string,
   ): Promise<PLMonthlyReport> {
     const scope = this.resolveSedeScope(user, sedeId);
-    const models = this.actualsModels();
+    const models = await this.actualsModels();
 
     // Gastos del año agrupados por mes (una sola consulta).
     const expFilter: Record<string, unknown> = {
@@ -1504,12 +1640,16 @@ export class FinanceService {
     if (scope) {
       expFilter.sedeId = { $in: scope.map((id) => new Types.ObjectId(id)) };
     }
-    const exps = await this.expenses.find(expFilter).select('date amount').exec();
+    const exps = await this.expenses
+      .find(expFilter)
+      .select('date amount taxAmount sedeId')
+      .exec();
     const gastosByMonth = new Array<number>(12).fill(0);
     for (const e of exps) {
       const m = Number.parseInt(e.date.slice(5, 7), 10) - 1;
       if (m >= 0 && m < 12) {
-        gastosByMonth[m] = (gastosByMonth[m] ?? 0) + (e.amount || 0);
+        gastosByMonth[m] =
+          (gastosByMonth[m] ?? 0) + costoDelGasto(models.admiteIvaDescontable, e);
       }
     }
 
@@ -1541,40 +1681,6 @@ export class FinanceService {
     );
 
     return { year, sedeId: sedeId ?? null, months, totals };
-  }
-
-  private async ivaGenerado(
-    range: DateRange,
-    scope: string[] | null,
-  ): Promise<number> {
-    const filter: Record<string, unknown> = {
-      status: 'completed',
-      createdAt: {
-        $gte: new Date(`${range.from}T00:00:00`),
-        $lt: new Date(
-          new Date(`${range.to}T00:00:00`).getTime() + 24 * 60 * 60 * 1000,
-        ),
-      },
-    };
-    if (scope) {
-      filter.sedeId = { $in: scope.map((id) => new Types.ObjectId(id)) };
-    }
-    const sales = await this.sales.find(filter).select('taxTotal').exec();
-    return cop(sales.reduce((a, s) => a + (s.taxTotal || 0), 0));
-  }
-
-  private async ivaDescontable(
-    range: DateRange,
-    scope: string[] | null,
-  ): Promise<number> {
-    const filter: Record<string, unknown> = {
-      date: { $gte: range.from, $lte: range.to },
-    };
-    if (scope) {
-      filter.sedeId = { $in: scope.map((id) => new Types.ObjectId(id)) };
-    }
-    const expenses = await this.expenses.find(filter).select('taxAmount').exec();
-    return cop(expenses.reduce((a, e) => a + (e.taxAmount || 0), 0));
   }
 
   /**
@@ -1645,7 +1751,7 @@ export class FinanceService {
     const { grossSales, cogs } = await this.grossSalesAndCogs(range, scope);
     const salesMonth = grossSales;
     const nomina = await actualForCategory(
-      this.actualsModels(),
+      await this.actualsModels(),
       'payroll',
       null,
       range,
@@ -1661,11 +1767,11 @@ export class FinanceService {
     }
     const monthExpenses = await this.expenses
       .find(expenseFilter)
-      .select('amount')
+      .select('amount taxAmount sedeId')
       .exec();
-    const expensesMonth = cop(
-      monthExpenses.reduce((a, e) => a + (e.amount || 0), 0),
-    );
+    // Mismo costo que el P&L: con el IVA que la sede no descuenta.
+    const admite = await this.admiteIvaDescontable();
+    const expensesMonth = sumBy(monthExpenses, (e) => costoDelGasto(admite, e));
 
     // CxP abiertas / vencidas.
     const payableFilter: Record<string, unknown> = {

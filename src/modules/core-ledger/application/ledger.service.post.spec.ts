@@ -17,7 +17,7 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
 });
 
 import { LedgerService } from './ledger.service';
-import { ACC } from '../domain/ledger.constants';
+import { ACC, SEED_ACCOUNTS } from '../domain/ledger.constants';
 
 /**
  * `post` es la ÚNICA puerta de escritura del libro diario, así que es la única
@@ -43,6 +43,11 @@ describe('LedgerService · escritura del libro diario', () => {
     accounts = {
       countDocuments: vi.fn(() => ({ exec: () => Promise.resolve(1) })),
       find: vi.fn(() => ({
+        // La siembra pregunta qué códigos del plan ya existen: todos.
+        select: () => ({
+          exec: () =>
+            Promise.resolve(SEED_ACCOUNTS.map((a) => ({ code: a.code }))),
+        }),
         exec: () =>
           Promise.resolve(
             knownAccounts([
@@ -61,7 +66,7 @@ describe('LedgerService · escritura del libro diario', () => {
       findOne: vi.fn(() => ({ exec: () => Promise.resolve(null) })),
       findById: vi.fn(() => ({ exec: () => Promise.resolve(null) })),
     };
-    service = new LedgerService(accounts as never, entries as never);
+    service = new LedgerService(accounts as never, entries as never, { findOneAndUpdate: vi.fn(() => ({ exec: () => Promise.resolve({ seq: 1 }) })) } as never);
   });
 
   const entrada = {
@@ -176,6 +181,7 @@ describe('LedgerService · escritura del libro diario', () => {
       return {
         _id: 'as1',
         number: 'AS-000001',
+        date: '2026-10-01',
         sourceType: 'sale',
         sourceId: 's1',
         memo: 'Venta FV-000001',
@@ -234,6 +240,63 @@ describe('LedgerService · escritura del libro diario', () => {
 
       expect(orig.reversedBy).toBe('as2');
       expect(orig.save).toHaveBeenCalledOnce();
+    });
+
+    it('reversa a 2408/2495 lo que el asiento viejo dejó en 2367/2368 (plan anterior al corte)', async () => {
+      // Venta posteada antes de la reclasificación PUC: el impuesto quedó en
+      // 2367/2368 (ReteIVA/ReteICA). Anularla después del corte no debe volver
+      // a tocar esas cuentas: la reclasificación ya trasladó su saldo.
+      const orig = original();
+      (orig as any).lines = [
+        { accountCode: ACC.CAJA, accountName: 'Caja', debit: 108_000, credit: 0 },
+        { accountCode: ACC.INGRESOS_VENTAS, accountName: 'Ingresos', debit: 0, credit: 100_000 },
+        { accountCode: '2368', accountName: 'INC (viejo)', debit: 0, credit: 5_000 },
+        { accountCode: '2367', accountName: 'IVA (viejo)', debit: 0, credit: 3_000 },
+      ];
+      orig.totalDebit = 108_000;
+      orig.totalCredit = 108_000;
+      entries.findById.mockReturnValue({ exec: () => Promise.resolve(orig) });
+      entries.create.mockImplementation((doc: any) =>
+        Promise.resolve({ ...doc, _id: 'as2' }),
+      );
+
+      const contra: any = await service.reverse('as1');
+
+      const codes = contra.lines.map((l: any) => l.accountCode);
+      expect(codes).not.toContain('2367');
+      expect(codes).not.toContain('2368');
+      const inc = contra.lines.find((l: any) => l.accountCode === ACC.INC_POR_PAGAR);
+      expect(inc.debit).toBe(5_000);
+      expect(inc.accountName).toBe(
+        SEED_ACCOUNTS.find((a) => a.code === ACC.INC_POR_PAGAR)!.name,
+      );
+      const iva = contra.lines.find((l: any) => l.accountCode === ACC.IVA_POR_PAGAR);
+      expect(iva.debit).toBe(3_000);
+      expect(contra.totalDebit).toBe(contra.totalCredit);
+    });
+
+    it('un asiento MANUAL de ReteIVA (2367) se reversa contra la 2367, no contra la 2408', async () => {
+      // La 2367 es ReteIVA de verdad en el PUC: un asiento manual que la usa
+      // no es IVA del plan viejo, y remapearlo ensuciaría el IVA por pagar.
+      const orig = original();
+      orig.sourceType = 'manual';
+      (orig as any).lines = [
+        { accountCode: ACC.PROVEEDORES, accountName: 'Proveedores', debit: 2_850, credit: 0 },
+        { accountCode: '2367', accountName: 'ReteIVA', debit: 0, credit: 2_850 },
+      ];
+      orig.totalDebit = 2_850;
+      orig.totalCredit = 2_850;
+      entries.findById.mockReturnValue({ exec: () => Promise.resolve(orig) });
+      entries.create.mockImplementation((doc: any) =>
+        Promise.resolve({ ...doc, _id: 'as2' }),
+      );
+
+      const contra: any = await service.reverse('as1');
+
+      const codes = contra.lines.map((l: any) => l.accountCode);
+      expect(codes).toContain('2367');
+      expect(codes).not.toContain(ACC.IVA_POR_PAGAR);
+      expect(contra.lines.find((l: any) => l.accountCode === '2367').debit).toBe(2_850);
     });
 
     it('no reversa un asiento ya reversado', async () => {
