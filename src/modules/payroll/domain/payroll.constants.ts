@@ -171,6 +171,13 @@ export interface PayrollSettingsData {
 
   /** La empresa está sujeta a exoneración de aportes (art. 114-1 ET). */
   empresaExoneradaAportes: boolean;
+  /**
+   * La empresa respondió explícitamente si está exonerada (ítem 1.15). La
+   * exoneración solo aplica con esto en `true`: no se presume, porque solo la
+   * tienen las sociedades declarantes de renta y las personas naturales con
+   * dos o más trabajadores.
+   */
+  exoneracionConfirmada?: boolean;
 }
 
 export const DEFAULT_PAYROLL_SETTINGS: PayrollSettingsData = {
@@ -250,7 +257,8 @@ export const DEFAULT_PAYROLL_SETTINGS: PayrollSettingsData = {
 
   jornadaTramos: [],
 
-  empresaExoneradaAportes: true,
+  empresaExoneradaAportes: false,
+  exoneracionConfirmada: false,
 };
 
 export const DIAS_MES = 30;

@@ -45,9 +45,17 @@ function armar(opts: {
   aplicadas?: { amount: number }[];
   run?: Record<string, unknown>;
   empleado?: Record<string, unknown>;
+  /** Por defecto la empresa ya respondió la exoneración (ítem 1.15). */
+  exoneracionConfirmada?: boolean;
 }) {
   const settings = {
-    findOne: () => exec({ toObject: () => structuredClone(DEFAULT_PAYROLL_SETTINGS) }),
+    findOne: () =>
+      exec({
+        toObject: () => ({
+          ...structuredClone(DEFAULT_PAYROLL_SETTINGS),
+          exoneracionConfirmada: opts.exoneracionConfirmada ?? true,
+        }),
+      }),
   };
   const created: Record<string, unknown>[] = [];
   const runs = {
@@ -219,5 +227,16 @@ describe('PayrollService.closeRun · deducciones amarradas', () => {
         },
       }),
     );
+  });
+});
+
+describe('PayrollService.createRun · exoneración de aportes (ítem 1.15)', () => {
+  it('no crea la nómina si la empresa no ha respondido si está exonerada', async () => {
+    const { service, created } = armar({ exoneracionConfirmada: false });
+
+    await expect(
+      service.createRun({ period: '2026-09' } as any, USER),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(created).toHaveLength(0);
   });
 });

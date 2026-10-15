@@ -359,6 +359,7 @@ export function computeSlip(
   // Aportes del empleador.
   const exonera =
     s.empresaExoneradaAportes &&
+    s.exoneracionConfirmada === true &&
     !integral &&
     input.salarioBase < s.exoneracionSmmlv * s.smmlv;
   const arlRate = input.arlRiskLevel ? s.arlRates[input.arlRiskLevel] : 0;

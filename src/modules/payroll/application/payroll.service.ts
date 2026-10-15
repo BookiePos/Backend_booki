@@ -278,6 +278,8 @@ export class PayrollService {
   ): Promise<PayrollSettingsDocument> {
     const doc = await this.getSettings();
     Object.assign(doc, dto);
+    // Responder la exoneración, en uno u otro sentido, la deja confirmada.
+    if (dto.empresaExoneradaAportes !== undefined) doc.exoneracionConfirmada = true;
     await doc.save();
     return doc;
   }
@@ -337,6 +339,14 @@ export class PayrollService {
     user: JwtUser,
   ): Promise<PayrollRunDocument> {
     const s = await this.parametrosEn(fechaCorteDePeriodo(dto.period));
+    // La exoneración de aportes no se presume (ítem 1.15): sin respuesta
+    // explícita no se liquida, porque de ella depende si se pagan salud, SENA
+    // e ICBF del empleador.
+    if (!s.exoneracionConfirmada) {
+      throw new BadRequestException(
+        'Antes de liquidar la nómina indica en Ajustes si la empresa está exonerada de aportes (art. 114-1 ET).',
+      );
+    }
     const coverage = dto.coverage ?? 'all';
     const filter: Record<string, unknown> = {
       status: 'activo',

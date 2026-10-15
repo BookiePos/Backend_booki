@@ -119,8 +119,12 @@ export class PayrollSettings {
   @Prop({ type: MongooseSchema.Types.Mixed })
   jornadaTramos?: JornadaTramo[];
 
-  @Prop({ required: true, default: true })
+  @Prop({ required: true, default: false })
   empresaExoneradaAportes!: boolean;
+
+  /** Ver `PayrollSettingsData.exoneracionConfirmada` (ítem 1.15). */
+  @Prop({ default: false })
+  exoneracionConfirmada!: boolean;
 }
 
 export const PayrollSettingsSchema =
