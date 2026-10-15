@@ -176,7 +176,7 @@ describe('ProductionService.complete', () => {
     // Harina: 10×3.000 + 15×3.200 = 78.000. Levadura: 0,5×20.000 = 10.000.
     expect(result.materialsCost).toBe(88_000);
     // Más la mano de obra del lote (30.000).
-    expect(result.totalCost).toBe(118_000);
+    expect(result.totalCost).toBe(117_960); // 983 x 120; el gasto fue 118.000, ver el cierre
     // Repartido entre las 120 unidades planeadas.
     expect(result.unitCost).toBe(Math.round(118_000 / 120));
 
@@ -192,8 +192,21 @@ describe('ProductionService.complete', () => {
     const result = await service.complete(orderId.toString(), {}, user);
 
     // 88.000 de materiales + 30.000 de mano de obra + 24.000 de empaque.
-    expect(result.totalCost).toBe(142_000);
+    expect(result.totalCost).toBe(141_960);
     expect(result.unitCost).toBe(Math.round(142_000 / 120));
+  });
+
+  it('lo que entra a bodega cuadra con la orden: totalCost = unitCost x salida', async () => {
+    // 142.000 / 120 = 1.183,33 -> 1.183; 1.183 x 120 = 141.960. La orden debe
+    // decir lo mismo que el inventario valora, no 40 pesos que nadie ve.
+    order.packagingCost = 24_000;
+
+    const result = await service.complete(orderId.toString(), {}, user);
+
+    expect(result.unitCost).toBe(1_183);
+    expect(result.totalCost).toBe(result.unitCost * 120);
+    const entrada = stock.entry.mock.calls[0]![0];
+    expect(entrada.unitCost * entrada.qty).toBe(result.totalCost);
   });
 
   it('cuesta igual que antes si la receta no trae empaque escrito', async () => {
@@ -203,7 +216,7 @@ describe('ProductionService.complete', () => {
 
     const result = await service.complete(orderId.toString(), {}, user);
 
-    expect(result.totalCost).toBe(118_000);
+    expect(result.totalCost).toBe(117_960);
   });
 
   it('reparte el costo entre la salida REAL, no entre la planeada', async () => {

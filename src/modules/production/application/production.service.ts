@@ -581,8 +581,14 @@ export class ProductionService {
       ),
     );
     const materialsCost = sumCop(lineCosts);
-    const totalCost = cop(materialsCost + extraCost + packagingCost);
-    const unitCost = cop(totalCost / producedQty);
+    const gastado = cop(materialsCost + extraCost + packagingCost);
+    const unitCost = cop(gastado / producedQty);
+    // Lo que entra a bodega vale unitCost x salida (el inventario guarda un
+    // costo unitario en pesos enteros). La orden dice lo mismo: si guardara el
+    // gasto sin redondear, el valor de la orden y el del lote diferirían en el residuo del
+    // redondeo (142.000 / 120 -> 1.183 x 120 = 141.960) sin que nadie lo vea.
+    // El residuo es menor a producedQty/2 pesos y no se contabiliza aparte.
+    const totalCost = cop(unitCost * producedQty);
 
     try {
       await this.stock.entry(
