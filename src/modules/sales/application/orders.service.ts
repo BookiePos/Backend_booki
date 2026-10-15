@@ -24,7 +24,8 @@ import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { CreateOrderDto, OrderLineInputDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { CheckoutOrderDto } from './dto/checkout-order.dto';
-import { PaymentPlan, planPayment } from '../domain/split-bill';
+import { PaymentPlan, paidByProduct, planPayment } from '../domain/split-bill';
+import { cop } from '../../finance/domain/money.util';
 import { SalesService } from './sales.service';
 
 @Injectable()
@@ -108,7 +109,7 @@ export class OrdersService {
           unit: 'und',
           qty,
           unitPrice: product.salePrice,
-          lineTotal: Math.round(product.salePrice * qty * 100) / 100,
+          lineTotal: cop(product.salePrice * qty),
           paidQty: pagado,
         };
       }),
@@ -275,6 +276,9 @@ export class OrdersService {
         },
         user,
         order._id as Types.ObjectId,
+        // Lo ya cobrado de cada producto en pagos anteriores: el bruto de este
+        // cobro sale del acumulado y la cuenta dividida suma exacto (1.11).
+        { paidBefore: paidByProduct(estado) },
       );
     } catch (err) {
       // La venta falló: se devuelve lo tomado para que el cobro se reintente.

@@ -19,6 +19,8 @@
  * en el mostrador.
  */
 
+import { clampNonNegative, cop } from '../../finance/domain/money.util';
+
 /** Por qué vuelve la mercancía. Queda en el registro y sirve para reportes. */
 export const RETURN_REASONS = [
   'defectuoso', // vino malo o dañado
@@ -73,9 +75,13 @@ export interface ReturnedLine {
   refundTax: number;
 }
 
-/** Redondeo a peso: el peso colombiano no usa centavos en caja. */
-function cop(amount: number): number {
-  return Math.round(amount);
+/** Lo que ya se devolvió de una línea en devoluciones anteriores. */
+export interface PriorReturn {
+  qty: number;
+  /** Plata ya devuelta por la línea (si se conoce). */
+  refund?: number;
+  /** IVA ya reversado de la línea (si se conoce). */
+  refundTax?: number;
 }
 
 /**
@@ -86,16 +92,30 @@ function cop(amount: number): number {
  * tocó del descuento de toda la venta. Usar `unitPrice × qty` devolvería el
  * precio de lista y regalaría el descuento otra vez.
  *
+ * Devoluciones sucesivas (ítem 1.11): cada una devuelve lo que corresponde a
+ * lo devuelto ACUMULADO menos lo que ya salió de la caja. Así tres
+ * devoluciones de 1 sobre una línea de 3 por $10.000 suman $10.000 y no
+ * $9.999, y la última salda exacto el saldo de la línea aunque las anteriores
+ * se hayan calculado con otra regla (ventas viejas con centavos).
+ *
  * La propina no entra: se cobró encima del total y ya se repartió.
  */
-export function refundForLine(line: SoldLine, qty: number): ReturnedLine {
-  const proporcion = line.qty > 0 ? qty / line.qty : 0;
+export function refundForLine(
+  line: SoldLine,
+  qty: number,
+  prior: PriorReturn = { qty: 0 },
+): ReturnedLine {
+  const parte = (monto: number, q: number) =>
+    line.qty > 0 ? cop((monto * q) / line.qty) : 0;
   const pagado = line.taxBase + line.taxAmount;
+  const hasta = prior.qty + qty;
+  const yaRefund = prior.refund ?? parte(pagado, prior.qty);
+  const yaTax = prior.refundTax ?? parte(line.taxAmount, prior.qty);
   return {
     productId: line.productId,
     qty,
-    refund: cop(pagado * proporcion),
-    refundTax: cop(line.taxAmount * proporcion),
+    refund: clampNonNegative(parte(pagado, hasta) - yaRefund),
+    refundTax: clampNonNegative(parte(line.taxAmount, hasta) - yaTax),
   };
 }
 
@@ -118,13 +138,31 @@ export function buildReturnPlan(
   soldLines: readonly SoldLine[],
   requests: readonly ReturnRequest[],
   alreadyReturned: ReadonlyMap<string, number>,
+  alreadyRefunded?: ReadonlyMap<string, { refund: number; refundTax: number }>,
 ): ReturnPlan {
   if (requests.length === 0) {
     throw new Error('No hay nada que devolver');
   }
 
+  // Un producto puede venir en varios renglones (otra ronda, descuentos
+  // distintos). Se agrupan: la devolución se valida y se paga contra todo lo
+  // vendido de ese producto, no solo contra su último renglón. En una venta
+  // el impuesto lo decide el producto, así que los renglones comparten taxKind.
   const porProducto = new Map<string, SoldLine>();
-  for (const l of soldLines) porProducto.set(l.productId, l);
+  for (const l of soldLines) {
+    const prev = porProducto.get(l.productId);
+    porProducto.set(
+      l.productId,
+      prev
+        ? {
+            productId: l.productId,
+            qty: prev.qty + l.qty,
+            taxBase: prev.taxBase + l.taxBase,
+            taxAmount: prev.taxAmount + l.taxAmount,
+          }
+        : { ...l },
+    );
+  }
 
   const pedidoPorProducto = new Map<string, number>();
   for (const r of requests) {
@@ -152,7 +190,14 @@ export function buildReturnPlan(
           : `No se pueden devolver ${qty} si solo se vendieron ${vendida.qty}`,
       );
     }
-    lines.push(refundForLine(vendida, qty));
+    const plata = alreadyRefunded?.get(productId);
+    lines.push(
+      refundForLine(vendida, qty, {
+        qty: yaDevuelto,
+        refund: plata?.refund,
+        refundTax: plata?.refundTax,
+      }),
+    );
   }
 
   // El total es la SUMA de las líneas ya redondeadas, no el redondeo de la

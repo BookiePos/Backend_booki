@@ -22,7 +22,9 @@ export class CheckoutLineDto {
   @IsMongoId()
   productId!: string;
 
-  @IsNumber()
+  // Milésimas, como reparte `evenShare`: más decimales dejaban restos por
+  // debajo de EPSILON que nadie cobraba (ítem 1.11).
+  @IsNumber({ maxDecimalPlaces: 3 })
   @IsPositive()
   qty!: number;
 }

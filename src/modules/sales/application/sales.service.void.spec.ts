@@ -65,6 +65,9 @@ describe('SalesService.void (anulación atómica)', () => {
   }
 
   let saleModel: any;
+  let receivableModel: any;
+  let payroll: any;
+  let saleReturnModel: any;
   let stock: any;
   let ledgerPosting: any;
   let treasury: any;
@@ -79,6 +82,15 @@ describe('SalesService.void (anulación atómica)', () => {
         .fn()
         .mockReturnValue({ exec: () => Promise.resolve(saleDoc()) }),
     };
+    // Sin CxC, sin consumo de empleado y sin devoluciones: venta de contado.
+    receivableModel = {
+      findOneAndUpdate: vi.fn().mockReturnValue({ exec: () => Promise.resolve(null) }),
+      findOne: vi.fn().mockReturnValue({ exec: () => Promise.resolve(null) }),
+    };
+    payroll = { cancelSaleDeduction: vi.fn().mockResolvedValue(undefined) };
+    saleReturnModel = {
+      countDocuments: vi.fn().mockReturnValue({ exec: () => Promise.resolve(0) }),
+    };
     stock = { reverseSale: vi.fn().mockResolvedValue(undefined) };
     ledgerPosting = { reverseSale: vi.fn().mockResolvedValue(undefined) };
     treasury = { reverse: vi.fn().mockResolvedValue(undefined) };
@@ -89,7 +101,7 @@ describe('SalesService.void (anulación atómica)', () => {
       {} as any, // stockItemModel
       {} as any, // cajaSessionModel
       {} as any, // discountModel
-      {} as any, // receivableModel
+      receivableModel, // receivableModel
       stock, // stock
       {} as any, // products
       {} as any, // sedes
@@ -99,11 +111,14 @@ describe('SalesService.void (anulación atómica)', () => {
       // Sin domicilio: no hay zona que resolver.
       { refFor: async () => null } as any, // deliveryZones
       {} as any, // customers
-      {} as any, // payroll
+      payroll, // payroll
       {} as any, // params
       ledgerPosting, // ledgerPosting
       treasury, // treasury
       {} as any, // sedeModel: solo lo recibe populate, que aquí está simulado
+      {} as any, // tax: sin tenant restaurante no se consulta el INC
+      {} as any, // businesses: el giro viene en el contexto o no hay tenant
+      saleReturnModel, // saleReturnModel
     );
   });
 
@@ -129,5 +144,197 @@ describe('SalesService.void (anulación atómica)', () => {
     // Los pasos contables/tesorería también corren una sola vez.
     expect(ledgerPosting.reverseSale).toHaveBeenCalledTimes(1);
     expect(treasury.reverse).toHaveBeenCalledTimes(1);
+  });
+
+  // ── 1.6 Anular un fiado ────────────────────────────────────────────────────
+
+  /** Venta a crédito (fiado): mismo documento con `payment.method = 'credit'`. */
+  function fiado() {
+    return { ...saleDoc(), payment: { method: 'credit' } };
+  }
+
+  function comoFiado() {
+    saleModel.findById.mockReturnValue({
+      populate: () => ({ exec: () => Promise.resolve(fiado()) }),
+    });
+    saleModel.findOneAndUpdate.mockReturnValue({
+      exec: () => Promise.resolve(fiado()),
+    });
+    saleModel.updateOne = vi
+      .fn()
+      .mockReturnValue({ exec: () => Promise.resolve({ modifiedCount: 1 }) });
+  }
+
+  it('fiado a cliente sin abonos: anula la CxC (solo si sigue sin abonos) y revierte', async () => {
+    comoFiado();
+    receivableModel.findOneAndUpdate.mockReturnValue({
+      exec: () => Promise.resolve({ _id: new Types.ObjectId(), status: 'void' }),
+    });
+
+    await service.void(saleObjId.toString(), user);
+
+    expect(receivableModel.findOneAndUpdate).toHaveBeenCalledTimes(1);
+    const [filtro, cambio] = receivableModel.findOneAndUpdate.mock.calls[0];
+    expect(filtro).toMatchObject({ saleId: saleObjId, paidAmount: 0 });
+    expect(cambio).toEqual({ $set: { status: 'void' } });
+    // El fiado era de un cliente: la nómina no tiene nada que ver.
+    expect(payroll.cancelSaleDeduction).not.toHaveBeenCalled();
+    expect(stock.reverseSale).toHaveBeenCalledTimes(1);
+    expect(ledgerPosting.reverseSale).toHaveBeenCalledTimes(1);
+  });
+
+  it('fiado a cliente CON abonos: rechaza, deshace el flip y no toca stock ni libro', async () => {
+    comoFiado();
+    // El flip condicional (paidAmount 0) no encuentra nada: la CxC tiene abonos.
+    receivableModel.findOne.mockReturnValue({
+      exec: () =>
+        Promise.resolve({ status: 'partial', amount: 20_000, paidAmount: 5_000 }),
+    });
+
+    await expect(
+      service.void(saleObjId.toString(), user),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    // La venta vuelve a 'completed': la anulación no ocurrió.
+    expect(saleModel.updateOne).toHaveBeenCalledWith(
+      { _id: saleObjId, status: 'void' },
+      { $set: { status: 'completed' } },
+    );
+    expect(stock.reverseSale).not.toHaveBeenCalled();
+    expect(ledgerPosting.reverseSale).not.toHaveBeenCalled();
+    expect(treasury.reverse).not.toHaveBeenCalled();
+  });
+
+  it('fiado de empleado ya descontado en nómina: rechaza y deshace el flip', async () => {
+    comoFiado();
+    payroll.cancelSaleDeduction.mockRejectedValue(
+      new BadRequestException('ya se descontó'),
+    );
+
+    await expect(
+      service.void(saleObjId.toString(), user),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(saleModel.updateOne).toHaveBeenCalledTimes(1);
+    expect(stock.reverseSale).not.toHaveBeenCalled();
+    expect(ledgerPosting.reverseSale).not.toHaveBeenCalled();
+  });
+
+  it('fiado de empleado (sin CxC): cancela el consumo en nómina y revierte', async () => {
+    comoFiado();
+
+    await service.void(saleObjId.toString(), user);
+
+    expect(payroll.cancelSaleDeduction).toHaveBeenCalledWith(
+      saleObjId.toString(),
+    );
+    expect(stock.reverseSale).toHaveBeenCalledTimes(1);
+  });
+
+  it('fiado a cliente: si falla la reversa de stock, la CxC vuelve a open y la venta a completed', async () => {
+    comoFiado();
+    receivableModel.findOneAndUpdate.mockReturnValue({
+      exec: () => Promise.resolve({ _id: new Types.ObjectId(), status: 'void' }),
+    });
+    receivableModel.updateOne = vi
+      .fn()
+      .mockReturnValue({ exec: () => Promise.resolve({ modifiedCount: 1 }) });
+    stock.reverseSale.mockRejectedValue(new Error('producto borrado'));
+
+    await expect(service.void(saleObjId.toString(), user)).rejects.toThrow(
+      'producto borrado',
+    );
+
+    // Se deshace solo lo que esta anulación anuló, y solo si sigue sin abonos.
+    expect(receivableModel.updateOne).toHaveBeenCalledWith(
+      { saleId: saleObjId, status: 'void', paidAmount: 0 },
+      { $set: { status: 'open' } },
+    );
+    expect(saleModel.updateOne).toHaveBeenCalledWith(
+      { _id: saleObjId, status: 'void' },
+      { $set: { status: 'completed' } },
+    );
+    // El reintento puede volver a anular: no quedó nada a medias en el libro.
+    expect(ledgerPosting.reverseSale).not.toHaveBeenCalled();
+    expect(treasury.reverse).not.toHaveBeenCalled();
+  });
+
+  it('fiado de empleado: si falla la reversa de stock, el consumo vuelve a nómina', async () => {
+    comoFiado();
+    payroll.restoreSaleDeduction = vi.fn().mockResolvedValue(undefined);
+    stock.reverseSale.mockRejectedValue(new Error('sin conexión'));
+
+    await expect(service.void(saleObjId.toString(), user)).rejects.toThrow(
+      'sin conexión',
+    );
+
+    expect(payroll.restoreSaleDeduction).toHaveBeenCalledWith(
+      saleObjId.toString(),
+    );
+    expect(saleModel.updateOne).toHaveBeenCalledTimes(1);
+    expect(ledgerPosting.reverseSale).not.toHaveBeenCalled();
+  });
+
+  it('venta de contado: si falla la reversa de stock, la venta vuelve a completed', async () => {
+    saleModel.updateOne = vi
+      .fn()
+      .mockReturnValue({ exec: () => Promise.resolve({ modifiedCount: 1 }) });
+    stock.reverseSale.mockRejectedValue(new Error('boom'));
+
+    await expect(service.void(saleObjId.toString(), user)).rejects.toThrow(
+      'boom',
+    );
+    expect(saleModel.updateOne).toHaveBeenCalledWith(
+      { _id: saleObjId, status: 'void' },
+      { $set: { status: 'completed' } },
+    );
+    expect(ledgerPosting.reverseSale).not.toHaveBeenCalled();
+  });
+
+  it('venta de contado no toca CxC ni nómina', async () => {
+    await service.void(saleObjId.toString(), user);
+    expect(receivableModel.findOneAndUpdate).not.toHaveBeenCalled();
+    expect(payroll.cancelSaleDeduction).not.toHaveBeenCalled();
+  });
+
+  // ── 1.7 Anular con devoluciones previas ────────────────────────────────────
+
+  it('venta con devoluciones previas: rechaza ANTES del flip (no revierte de más)', async () => {
+    saleReturnModel.countDocuments.mockReturnValue({
+      exec: () => Promise.resolve(1),
+    });
+
+    await expect(
+      service.void(saleObjId.toString(), user),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(saleReturnModel.countDocuments).toHaveBeenCalledWith({
+      saleId: saleObjId,
+    });
+    expect(saleModel.findOneAndUpdate).not.toHaveBeenCalled();
+    expect(stock.reverseSale).not.toHaveBeenCalled();
+    expect(ledgerPosting.reverseSale).not.toHaveBeenCalled();
+  });
+
+  it('devolución que entra entre la revisión y el flip: deshace el flip y no revierte nada', async () => {
+    saleModel.updateOne = vi
+      .fn()
+      .mockReturnValue({ exec: () => Promise.resolve({ modifiedCount: 1 }) });
+    // Primera cuenta (antes del flip): 0. Segunda (después): ya hay una.
+    saleReturnModel.countDocuments
+      .mockReturnValueOnce({ exec: () => Promise.resolve(0) })
+      .mockReturnValueOnce({ exec: () => Promise.resolve(1) });
+
+    await expect(
+      service.void(saleObjId.toString(), user),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(saleModel.updateOne).toHaveBeenCalledWith(
+      { _id: saleObjId, status: 'void' },
+      { $set: { status: 'completed' } },
+    );
+    expect(receivableModel.findOneAndUpdate).not.toHaveBeenCalled();
+    expect(stock.reverseSale).not.toHaveBeenCalled();
+    expect(ledgerPosting.reverseSale).not.toHaveBeenCalled();
   });
 });

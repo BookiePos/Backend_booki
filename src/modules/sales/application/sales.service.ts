@@ -9,6 +9,10 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Sale, SaleDocument } from '../infrastructure/schemas/sale.schema';
 import {
+  SaleReturn,
+  SaleReturnDocument,
+} from '../infrastructure/schemas/sale-return.schema';
+import {
   Counter,
   CounterDocument,
 } from '../infrastructure/schemas/counter.schema';
@@ -44,12 +48,47 @@ import { Sede } from '../../sedes/infrastructure/schemas/sede.schema';
 import { CustomersService } from '../../customers/application/customers.service';
 import { PayrollService } from '../../payroll/application/payroll.service';
 import { ParamsService } from '../../core-params/application/params.service';
+import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { TreasuryPostingService } from '../../finance/treasury/treasury-posting.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import { CreateSaleDto } from './dto/create-sale.dto';
+import { TaxService } from '../../core-tax/application/tax.service';
+import {
+  causesInc,
+  INC_RESTAURANTE_CODE,
+  saleTaxFor,
+  SaleTaxKind,
+  SaleTaxProfile,
+} from '../../core-tax/domain/sale-tax';
+import { TenantContext } from '../../../shared/tenancy/tenant-context';
+import {
+  clampNonNegative,
+  cop,
+  sumBy,
+} from '../../finance/domain/money.util';
+import {
+  chargeForQty,
+  prorateCop,
+  splitTaxIncluded,
+} from '../domain/sale-amounts';
+import { BusinessService } from '../../control/application/business.service';
+import type { BusinessType } from '../../control/domain/control.constants';
+
+/** Opciones internas de `create` (no viajan en el DTO HTTP). */
+export interface CreateSaleOptions {
+  /**
+   * Cuenta dividida: cantidad de cada producto ya cobrada en pagos anteriores
+   * de la misma comanda. Con ella el bruto sale del acumulado y los cobros
+   * suman exacto la cuenta.
+   */
+  paidBefore?: ReadonlyMap<string, number>;
+}
+
+/** Qué anuló cancelCredit, para poder devolverlo si la anulación se aborta. */
+type FiadoCancelado = 'none' | 'receivable' | 'deduction';
 
 @Injectable()
 export class SalesService {
@@ -89,7 +128,33 @@ export class SalesService {
      */
     @InjectModel(Sede.name)
     private readonly sedeModel: Model<unknown>,
+    /** Catálogo de impuestos: de aquí sale la tarifa vigente del INC. */
+    private readonly tax: TaxService,
+    /** Control-plane: el giro del negocio cuando el token no lo trae. */
+    private readonly businesses: BusinessService,
+    /**
+     * Devoluciones de la venta: la anulación las consulta para no revertir dos
+     * veces lo ya devuelto. Modelo y no `SaleReturnsService`, que depende de
+     * este servicio (sería un ciclo).
+     */
+    @InjectModel(SaleReturn.name)
+    private readonly saleReturnModel: Model<SaleReturnDocument>,
   ) {}
+
+  /**
+   * Giro del negocio activo, que decide si la venta causa INC o IVA. Lo trae
+   * el claim `biztype` del token; los tokens emitidos antes de ese claim no lo
+   * tienen, y sin giro un restaurante cobraría IVA 19 % en vez de INC 8 %. En
+   * ese caso se lee de la empresa (igual que `AuthService.currentTipoNegocio`),
+   * una vez por venta y no por línea.
+   */
+  private async tipoNegocio(): Promise<BusinessType | undefined> {
+    const ctx = TenantContext.current();
+    if (!ctx) return undefined;
+    if (ctx.tipoNegocio) return ctx.tipoNegocio;
+    const business = await this.businesses.findById(ctx.businessId);
+    return business?.tipoNegocio;
+  }
 
   /** Suma `days` días a una fecha YYYY-MM-DD y devuelve otra YYYY-MM-DD. */
   private addDays(dateStr: string, days: number): string {
@@ -118,10 +183,12 @@ export class SalesService {
     dto: CreateSaleDto,
     user: JwtUser,
     orderId?: Types.ObjectId,
+    opts: CreateSaleOptions = {},
   ): Promise<SaleDocument> {
     assertSedeAccess(user, dto.sedeId);
-    // Valida que la sede exista (lanza 404 si no).
-    await this.sedes.findOrFail(dto.sedeId);
+    // Valida que la sede exista (lanza 404 si no). Su responsabilidad fiscal,
+    // junto con el giro del negocio, decide qué impuesto lleva la venta.
+    const sede = await this.sedes.findOrFail(dto.sedeId);
 
     // 0. Exigir caja abierta ANTES de tocar inventario: toda venta ocurre
     //    dentro de un turno de caja (integridad contable). Se enlaza al arqueo.
@@ -234,6 +301,13 @@ export class SalesService {
       }
     }
 
+    /*
+     * Ítem 1.11: todo en COP entero. El bruto de cada línea se redondea a peso
+     * (venta por peso o lista de precios dejan fracción) y, en una cuenta
+     * dividida, sale del ACUMULADO cobrado de ese producto (`chargeForQty`):
+     * tres tercios de $10.001 suman $10.001 y no $10.000.
+     */
+    const cobradoAntes = new Map(opts.paidBefore ?? []);
     const lineTotals = dto.lines.map((line) => {
       const product = catalogById.get(line.productId)!;
       const unitPrice = resolveUnitPrice({
@@ -242,14 +316,16 @@ export class SalesService {
         catalogProductId: line.productId,
         list: priceRules,
       });
-      const gross = unitPrice * line.qty;
+      const previo = cobradoAntes.get(line.productId) ?? 0;
+      const gross = chargeForQty(unitPrice, previo, line.qty);
+      cobradoAntes.set(line.productId, previo + line.qty);
       let discountAmount = 0;
       let discountName: string | undefined;
       if (line.discountId) {
         const d = discountsById.get(line.discountId)!;
         const raw =
           d.type === 'percent' ? (gross * Math.min(d.value, 100)) / 100 : d.value;
-        discountAmount = Math.round(Math.min(Math.max(raw, 0), gross) * 100) / 100;
+        discountAmount = cop(Math.min(Math.max(raw, 0), gross));
         discountName = d.name;
       }
       return {
@@ -261,11 +337,8 @@ export class SalesService {
         discountName,
       };
     });
-    const subtotal = lineTotals.reduce((sum, l) => sum + l.lineTotal, 0);
-    const lineDiscountTotal = lineTotals.reduce(
-      (sum, l) => sum + l.discountAmount,
-      0,
-    );
+    const subtotal = sumBy(lineTotals, (l) => l.lineTotal);
+    const lineDiscountTotal = sumBy(lineTotals, (l) => l.discountAmount);
 
     // Descuento opcional a nivel de venta, sobre lo que queda tras descuentos de
     // línea. Se acota a [0, base].
@@ -277,8 +350,7 @@ export class SalesService {
         dto.discount.type === 'percent'
           ? (base * Math.min(dto.discount.value, 100)) / 100
           : dto.discount.value;
-      const saleLevel =
-        Math.round(Math.min(Math.max(raw, 0), base) * 100) / 100;
+      const saleLevel = cop(Math.min(Math.max(raw, 0), base));
       discountTotal = lineDiscountTotal + saleLevel;
       discount = {
         type: dto.discount.type,
@@ -287,33 +359,50 @@ export class SalesService {
       };
     }
 
-    // Discriminación de IVA (el precio YA incluye IVA). El descuento de venta se
-    // prorratea entre líneas según su neto antes de separar base + IVA.
+    // Qué impuesto lleva la venta: lo decide el régimen del negocio, no solo
+    // el producto. Un restaurante cobra INC (2495) y no IVA; un no responsable
+    // de IVA no discrimina impuesto (arts. 426, 437, 512-1 y 512-9 ET).
+    const taxProfile: SaleTaxProfile = {
+      tipoNegocio: await this.tipoNegocio(),
+      responsabilidadFiscal: sede.responsabilidadFiscal,
+    };
+    const incRate = causesInc(taxProfile)
+      ? (await this.tax.resolveRate(INC_RESTAURANTE_CODE)).rate
+      : 0;
+
+    // Discriminación del impuesto (el precio YA lo incluye). El descuento de
+    // venta se prorratea entre líneas según su neto antes de separar base +
+    // impuesto. Todo en pesos: la suma de las partes del descuento es exacto
+    // el descuento (el residuo cae al final) y en cada línea el impuesto es
+    // `neto − base`, así Σ base + Σ impuesto = total sin un peso de más.
     const saleLevelDiscount = discountTotal - lineDiscountTotal;
-    const netSum = subtotal - lineDiscountTotal;
-    const linesWithTax = lineTotals.map((l) => {
-      const net = l.lineTotal - l.discountAmount;
-      const saleShare = netSum > 0 ? (saleLevelDiscount * net) / netSum : 0;
-      const finalNet = net - saleShare;
-      const rate = l.product.ivaType === 'gravado' ? l.product.ivaRate : 0;
-      const base =
-        rate > 0
-          ? Math.round((finalNet / (1 + rate / 100)) * 100) / 100
-          : Math.round(finalNet * 100) / 100;
-      const iva = Math.round((finalNet - base) * 100) / 100;
-      return { ...l, ivaRate: rate, taxBase: base, taxAmount: iva };
+    const saleShares = prorateCop(
+      saleLevelDiscount,
+      lineTotals.map((l) => l.lineTotal - l.discountAmount),
+    );
+    const linesWithTax = lineTotals.map((l, i) => {
+      const finalNet = l.lineTotal - l.discountAmount - (saleShares[i] ?? 0);
+      const { kind: taxKind, rate } = saleTaxFor(taxProfile, l.product, incRate);
+      const { base, tax: iva } = splitTaxIncluded(finalNet, rate);
+      return {
+        ...l,
+        // `ivaRate` sigue siendo solo IVA: una línea con INC lo deja en 0.
+        ivaRate: taxKind === 'iva' ? rate : 0,
+        taxKind,
+        taxRate: rate,
+        taxBase: base,
+        taxAmount: iva,
+      };
     });
-    const taxableBase =
-      Math.round(linesWithTax.reduce((s, l) => s + l.taxBase, 0) * 100) / 100;
-    const taxTotal =
-      Math.round(linesWithTax.reduce((s, l) => s + l.taxAmount, 0) * 100) / 100;
+    const taxableBase = sumBy(linesWithTax, (l) => l.taxBase);
+    const taxTotal = sumBy(linesWithTax, (l) => l.taxAmount);
 
     // El IVA está incluido en los precios: el total NO lo vuelve a sumar.
     const total = subtotal - discountTotal;
 
     // Propina voluntaria (restaurante): se cobra ENCIMA del total. No es venta
     // ni base gravable; el monto a pagar por el cliente es total + tip.
-    const tip = Math.max(0, Math.round((dto.tip ?? 0) * 100) / 100);
+    const tip = clampNonNegative(dto.tip ?? 0);
 
     /*
      * Cobro del domicilio. Como la propina, se suma ENCIMA del total y no entra
@@ -346,15 +435,15 @@ export class SalesService {
         'Para registrar una entrega, el pedido tiene que ser de tipo domicilio',
       );
     }
-    const deliveryFee = delivery?.fee ?? 0;
+    const deliveryFee = cop(delivery?.fee ?? 0);
 
-    const grandTotal =
-      Math.round((total + tip + deliveryFee) * 100) / 100;
+    const grandTotal = total + tip + deliveryFee;
 
     let received: number | undefined;
     let change: number | undefined;
     if (dto.payment.method === 'cash' && dto.payment.received !== undefined) {
-      received = dto.payment.received;
+      // En pesos: el cambio que se entrega no puede llevar centavos (1.11).
+      received = cop(dto.payment.received);
       if (received < grandTotal) {
         throw new BadRequestException(
           'El monto recibido es menor que el total a pagar (incluye la propina)',
@@ -619,6 +708,8 @@ export class SalesService {
       discountAmount: number;
       discountName?: string;
       ivaRate: number;
+      taxKind: SaleTaxKind;
+      taxRate: number;
       taxBase: number;
       taxAmount: number;
     }[];
@@ -688,6 +779,8 @@ export class SalesService {
         discountAmount: l.discountAmount,
         discountName: l.discountName,
         ivaRate: l.ivaRate,
+        taxKind: l.taxKind,
+        taxRate: l.taxRate,
         taxBase: l.taxBase,
         taxAmount: l.taxAmount,
       })),
@@ -713,8 +806,11 @@ export class SalesService {
     holder.sale = sale;
 
     // Venta a crédito (fiado): no entra a caja. Se rutea según el deudor.
+    // Se debe lo mismo que el asiento debita a Clientes: total + domicilio. La
+    // propina no se fía (es del personal y no pasa por el libro).
     if (isCredit) {
-      const today = new Date().toLocaleDateString('en-CA');
+      const fiado = cop(total + deliveryFee);
+      const today = fechaColombia();
       if (dto.payment.debtorType === 'employee') {
         // Empleado → deducción de nómina (pendiente de aprobación). Aparecerá
         // en la colilla al aprobarse y correr la nómina.
@@ -722,7 +818,7 @@ export class SalesService {
           {
             employeeId: dto.payment.employeeId!,
             concept: `Consumo POS ${saleNumber}`,
-            amount: Math.round(total),
+            amount: fiado,
             date: today,
             source: 'sale',
             sourceId: sale._id.toString(),
@@ -750,7 +846,7 @@ export class SalesService {
           docNumber: saleNumber,
           issueDate: today,
           dueDate: dto.payment.dueDate || this.addDays(today, diasGracia),
-          amount: Math.round(total),
+          amount: fiado,
           paidAmount: 0,
           status: 'open',
           payments: [],
@@ -760,19 +856,31 @@ export class SalesService {
       }
     }
 
-    // Asiento contable de la venta (ingreso, IVA y costo). Best-effort.
+    // Asiento contable de la venta (ingreso, IVA, INC y costo). Best-effort.
+    // El INC va a su propia cuenta (2495) y el IVA a la suya (2408). Los dos
+    // se suman con el MISMO criterio (sumBy por tipo): sacar el IVA como
+    // el total redondeado menos el INC redondeaba dos veces y podía mandar un
+    // peso de INC a la cuenta del IVA.
     const cogs = components.reduce((sum, c) => sum + (c.cost ?? 0), 0);
+    const taxOf = (kind: SaleTaxKind) =>
+      sumBy(
+        linesWithTax.filter((l) => l.taxKind === kind),
+        (l) => l.taxAmount,
+      );
+    const incTax = taxOf('inc');
+    const ivaTax = taxOf('iva');
     await this.ledgerPosting.postSale({
       saleId: sale._id.toString(),
       number: saleNumber,
-      date: new Date().toLocaleDateString('en-CA'),
+      date: fechaColombia(),
       sedeId: dto.sedeId,
-      total: Math.round(total),
-      tax: Math.round(taxTotal),
-      cogs: Math.round(cogs),
+      total,
+      tax: ivaTax,
+      consumptionTax: incTax,
+      cogs: cop(cogs),
       // El domicilio es ingreso del negocio (a diferencia de la propina, que
       // es del personal y por eso no aparece aquí), pero sin IVA que separar.
-      deliveryFee: Math.round(deliveryFee),
+      deliveryFee,
       paymentMethod: dto.payment.method,
       onCredit: isCredit,
       userEmail: user.email,
@@ -789,11 +897,8 @@ export class SalesService {
         method: dto.payment.method,
         direction: 'in',
         // Lo que de verdad entró a la cuenta: el cliente pagó todo junto.
-        amount:
-          Math.round(total) +
-          Math.round(sale.tip ?? 0) +
-          Math.round(deliveryFee),
-        date: new Date().toLocaleDateString('en-CA'),
+        amount: total + cop(sale.tip ?? 0) + deliveryFee,
+        date: fechaColombia(),
         concept: `Venta #${saleNumber}`,
       });
     }
@@ -838,6 +943,18 @@ export class SalesService {
     )._id.toString();
     assertSedeAccess(user, sedeId);
 
+    // Con devoluciones previas, anular revertiría otra vez el stock y el
+    // ingreso de lo ya devuelto. Se rechaza en vez de anular solo el saldo: la
+    // devolución ya es el camino para sacar lo que queda.
+    const devoluciones = await this.saleReturnModel
+      .countDocuments({ saleId: existing._id })
+      .exec();
+    if (devoluciones > 0) {
+      throw new BadRequestException(
+        'La venta tiene devoluciones registradas y no se puede anular: registra una devolución por lo que queda.',
+      );
+    }
+
     // Guarda de concurrencia (Mongo standalone, sin transacciones): tomamos la
     // venta con un update condicional `status != 'void'`. Solo un llamador gana
     // el flip; si `findOneAndUpdate` devuelve null la venta ya estaba anulada,
@@ -854,6 +971,39 @@ export class SalesService {
       throw new BadRequestException('La venta ya está anulada');
     }
 
+    // Deshace el flip: la venta vuelve a 'completed' (solo si sigue 'void').
+    const deshacerFlip = () =>
+      this.saleModel
+        .updateOne(
+          { _id: sale._id, status: 'void' },
+          { $set: { status: 'completed' } },
+        )
+        .exec();
+
+    // Una devolución pudo registrarse entre la revisión de arriba y el flip.
+    // Se vuelve a contar con la venta ya tomada: la devolución, a su vez,
+    // revisa el estado de la venta después de crear su registro, así que en
+    // cualquier orden al menos una de las dos se echa para atrás.
+    const tardias = await this.saleReturnModel
+      .countDocuments({ saleId: sale._id })
+      .exec();
+    if (tardias > 0) {
+      await deshacerFlip();
+      throw new BadRequestException(
+        'La venta tiene devoluciones registradas y no se puede anular: registra una devolución por lo que queda.',
+      );
+    }
+
+    // El fiado se cancela ANTES de revertir nada. Si no se puede (abonos o
+    // nómina ya liquidada), la venta vuelve a 'completed' y no se movió nada.
+    let fiado: FiadoCancelado;
+    try {
+      fiado = await this.cancelCredit(sale);
+    } catch (err) {
+      await deshacerFlip();
+      throw err;
+    }
+
     // A partir de aquí somos los dueños del flip: revertimos stock una sola vez.
     const source = sale.components.length > 0 ? sale.components : sale.lines;
     const units = source.map((x) => ({
@@ -866,7 +1016,20 @@ export class SalesService {
       })),
     }));
     if (units.length > 0) {
-      await this.stock.reverseSale(sedeId, units, user);
+      try {
+        await this.stock.reverseSale(sedeId, units, user);
+      } catch (err) {
+        // Sin la reversa de stock la anulación no ocurrió: se devuelve el
+        // fiado y la venta a como estaban, para que el reintento pueda volver
+        // a anular (si no, diría «ya está anulada» con el asiento sin
+        // reversar). El libro y la tesorería todavía no se tocaron.
+        this.logger.error(
+          `Anulación de la venta ${sale._id.toString()} abortada: falló la reversa de stock (${(err as Error).message}). Se deshace el fiado (${fiado}) y el flip.`,
+        );
+        await this.restoreCredit(sale, fiado);
+        await deshacerFlip();
+        throw err;
+      }
     }
 
     // Reversa contable de la venta (contra-asiento).
@@ -874,6 +1037,68 @@ export class SalesService {
     // Reversa del auto-posteo a tesorería (si la venta fue tarjeta/transferencia).
     await this.treasury.reverse('sale', sale._id.toString());
     return this.getOrFail(sale.id);
+  }
+
+  /**
+   * Cancela lo que dejó un fiado: la CxC del cliente o el consumo en la nómina
+   * del empleado (una venta tiene uno o el otro).
+   *
+   * Criterio conservador: solo se anula un fiado que nadie ha tocado. La CxC
+   * se anula con un update condicionado a `paidAmount: 0`, así un abono que
+   * llegue a la vez no se pierde; si ya tiene abonos se rechaza, porque esos
+   * cobros tienen su asiento y su entrada a caja o banco, y anular solo el
+   * saldo dejaría a medias una venta cuyo stock e ingreso sí se revierten
+   * completos. El consumo ya descontado en nómina se rechaza por lo mismo.
+   */
+  private async cancelCredit(sale: SaleDocument): Promise<FiadoCancelado> {
+    if (sale.payment?.method !== 'credit') return 'none';
+
+    // La venta no guarda el tipo de deudor: el fiado a cliente deja una CxC
+    // enlazada a la venta y el de empleado no. Por eso se mira la CxC primero
+    // y la nómina solo se toca cuando no hay CxC.
+    const anulada = await this.receivableModel
+      .findOneAndUpdate(
+        { saleId: sale._id, status: 'open', paidAmount: 0 },
+        { $set: { status: 'void' } },
+        { new: true },
+      )
+      .exec();
+    if (anulada) return 'receivable';
+
+    const cxc = await this.receivableModel.findOne({ saleId: sale._id }).exec();
+    if (cxc) {
+      if (cxc.status !== 'void') {
+        throw new BadRequestException(
+          `El fiado ya tiene abonos por $${cxc.paidAmount} de $${cxc.amount} y la venta no se puede anular. Registra una devolución o termina de cobrar la cuenta.`,
+        );
+      }
+      // Ya estaba anulada desde antes: no es nuestra, no se restaura.
+      return 'none';
+    }
+
+    // Fiado de empleado: el consumo en nómina.
+    await this.payroll.cancelSaleDeduction(sale._id.toString());
+    return 'deduction';
+  }
+
+  /**
+   * Devuelve el fiado que cancelCredit anuló cuando la anulación se aborta más
+   * adelante. La CxC solo vuelve a 'open' si sigue anulada y sin abonos.
+   */
+  private async restoreCredit(
+    sale: SaleDocument,
+    fiado: FiadoCancelado,
+  ): Promise<void> {
+    if (fiado === 'receivable') {
+      await this.receivableModel
+        .updateOne(
+          { saleId: sale._id, status: 'void', paidAmount: 0 },
+          { $set: { status: 'open' } },
+        )
+        .exec();
+    } else if (fiado === 'deduction') {
+      await this.payroll.restoreSaleDeduction(sale._id.toString());
+    }
   }
 
   /** Ventas de una sede, paginadas (más recientes primero). */

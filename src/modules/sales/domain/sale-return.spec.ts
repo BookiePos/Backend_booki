@@ -147,6 +147,117 @@ describe('buildReturnPlan · qué se puede devolver', () => {
   });
 });
 
+describe('devoluciones parciales sucesivas · ítem 1.11', () => {
+  /**
+   * Tres devoluciones de 1 sobre una línea de 3 que costó $10.000 (IVA 19 %).
+   * Cada una a ojo sería 3.333,33: redondeando por separado se devolvían
+   * 3.333 × 3 = 9.999 y el peso restante quedaba colgando para siempre.
+   */
+  const linea = { productId: 'x', qty: 3, taxBase: 8_403, taxAmount: 1_597 };
+
+  function devolverEnTres() {
+    const devuelto = new Map<string, number>();
+    const reembolsado = new Map<string, { refund: number; refundTax: number }>();
+    const planes = [1, 1, 1].map((qty) => {
+      const plan = buildReturnPlan(
+        [linea],
+        [{ productId: 'x', qty }],
+        devuelto,
+        reembolsado,
+      );
+      const l = plan.lines[0]!;
+      devuelto.set('x', (devuelto.get('x') ?? 0) + l.qty);
+      const prev = reembolsado.get('x') ?? { refund: 0, refundTax: 0 };
+      reembolsado.set('x', {
+        refund: prev.refund + l.refund,
+        refundTax: prev.refundTax + l.refundTax,
+      });
+      return plan;
+    });
+    return planes;
+  }
+
+  it('la suma de las devoluciones es exacto lo que se pagó por la línea', () => {
+    const planes = devolverEnTres();
+    expect(planes.reduce((s, p) => s + p.refundTotal, 0)).toBe(10_000);
+    expect(planes.reduce((s, p) => s + p.refundTax, 0)).toBe(1_597);
+    for (const p of planes) expect(Number.isInteger(p.refundTotal)).toBe(true);
+  });
+
+  it('sin el historial en pesos también cierra exacto (acumulado por cantidad)', () => {
+    const devuelto = new Map<string, number>();
+    let total = 0;
+    for (let i = 0; i < 3; i++) {
+      const plan = buildReturnPlan([linea], [{ productId: 'x', qty: 1 }], devuelto);
+      total += plan.refundTotal;
+      devuelto.set('x', (devuelto.get('x') ?? 0) + 1);
+    }
+    expect(total).toBe(10_000);
+  });
+
+  it('la última devolución salda lo que falte aunque las previas se calcularan distinto', () => {
+    // Una venta vieja: antes se devolvieron 2 por $6.666 en total.
+    const plan = buildReturnPlan(
+      [linea],
+      [{ productId: 'x', qty: 1 }],
+      new Map([['x', 2]]),
+      new Map([['x', { refund: 6_666, refundTax: 1_064 }]]),
+    );
+    expect(plan.refundTotal).toBe(3_334);
+    expect(plan.refundTax).toBe(533);
+  });
+});
+
+describe('mismo producto en varias líneas de la venta', () => {
+  /**
+   * Tres renglones de gaseosa con descuentos distintos: 2 por $10.000, 1 por
+   * $4.000 y 3 por $9.000. Antes la devolución se validaba y se pagaba solo
+   * contra el ÚLTIMO renglón (3 unidades a $3.000): devolver 4 se rechazaba y
+   * devolver 2 pagaba $6.000 en vez de la parte de lo pagado por las seis.
+   */
+  const vendidas = [
+    { productId: 'gaseosa', qty: 2, taxBase: 8_403, taxAmount: 1_597 },
+    { productId: 'gaseosa', qty: 1, taxBase: 3_361, taxAmount: 639 },
+    { productId: 'gaseosa', qty: 3, taxBase: 7_563, taxAmount: 1_437 },
+  ];
+  const nada = new Map<string, number>();
+
+  it('valida contra lo vendido en TODAS las líneas del producto', () => {
+    const plan = buildReturnPlan(vendidas, [{ productId: 'gaseosa', qty: 4 }], nada);
+    expect(plan.lines[0]!.qty).toBe(4);
+    expect(() =>
+      buildReturnPlan(vendidas, [{ productId: 'gaseosa', qty: 7 }], nada),
+    ).toThrow(/solo se vendieron 6/i);
+  });
+
+  it('devolución parcial: la parte proporcional de lo pagado por las seis', () => {
+    const plan = buildReturnPlan(vendidas, [{ productId: 'gaseosa', qty: 2 }], nada);
+    // 23.000 × 2/6 = 7.666,67 → 7.667; IVA 3.673 × 2/6 = 1.224,33 → 1.224.
+    expect(plan.refundTotal).toBe(7_667);
+    expect(plan.refundTax).toBe(1_224);
+  });
+
+  it('devolución total de una vez: exacto lo pagado', () => {
+    const plan = buildReturnPlan(vendidas, [{ productId: 'gaseosa', qty: 6 }], nada);
+    expect(plan.refundTotal).toBe(23_000);
+    expect(plan.refundTax).toBe(3_673);
+  });
+
+  it('parcial y luego el resto: la segunda salda exacto el saldo', () => {
+    const primera = buildReturnPlan(vendidas, [{ productId: 'gaseosa', qty: 2 }], nada);
+    const segunda = buildReturnPlan(
+      vendidas,
+      [{ productId: 'gaseosa', qty: 4 }],
+      new Map([['gaseosa', 2]]),
+      new Map([
+        ['gaseosa', { refund: primera.refundTotal, refundTax: primera.refundTax }],
+      ]),
+    );
+    expect(primera.refundTotal + segunda.refundTotal).toBe(23_000);
+    expect(primera.refundTax + segunda.refundTax).toBe(3_673);
+  });
+});
+
 describe('prorateLots · a qué lote vuelve la mercancía', () => {
   it('reparte lo devuelto entre los lotes de los que salió', () => {
     // Si volviera todo a un solo lote, el costo de los otros quedaría inflado

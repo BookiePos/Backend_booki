@@ -84,6 +84,8 @@ describe('SaleReturnsService.create · lo que se mueve', () => {
   let stock: any;
   let caja: any;
   let ledger: any;
+  let modelo: any;
+  let ventas: any;
 
   /**
    * @param porUnidad cuánto consume del inventario cada unidad vendible, según
@@ -103,7 +105,9 @@ describe('SaleReturnsService.create · lo que se mueve', () => {
         creado = { ...doc, _id: new Types.ObjectId(), save: vi.fn() };
         return Promise.resolve(creado);
       }),
+      deleteOne: vi.fn(() => ({ exec: () => Promise.resolve({ deletedCount: 1 }) })),
     };
+    modelo = model;
     stock = {
       reverseSale: vi.fn().mockResolvedValue(undefined),
       adjust: vi.fn().mockResolvedValue(undefined),
@@ -113,7 +117,7 @@ describe('SaleReturnsService.create · lo que se mueve', () => {
 
     service = new SaleReturnsService(
       model as never,
-      { getOrFail: vi.fn().mockResolvedValue(sale) } as never,
+      (ventas = { getOrFail: vi.fn().mockResolvedValue(sale) }) as never,
       stock as never,
       {
         loadSellableOrFail: vi
@@ -253,6 +257,64 @@ describe('SaleReturnsService.create · lo que se mueve', () => {
     ).resolves.toBeDefined();
   });
 
+  it('la devolución de una línea con INC reversa INC, no IVA (ítem 1.3)', async () => {
+    const base = venta();
+    build(
+      venta({
+        lines: [{ ...base.lines[0], taxBase: 23_148, taxAmount: 1_852, taxKind: 'inc' }],
+      }),
+    );
+    await service.create(saleId.toString(), devolucion(), user);
+
+    const asiento = ledger.postSaleReturn.mock.calls[0][0];
+    // 2 de 10: 1.852 × 0,2 = 370 de INC.
+    expect(asiento.consumptionTax).toBe(370);
+    expect(asiento.tax).toBe(0);
+  });
+
+  it('IVA e INC devueltos se suman por tipo, sin redondear dos veces (sumBy por taxKind)', async () => {
+    const SANDWICH = new Types.ObjectId();
+    const base = venta();
+    build(
+      venta({
+        lines: [
+          { ...base.lines[0], taxKind: 'iva' },
+          { ...base.lines[0], productId: SANDWICH, taxKind: 'inc' },
+        ],
+      }),
+    );
+    // Un registro con fracciones de peso por renglón (los guardados antes de
+    // redondear la devolución): restar el INC ya redondeado del total sin
+    // redondear dejaba un IVA de 100,2.
+    modelo.create.mockImplementation((doc: any) => {
+      creado = {
+        ...doc,
+        lines: [
+          { ...doc.lines[0], productId: GASEOSA, refundTax: 100.6 },
+          { ...doc.lines[0], productId: SANDWICH, refundTax: 50.6 },
+        ],
+        refundTax: 151.2,
+        _id: new Types.ObjectId(),
+        save: vi.fn(),
+      };
+      return Promise.resolve(creado);
+    });
+    await service.create(saleId.toString(), devolucion(), user);
+
+    const asiento = ledger.postSaleReturn.mock.calls[0][0];
+    expect(asiento.tax).toBe(101);
+    expect(asiento.consumptionTax).toBe(51);
+  });
+
+  it('una línea vieja sin taxKind sigue reversando IVA', async () => {
+    build();
+    await service.create(saleId.toString(), devolucion(), user);
+
+    const asiento = ledger.postSaleReturn.mock.calls[0][0];
+    expect(asiento.tax).toBe(798); // 3.992 × 0,2
+    expect(asiento.consumptionTax).toBe(0);
+  });
+
   it('el asiento deshace el costo solo si la mercancía volvió al inventario', async () => {
     build();
     await service.create(saleId.toString(), devolucion(), user);
@@ -298,5 +360,37 @@ describe('SaleReturnsService.create · lo que se mueve', () => {
 
     const units = stock.reverseSale.mock.calls[0][1];
     expect(units[0].qty).toBe(10);
+  });
+
+  it('si la venta se anuló mientras se registraba, borra el registro y no mueve nada', async () => {
+    // Revisión inicial: completada. Al volver a mirar tras crear el registro,
+    // una anulación simultánea ya la tomó (y revertirá todo el stock).
+    build();
+    ventas.getOrFail
+      .mockResolvedValueOnce(venta())
+      .mockResolvedValueOnce(venta({ status: 'void' }));
+
+    await expect(
+      service.create(saleId.toString(), devolucion(), user),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(modelo.create).toHaveBeenCalledTimes(1);
+    expect(modelo.deleteOne).toHaveBeenCalledWith({ _id: creado._id });
+    expect(stock.reverseSale).not.toHaveBeenCalled();
+    expect(caja.movement).not.toHaveBeenCalled();
+    expect(ledger.postSaleReturn).not.toHaveBeenCalled();
+  });
+
+  it('el asiento de la devolución lleva la fecha de Colombia, no la UTC', async () => {
+    // 15-oct 02:00 UTC es todavía 14-oct en Bogotá.
+    build();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-15T02:00:00Z'));
+    try {
+      await service.create(saleId.toString(), devolucion(), user);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(ledger.postSaleReturn.mock.calls[0][0].date).toBe('2026-10-14');
   });
 });

@@ -39,6 +39,8 @@ import { CajaModule } from '../caja/caja.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { PayrollModule } from '../payroll/payroll.module';
 import { CoreParamsModule } from '../core-params/core-params.module';
+import { CoreTaxModule } from '../core-tax/core-tax.module';
+import { ControlModule } from '../control/control.module';
 import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
 
 @Module({
@@ -56,6 +58,10 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
     DeliveryModule,
     PayrollModule,
     CoreParamsModule,
+    // La tarifa vigente del INC sale del catálogo de impuestos.
+    CoreTaxModule,
+    // El giro del negocio cuando el token no trae el claim biztype.
+    ControlModule,
     // Modelos referenciados por `populate`. Se registran aquí (mismo token que
     // en su módulo de origen → misma instancia cacheada por empresa) para poder
     // inyectarlos y pasarlos EXPLÍCITOS a populate: los modelos se compilan de
