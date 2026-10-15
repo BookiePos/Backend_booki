@@ -8,6 +8,7 @@ import {
   type ColeccionVentanas,
   type DocVentana,
 } from '../../../shared/throttle/contador-ventana';
+import { sinLimitesParaE2e } from '../../../shared/throttle/sin-limites-e2e';
 
 /** Fallos seguidos que bloquean la cuenta. */
 export const FALLOS_PARA_BLOQUEO = 5;
@@ -47,6 +48,7 @@ export class IntentosLoginService {
 
   /** 429 si la cuenta está bloqueada. */
   async assertNoBloqueada(identificador: string): Promise<void> {
+    if (sinLimitesParaE2e()) return;
     let doc: DocVentana | null = null;
     try {
       doc = await this.coleccion().findOne({
@@ -67,6 +69,7 @@ export class IntentosLoginService {
   }
 
   async registrarFallo(identificador: string): Promise<void> {
+    if (sinLimitesParaE2e()) return;
     try {
       const col = this.coleccion();
       await asegurarIndiceTtl(col, this.indices);

@@ -8,6 +8,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import type { Connection } from 'mongoose';
 import { TenancyModule } from './shared/tenancy/tenancy.module';
 import { MongoThrottlerStorage } from './shared/throttle/mongo-throttler.storage';
+import { sinLimitesParaE2e } from './shared/throttle/sin-limites-e2e';
 import type { ColeccionVentanas } from './shared/throttle/contador-ventana';
 import { CONTROL_CONNECTION } from './modules/control/domain/control.constants';
 import { ControlModule } from './modules/control/control.module';
@@ -76,6 +77,10 @@ function adjuntarPoolAVercel(connection: Connection, logger: Logger): void {
       inject: [getConnectionToken(CONTROL_CONNECTION)],
       useFactory: (control: Connection) => ({
         throttlers: [{ name: 'default', ttl: 60_000, limit: 100 }],
+        errorMessage: 'Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.',
+        // Las pruebas e2e inician sesión muchas veces seguidas desde la misma
+        // IP. Nunca aplica en producción, aunque alguien deje la variable.
+        skipIf: () => sinLimitesParaE2e(),
         storage: new MongoThrottlerStorage(
           () => control.collection('throttle_ventanas') as unknown as ColeccionVentanas,
         ),
