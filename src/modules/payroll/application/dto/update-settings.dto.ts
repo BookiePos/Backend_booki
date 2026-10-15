@@ -80,4 +80,7 @@ export class UpdatePayrollSettingsDto {
   jornadaTramos?: JornadaTramoDto[];
 
   @IsOptional() @IsBoolean() empresaExoneradaAportes?: boolean;
+
+  /** Semana de 5 o 6 días laborables (descanso dominical, ítem 1.19). */
+  @IsOptional() @IsInt() @Min(5) @Max(6) diasLaborablesSemana?: number;
 }

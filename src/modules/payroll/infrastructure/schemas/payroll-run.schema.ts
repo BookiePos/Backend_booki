@@ -57,6 +57,10 @@ export class PayrollSlip {
 
   @Prop({ required: true })
   costoEmpleador!: number;
+
+  /** Avisos para revisar (p. ej. tope de horas extra, ítem 1.19). */
+  @Prop({ type: [String], default: [] })
+  alertas?: string[];
 }
 const PayrollSlipSchema = SchemaFactory.createForClass(PayrollSlip);
 

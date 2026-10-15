@@ -63,7 +63,17 @@ export interface NovedadesTurnos {
   diasTrabajados: number;
   totalHoras: number;
   horas: Required<NovedadHoras>;
+  /**
+   * Excesos del tope de horas extra (Ley 2466 de 2025, art. 13: 2 h al día y
+   * 12 h a la semana). Es un límite al trabajo, no al pago: las horas se
+   * pagan igual y esto solo alimenta el aviso de la colilla (ítem 1.19).
+   */
+  topeExtras: { diasSobre2h: number; semanasSobre12h: number };
 }
+
+/** Tope diario y semanal de horas extra (Ley 2466 de 2025, art. 13), en minutos. */
+const TOPE_EXTRA_DIA_MIN = 2 * 60;
+const TOPE_EXTRA_SEMANA_MIN = 12 * 60;
 
 function toMin(hhmm?: string): number | null {
   if (!hhmm) return null;
@@ -108,6 +118,8 @@ export function classifyTurnos(
   // de cada día: el tope de 8 h es del día, no de cada registro.
   const ordinarioSemana = new Map<string, number>();
   const ordinarioDia = new Map<string, number>();
+  const extraDia = new Map<string, number>();
+  const extraSemana = new Map<string, number>();
 
   // En orden cronológico: el tope semanal lo agotan los primeros días y el
   // diario los primeros turnos del día; las extras quedan al final.
@@ -138,6 +150,11 @@ export function classifyTurnos(
 
     dias.add(r.workDate);
     totalMin += total;
+    const extraMin = total - ordinary;
+    if (extraMin > 0) {
+      extraDia.set(r.workDate, (extraDia.get(r.workDate) ?? 0) + extraMin);
+      extraSemana.set(semana, (extraSemana.get(semana) ?? 0) + extraMin);
+    }
 
     // El turno se parte en tramos homogéneos: cambian de clase en el inicio y
     // el fin de la franja nocturna, en la medianoche (el recargo dominical solo
@@ -196,6 +213,11 @@ export function classifyTurnos(
       extraNocturna: h(acc.extraNocturna),
       extraDiurnaDominical: h(acc.extraDiurnaDominical),
       extraNocturnaDominical: h(acc.extraNocturnaDominical),
+    },
+    topeExtras: {
+      diasSobre2h: [...extraDia.values()].filter((m) => m > TOPE_EXTRA_DIA_MIN).length,
+      semanasSobre12h: [...extraSemana.values()].filter((m) => m > TOPE_EXTRA_SEMANA_MIN)
+        .length,
     },
   };
 }

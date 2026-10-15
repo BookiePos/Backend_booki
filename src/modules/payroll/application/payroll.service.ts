@@ -45,6 +45,7 @@ import {
 } from '../domain/turnos-classify';
 import {
   DEFAULT_PAYROLL_SETTINGS,
+  DIAS_MES,
   PayrollSettingsData,
 } from '../domain/payroll.constants';
 import {
@@ -71,6 +72,7 @@ import { ParamsService } from '../../core-params/application/params.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { cop, sumBy } from '../../finance/domain/money.util';
 import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
+import { diasDescansoRemunerado } from '../domain/descanso-remunerado';
 
 export interface PreviewResult {
   input: {
@@ -555,7 +557,8 @@ export class PayrollService {
     const slips: PayrollSlip[] = emps.map((e) => {
       const empDeductions = dedByEmp.get(e.id) ?? [];
       const otrasDeducciones = empDeductions.reduce((sum, d) => sum + d.amount, 0);
-      const turnos = classifyTurnos(recsByEmp.get(e.id) ?? [], {
+      const registros = recsByEmp.get(e.id) ?? [];
+      const turnos = classifyTurnos(registros, {
         desde: from,
         jornadaSemanal: (f) => jornadaSemanalVigente(f, s),
       });
@@ -571,7 +574,18 @@ export class PayrollService {
       const input: PayrollInput = {
         salarioBase: e.salary ?? 0,
         salaryType: (e.salaryType as SalaryType) ?? 'ordinario',
-        diasTrabajados: turnos.diasTrabajados,
+        // Días con turno + descansos remunerados que ganó (domingos de semanas
+        // completas y festivos), con el tope de 30 (ítem 1.19).
+        diasTrabajados: Math.min(
+          DIAS_MES,
+          turnos.diasTrabajados +
+            diasDescansoRemunerado(
+              new Set(registros.map((r) => r.workDate)),
+              from,
+              to,
+              s.diasLaborablesSemana ?? 6,
+            ),
+        ),
         arlRiskLevel: e.arlRiskLevel as ArlLevel | undefined,
         novedades: Object.keys(novedades).length > 0 ? novedades : undefined,
         fechaCorte: fechaCorteDePeriodo(period),
@@ -596,6 +610,7 @@ export class PayrollService {
         totalDeducciones: breakdown.deducciones.total,
         netoPagar: breakdown.netoPagar,
         costoEmpleador: breakdown.costoEmpleador,
+        alertas: alertasDeTope(turnos.topeExtras),
       };
     });
 
@@ -967,4 +982,24 @@ export class PayrollService {
       .exec();
     await run.deleteOne();
   }
+}
+
+/**
+ * Avisos del tope de horas extra (Ley 2466 de 2025, art. 13: máximo 2 h al día
+ * y 12 h a la semana). Las horas se pagan igual; el aviso es para corregir la
+ * programación de turnos (ítem 1.19).
+ */
+function alertasDeTope(t: { diasSobre2h: number; semanasSobre12h: number }): string[] {
+  const alertas: string[] = [];
+  if (t.diasSobre2h > 0) {
+    alertas.push(
+      `Más de 2 horas extra en ${t.diasSobre2h} ${t.diasSobre2h === 1 ? 'día' : 'días'} (tope legal, Ley 2466 de 2025, art. 13).`,
+    );
+  }
+  if (t.semanasSobre12h > 0) {
+    alertas.push(
+      `Más de 12 horas extra en ${t.semanasSobre12h} ${t.semanasSobre12h === 1 ? 'semana' : 'semanas'} (tope legal, Ley 2466 de 2025, art. 13).`,
+    );
+  }
+  return alertas;
 }

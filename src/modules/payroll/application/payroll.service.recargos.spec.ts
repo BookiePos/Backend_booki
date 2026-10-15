@@ -240,3 +240,42 @@ describe('PayrollService.createRun · exoneración de aportes (ítem 1.15)', () 
     expect(created).toHaveLength(0);
   });
 });
+
+describe('PayrollService.createRun · descanso remunerado (ítem 1.19)', () => {
+  it('lunes a sábado todo septiembre: paga los 30 días, no 26', async () => {
+    // El lunes 31 de agosto abre la semana del domingo 6 de septiembre.
+    const turnos: { employeeId: string; workDate: string; checkIn: string; checkOut: string }[] = [
+      { employeeId: 'e1', workDate: '2026-08-31', checkIn: '08:00', checkOut: '15:00' },
+    ];
+    for (let d = 1; d <= 30; d++) {
+      const fecha = `2026-09-${String(d).padStart(2, '0')}`;
+      if (new Date(`${fecha}T12:00:00Z`).getUTCDay() === 0) continue; // domingo
+      turnos.push({ employeeId: 'e1', workDate: fecha, checkIn: '08:00', checkOut: '15:00' });
+    }
+    const { service, created } = armar({ turnos });
+
+    await service.createRun({ period: '2026-09' } as any, USER);
+
+    const slip = (created[0]!.slips as any[])[0];
+    // 26 días de septiembre con turno + 4 domingos ganados.
+    expect(turnos).toHaveLength(27);
+    expect(slip.diasTrabajados).toBe(30);
+    expect(slip.alertas).toEqual([]);
+  });
+
+  it('avisa en la colilla cuando se pasa del tope de horas extra (Ley 2466, art. 13)', async () => {
+    const turnos = ['07', '08', '09'].map((d) => ({
+      employeeId: 'e1',
+      workDate: `2026-09-${d}`,
+      checkIn: '07:00',
+      checkOut: '18:00',
+    }));
+    const { service, created } = armar({ turnos });
+
+    await service.createRun({ period: '2026-09' } as any, USER);
+
+    const slip = (created[0]!.slips as any[])[0];
+    expect(slip.alertas).toHaveLength(1);
+    expect(slip.alertas[0]).toContain('3 días');
+  });
+});

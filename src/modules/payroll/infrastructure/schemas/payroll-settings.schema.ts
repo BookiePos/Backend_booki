@@ -125,6 +125,10 @@ export class PayrollSettings {
   /** Ver `PayrollSettingsData.exoneracionConfirmada` (ítem 1.15). */
   @Prop({ default: false })
   exoneracionConfirmada!: boolean;
+
+  /** Ver `PayrollSettingsData.diasLaborablesSemana` (ítem 1.19). */
+  @Prop({ default: 6, min: 5, max: 6 })
+  diasLaborablesSemana!: number;
 }
 
 export const PayrollSettingsSchema =

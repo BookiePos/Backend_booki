@@ -178,6 +178,11 @@ export interface PayrollSettingsData {
    * dos o más trabajadores.
    */
   exoneracionConfirmada?: boolean;
+  /**
+   * Días laborables de la semana del negocio (5 o 6). Decide cuándo se gana el
+   * domingo remunerado (CST art. 173, ítem 1.19). Por defecto, 6.
+   */
+  diasLaborablesSemana?: number;
 }
 
 export const DEFAULT_PAYROLL_SETTINGS: PayrollSettingsData = {

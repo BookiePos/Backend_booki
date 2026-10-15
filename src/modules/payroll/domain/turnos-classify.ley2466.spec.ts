@@ -123,3 +123,25 @@ describe('classifyTurnos · varios turnos el mismo día', () => {
   });
 });
 
+
+describe('tope de horas extra (Ley 2466 de 2025, art. 13)', () => {
+  it('cuenta los días con más de 2 h extra y las semanas con más de 12', () => {
+    // Lunes 7 a sábado 12 de septiembre de 2026, 11 h diarias: 3 h extra al día.
+    const recs = ['07', '08', '09', '10', '11', '12'].map((d) => ({
+      workDate: `2026-09-${d}`,
+      checkIn: '07:00',
+      checkOut: '18:00',
+    }));
+    const r = classifyTurnos(recs, { desde: '2026-09-01' });
+    expect(r.topeExtras.diasSobre2h).toBe(6);
+    expect(r.topeExtras.semanasSobre12h).toBe(1);
+  });
+
+  it('dentro del tope no avisa', () => {
+    const r = classifyTurnos(
+      [{ workDate: '2026-09-07', checkIn: '07:00', checkOut: '17:00' }],
+      { desde: '2026-09-01' },
+    );
+    expect(r.topeExtras).toEqual({ diasSobre2h: 0, semanasSobre12h: 0 });
+  });
+});
