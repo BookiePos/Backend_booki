@@ -32,6 +32,7 @@ import { ProductsService } from '../../inventory/application/products.service';
 import { Product } from '../../inventory/infrastructure/schemas/product.schema';
 import { ProductCategory } from '../../inventory/infrastructure/schemas/product-category.schema';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
+import { cop } from '../../finance/domain/money.util';
 
 const PRODUCT_POPULATE = 'name sku unit';
 
@@ -137,8 +138,8 @@ export class CatalogService {
       packaging: await this.resolvePackaging(dto.packaging),
       // Dinero en entero: el peso no tiene centavos y un costo con decimales
       // solo produce totales que no cuadran al sumarlos.
-      laborCost: Math.round(dto.laborCost ?? 0),
-      packagingCost: Math.round(dto.packagingCost ?? 0),
+      laborCost: cop(dto.laborCost ?? 0),
+      packagingCost: cop(dto.packagingCost ?? 0),
       ...sourceFields,
     });
     return this.getOrFail(created.id);
@@ -165,10 +166,10 @@ export class CatalogService {
     // Igual que el empaque, los costos escritos en dinero no dependen de la
     // fuente: una receta y una galleta comprada hecha pueden tener los dos.
     if (dto.laborCost !== undefined) {
-      product.laborCost = Math.round(dto.laborCost);
+      product.laborCost = cop(dto.laborCost);
     }
     if (dto.packagingCost !== undefined) {
-      product.packagingCost = Math.round(dto.packagingCost);
+      product.packagingCost = cop(dto.packagingCost);
     }
 
     if (dto.categoryId !== undefined) {

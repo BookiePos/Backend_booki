@@ -288,3 +288,58 @@ describe('ProductionService.complete', () => {
     expect(stock.consumeLines).not.toHaveBeenCalled();
   });
 });
+
+describe('ProductionService · empaque de la receta al planear la orden', () => {
+  const panId = new Types.ObjectId();
+  const harinaId = new Types.ObjectId();
+  const output = { _id: panId, name: 'Pan francés' };
+
+  function servicio(bom: Record<string, unknown> | null) {
+    const products = {
+      getOrFail: vi.fn(async (id: string) => ({
+        _id: new Types.ObjectId(id),
+        name: 'Harina',
+        sku: '10001',
+        unit: 'kg',
+        active: true,
+      })),
+    };
+    const service = new ProductionService(
+      {} as any,
+      {} as any,
+      {} as any,
+      products as any,
+      {} as any,
+      {} as any,
+    );
+    vi.spyOn(service, 'bomForProduct').mockResolvedValue(bom as any);
+    return service as any;
+  }
+
+  const receta = {
+    _id: new Types.ObjectId(),
+    outputQty: 100,
+    extraCost: 30_000,
+    packagingCost: 10_001,
+    lines: [{ productId: harinaId, qty: 20 }],
+  };
+
+  it('prorratea el empaque como la mano de obra y lo cierra en COP entero', async () => {
+    // 40 de 100 unidades: 10.001 * 0,4 = 4.000,4 -> 4.000
+    const r = await servicio(receta).resolveLines(output, 40, undefined, undefined, undefined);
+    expect(r.packagingCost).toBe(4_000);
+    expect(r.extraCost).toBe(12_000);
+    expect(Number.isInteger(r.packagingCost)).toBe(true);
+  });
+
+  it('una receta anterior sin el campo cuenta cero, no NaN', async () => {
+    const { packagingCost: _omitido, ...vieja } = receta;
+    const r = await servicio(vieja).resolveLines(output, 40, undefined, undefined, undefined);
+    expect(r.packagingCost).toBe(0);
+  });
+
+  it('lo escrito a mano en la orden manda sobre la receta', async () => {
+    const r = await servicio(receta).resolveLines(output, 40, undefined, undefined, 2_500.4);
+    expect(r.packagingCost).toBe(2_500);
+  });
+});
