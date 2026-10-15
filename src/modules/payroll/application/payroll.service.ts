@@ -69,7 +69,7 @@ import {
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { ParamsService } from '../../core-params/application/params.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
-import { sumBy } from '../../finance/domain/money.util';
+import { cop, sumBy } from '../../finance/domain/money.util';
 import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 
 export interface PreviewResult {
@@ -679,7 +679,7 @@ export class PayrollService {
       docNumber: emp.docNumber,
       sedeId: emp.sedeId,
       concept: dto.concept,
-      amount: Math.round(dto.amount),
+      amount: cop(dto.amount),
       date: dto.date ?? new Date().toLocaleDateString('en-CA'),
       status: 'pending',
       source: dto.source ?? 'manual',

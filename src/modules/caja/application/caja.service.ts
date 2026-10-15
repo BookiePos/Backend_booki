@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { sumBy } from '../../finance/domain/money.util';
+import { cop, sumBy } from '../../finance/domain/money.util';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { ParamsService } from '../../core-params/application/params.service';
 import {
@@ -318,7 +318,7 @@ export class CajaService {
       });
       total += totals.expectedCash;
     }
-    return { rows, total: Math.round(total) };
+    return { rows, total: cop(total) };
   }
 
   /**
@@ -462,7 +462,7 @@ export class CajaService {
     }
     const { totals } = await this.summarize(session);
     const difference =
-      Math.round((dto.countedAmount - totals.expectedCash) * 100) / 100;
+      cop(dto.countedAmount - totals.expectedCash);
 
     // Tolerancia de descuadre (parámetro, override por sede si existe). Si el
     // descuadre la supera, se exige una nota que justifique el faltante/sobrante

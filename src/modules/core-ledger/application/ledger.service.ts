@@ -23,7 +23,7 @@ import {
   ORIGENES_IVA_INC_VIEJO,
   cuentaVigente,
 } from '../domain/ledger.constants';
-import { sumBy } from '../../finance/domain/money.util';
+import { cop, sumBy } from '../../finance/domain/money.util';
 import {
   INDICE_ORIGEN_VIVO,
   INDICE_UNA_REVERSA,
@@ -261,8 +261,8 @@ export class LedgerService {
     let totalDebit = 0;
     let totalCredit = 0;
     const lines = input.lines.map((l) => {
-      const debit = Math.round(l.debit ?? 0);
-      const credit = Math.round(l.credit ?? 0);
+      const debit = cop(l.debit ?? 0);
+      const credit = cop(l.credit ?? 0);
       if (debit < 0 || credit < 0) {
         throw new BadRequestException('Los montos no pueden ser negativos');
       }

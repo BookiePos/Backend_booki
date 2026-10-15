@@ -16,6 +16,7 @@
  */
 import { jornadaSemanalVigente, NovedadHoras } from './payroll-calc';
 import { isSundayOrHoliday } from './colombia-holidays';
+import { redondearA } from '../../finance/domain/money.util';
 import {
   FRANJA_NOCTURNA_LEY_2466,
   NOCTURNO_DESDE_HORA_ANTERIOR,
@@ -183,7 +184,7 @@ export function classifyTurnos(
     }
   }
 
-  const h = (min: number) => Math.round((min / 60) * 100) / 100;
+  const h = (min: number) => redondearA(min / 60, 2);
   return {
     diasTrabajados: dias.size,
     totalHoras: h(totalMin),

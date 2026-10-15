@@ -5,6 +5,7 @@
  * Es una estimación; casos especiales requieren revisión del contador/abogado.
  */
 import { PayrollSettingsData } from './payroll.constants';
+import { cop, redondearA } from '../../finance/domain/money.util';
 import { SalaryType } from './payroll-calc';
 
 export type MotivoRetiro =
@@ -41,7 +42,7 @@ export interface LiquidacionBreakdown {
   total: number;
 }
 
-const round = (n: number) => Math.round(n);
+const round = cop;
 
 /** Días entre dos fechas por el método comercial 360 (meses de 30 días). */
 export function dias360(from: string, to: string): number {
@@ -110,7 +111,7 @@ export function computeLiquidacion(
         anios <= 1 ? primer : primer + adicional * (anios - 1);
       indemnizacion = round(salarioDiario * diasIndem);
       detalleIndemnizacion = `Indefinido (${menor10 ? '<' : '≥'} 10 SMMLV): ${
-        Math.round(diasIndem * 10) / 10
+        redondearA(diasIndem, 1)
       } días`;
     }
   }

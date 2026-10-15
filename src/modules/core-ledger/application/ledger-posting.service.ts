@@ -126,12 +126,12 @@ export class LedgerPostingService {
     onCredit?: boolean;
     userEmail?: string;
   }): Promise<void> {
-    const total = Math.round(input.total);
-    const tax = Math.round(input.tax);
+    const total = cop(input.total);
+    const tax = cop(input.tax);
     const inc = cop(input.consumptionTax ?? 0);
-    const delivery = Math.round(input.deliveryFee ?? 0);
+    const delivery = cop(input.deliveryFee ?? 0);
     const income = total - tax - inc + delivery;
-    const cogs = Math.round(input.cogs);
+    const cogs = cop(input.cogs);
     const tip = input.onCredit ? 0 : cop(input.tip ?? 0);
     const debitAccount = input.onCredit
       ? ACC.CLIENTES
@@ -203,12 +203,12 @@ export class LedgerPostingService {
     refundMethod: string;
     userEmail?: string;
   }): Promise<void> {
-    const total = Math.round(input.refundTotal);
+    const total = cop(input.refundTotal);
     if (total <= 0 && input.cogs <= 0) return;
-    const tax = Math.round(input.tax);
+    const tax = cop(input.tax);
     const inc = cop(input.consumptionTax ?? 0);
     const income = total - tax - inc;
-    const cogs = Math.round(input.cogs);
+    const cogs = cop(input.cogs);
 
     const contrapartida =
       input.refundMethod === 'credit_note' || input.refundMethod === 'none'
@@ -280,11 +280,11 @@ export class LedgerPostingService {
     withholding?: number;
     userEmail?: string;
   }): Promise<void> {
-    const gross = Math.round(input.amount) + Math.round(input.tax);
+    const gross = cop(input.amount) + cop(input.tax);
     // Lo retenido no sale hacia el proveedor: se le debe a la DIAN. El gasto
     // sigue siendo el bruto; cambia a quién se le debe cada parte.
     const withholding = Math.min(
-      Math.max(Math.round(input.withholding ?? 0), 0),
+      Math.max(cop(input.withholding ?? 0), 0),
       gross,
     );
     const credit =
@@ -342,7 +342,7 @@ export class LedgerPostingService {
     docNumber?: string;
     userEmail?: string;
   }): Promise<void> {
-    const amount = Math.round(input.amount);
+    const amount = cop(input.amount);
     await this.safePost({
       date: input.date,
       sourceType: 'payable_payment',
@@ -366,7 +366,7 @@ export class LedgerPostingService {
     docNumber?: string;
     userEmail?: string;
   }): Promise<void> {
-    const amount = Math.round(input.amount);
+    const amount = cop(input.amount);
     await this.safePost({
       date: input.date,
       sourceType: 'receivable_payment',
