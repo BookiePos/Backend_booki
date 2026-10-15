@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import { BusinessService } from '../../control/application/business.service';
 import { createHash, randomBytes } from 'crypto';
 import {
   Invitation,
@@ -88,6 +89,8 @@ export class InvitationsService {
     private readonly mail: MailService,
     private readonly auth: AuthService,
     private readonly config: ConfigService,
+    /** Control-plane: la empresa del enlace y su plan (ítems 3.5 y 3.6). */
+    private readonly businesses: BusinessService,
   ) {}
 
   /** Crea una invitación, la envía por correo y devuelve el enlace. */
@@ -313,11 +316,13 @@ export class InvitationsService {
   /**
    * Ejecuta `fn` dentro de la empresa que indica el enlace.
    *
-   * `dbNameForBusiness` es una función pura, así que aceptar una invitación no
-   * consulta el control-plane: si ese servicio está caído, la gente igual puede
-   * entrar al negocio.
+   * La ruta es pública, así que el `businessId` del enlace no se cree a ciegas
+   * (ítem 3.5): debe tener formato de id y existir en el control-plane antes de
+   * abrir su base. La empresa trae su plan al contexto para que crear el
+   * usuario respete el cupo (ítem 3.6). Si el control-plane no responde, se
+   * sigue sin plan, la misma política que el middleware de empresa.
    */
-  private inBusinessOf<T>(
+  private async inBusinessOf<T>(
     linkToken: string,
     fn: (rawToken: string) => Promise<T>,
   ): Promise<T> {
@@ -335,8 +340,29 @@ export class InvitationsService {
     }
     const businessId = linkToken.slice(0, separator);
     const rawToken = linkToken.slice(separator + 1);
+    const noExiste = () =>
+      new NotFoundException({
+        code: INVITATION_ERRORS.NOT_FOUND,
+        message: 'Este enlace de invitación no existe.',
+      });
+    if (!Types.ObjectId.isValid(businessId)) throw noExiste();
+
+    let business: Awaited<ReturnType<BusinessService['findById']>> | undefined;
+    try {
+      business = await this.businesses.findById(businessId);
+    } catch {
+      business = undefined; // control-plane caído: se sigue sin plan
+    }
+    if (business === null) throw noExiste();
+
     return TenantContext.run(
-      { businessId, dbName: dbNameForBusiness(businessId) },
+      {
+        businessId,
+        dbName: dbNameForBusiness(businessId),
+        tipoNegocio: business?.tipoNegocio,
+        plan: business?.plan,
+        addOns: business?.addOns,
+      },
       () => fn(rawToken),
     );
   }

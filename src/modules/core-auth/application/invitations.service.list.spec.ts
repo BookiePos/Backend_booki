@@ -51,6 +51,7 @@ describe('InvitationsService · listado', () => {
       {} as never,
       {} as never,
       { get: () => undefined } as never,
+      { findById: async () => null } as never, // businesses: list() no lo usa
     );
   });
 

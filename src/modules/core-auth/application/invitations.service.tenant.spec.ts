@@ -94,6 +94,8 @@ describe('InvitationsService · contexto de empresa al aceptar', () => {
       {} as never,
       auth as never,
       { get: () => undefined } as never,
+      // Control-plane: la empresa del enlace existe (ítem 3.5).
+      { findById: async (id: string) => ({ _id: id, plan: 'negocio' }) } as never,
     );
   });
 
