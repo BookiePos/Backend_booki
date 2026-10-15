@@ -83,6 +83,46 @@ describe('LedgerPostingService · asientos automáticos', () => {
       expect(amountOn(ACC.IVA_POR_PAGAR, 'credit')).toBe(19_000);
     });
 
+    it('propina: entra a Caja y queda como pasivo con el personal en la 2380 (ítem 1.10)', async () => {
+      await service.postSale({ ...base, total: 119_000, tax: 19_000, cogs: 0, tip: 11_900 });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.CAJA, 'debit')).toBe(130_900);
+      expect(amountOn(ACC.PROPINAS_POR_PAGAR, 'credit')).toBe(11_900);
+      // No es ingreso del negocio.
+      expect(amountOn(ACC.INGRESOS_VENTAS, 'credit')).toBe(100_000);
+    });
+
+    it('propina con tarjeta: entra a Bancos', async () => {
+      await service.postSale({
+        ...base,
+        paymentMethod: 'card',
+        total: 50_000,
+        tax: 0,
+        cogs: 0,
+        tip: 5_000,
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.BANCOS, 'debit')).toBe(55_000);
+      expect(amountOn(ACC.PROPINAS_POR_PAGAR, 'credit')).toBe(5_000);
+    });
+
+    it('fiado: la propina no se fía y no entra al asiento', async () => {
+      await service.postSale({
+        ...base,
+        onCredit: true,
+        total: 50_000,
+        tax: 0,
+        cogs: 0,
+        tip: 5_000,
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.CLIENTES, 'debit')).toBe(50_000);
+      expect(amountOn(ACC.PROPINAS_POR_PAGAR, 'credit')).toBe(0);
+    });
+
     it('con costo de venta sigue cuadrando: sale de inventario y entra al costo', async () => {
       await service.postSale({
         ...base,

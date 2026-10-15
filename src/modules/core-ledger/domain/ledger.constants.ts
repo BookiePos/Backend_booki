@@ -53,6 +53,8 @@ export const ACC = {
    * impuestos por pagar); no es la 2368, que es la ReteICA.
    */
   INC_POR_PAGAR: '2495',
+  /** Propinas recibidas para el personal (Ley 1935/2018: no son ingreso). */
+  PROPINAS_POR_PAGAR: '2380',
   /** Salud, pensión y FSP retenidos al empleado + aportes del empleador (PUC 2370). */
   APORTES_NOMINA: '2370',
   SALARIOS_POR_PAGAR: '2505',

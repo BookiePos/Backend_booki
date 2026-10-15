@@ -52,6 +52,7 @@ export interface VentaGuardada {
   status: string;
   total: number;
   deliveryFee?: number;
+  tip?: number;
   paymentMethod: string;
   lines: { taxKind?: string; taxAmount?: number }[];
   components: { cost?: number }[];
@@ -132,6 +133,7 @@ export function insumoVenta(v: VentaGuardada): Parameters<Posting['postSale']>[0
     consumptionTax: taxOf('inc'),
     cogs: sumBy(v.components, (c) => c.cost ?? 0),
     deliveryFee,
+    tip: cop(v.tip ?? 0),
     paymentMethod: v.paymentMethod,
     onCredit: v.paymentMethod === 'credit',
     userEmail: AUTOR,

@@ -878,9 +878,10 @@ export class SalesService {
       tax: ivaTax,
       consumptionTax: incTax,
       cogs: cop(cogs),
-      // El domicilio es ingreso del negocio (a diferencia de la propina, que
-      // es del personal y por eso no aparece aquí), pero sin IVA que separar.
+      // El domicilio es ingreso del negocio, sin IVA que separar.
       deliveryFee,
+      // La propina entra con el cobro pero va al pasivo 2380 (ítem 1.10).
+      tip: cop(sale.tip ?? 0),
       paymentMethod: dto.payment.method,
       onCredit: isCredit,
       userEmail: user.email,

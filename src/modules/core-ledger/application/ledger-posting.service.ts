@@ -113,10 +113,15 @@ export class LedgerPostingService {
     cogs: number;
     /**
      * Cobro del domicilio. Es ingreso del negocio pero NO lleva IVA, así que
-     * entra entero a Ingresos sin nada que separar. La propina no aparece aquí
-     * a propósito: esa es del personal, no del negocio.
+     * entra entero a Ingresos sin nada que separar.
      */
     deliveryFee?: number;
+    /**
+     * Propina (ítem 1.10). Entra a Caja o Bancos con el resto del cobro, pero
+     * es del personal (Ley 1935/2018): va al pasivo 2380, nunca a Ingresos.
+     * La propina no se fía, así que en una venta a crédito no entra.
+     */
+    tip?: number;
     paymentMethod?: string;
     onCredit?: boolean;
     userEmail?: string;
@@ -127,6 +132,7 @@ export class LedgerPostingService {
     const delivery = Math.round(input.deliveryFee ?? 0);
     const income = total - tax - inc + delivery;
     const cogs = Math.round(input.cogs);
+    const tip = input.onCredit ? 0 : cop(input.tip ?? 0);
     const debitAccount = input.onCredit
       ? ACC.CLIENTES
       : this.funding(input.paymentMethod);
@@ -134,11 +140,14 @@ export class LedgerPostingService {
     const lines: PostLine[] = [
       {
         accountCode: debitAccount,
-        debit: total + delivery,
+        debit: total + delivery + tip,
         sedeId: input.sedeId,
       },
       { accountCode: ACC.INGRESOS_VENTAS, credit: income, sedeId: input.sedeId },
     ];
+    if (tip > 0) {
+      lines.push({ accountCode: ACC.PROPINAS_POR_PAGAR, credit: tip, sedeId: input.sedeId });
+    }
     if (tax > 0) {
       lines.push({ accountCode: ACC.IVA_POR_PAGAR, credit: tax, sedeId: input.sedeId });
     }
