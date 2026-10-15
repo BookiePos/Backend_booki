@@ -40,6 +40,7 @@ import { PlanUpgradeRequiredException } from '../../control/domain/plan-upgrade.
 import { buildPayslipPdf } from './payslip-pdf';
 import {
   classifyTurnos,
+  lunesDe,
   NovedadesTurnos,
 } from '../domain/turnos-classify';
 import {
@@ -49,6 +50,8 @@ import {
 import {
   ArlLevel,
   computeSlip,
+  fechaCorteDePeriodo,
+  jornadaSemanalVigente,
   PayrollInput,
   SalaryType,
 } from '../domain/payroll-calc';
@@ -66,6 +69,7 @@ import {
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { ParamsService } from '../../core-params/application/params.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
+import { sumBy } from '../../finance/domain/money.util';
 
 export interface PreviewResult {
   input: {
@@ -189,8 +193,11 @@ export class PayrollService {
     from: string,
     to: string,
   ): Promise<NovedadesTurnos> {
+    const s = await this.parametrosEn(to);
+    // Desde el lunes de la semana de `from`: el tope semanal de la jornada se
+    // llena también con los días previos de esa semana.
     const recs = await this.attendance
-      .find({ employeeId, workDate: { $gte: from, $lte: to } })
+      .find({ employeeId, workDate: { $gte: lunesDe(from), $lte: to } })
       .select('workDate checkIn checkOut')
       .exec();
     return classifyTurnos(
@@ -199,6 +206,7 @@ export class PayrollService {
         checkIn: r.checkIn,
         checkOut: r.checkOut,
       })),
+      { desde: from, jornadaSemanal: (f) => jornadaSemanalVigente(f, s) },
     );
   }
 
@@ -208,33 +216,37 @@ export class PayrollService {
     return this.settings.create({ ...DEFAULT_PAYROLL_SETTINGS });
   }
 
-  private async settingsData(): Promise<PayrollSettingsData> {
+  /**
+   * Parámetros de nómina vigentes en `fecha` (YYYY-MM-DD; por defecto hoy):
+   * el expediente con los parámetros compartidos de core-params superpuestos a
+   * esa fecha. Público para los informes de `src/datos/`.
+   */
+  async parametrosEn(fecha?: string): Promise<PayrollSettingsData> {
     const doc = await this.getSettings();
     const data = doc.toObject() as unknown as PayrollSettingsData;
+    const opts = fecha ? { date: fecha } : undefined;
 
     // Parámetros compartidos con el resto del ERP: la fuente de verdad es
     // core-params (SMMLV, auxilio, UVT y recargos se editan en una sola
-    // pantalla de Parámetros). Se superponen sobre el expediente de nómina;
-    // si un parámetro no está sembrado, se conserva el valor de nómina. Los
-    // recargos en params están en % (35) y aquí se usan como factor (0.35).
-    data.smmlv = await this.params.number('nomina.salario_minimo', data.smmlv);
+    // pantalla de Parámetros). Se superponen sobre el expediente de nómina en
+    // la fecha del período (son versionados); si un parámetro no está
+    // sembrado, se conserva el valor de nómina. Los recargos en params están en
+    // % (35) y aquí se usan como factor (0.35).
+    data.smmlv = await this.params.number('nomina.salario_minimo', data.smmlv, opts);
     data.auxilioTransporte = await this.params.number(
       'nomina.auxilio_transporte',
       data.auxilioTransporte,
+      opts,
     );
-    data.uvt = await this.params.number('fiscal.uvt', data.uvt);
+    data.uvt = await this.params.number('fiscal.uvt', data.uvt, opts);
 
     const factor = async (key: string, fallbackFactor: number): Promise<number> =>
-      (await this.params.number(key, fallbackFactor * 100)) / 100;
+      (await this.params.number(key, fallbackFactor * 100, opts)) / 100;
     data.recargos = {
       ...data.recargos,
       recargoNocturno: await factor(
         'recargo.nocturno',
         data.recargos.recargoNocturno,
-      ),
-      dominical: await factor(
-        'recargo.dominical_festivo',
-        data.recargos.dominical,
       ),
       extraDiurna: await factor(
         'recargo.hora_extra_diurna',
@@ -245,6 +257,17 @@ export class PayrollService {
         data.recargos.extraNocturna,
       ),
     };
+    // El dominical legal va por fecha (`recargosVigentes`). De Parámetros solo
+    // cuenta una vigencia creada por una persona: es un pacto, y solo rige si
+    // supera al legal. La semilla del sistema (90 % desde el 1-ene-2026, sin
+    // autor) adelantaba el 90 % que la Ley 2466 fija desde el 1-jul-2026.
+    const dominical = await this.params
+      .resolve('recargo.dominical_festivo', opts)
+      .catch(() => null);
+    data.recargoDominicalPactado =
+      dominical?.createdByEmail && typeof dominical.value === 'number'
+        ? dominical.value / 100
+        : undefined;
 
     return data;
   }
@@ -259,7 +282,9 @@ export class PayrollService {
   }
 
   async preview(dto: PreviewPayrollDto): Promise<PreviewResult> {
-    const s = await this.settingsData();
+    const s = await this.parametrosEn(
+      dto.period ? fechaCorteDePeriodo(dto.period) : undefined,
+    );
     let salarioBase = dto.salarioBase ?? 0;
     let salaryType: SalaryType =
       (dto.salaryType as SalaryType) ?? 'ordinario';
@@ -291,6 +316,7 @@ export class PayrollService {
       diasTrabajados,
       arlRiskLevel,
       novedades: dto.novedades,
+      fechaCorte: dto.period ? fechaCorteDePeriodo(dto.period) : undefined,
     };
     return {
       input: {
@@ -309,7 +335,7 @@ export class PayrollService {
     dto: CreateRunDto,
     user: JwtUser,
   ): Promise<PayrollRunDocument> {
-    const s = await this.settingsData();
+    const s = await this.parametrosEn(fechaCorteDePeriodo(dto.period));
     const coverage = dto.coverage ?? 'all';
     const filter: Record<string, unknown> = {
       status: 'activo',
@@ -388,7 +414,14 @@ export class PayrollService {
       createdByEmail: user.email,
     });
 
-    await this.applyDeductionsToRun(approvedIds, run._id, dto.period);
+    try {
+      await this.applyDeductionsToRun(approvedIds, run._id, dto.period);
+    } catch (err) {
+      // Las colillas descuentan algo que no quedó amarrado a la corrida: la
+      // corrida no se deja a medias.
+      await this.runs.deleteOne({ _id: run._id }).exec();
+      throw err;
+    }
     return run;
   }
 
@@ -418,7 +451,7 @@ export class PayrollService {
       )
       .exec();
 
-    const s = await this.settingsData();
+    const s = await this.parametrosEn(fechaCorteDePeriodo(run.period));
     const filter: Record<string, unknown> = { status: 'activo', salary: { $gt: 0 } };
     if (run.coverage === 'sede' && run.sedeId) {
       filter.sedeId = run.sedeId;
@@ -428,17 +461,26 @@ export class PayrollService {
       .sort({ lastName: 1, firstName: 1 })
       .exec();
 
-    const { slips, totals, approvedIds } = await this.buildRunSlips(
-      emps,
-      s,
-      run.period,
-    );
-    run.slips = slips;
-    run.totals = totals;
-    await run.save();
-
-    await this.applyDeductionsToRun(approvedIds, run._id, run.period);
-    return run;
+    // Se aplica ANTES de guardar las colillas: si un consumo cambió entre la
+    // lectura y la aplicación (se anuló o lo tomó otra corrida), se vuelve a
+    // calcular con lo que hay ahora en vez de guardar colillas que no cuadran.
+    for (let intento = 1; ; intento++) {
+      const { slips, totals, approvedIds } = await this.buildRunSlips(
+        emps,
+        s,
+        run.period,
+      );
+      try {
+        await this.applyDeductionsToRun(approvedIds, run._id, run.period);
+      } catch (err) {
+        if (err instanceof ConflictException && intento < 3) continue;
+        throw err;
+      }
+      run.slips = slips;
+      run.totals = totals;
+      await run.save();
+      return run;
+    }
   }
 
   /**
@@ -473,18 +515,19 @@ export class PayrollService {
       dedByEmp.set(d.employeeId, arr);
     }
 
-    // Días trabajados por empleado, tomados de Turnos (asistencia) del período.
-    // El salario se prorratea por estos días (X/30). Estricto: sin registros de
-    // horas ⇒ 0 días ⇒ no se paga ese mes (lo alimenta el control de horas).
-    const y = Number(period.slice(0, 4));
-    const mo = Number(period.slice(5, 7));
+    // Días trabajados y horas por empleado, tomados de Turnos (asistencia) del
+    // período. El salario se prorratea por estos días (X/30). Estricto: sin
+    // registros de horas ⇒ 0 días ⇒ no se paga ese mes (lo alimenta el control
+    // de horas). Las horas clasificadas (recargos nocturnos y dominicales,
+    // extras) se pagan en la colilla: antes solo las veía el simulador. Se lee
+    // desde el lunes de la semana del día 1 para que el tope semanal de la
+    // jornada cuente los días de esa semana que cayeron en el mes anterior.
     const from = `${period}-01`;
-    const lastDay = new Date(y, mo, 0).getDate();
-    const to = `${period}-${String(lastDay).padStart(2, '0')}`;
+    const to = fechaCorteDePeriodo(period);
     const recs = await this.attendance
       .find({
         employeeId: { $in: emps.map((e) => e.id) },
-        workDate: { $gte: from, $lte: to },
+        workDate: { $gte: lunesDe(from), $lte: to },
       })
       .select('employeeId workDate checkIn checkOut')
       .exec();
@@ -501,15 +544,26 @@ export class PayrollService {
     const slips: PayrollSlip[] = emps.map((e) => {
       const empDeductions = dedByEmp.get(e.id) ?? [];
       const otrasDeducciones = empDeductions.reduce((sum, d) => sum + d.amount, 0);
-      const diasTrabajados = classifyTurnos(
-        recsByEmp.get(e.id) ?? [],
-      ).diasTrabajados;
+      const turnos = classifyTurnos(recsByEmp.get(e.id) ?? [], {
+        desde: from,
+        jornadaSemanal: (f) => jornadaSemanalVigente(f, s),
+      });
+      // Al salario integral no se le liquidan recargos ni extras: ya los
+      // compensa (art. 132 num. 2 CST). El expediente no registra un pacto en
+      // contrario, así que no hay excepción que leer.
+      const integral = e.salaryType === 'integral';
+      const conHoras = !integral && Object.values(turnos.horas).some((h) => h > 0);
+      const novedades = {
+        ...(conHoras ? { horas: turnos.horas } : {}),
+        ...(otrasDeducciones > 0 ? { otrasDeducciones } : {}),
+      };
       const input: PayrollInput = {
         salarioBase: e.salary ?? 0,
         salaryType: (e.salaryType as SalaryType) ?? 'ordinario',
-        diasTrabajados,
+        diasTrabajados: turnos.diasTrabajados,
         arlRiskLevel: e.arlRiskLevel as ArlLevel | undefined,
-        novedades: otrasDeducciones > 0 ? { otrasDeducciones } : undefined,
+        novedades: Object.keys(novedades).length > 0 ? novedades : undefined,
+        fechaCorte: fechaCorteDePeriodo(period),
       };
       const breakdown = computeSlip(input, s);
       return {
@@ -573,12 +627,30 @@ export class PayrollService {
     period: string,
   ): Promise<void> {
     if (ids.length === 0) return;
-    await this.deductions
+    const res = await this.deductions
       .updateMany(
         { _id: { $in: ids }, status: 'approved' },
         { $set: { status: 'applied', appliedRunId: runId, appliedPeriod: period } },
       )
       .exec();
+    // Alguna dejó de estar aprobada entre la lectura y aquí (se anuló con su
+    // venta o la tomó otra corrida), pero las colillas sí la descuentan. Se
+    // sueltan las que tomó esta corrida y quien llama decide (borrar o
+    // recalcular).
+    if (res.matchedCount !== ids.length) {
+      await this.deductions
+        .updateMany(
+          { appliedRunId: runId },
+          {
+            $set: { status: 'approved' },
+            $unset: { appliedRunId: '', appliedPeriod: '' },
+          },
+        )
+        .exec();
+      throw new ConflictException(
+        'Un consumo de nómina cambió mientras se generaba la corrida (se anuló o lo tomó otra corrida). Vuelve a generarla.',
+      );
+    }
   }
 
   // ── Deducciones de empleado (consumos, descuentos) ──────────────────────────
@@ -604,6 +676,62 @@ export class PayrollService {
       note: dto.note,
       createdByEmail: user.email,
     });
+  }
+
+  /**
+   * Cancela el consumo POS de una venta a crédito que se anula. Mientras está
+   * pendiente o aprobado no ha salido de ninguna colilla y basta con cambiarle
+   * el estado. Si ya se aplicó en una corrida, se rechaza ANTES de tocar nada:
+   * el descuento ya está en la colilla (y, si la nómina se cerró, en el libro),
+   * y devolverlo es un ajuste de nómina, no un cambio de estado.
+   */
+  async cancelSaleDeduction(saleId: string): Promise<void> {
+    const aplicada = await this.deductions
+      .findOne({ source: 'sale', sourceId: saleId, status: 'applied' })
+      .exec();
+    if (aplicada) {
+      throw new BadRequestException(
+        `El consumo de esta venta ya se descontó en la nómina ${aplicada.appliedPeriod ?? ''}`.trim() +
+          '. Si esa nómina sigue en borrador, elimínala, anula la venta y vuelve a generarla; si está cerrada, la venta no se puede anular: devuélvele el valor al empleado con un ajuste en la próxima nómina.',
+      );
+    }
+    await this.deductions
+      .updateMany(
+        {
+          source: 'sale',
+          sourceId: saleId,
+          status: { $in: ['pending', 'approved'] },
+        },
+        { $set: { status: 'cancelled' } },
+      )
+      .exec();
+    // Una corrida pudo aplicarlo entre la revisión y el updateMany: entonces no
+    // se canceló nada y el consumo ya está en una colilla.
+    const tomada = await this.deductions
+      .findOne({ source: 'sale', sourceId: saleId, status: 'applied' })
+      .exec();
+    if (tomada) {
+      throw new BadRequestException(
+        `El consumo de esta venta acaba de entrar en la nómina ${tomada.appliedPeriod ?? ''}`.trim() +
+          '. Si esa nómina sigue en borrador, elimínala, anula la venta y vuelve a generarla.',
+      );
+    }
+  }
+
+  /**
+   * Deshace cancelSaleDeduction cuando la anulación de la venta se aborta más
+   * adelante. Vuelve a 'pending' (no a 'approved'): no se sabe si estaba
+   * aprobada y es más seguro pedir aprobarla otra vez que descontar sin
+   * aprobación. Solo las ventas cancelan consumos, así que no se resucita
+   * nada que alguien haya anulado a mano.
+   */
+  async restoreSaleDeduction(saleId: string): Promise<void> {
+    await this.deductions
+      .updateMany(
+        { source: 'sale', sourceId: saleId, status: 'cancelled' },
+        { $set: { status: 'pending' } },
+      )
+      .exec();
   }
 
   async listDeductions(query: {
@@ -672,7 +800,7 @@ export class PayrollService {
     };
     breakdown: LiquidacionBreakdown;
   }> {
-    const s = await this.settingsData();
+    const s = await this.parametrosEn(dto.fechaFin);
     let salarioBase = dto.salarioBase ?? 0;
     let salaryType: SalaryType = (dto.salaryType as SalaryType) ?? 'ordinario';
     let contractType = dto.contractType;
@@ -755,6 +883,23 @@ export class PayrollService {
     const run = await this.getRun(id);
     if (run.status === 'cerrada') {
       throw new BadRequestException('La nómina ya está cerrada.');
+    }
+    // Las colillas descuentan consumos: deben estar marcados `applied` a ESTA
+    // corrida. Si `recalcRun` agotó sus reintentos, los soltó a `approved` y
+    // dejó las colillas viejas: cerrar así descontaría algo que la próxima
+    // corrida volvería a descontar.
+    const esperadas = run.slips.flatMap((sl) => sl.otrasDeduccionesDetalle ?? []);
+    const aplicadas = await this.deductions
+      .find({ appliedRunId: run._id, status: 'applied' })
+      .select('amount')
+      .exec();
+    if (
+      aplicadas.length !== esperadas.length ||
+      sumBy(aplicadas, (d) => d.amount) !== sumBy(esperadas, (d) => d.amount)
+    ) {
+      throw new BadRequestException(
+        'Los consumos que descuentan las colillas no están amarrados a esta nómina. Recalcúlala antes de cerrarla.',
+      );
     }
     run.status = 'cerrada';
     run.closedAt = new Date();

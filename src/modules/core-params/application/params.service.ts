@@ -177,6 +177,11 @@ export class ParamsService {
     value: number | string | boolean;
     effectiveFrom: string;
     sedeId: string | null;
+    /**
+     * Quién creó la vigencia. Las semillas del sistema no tienen autor: así
+     * nómina distingue un pacto de la empresa del valor sembrado por defecto.
+     */
+    createdByEmail?: string;
   }> {
     await this.seed();
     const at = opts?.date ?? this.today();
@@ -201,6 +206,7 @@ export class ParamsService {
           value: version.value,
           effectiveFrom: version.effectiveFrom,
           sedeId: version.sedeId ?? null,
+          createdByEmail: version.createdByEmail,
         };
       }
     }

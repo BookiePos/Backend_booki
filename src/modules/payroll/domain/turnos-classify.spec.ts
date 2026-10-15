@@ -48,7 +48,7 @@ describe('classifyTurnos', () => {
     expect(r.horas.recargoNocturno).toBe(2);
   });
 
-  it('un turno que cruza la medianoche se mide entero, no se parte', () => {
+  it('un turno que cruza la medianoche cuenta como una sola jornada', () => {
     // 8 p.m. a 4 a.m.: ocho horas, todas dentro de la franja nocturna.
     const r = classifyTurnos([
       { workDate: LUNES, checkIn: '20:00', checkOut: '04:00' },
@@ -69,17 +69,29 @@ describe('classifyTurnos', () => {
     expect(r.horas.recargoNocturno).toBe(0);
   });
 
-  it('la parte nocturna de las extras va a extra nocturna', () => {
-    // 2 p.m. a medianoche: 10 horas, de las cuales 5 son nocturnas (7 p.m. en
-    // adelante). La proporción nocturna se aplica igual a ordinarias y extras.
+  it('las extras son las últimas horas del turno (art. 159 CST)', () => {
+    // 2 p.m. a medianoche: 10 horas. Las 8 primeras (2 p.m.-10 p.m.) son la
+    // jornada ordinaria, con 3 nocturnas (7-10 p.m.); las 2 últimas (10 p.m.-
+    // medianoche) son extra, y caen de noche. No se reparte en proporción.
     const r = classifyTurnos([
       { workDate: LUNES, checkIn: '14:00', checkOut: '00:00' },
     ]);
 
     expect(r.totalHoras).toBe(10);
-    expect(r.horas.extraDiurna + r.horas.extraNocturna).toBe(2);
-    expect(r.horas.extraNocturna).toBe(1);
-    expect(r.horas.recargoNocturno).toBe(4);
+    expect(r.horas.extraNocturna).toBe(2);
+    expect(r.horas.extraDiurna).toBe(0);
+    expect(r.horas.recargoNocturno).toBe(3);
+  });
+
+  it('extras diurnas al final de un turno que empezó de noche', () => {
+    // 4 a.m. a 2 p.m.: ordinarias 4-12 (2 nocturnas), extras 12-2 p.m. diurnas.
+    const r = classifyTurnos([
+      { workDate: LUNES, checkIn: '04:00', checkOut: '14:00' },
+    ]);
+
+    expect(r.horas.recargoNocturno).toBe(2);
+    expect(r.horas.extraDiurna).toBe(2);
+    expect(r.horas.extraNocturna).toBe(0);
   });
 
   describe('domingos y festivos', () => {
