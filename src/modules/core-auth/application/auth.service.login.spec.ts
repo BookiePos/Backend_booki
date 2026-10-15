@@ -67,6 +67,11 @@ describe('AuthService · login sin enumeración', () => {
       directory as never,
       {} as never,
       {} as never,
+      {
+        assertNoBloqueada: vi.fn(async () => undefined),
+        registrarFallo: vi.fn(async () => undefined),
+        limpiar: vi.fn(async () => undefined),
+      } as never,
     );
   });
 

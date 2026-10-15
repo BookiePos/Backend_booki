@@ -2,11 +2,13 @@ import { attachDatabasePool } from '@vercel/functions';
 import { POOL_MONGO, uriSinCredenciales } from './shared/config/mongo';
 import { Module, Logger } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { MongooseModule } from '@nestjs/mongoose';
+import { MongooseModule, getConnectionToken } from '@nestjs/mongoose';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import type { Connection } from 'mongoose';
 import { TenancyModule } from './shared/tenancy/tenancy.module';
+import { MongoThrottlerStorage } from './shared/throttle/mongo-throttler.storage';
+import type { ColeccionVentanas } from './shared/throttle/contador-ventana';
 import { CONTROL_CONNECTION } from './modules/control/domain/control.constants';
 import { ControlModule } from './modules/control/control.module';
 import { HealthModule } from './modules/health/health.module';
@@ -67,8 +69,18 @@ function adjuntarPoolAVercel(connection: Connection, logger: Logger): void {
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     // Rate limiting global: 100 req/min por IP. Los endpoints sensibles de auth
-    // aprietan aún más el límite con @Throttle en su controller.
-    ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 100 }]),
+    // aprietan aún más el límite con @Throttle en su controller. Esos límites
+    // estrictos se cuentan en la base de control, uno solo para todas las
+    // instancias de Vercel (ítem 4.3; ver MongoThrottlerStorage).
+    ThrottlerModule.forRootAsync({
+      inject: [getConnectionToken(CONTROL_CONNECTION)],
+      useFactory: (control: Connection) => ({
+        throttlers: [{ name: 'default', ttl: 60_000, limit: 100 }],
+        storage: new MongoThrottlerStorage(
+          () => control.collection('throttle_ventanas') as unknown as ColeccionVentanas,
+        ),
+      }),
+    }),
     MongooseModule.forRootAsync({
       useFactory: () => {
         const uri =
