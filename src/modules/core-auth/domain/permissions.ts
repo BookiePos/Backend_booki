@@ -10,6 +10,12 @@ export const PERMISSIONS = {
   SEDE_MANAGE: 'sede.manage',
   SEDE_VIEW_ALL: 'sede.view_all',
   PARAMS_MANAGE: 'params.manage',
+  /**
+   * Suscripción de BookiPos: medio de pago, cambiar de plan, cancelar. Va
+   * aparte de `params.manage` (ítem 3.10): el Gerente ajusta parámetros de la
+   * operación, pero no compromete ni cancela el contrato de la empresa.
+   */
+  BILLING_MANAGE: 'billing.manage',
   TAX_MANAGE: 'tax.manage',
   AUDIT_VIEW: 'audit.view',
   // POS / ventas
@@ -74,6 +80,7 @@ export const PERMISSION_GROUPS: {
       { key: PERMISSIONS.ROLES_MANAGE, label: 'Gestionar roles y permisos' },
       { key: PERMISSIONS.AUDIT_VIEW, label: 'Ver auditoría' },
       { key: PERMISSIONS.PARAMS_MANAGE, label: 'Gestionar parámetros' },
+      { key: PERMISSIONS.BILLING_MANAGE, label: 'Gestionar plan y pagos de BookiPos' },
     ],
   },
   {

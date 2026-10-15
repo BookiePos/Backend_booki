@@ -32,13 +32,13 @@ export class BillingController {
     return user.businessId;
   }
 
-  @RequirePermissions(PERMISSIONS.PARAMS_MANAGE)
+  @RequirePermissions(PERMISSIONS.BILLING_MANAGE)
   @Get('config')
   config() {
     return this.billing.config();
   }
 
-  @RequirePermissions(PERMISSIONS.PARAMS_MANAGE)
+  @RequirePermissions(PERMISSIONS.BILLING_MANAGE)
   @Get('status')
   status(@CurrentUser() user: JwtUser) {
     return this.billing.status(this.businessId(user));
@@ -50,14 +50,14 @@ export class BillingController {
    * no llegar nunca (desarrollo local), y sin esto la pantalla se queda en
    * "pago en proceso" hasta el barrido del cron.
    */
-  @RequirePermissions(PERMISSIONS.PARAMS_MANAGE)
+  @RequirePermissions(PERMISSIONS.BILLING_MANAGE)
   @Get('payments/:reference')
   payment(@CurrentUser() user: JwtUser, @Param('reference') reference: string) {
     return this.billing.syncPayment(this.businessId(user), reference);
   }
 
   /** Registra la tarjeta sin cobrar: queda guardada para los cobros siguientes. */
-  @RequirePermissions(PERMISSIONS.PARAMS_MANAGE)
+  @RequirePermissions(PERMISSIONS.BILLING_MANAGE)
   @Post('payment-method')
   savePaymentMethod(
     @CurrentUser() user: JwtUser,
@@ -66,19 +66,19 @@ export class BillingController {
     return this.billing.savePaymentMethod(this.businessId(user), dto);
   }
 
-  @RequirePermissions(PERMISSIONS.PARAMS_MANAGE)
+  @RequirePermissions(PERMISSIONS.BILLING_MANAGE)
   @Post('subscribe')
   subscribe(@CurrentUser() user: JwtUser, @Body() dto: SubscribeDto) {
     return this.billing.subscribe(this.businessId(user), dto);
   }
 
-  @RequirePermissions(PERMISSIONS.PARAMS_MANAGE)
+  @RequirePermissions(PERMISSIONS.BILLING_MANAGE)
   @Post('purchase-docs')
   purchaseDocs(@CurrentUser() user: JwtUser, @Body() dto: PurchaseDocsDto) {
     return this.billing.purchaseDocs(this.businessId(user), dto.packages);
   }
 
-  @RequirePermissions(PERMISSIONS.PARAMS_MANAGE)
+  @RequirePermissions(PERMISSIONS.BILLING_MANAGE)
   @Post('cancel')
   cancel(@CurrentUser() user: JwtUser) {
     return this.billing.cancel(this.businessId(user));
