@@ -1,3 +1,5 @@
+import { attachDatabasePool } from '@vercel/functions';
+import { POOL_MONGO, uriSinCredenciales } from './shared/config/mongo';
 import { Module, Logger } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
@@ -48,6 +50,19 @@ function controlUri(): string {
   return uri.replace(/\/[^/?]*(\?|$)/, '/bookipos_control$1');
 }
 
+/**
+ * En Vercel (Fluid compute) la función se congela entre requests: sin esto, el
+ * pool deja conexiones abiertas que el cluster sigue contando (ítem 2.11).
+ */
+function adjuntarPoolAVercel(connection: Connection, logger: Logger): void {
+  if (!process.env.VERCEL) return;
+  try {
+    attachDatabasePool(connection.getClient());
+  } catch (err) {
+    logger.warn(`No se pudo adjuntar el pool de Mongo a Vercel: ${(err as Error).message}`);
+  }
+}
+
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -62,6 +77,7 @@ function controlUri(): string {
         const logger = new Logger('MongooseModule');
         return {
           uri,
+          ...POOL_MONGO,
           // Falla rápido en la selección de servidor.
           serverSelectionTimeoutMS: 3000,
           // Conexión perezosa: el servidor arranca aunque Mongo no esté
@@ -69,8 +85,9 @@ function controlUri(): string {
           // reporta el estado real (db: disconnected/connected).
           lazyConnection: true,
           connectionFactory: (connection: Connection) => {
+            adjuntarPoolAVercel(connection, logger);
             connection.on('connected', () =>
-              logger.log(`Conectado a MongoDB (${uri})`),
+              logger.log(`Conectado a MongoDB (${uriSinCredenciales(uri)})`),
             );
             connection.on('error', (err: Error) =>
               logger.error(`Error de conexión a MongoDB: ${err.message}`),
@@ -90,8 +107,13 @@ function controlUri(): string {
       connectionName: CONTROL_CONNECTION,
       useFactory: () => ({
         uri: controlUri(),
+        ...POOL_MONGO,
         serverSelectionTimeoutMS: 3000,
         lazyConnection: true,
+        connectionFactory: (connection: Connection) => {
+          adjuntarPoolAVercel(connection, new Logger('MongooseControl'));
+          return connection;
+        },
       }),
     }),
     // Infraestructura multi-empresa (registry + middleware de contexto).
