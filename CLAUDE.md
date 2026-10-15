@@ -163,11 +163,13 @@ modules/<nombre>/
   <nombre>.module.ts
 ```
 
-`shared/storage/` guarda archivos públicos en Supabase Storage (fotos de
-productos y facturas de compra), en un solo bucket separado por prefijos:
-`catalogo/<empresa>/...` y `facturas/<empresa>/...`. La `service_role key` salta
-RLS y es de servidor: el archivo entra por el API —multipart— y nunca se sube
-directo desde el navegador.
+`shared/storage/` guarda archivos en Supabase Storage, en dos buckets. El
+público (`catalogo/<empresa>/...`) tiene las fotos de productos, que se muestran
+por su URL. El privado (`facturas/<empresa>/...`) tiene las facturas de compra:
+el API las lee con la llave y las entrega con URL firmada que vence
+(`InvoiceScanService.conUrlsFirmadas`). La `service_role key` salta RLS y es de
+servidor: el archivo entra por el API —multipart— y nunca se sube directo desde
+el navegador.
 
 `modules/invoice-scan/` carga compras a partir de una FOTO de la factura. Dos
 reglas lo gobiernan y conviene no romperlas:

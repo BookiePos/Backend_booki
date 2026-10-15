@@ -129,13 +129,13 @@ describe('InvoiceScanController · límites de IA', () => {
   const user = {} as JwtUser;
 
   it('texto de más de 200 KB en upload responde 400', () => {
-    const c = new InvoiceScanController({ upload: vi.fn() } as never);
+    const c = new InvoiceScanController({ upload: vi.fn(), conUrlsFirmadas: vi.fn(async (s: unknown[]) => s) } as never);
     expect(() => c.upload(file, user, big)).toThrow(BadRequestException);
   });
 
   it('xml: pasa con 1,5 MB (no usa IA) y responde 400 por encima de 2 MB', () => {
     const upload = vi.fn();
-    const c = new InvoiceScanController({ upload } as never);
+    const c = new InvoiceScanController({ upload, conUrlsFirmadas: vi.fn(async (s: unknown[]) => s) } as never);
     c.upload(file, user, undefined, 'x'.repeat(1_500_000));
     expect(upload).toHaveBeenCalledTimes(1);
     expect(() => c.upload(file, user, undefined, 'x'.repeat(INVOICE_XML_MAX_CHARS + 1))).toThrow(

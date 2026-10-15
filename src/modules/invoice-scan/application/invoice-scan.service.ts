@@ -26,6 +26,7 @@ import {
   InvoiceScan,
   InvoiceScanDocument,
   NewProductDraft,
+  ScanPage,
 } from '../infrastructure/schemas/invoice-scan.schema';
 import {
   INVOICE_IMAGE_MAX_BYTES,
@@ -133,14 +134,15 @@ export class InvoiceScanService {
     await this.businesses.consumeScan(ctx.businessId, ctx.plan);
 
     const pathname = `facturas/${ctx.businessId}/${Date.now()}-${randomBytes(6).toString('hex')}.${extension}`;
-    const stored = await this.storage.upload(pathname, file.buffer, detected.mime);
+    // Bucket privado (ítem 3.8): la factura no se lee sin pasar por el API.
+    const stored = await this.storage.uploadPrivado(pathname, file.buffer, detected.mime);
 
     const conTexto = Boolean(text && text.trim().length > 0);
     const scan = await this.scans.create({
       pages: [
         {
-          imageUrl: stored.url,
           imagePathname: stored.pathname,
+          privada: true,
           text: conTexto ? text : undefined,
         },
       ],
@@ -225,9 +227,7 @@ export class InvoiceScanService {
         ? await this.extractor.extractText(
             page.text.slice(0, INVOICE_TEXT_MAX_CHARS),
           )
-        : await this.extractor.extract(
-            ...(await this.downloadArgs(page.imageUrl)),
-          );
+        : await this.extractor.extract(...(await this.downloadArgs(page)));
 
       page.raw = result.raw;
       page.model = result.model;
@@ -934,13 +934,39 @@ export class InvoiceScanService {
         'Esta factura ya se aplicó: no se puede descartar.',
       );
     }
-    const pathnames = scan.pages.map((p) => p.imagePathname);
+    const archivos = scan.pages.map((p) => ({
+      pathname: p.imagePathname,
+      privado: Boolean(p.privada),
+    }));
     scan.status = 'discarded';
     this.addHistory(scan, user, 'discarded', 'Descartada');
     await scan.save();
-    for (const pathname of pathnames) {
-      await this.storage.remove(pathname);
+    for (const { pathname, privado } of archivos) {
+      await this.storage.remove(pathname, { privado });
     }
+  }
+
+  /**
+   * La factura tal como sale por el API: cada página del bucket privado lleva
+   * en `imageUrl` una URL firmada que vence (ítem 3.8). Las subidas antes
+   * conservan su URL pública. Se firma todo el listado en una sola llamada.
+   */
+  async conUrlsFirmadas(
+    scans: InvoiceScanDocument[],
+  ): Promise<(InvoiceScan & { id?: string })[]> {
+    const planos = scans.map(
+      (s) => s.toJSON() as unknown as InvoiceScan & { id?: string },
+    );
+    const privadas = planos.flatMap((s) =>
+      s.pages.filter((p) => p.privada).map((p) => p.imagePathname),
+    );
+    const firmadas = await this.storage.firmarUrls(privadas);
+    for (const scan of planos) {
+      for (const page of scan.pages) {
+        if (page.privada) page.imageUrl = firmadas[page.imagePathname];
+      }
+    }
+    return planos;
   }
 
   // ─── Utilidades ───────────────────────────────────────────────────────────
@@ -954,9 +980,14 @@ export class InvoiceScanService {
     scan.history.push({ at: new Date(), userEmail: user.email, action, detail });
   }
 
-  /** Argumentos de `extract` a partir de la imagen guardada. */
-  private async downloadArgs(url: string): Promise<[Buffer, string]> {
-    const { buffer, mimetype } = await this.download(url);
+  /**
+   * Argumentos de `extract` a partir de la imagen guardada. La privada se baja
+   * con la llave del servidor; la vieja, por su URL pública.
+   */
+  private async downloadArgs(page: ScanPage): Promise<[Buffer, string]> {
+    const { buffer, mimetype } = page.privada
+      ? await this.storage.descargarPrivado(page.imagePathname)
+      : await this.download(page.imageUrl ?? '');
     return [buffer, mimetype];
   }
 

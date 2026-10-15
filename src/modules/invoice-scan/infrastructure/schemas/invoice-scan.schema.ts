@@ -14,12 +14,20 @@ export type InvoiceScanDocument = HydratedDocument<InvoiceScan>;
 /** Una foto de la factura. Una factura de dos hojas tiene dos páginas. */
 @Schema({ _id: false })
 export class ScanPage {
-  @Prop({ required: true })
-  imageUrl!: string;
+  /**
+   * URL pública. Solo la tienen las facturas subidas antes del bucket privado
+   * (ítem 3.8); las nuevas no guardan URL y el API firma una al responder.
+   */
+  @Prop()
+  imageUrl?: string;
 
-  /** Ruta en el store, necesaria para borrar el archivo. */
+  /** Ruta en el store, necesaria para leer, firmar y borrar el archivo. */
   @Prop({ required: true })
   imagePathname!: string;
+
+  /** El archivo está en el bucket privado. */
+  @Prop()
+  privada?: boolean;
 
   /**
    * Capa de texto del PDF, cuando la traía.
