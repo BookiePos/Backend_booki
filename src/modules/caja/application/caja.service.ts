@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import { sumBy } from '../../finance/domain/money.util';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { ParamsService } from '../../core-params/application/params.service';
 import {
@@ -559,11 +560,13 @@ export class CajaService {
         .exec(),
     ]);
     const salesTotal = sales.reduce((a, s) => a + s.total, 0);
-    // El efectivo del cajón incluye la propina cobrada en efectivo (se paga
-    // encima del total), por eso se suma `tip` para que el arqueo cuadre.
-    const cashSalesTotal = sales
-      .filter((s) => s.payment.method === 'cash')
-      .reduce((a, s) => a + s.total + (s.tip ?? 0), 0);
+    // El efectivo del cajón incluye lo cobrado encima del total: la propina
+    // (`tip`) y el envío (`deliveryFee`); la venta se paga con un único método,
+    // así que en una venta en efectivo todo el monto a pagar entra al cajón.
+    const cashSalesTotal = sumBy(
+      sales.filter((s) => s.payment.method === 'cash'),
+      (s) => s.total + (s.tip ?? 0) + (s.deliveryFee ?? 0),
+    );
     const movementsIn = movements
       .filter((m) => m.type === 'in')
       .reduce((a, m) => a + m.amount, 0);
