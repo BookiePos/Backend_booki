@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Types } from 'mongoose';
 
 // SWC emite `Object` como metadata de tipo para los @Prop() con uniones de
@@ -71,6 +71,8 @@ describe('SalesService.void (anulación atómica)', () => {
   let stock: any;
   let ledgerPosting: any;
   let treasury: any;
+  let cajaSessionModel: any;
+  let cajaMovementModel: any;
   let service: SalesService;
 
   beforeEach(() => {
@@ -94,12 +96,17 @@ describe('SalesService.void (anulación atómica)', () => {
     stock = { reverseSale: vi.fn().mockResolvedValue(undefined) };
     ledgerPosting = { reverseSale: vi.fn().mockResolvedValue(undefined) };
     treasury = { reverse: vi.fn().mockResolvedValue(undefined) };
+    cajaSessionModel = {
+      findById: vi.fn().mockReturnValue({ exec: () => Promise.resolve(null) }),
+      findOne: vi.fn().mockReturnValue({ exec: () => Promise.resolve(null) }),
+    };
+    cajaMovementModel = { create: vi.fn().mockResolvedValue({}) };
 
     service = new SalesService(
       saleModel, // saleModel
       {} as any, // counterModel
       {} as any, // stockItemModel
-      {} as any, // cajaSessionModel
+      cajaSessionModel, // cajaSessionModel
       {} as any, // discountModel
       receivableModel, // receivableModel
       stock, // stock
@@ -119,6 +126,7 @@ describe('SalesService.void (anulación atómica)', () => {
       {} as any, // tax: sin tenant restaurante no se consulta el INC
       {} as any, // businesses: el giro viene en el contexto o no hay tenant
       saleReturnModel, // saleReturnModel
+      cajaMovementModel, // cajaMovementModel
     );
   });
 
@@ -336,5 +344,77 @@ describe('SalesService.void (anulación atómica)', () => {
     expect(receivableModel.findOneAndUpdate).not.toHaveBeenCalled();
     expect(stock.reverseSale).not.toHaveBeenCalled();
     expect(ledgerPosting.reverseSale).not.toHaveBeenCalled();
+  });
+
+  // ── 1.12 Anular una venta de un turno cerrado ──────────────────────────────
+
+  describe('venta en efectivo de un turno ya cerrado (ítem 1.12)', () => {
+    const turnoCerrado = new Types.ObjectId();
+    const turnoAbierto = new Types.ObjectId();
+
+    function enEfectivo(cajaSessionId: Types.ObjectId) {
+      const doc = () => ({
+        ...saleDoc(),
+        saleNumber: 'FV-000042',
+        payment: { method: 'cash' },
+        cajaSessionId,
+        total: 50_000,
+        tip: 5_000,
+        deliveryFee: 4_000,
+      });
+      saleModel.findById.mockReturnValue({
+        populate: () => ({ exec: () => Promise.resolve(doc()) }),
+      });
+      saleModel.findOneAndUpdate.mockReturnValue({
+        exec: () => Promise.resolve(doc()),
+      });
+    }
+
+    it('registra la salida del efectivo en la caja abierta de la sede', async () => {
+      enEfectivo(turnoCerrado);
+      cajaSessionModel.findById.mockReturnValue({
+        exec: () => Promise.resolve({ _id: turnoCerrado, status: 'closed' }),
+      });
+      cajaSessionModel.findOne.mockReturnValue({
+        exec: () => Promise.resolve({ _id: turnoAbierto, status: 'open' }),
+      });
+
+      await service.void(saleObjId.toString(), user);
+
+      expect(cajaMovementModel.create).toHaveBeenCalledTimes(1);
+      expect(cajaMovementModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: turnoAbierto,
+          type: 'out',
+          // Lo que el cliente pagó: total + propina + domicilio.
+          amount: 59_000,
+        }),
+      );
+    });
+
+    it('sin caja abierta rechaza antes de anular: no toca la venta ni el stock', async () => {
+      enEfectivo(turnoCerrado);
+      cajaSessionModel.findById.mockReturnValue({
+        exec: () => Promise.resolve({ _id: turnoCerrado, status: 'closed' }),
+      });
+
+      await expect(service.void(saleObjId.toString(), user)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(saleModel.findOneAndUpdate).not.toHaveBeenCalled();
+      expect(stock.reverseSale).not.toHaveBeenCalled();
+      expect(cajaMovementModel.create).not.toHaveBeenCalled();
+    });
+
+    it('venta del turno que sigue abierto: el arqueo ya la excluye, no hay movimiento', async () => {
+      enEfectivo(turnoAbierto);
+      cajaSessionModel.findById.mockReturnValue({
+        exec: () => Promise.resolve({ _id: turnoAbierto, status: 'open' }),
+      });
+
+      await service.void(saleObjId.toString(), user);
+
+      expect(cajaMovementModel.create).not.toHaveBeenCalled();
+    });
   });
 });

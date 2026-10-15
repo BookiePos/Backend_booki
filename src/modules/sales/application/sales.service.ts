@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -24,6 +25,10 @@ import {
   CajaSession,
   CajaSessionDocument,
 } from '../../caja/infrastructure/schemas/caja-session.schema';
+import {
+  CajaMovement,
+  CajaMovementDocument,
+} from '../../caja/infrastructure/schemas/caja-movement.schema';
 import {
   Discount,
   DiscountDocument,
@@ -139,6 +144,12 @@ export class SalesService {
      */
     @InjectModel(SaleReturn.name)
     private readonly saleReturnModel: Model<SaleReturnDocument>,
+    /**
+     * Movimientos de caja: anular una venta en efectivo de un turno ya cerrado
+     * registra la salida del dinero en la caja abierta (ítem 1.12).
+     */
+    @InjectModel(CajaMovement.name)
+    private readonly cajaMovementModel: Model<CajaMovementDocument>,
   ) {}
 
   /**
@@ -956,6 +967,22 @@ export class SalesService {
       );
     }
 
+    // Venta en efectivo de un turno ya cerrado: su dinero se contó en ese
+    // arqueo, así que devolverlo sale de la caja abierta hoy. Sin caja abierta
+    // no hay dónde registrar la salida y el arqueo de mañana no cuadraría: se
+    // rechaza antes de tocar nada (ítem 1.12).
+    let cajaParaSalida: CajaSessionDocument | null = null;
+    if (await this.esEfectivoDeTurnoCerrado(existing)) {
+      cajaParaSalida = await this.cajaSessionModel
+        .findOne({ sedeId: new Types.ObjectId(sedeId), status: 'open' })
+        .exec();
+      if (!cajaParaSalida) {
+        throw new ConflictException(
+          'La venta es de un turno ya cerrado y se pagó en efectivo: abre la caja para registrar la salida del dinero antes de anularla.',
+        );
+      }
+    }
+
     // Guarda de concurrencia (Mongo standalone, sin transacciones): tomamos la
     // venta con un update condicional `status != 'void'`. Solo un llamador gana
     // el flip; si `findOneAndUpdate` devuelve null la venta ya estaba anulada,
@@ -1037,7 +1064,34 @@ export class SalesService {
     await this.ledgerPosting.reverseSale(sale._id.toString(), user.email);
     // Reversa del auto-posteo a tesorería (si la venta fue tarjeta/transferencia).
     await this.treasury.reverse('sale', sale._id.toString());
+
+    if (cajaParaSalida) {
+      try {
+        await this.cajaMovementModel.create({
+          sessionId: cajaParaSalida._id,
+          sedeId: new Types.ObjectId(sedeId),
+          type: 'out',
+          // Lo que el cliente pagó en efectivo: total + propina + domicilio.
+          amount: cop(sale.total + (sale.tip ?? 0) + (sale.deliveryFee ?? 0)),
+          reason: 'Anulación de venta',
+          note: `Venta ${sale.saleNumber} de un turno cerrado`,
+          userId: user.userId,
+          userEmail: user.email,
+        });
+      } catch (err) {
+        this.logger.error(
+          `CONCILIAR: la venta ${sale._id.toString()} se anuló pero no se registró la salida de efectivo en la caja ${cajaParaSalida._id.toString()}: ${(err as Error).message}`,
+        );
+      }
+    }
     return this.getOrFail(sale.id);
+  }
+
+  /** Venta pagada en efectivo cuyo turno de caja ya se cerró (o no existe). */
+  private async esEfectivoDeTurnoCerrado(sale: SaleDocument): Promise<boolean> {
+    if (sale.payment?.method !== 'cash' || !sale.cajaSessionId) return false;
+    const turno = await this.cajaSessionModel.findById(sale.cajaSessionId).exec();
+    return turno?.status !== 'open';
   }
 
   /**

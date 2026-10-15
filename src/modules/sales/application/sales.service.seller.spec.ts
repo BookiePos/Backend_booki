@@ -121,6 +121,7 @@ describe('SalesService.create · vendedor', () => {
       {} as any, // tax: sin tenant restaurante no se consulta el INC
       {} as any, // businesses: el giro viene en el contexto o no hay tenant
       {} as any, // saleReturnModel: solo lo usa la anulación
+      {} as any, // cajaMovementModel: solo lo usa la anulación
     );
   });
 

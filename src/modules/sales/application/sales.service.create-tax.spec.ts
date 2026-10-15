@@ -194,6 +194,7 @@ describe('SalesService.create (IVA incluido + prorrateo de descuento)', () => {
       tax,
       businesses,
       {} as any, // saleReturnModel: solo lo usa la anulación
+      {} as any, // cajaMovementModel: solo lo usa la anulación
     );
   });
 
@@ -728,6 +729,7 @@ describe('SalesService.create (IVA incluido + prorrateo de descuento)', () => {
       tax,
       businesses,
       {} as any,
+      {} as any, // cajaMovementModel
     );
     const tzAntes = process.env.TZ;
     process.env.TZ = 'UTC';

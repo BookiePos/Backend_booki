@@ -19,6 +19,10 @@ import {
   CajaSessionSchema,
 } from '../caja/infrastructure/schemas/caja-session.schema';
 import {
+  CajaMovement,
+  CajaMovementSchema,
+} from '../caja/infrastructure/schemas/caja-movement.schema';
+import {
   FinanceReceivable,
   FinanceReceivableSchema,
 } from '../finance/infrastructure/schemas/finance-receivable.schema';
@@ -74,6 +78,7 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
       { name: Counter.name, schema: CounterSchema },
       { name: StockItem.name, schema: StockItemSchema },
       { name: CajaSession.name, schema: CajaSessionSchema },
+      { name: CajaMovement.name, schema: CajaMovementSchema },
       { name: FinanceReceivable.name, schema: FinanceReceivableSchema },
       { name: Sede.name, schema: SedeSchema },
     ]),
