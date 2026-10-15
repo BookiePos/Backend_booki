@@ -311,6 +311,7 @@ describe('ProductionService · empaque de la receta al planear la orden', () => 
       products as any,
       {} as any,
       {} as any,
+      {} as any,
     );
     vi.spyOn(service, 'bomForProduct').mockResolvedValue(bom as any);
     return service as any;
