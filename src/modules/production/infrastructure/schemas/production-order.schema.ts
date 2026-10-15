@@ -101,6 +101,14 @@ export class ProductionOrder {
   @Prop({ default: 0, min: 0 })
   extraCost!: number;
 
+  /**
+   * Empaque del lote escrito en dinero (COP entero). Sale de la receta a
+   * prorrata, igual que la mano de obra, y se congela aquí: la orden tiene que
+   * poder explicarse dentro de un año aunque después suba la bolsa.
+   */
+  @Prop({ default: 0, min: 0 })
+  packagingCost!: number;
+
   /** Σ del costo real de los lotes consumidos. */
   @Prop({ default: 0, min: 0 })
   materialsCost!: number;

@@ -88,6 +88,33 @@ export class CatalogProduct {
   @Prop({ type: [RecipeLineSchema], default: [] })
   packaging!: RecipeLine[];
 
+  // ── Costos escritos en dinero ──────────────────────────────────────────────
+  /**
+   * Mano de obra por unidad vendida, en COP entero.
+   *
+   * No sale de la nómina ni la toca: es lo que el dueño calcula que le cuesta
+   * el trabajo de una porción, y existe para que el semáforo de margen diga la
+   * verdad. Una receta cuyo costo son solo los ingredientes siempre parece más
+   * rentable de lo que es.
+   */
+  @Prop({ default: 0, min: 0 })
+  laborCost!: number;
+
+  /**
+   * Empaque por unidad vendida escrito EN DINERO, en COP entero.
+   *
+   * Es la alternativa a `packaging`, no su reemplazo, y las dos conviven a
+   * propósito: elegir la bolsa del inventario es lo que hace que la existencia
+   * baje sola al vender, pero obliga a tenerla cargada con su precio. Quien
+   * todavía no la tiene cargada —o compra las bolsas sueltas y no las cuenta—
+   * escribe aquí lo que le cuestan y el costo de la receta queda completo.
+   *
+   * Si se usan las dos, las dos suman: es la forma de cobrarse el vaso que sí
+   * está en el inventario y la servilleta que no.
+   */
+  @Prop({ default: 0, min: 0 })
+  packagingCost!: number;
+
   /**
    * URL pública de la foto del producto (Vercel Blob). La usa el POS para
    * mostrar la rejilla con imagen y el panel para la ficha.

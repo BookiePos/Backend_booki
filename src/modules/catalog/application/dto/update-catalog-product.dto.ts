@@ -3,6 +3,7 @@ import {
   IsArray,
   IsBoolean,
   IsIn,
+  IsInt,
   IsNumber,
   IsOptional,
   IsPositive,
@@ -83,6 +84,18 @@ export class UpdateCatalogProductDto {
   @ValidateNested({ each: true })
   @Type(() => RecipeLineDto)
   packaging?: RecipeLineDto[];
+
+  /** Mano de obra por unidad vendida, en pesos. Cero la quita. */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  laborCost?: number;
+
+  /** Empaque por unidad vendida escrito en pesos. Cero lo quita. */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  packagingCost?: number;
 
   @IsOptional()
   @IsBoolean()

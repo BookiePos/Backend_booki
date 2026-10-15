@@ -4,6 +4,7 @@ import {
   IsBoolean,
   IsIn,
   IsMongoId,
+  IsInt,
   IsNumber,
   IsOptional,
   IsPositive,
@@ -83,6 +84,18 @@ export class CreateCatalogProductDto {
   @ValidateNested({ each: true })
   @Type(() => RecipeLineDto)
   packaging?: RecipeLineDto[];
+
+  /** Mano de obra por unidad vendida, en pesos. Opcional. */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  laborCost?: number;
+
+  /** Empaque por unidad vendida escrito en pesos. Opcional. */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  packagingCost?: number;
 
   @IsOptional()
   @IsBoolean()
