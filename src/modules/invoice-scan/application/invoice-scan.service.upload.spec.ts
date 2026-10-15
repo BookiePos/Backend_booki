@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ServiceUnavailableException } from '@nestjs/common';
+import { ServiceUnavailableException, BadRequestException } from '@nestjs/common';
 
 vi.mock('@nestjs/mongoose', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@nestjs/mongoose')>();
@@ -33,7 +33,7 @@ describe('InvoiceScanService · cuota al subir', () => {
   const ctx = { businessId: 'b1', dbName: 'biz_b1', plan: 'pro' } as never;
 
   const file = {
-    buffer: Buffer.from('foto'),
+    buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]),
     mimetype: 'image/jpeg',
     size: 1024,
     originalname: 'factura.jpg',
@@ -87,5 +87,33 @@ describe('InvoiceScanService · cuota al subir', () => {
     expect(businesses.consumeScan).toHaveBeenCalledOnce();
     expect(storage.upload).toHaveBeenCalledOnce();
     expect(scans.create).toHaveBeenCalledOnce();
+  });
+
+  it("rechaza por contenido un HTML con mimetype image/png, sin cobrar ni subir", async () => {
+    const storage = { assertAvailable: vi.fn(), upload: vi.fn() };
+    const { service, scans, businesses } = makeService(storage);
+    const html = { ...file, buffer: Buffer.from("<html><script>x</script></html>"), mimetype: "image/png" };
+
+    await expect(
+      TenantContext.run(ctx, () => service.upload(html, user)),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(businesses.consumeScan).not.toHaveBeenCalled();
+    expect(storage.upload).not.toHaveBeenCalled();
+    expect(scans.create).not.toHaveBeenCalled();
+  });
+
+  it("guarda con el Content-Type detectado, no con el declarado", async () => {
+    const storage = {
+      assertAvailable: vi.fn(),
+      upload: vi.fn().mockResolvedValue({ url: "u", pathname: "p" }),
+    };
+    const { service } = makeService(storage);
+    const png = { ...file, buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), mimetype: "image/jpeg" };
+
+    await TenantContext.run(ctx, () => service.upload(png, user));
+
+    expect(storage.upload.mock.calls[0]![0]).toMatch(/.png$/);
+    expect(storage.upload.mock.calls[0]![2]).toBe("image/png");
   });
 });

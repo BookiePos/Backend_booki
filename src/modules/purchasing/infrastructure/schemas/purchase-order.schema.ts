@@ -76,8 +76,11 @@ export class ReceiptLine {
 }
 const ReceiptLineSchema = SchemaFactory.createForClass(ReceiptLine);
 
-/** Una recepción (parcial o total) de la orden. */
-@Schema({ _id: false, timestamps: { createdAt: 'at', updatedAt: false } })
+/**
+ * Una recepción (parcial o total) de la orden. Lleva `_id`: es el sourceId de
+ * su asiento. Las recepciones anteriores a este campo no lo tienen guardado.
+ */
+@Schema({ timestamps: { createdAt: 'at', updatedAt: false } })
 export class Receipt {
   @Prop({ required: true, trim: true })
   date!: string;

@@ -18,6 +18,7 @@ import {
   TIPO_PERSONA,
   TipoPersona,
 } from '../../../sedes/domain/sede.constants';
+import { POLITICA_CONTRASENA } from './password-policy';
 
 /**
  * Alta pública de una empresa (tenant) desde la web. Recoge la identidad del
@@ -84,12 +85,6 @@ export class RegisterDto {
   ownerEmail!: string;
 
   @IsString()
-  @IsStrongPassword({
-    minLength: 8,
-    minLowercase: 1,
-    minUppercase: 1,
-    minNumbers: 1,
-    minSymbols: 1,
-  })
+  @IsStrongPassword(POLITICA_CONTRASENA)
   password!: string;
 }

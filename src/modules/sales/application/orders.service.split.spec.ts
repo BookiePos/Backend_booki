@@ -175,6 +175,25 @@ describe('OrdersService.checkout · cuenta dividida', () => {
     expect(claim()[1].$set.status).toBe('closed');
   });
 
+  it('le pasa a la venta lo ya cobrado de cada producto (cuenta dividida en pesos exactos, 1.11)', async () => {
+    // Sin esto cada parte se redondeaba por su cuenta y tres tercios de una
+    // pizza de $10.001 sumaban $10.000.
+    build(
+      comanda({
+        lines: [
+          { productId: PIZZA, qty: 1, paidQty: 0.666 },
+          { productId: CERVEZA, qty: 4, paidQty: 1.5 },
+        ],
+      }),
+    );
+
+    await service.checkout(orderObjId.toString(), { payment: pago } as never, user);
+
+    const opts = sales.create.mock.calls[0][3];
+    expect(opts.paidBefore.get(PIZZA.toString())).toBe(0.666);
+    expect(opts.paidBefore.get(CERVEZA.toString())).toBe(1.5);
+  });
+
   it('el cobro exige que nadie haya cobrado mientras tanto', async () => {
     // Dos meseros cobrando partes distintas al tiempo leerían las mismas
     // cantidades pendientes. El segundo tiene que perder.

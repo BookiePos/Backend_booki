@@ -79,6 +79,8 @@ describe('PurchasingService.nextNumber (consecutivo OC-000012)', () => {
       {} as any, // products
       tax,
       {} as any, // ledgerPosting
+      {} as any, // sedes
+      {} as any, // businesses
     );
   }
 

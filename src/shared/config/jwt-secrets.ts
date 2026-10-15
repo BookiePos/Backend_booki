@@ -18,13 +18,22 @@ export function jwtSecret(config: ConfigService): string {
 }
 
 /**
- * Secreto de firma del refresh token. Si `JWT_REFRESH_SECRET` no está definido,
- * cae al `JWT_SECRET` (también obligatorio); nunca a un valor por defecto.
+ * Secreto de firma del refresh token. Obligatorio y DISTINTO del de acceso
+ * (ítem 3.7).
+ *
+ * Antes caía a `JWT_SECRET` si faltaba. Con un único secreto, un access token
+ * pasaba la verificación del refresh y viceversa: `refresh` leía un `jti`
+ * inexistente (`findOne({jti: undefined})` devuelve cualquier fila) y podía
+ * rotar la sesión de otra persona. El claim `typ` cierra el mismo hueco por
+ * otra vía; los dos juntos no dependen el uno del otro.
  */
 export function jwtRefreshSecret(config: ConfigService): string {
-  const refresh = config.get<string>('JWT_REFRESH_SECRET');
-  if (refresh && refresh.trim() !== '') {
-    return refresh;
+  const refresh = requireSecret(
+    config.get<string>('JWT_REFRESH_SECRET'),
+    'JWT_REFRESH_SECRET',
+  );
+  if (refresh === jwtSecret(config)) {
+    throw new Error('JWT_REFRESH_SECRET debe ser distinto de JWT_SECRET');
   }
-  return jwtSecret(config);
+  return refresh;
 }

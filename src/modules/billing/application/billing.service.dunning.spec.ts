@@ -110,6 +110,10 @@ describe('BillingService.runBillingCycle · cobro y mora', () => {
       })),
     };
     payments = {
+      // Reserva atómica de `applyApproved`: aquí siempre la gana este proceso
+      // (la carrera entre dos procesos se prueba en billing.service.webhook.spec).
+      findOneAndUpdate: vi.fn(() => ({ exec: () => Promise.resolve({}) })),
+      updateOne: vi.fn(() => ({ exec: () => Promise.resolve({ modifiedCount: 1 }) })),
       create: vi.fn((doc: any) =>
         Promise.resolve({
           ...doc,

@@ -74,6 +74,8 @@ describe('SalesService.create · domicilio', () => {
   let creada: any;
   let ledger: any;
   let treasury: any;
+  let receivableModel: any;
+  let payroll: any;
   let service: SalesService;
 
   /** @param zona lo que devuelve `deliveryZones.refFor` */
@@ -81,6 +83,8 @@ describe('SalesService.create · domicilio', () => {
     creada = undefined;
     ledger = { postSale: vi.fn().mockResolvedValue(undefined) };
     treasury = { post: vi.fn().mockResolvedValue(undefined) };
+    receivableModel = { create: vi.fn().mockResolvedValue({}) };
+    payroll = { createDeduction: vi.fn().mockResolvedValue({}) };
 
     service = new SalesService(
       {
@@ -105,7 +109,7 @@ describe('SalesService.create · domicilio', () => {
         })),
       } as never,
       {} as never, // discountModel
-      {} as never, // receivableModel
+      receivableModel as never,
       {
         sell: vi.fn((_s: string, lines: any[]) =>
           Promise.resolve(
@@ -131,12 +135,22 @@ describe('SalesService.create · domicilio', () => {
       // Sin lista de precios: se cobra el precio de mostrador del catálogo.
       { rulesFor: vi.fn().mockResolvedValue(null) } as never,
       { refFor: vi.fn().mockResolvedValue(zona) } as never,
-      {} as never, // customers
-      {} as never, // payroll
-      {} as never, // params
+      {
+        getOrFail: vi.fn().mockResolvedValue({
+          _id: new Types.ObjectId(),
+          name: 'Cliente',
+          docType: 'CC',
+          docNumber: '1',
+        }),
+      } as never, // customers
+      payroll as never,
+      { number: vi.fn().mockResolvedValue(30) } as never, // params
       ledger as never,
       treasury as never,
       {} as any, // sedeModel: solo lo recibe populate, que aquí está simulado
+      {} as any, // tax: sin tenant restaurante no se consulta el INC
+      {} as any, // businesses: el giro viene en el contexto o no hay tenant
+      {} as any, // saleReturnModel: solo lo usa la anulación
     );
   }
 
@@ -278,5 +292,51 @@ describe('SalesService.create · domicilio', () => {
     expect(creada.orderType).toBe('mostrador');
     expect(creada.deliveryFee).toBe(0);
     expect(creada.delivery).toBeUndefined();
+  });
+
+  // El fiado se debe por lo mismo que el asiento debita a Clientes: total +
+  // domicilio. La propina no se fía (es del personal) y sigue fuera.
+  it('fiado a cliente con domicilio: la CxC incluye el envío y no la propina', async () => {
+    build({ id: ZONA.toString(), name: 'Laureles', fee: 5_000 });
+
+    await service.create(
+      venta({
+        orderType: 'domicilio',
+        tip: 2_000,
+        payment: {
+          method: 'credit',
+          debtorType: 'customer',
+          customerId: new Types.ObjectId().toString(),
+        },
+        delivery: { address: 'Calle 33', zoneId: ZONA.toString() },
+      }),
+      user,
+    );
+
+    expect(receivableModel.create).toHaveBeenCalledTimes(1);
+    expect(receivableModel.create.mock.calls[0][0].amount).toBe(16_900);
+    const asiento = ledger.postSale.mock.calls[0][0];
+    expect(asiento.total + asiento.deliveryFee).toBe(16_900);
+  });
+
+  it('fiado de empleado con domicilio: la deducción incluye el envío y no la propina', async () => {
+    build({ id: ZONA.toString(), name: 'Laureles', fee: 5_000 });
+
+    await service.create(
+      venta({
+        orderType: 'domicilio',
+        tip: 2_000,
+        payment: {
+          method: 'credit',
+          debtorType: 'employee',
+          employeeId: new Types.ObjectId().toString(),
+        },
+        delivery: { address: 'Calle 33', zoneId: ZONA.toString() },
+      }),
+      user,
+    );
+
+    expect(payroll.createDeduction).toHaveBeenCalledTimes(1);
+    expect(payroll.createDeduction.mock.calls[0][0].amount).toBe(16_900);
   });
 });

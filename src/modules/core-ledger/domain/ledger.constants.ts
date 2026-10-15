@@ -43,7 +43,16 @@ export const ACC = {
   INVENTARIO: '1435',
   PROVEEDORES: '2205',
   RETENCION_FUENTE: '2365',
-  IVA_POR_PAGAR: '2367',
+  /**
+   * IVA generado por pagar (PUC, Decreto 2650/93: 2408). No es la 2367: esa es
+   * la ReteIVA que el negocio practica como agente retenedor.
+   */
+  IVA_POR_PAGAR: '2408',
+  /**
+   * INC de restaurantes y bares (arts. 512-1 y 512-9 ET). PUC 2495 (otros
+   * impuestos por pagar); no es la 2368, que es la ReteICA.
+   */
+  INC_POR_PAGAR: '2495',
   SALARIOS_POR_PAGAR: '2505',
   INGRESOS_VENTAS: '4135',
   GASTOS_PERSONAL: '5105',
@@ -72,9 +81,14 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   // Pasivo
   { code: '2205', name: 'Proveedores (CxP)', type: 'liability' },
   { code: '2365', name: 'Retención en la fuente', type: 'liability' },
-  { code: '2367', name: 'IVA por pagar', type: 'liability' },
-  { code: '2368', name: 'INC por pagar', type: 'liability' },
+  // 2367/2368 son retenciones practicadas (PUC). Se siembran con su nombre
+  // real aunque el posteo automático ya no las use: las empresas anteriores
+  // al cambio guardan ahí IVA/INC hasta correr la reclasificación (src/datos).
+  { code: '2367', name: 'Impuesto a las ventas retenido (ReteIVA)', type: 'liability' },
+  { code: '2368', name: 'Impuesto de industria y comercio retenido (ReteICA)', type: 'liability' },
   { code: '2380', name: 'Propinas por pagar', type: 'liability' },
+  { code: '2408', name: 'Impuesto sobre las ventas por pagar (IVA)', type: 'liability' },
+  { code: '2495', name: 'Impuesto nacional al consumo por pagar', type: 'liability' },
   { code: '2505', name: 'Salarios por pagar', type: 'liability' },
   // Patrimonio
   { code: '3105', name: 'Capital', type: 'equity' },
@@ -88,3 +102,26 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   { code: '5195', name: 'Gastos diversos', type: 'expense' },
   { code: '6135', name: 'Costo de mercancía vendida', type: 'expense' },
 ];
+
+/**
+ * Cuentas que el posteo automático usó para IVA/INC hasta octubre de 2026 →
+ * cuenta PUC correcta (Decreto 2650/93). 2367/2368 son ReteIVA/ReteICA; el IVA
+ * por pagar es la 2408 y el INC la 2495. La usan el script de reclasificación
+ * (src/datos) y la reversa de un asiento viejo, para no volver a ensuciarlas.
+ */
+export const RECLASIFICACIONES: readonly { desde: string; hacia: string }[] = [
+  { desde: '2367', hacia: ACC.IVA_POR_PAGAR },
+  { desde: '2368', hacia: ACC.INC_POR_PAGAR },
+];
+
+/**
+ * `sourceType` de los asientos automáticos que llevaban el IVA/INC a 2367/2368
+ * con el plan viejo. Solo en ellos 2367/2368 significan IVA/INC: en un asiento
+ * manual (o de otro origen) son ReteIVA/ReteICA de verdad y no se remapean.
+ */
+export const ORIGENES_IVA_INC_VIEJO: readonly string[] = ['sale', 'sale_return'];
+
+/** Código vigente de una cuenta: la PUC correcta si es una de las viejas de IVA/INC. */
+export function cuentaVigente(code: string): string {
+  return RECLASIFICACIONES.find((r) => r.desde === code)?.hacia ?? code;
+}

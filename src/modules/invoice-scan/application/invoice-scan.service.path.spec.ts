@@ -68,6 +68,7 @@ describe('InvoiceScanService · texto del PDF vs OCR', () => {
     };
     const scans = {
       findById: vi.fn().mockReturnValue({ exec: vi.fn().mockResolvedValue(scan) }),
+      findOneAndUpdate: vi.fn().mockReturnValue({ exec: vi.fn().mockResolvedValue({ extractions: 1 }) }),
       findOne: vi.fn().mockReturnValue({
         sort: () => ({ exec: vi.fn().mockResolvedValue(null) }),
       }),

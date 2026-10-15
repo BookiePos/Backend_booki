@@ -199,6 +199,28 @@ describe('InvoiceScanService.apply', () => {
     expect(scan.status).toBe('applied');
   });
 
+  it('de contado, la recepción y el gasto salen del medio con que se pagó (ítem 1.4)', async () => {
+    const contado = makeScan({
+      draft: { ...draft(), invoice: { ...draft().invoice, paymentTerms: 'contado' } },
+    });
+    const d = makeDeps(contado);
+    await TenantContext.run(ctx, () =>
+      makeService(d).apply(contado.id, user, { paymentMethod: 'transfer' }),
+    );
+
+    const receipt = d.purchasing.receive.mock.calls[0]![1] as {
+      generatePayable: boolean;
+      paymentMethod?: string;
+    };
+    expect(receipt.generatePayable).toBe(false);
+    expect(receipt.paymentMethod).toBe('transfer');
+    const expense = d.finance.createExpense.mock.calls[0]![0] as {
+      status: string;
+      paymentMethod?: string;
+    };
+    expect(expense).toMatchObject({ status: 'paid', paymentMethod: 'transfer' });
+  });
+
   it('crea el producto nuevo con lo que se completó en la revisión', async () => {
     await TenantContext.run(ctx, () => service.apply(scan.id, user));
 

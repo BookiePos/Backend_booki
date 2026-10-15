@@ -138,6 +138,9 @@ describe('SalesService.create · empaque', () => {
       { postSale: vi.fn().mockResolvedValue(undefined) } as never,
       { post: vi.fn().mockResolvedValue(undefined) } as never,
       {} as any, // sedeModel: solo lo recibe populate, que aquí está simulado
+      {} as any, // tax: sin tenant restaurante no se consulta el INC
+      {} as any, // businesses: el giro viene en el contexto o no hay tenant
+      {} as any, // saleReturnModel: solo lo usa la anulación
     );
   }
 

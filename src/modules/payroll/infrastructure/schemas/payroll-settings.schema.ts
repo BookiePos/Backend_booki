@@ -3,6 +3,7 @@ import { HydratedDocument, Schema as MongooseSchema } from 'mongoose';
 import {
   ArlRates,
   FspTramo,
+  JornadaTramo,
   RecargoFactores,
   RetTramo,
 } from '../../domain/payroll.constants';
@@ -113,6 +114,10 @@ export class PayrollSettings {
 
   @Prop({ type: MongooseSchema.Types.Mixed, required: true })
   recargos!: RecargoFactores;
+
+  /** Jornada máxima por vigencia (divisor del valor hora). Ver `horasMesVigentes`. */
+  @Prop({ type: MongooseSchema.Types.Mixed })
+  jornadaTramos?: JornadaTramo[];
 
   @Prop({ required: true, default: true })
   empresaExoneradaAportes!: boolean;

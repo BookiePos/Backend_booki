@@ -31,6 +31,7 @@ import { TenantContext } from '../../../shared/tenancy/tenant-context';
  */
 describe('AuthService · cierre de sesión', () => {
   const BUSINESS_ID = '68b0f3c2a1d4e5f6a7b8c9d0';
+  const USER_ID = '68b0f3c2a1d4e5f6a7b8c9aa';
 
   let seenBusinessId: string | undefined;
   let updateOne: any;
@@ -52,7 +53,9 @@ describe('AuthService · cierre de sesión', () => {
     service = new AuthService(
       {} as never,
       jwt as never,
-      { get: () => 'secreto-de-pruebas' } as never,
+      {
+        get: (k: string) => (k === 'JWT_SECRET' ? 'acceso' : 'refresco'),
+      } as never,
       {} as never,
       {} as never,
       refreshModel as never,
@@ -61,7 +64,7 @@ describe('AuthService · cierre de sesión', () => {
 
   it('revoca el token dentro de la empresa que viaja en el propio token', async () => {
     jwt.verifyAsync.mockResolvedValue({
-      sub: 'u1',
+      sub: USER_ID,
       jti: 'jti-1',
       biz: BUSINESS_ID,
     });
@@ -81,7 +84,7 @@ describe('AuthService · cierre de sesión', () => {
 
   it('propaga el fallo al revocar: no se anuncia una sesión cerrada que no lo está', async () => {
     jwt.verifyAsync.mockResolvedValue({
-      sub: 'u1',
+      sub: USER_ID,
       jti: 'jti-1',
       biz: BUSINESS_ID,
     });
@@ -92,5 +95,40 @@ describe('AuthService · cierre de sesión', () => {
     await expect(service.logout('refresh-valido')).rejects.toThrow(
       'sin conexión a la base',
     );
+  });
+
+  // Ítem 3.7: sin jti no hay qué revocar, y antes `updateOne({jti: undefined})`
+  // podía marcar la sesión de otra persona.
+  it('un token sin jti no revoca nada', async () => {
+    jwt.verifyAsync.mockResolvedValue({ sub: USER_ID, biz: BUSINESS_ID });
+
+    await expect(service.logout('sin-jti')).resolves.toBeUndefined();
+    expect(updateOne).not.toHaveBeenCalled();
+  });
+
+  it('un access token presentado como refresh no revoca nada', async () => {
+    jwt.verifyAsync.mockResolvedValue({
+      sub: USER_ID,
+      jti: 'jti-1',
+      biz: BUSINESS_ID,
+      typ: 'access',
+    });
+
+    await expect(service.logout('access')).resolves.toBeUndefined();
+    expect(updateOne).not.toHaveBeenCalled();
+  });
+
+  it('verifica con el secreto de refresh', async () => {
+    jwt.verifyAsync.mockResolvedValue({
+      sub: USER_ID,
+      jti: 'jti-1',
+      biz: BUSINESS_ID,
+      typ: 'refresh',
+    });
+
+    await service.logout('refresh-valido');
+    expect(jwt.verifyAsync.mock.calls[0][1]).toMatchObject({
+      secret: 'refresco',
+    });
   });
 });

@@ -110,8 +110,10 @@ export class TreasuryPostingService {
         .deleteMany({ sourceType, sourceId, auto: true })
         .exec();
     } catch (err) {
-      this.logger.warn(
-        `No se pudo reversar tesorería (${sourceType}:${sourceId}): ${
+      // Best-effort como el resto del servicio, pero el movimiento queda vivo
+      // para una operación anulada: ERROR con el origen para conciliarlo.
+      this.logger.error(
+        `CONCILIAR: no se pudo reversar tesorería (${sourceType}:${sourceId}): ${
           err instanceof Error ? err.message : String(err)
         }`,
       );

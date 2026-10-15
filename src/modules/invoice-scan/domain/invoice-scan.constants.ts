@@ -23,10 +23,6 @@ export const INVOICE_IMAGE_TYPES: Readonly<Record<string, string>> = {
 
 export const INVOICE_IMAGE_TYPES_LABEL = 'JPG, PNG, WebP o AVIF';
 
-export function invoiceImageExtension(mimetype: string): string | null {
-  return INVOICE_IMAGE_TYPES[mimetype.toLowerCase()] ?? null;
-}
-
 /** Estados por los que pasa una factura escaneada. */
 export const INVOICE_SCAN_STATUSES = [
   /** Imagen subida, todavía sin leer. */
@@ -88,3 +84,24 @@ export const TOTALS_TOLERANCE_COP = 100;
  * falso negativo solo obliga a elegir el producto a mano.
  */
 export const NAME_MATCH_THRESHOLD = 0.6;
+
+/**
+ * Tope de texto (PDF) o XML que se acepta y se manda al modelo, ~200 KB.
+ * Una factura real cabe de sobra; más que eso es abuso o un archivo equivocado
+ * y cada token se paga.
+ */
+export const INVOICE_TEXT_MAX_CHARS = 200_000;
+
+/**
+ * Lecturas con IA por factura incluidas en el escaneo que cobró la subida (la
+ * primera y un par de reintentos tras un fallo). Desde ahí, cada lectura
+ * consume otro escaneo de la cuota mensual del plan.
+ */
+export const INVOICE_FREE_EXTRACTIONS = 3;
+
+/**
+ * Tope del XML de la factura electrónica, 2 MB. No usa IA (se interpreta
+ * localmente), pero un XML firmado de la DIAN con su respuesta de validación
+ * pasa de 1 MB, así que no le aplica el tope de 200 KB del texto.
+ */
+export const INVOICE_XML_MAX_CHARS = 2_000_000;

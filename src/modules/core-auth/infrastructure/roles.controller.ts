@@ -34,14 +34,15 @@ export class RolesController {
     return this.roles.list();
   }
 
+  // El usuario viaja para que nadie cree un rol con permisos que no tiene.
   @RequirePermissions(PERMISSIONS.ROLES_MANAGE)
   @Post('roles')
-  create(@Body() dto: CreateRoleDto) {
-    return this.roles.create(dto);
+  create(@Body() dto: CreateRoleDto, @CurrentUser() user: JwtUser) {
+    return this.roles.create(dto, user);
   }
 
-  // El usuario viaja para una sola cosa: impedir que se quite a sí mismo el
-  // permiso con el que entró aquí y se deje fuera sin vuelta atrás.
+  // El usuario viaja para que nadie se suba de rango editando roles (ni el
+  // propio ni el del Dueño) ni se deje fuera quitándose `roles.manage`.
   @RequirePermissions(PERMISSIONS.ROLES_MANAGE)
   @Patch('roles/:id')
   update(

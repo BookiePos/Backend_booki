@@ -5,6 +5,8 @@ import { CreateUserDto } from '../application/dto/create-user.dto';
 import { UpdateUserDto } from '../application/dto/update-user.dto';
 import { RequirePermissions } from './decorators/require-permissions.decorator';
 import { PERMISSIONS } from '../domain/permissions';
+import { CurrentUser } from './decorators/current-user.decorator';
+import { JwtUser } from './jwt.strategy';
 
 /** Vista pública de un usuario (sin passwordHash). */
 function serialize(user: UserDocument) {
@@ -34,13 +36,17 @@ export class UsersController {
 
   @RequirePermissions(PERMISSIONS.USERS_MANAGE)
   @Post()
-  async create(@Body() dto: CreateUserDto) {
-    return serialize(await this.users.create(dto));
+  async create(@Body() dto: CreateUserDto, @CurrentUser() user: JwtUser) {
+    return serialize(await this.users.create(dto, user));
   }
 
   @RequirePermissions(PERMISSIONS.USERS_MANAGE)
   @Patch(':id')
-  async update(@Param('id') id: string, @Body() dto: UpdateUserDto) {
-    return serialize(await this.users.update(id, dto));
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateUserDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return serialize(await this.users.update(id, dto, user));
   }
 }

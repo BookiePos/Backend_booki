@@ -61,7 +61,7 @@ describe('LedgerPostingService · asientos automáticos', () => {
       post: vi.fn().mockResolvedValue({}),
       reverseBySource: vi.fn().mockResolvedValue({}),
     };
-    service = new LedgerPostingService(ledger as never);
+    service = new LedgerPostingService(ledger as never, { registrar: vi.fn() } as never);
   });
 
   describe('venta', () => {
@@ -94,6 +94,44 @@ describe('LedgerPostingService · asientos automáticos', () => {
       expect(side('debit')).toBe(side('credit'));
       expect(amountOn(ACC.COSTO_VENTA, 'debit')).toBe(60_000);
       expect(amountOn(ACC.INVENTARIO, 'credit')).toBe(60_000);
+    });
+
+    it('INC de restaurante: va a la 2495, no a la 2408 (ítem 1.3)', async () => {
+      // Plato de $30.000 con INC 8 % incluido: base 27.778, INC 2.222.
+      await service.postSale({
+        ...base,
+        total: 30_000,
+        tax: 0,
+        consumptionTax: 2_222,
+        cogs: 0,
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      // PUC (Decreto 2650/93): 2495 es INC por pagar; 2367/2368 son ReteIVA/ReteICA.
+      expect(ACC.INC_POR_PAGAR).toBe('2495');
+      expect(ACC.IVA_POR_PAGAR).toBe('2408');
+      expect(amountOn(ACC.INC_POR_PAGAR, 'credit')).toBe(2_222);
+      expect(amountOn(ACC.IVA_POR_PAGAR, 'credit')).toBe(0);
+      expect(amountOn(ACC.INGRESOS_VENTAS, 'credit')).toBe(27_778);
+    });
+
+    it('devolución de una venta con INC baja la 2495, no la 2408', async () => {
+      await service.postSaleReturn({
+        returnId: 'r1',
+        saleNumber: 'FV-000001',
+        date: '2026-09-10',
+        sedeId: SEDE,
+        refundTotal: 30_000,
+        tax: 0,
+        consumptionTax: 2_222,
+        cogs: 0,
+        refundMethod: 'cash',
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.INC_POR_PAGAR, 'debit')).toBe(2_222);
+      expect(amountOn(ACC.IVA_POR_PAGAR, 'debit')).toBe(0);
+      expect(amountOn(ACC.INGRESOS_VENTAS, 'debit')).toBe(27_778);
     });
 
     it('sin IVA no abre el renglón de impuesto y el ingreso es el total', async () => {
@@ -222,6 +260,36 @@ describe('LedgerPostingService · asientos automáticos', () => {
       expect(amountOn(ACC.RETENCION_FUENTE, 'credit')).toBe(12_500);
     });
 
+    it('IVA descontable (responsable): el gasto va a la base y el IVA a la 2408', async () => {
+      await service.postExpense({
+        ...base,
+        amount: 100_000,
+        tax: 19_000,
+        ivaDescontable: 19_000,
+        status: 'paid',
+        paymentMethod: 'cash',
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.GASTOS_DIVERSOS, 'debit')).toBe(100_000);
+      expect(amountOn(ACC.IVA_POR_PAGAR, 'debit')).toBe(19_000);
+      expect(amountOn(ACC.CAJA, 'credit')).toBe(119_000);
+    });
+
+    it('sin IVA descontable (restaurante INC o no responsable): el IVA es gasto, no toca la 2408', async () => {
+      await service.postExpense({
+        ...base,
+        amount: 100_000,
+        tax: 19_000,
+        ivaDescontable: 0,
+        status: 'paid',
+        paymentMethod: 'cash',
+      });
+
+      expect(amountOn(ACC.GASTOS_DIVERSOS, 'debit')).toBe(119_000);
+      expect(lines().some((l) => l.accountCode === ACC.IVA_POR_PAGAR)).toBe(false);
+    });
+
     it('sin retención no abre el renglón de retención', async () => {
       await service.postExpense({
         ...base,
@@ -281,6 +349,57 @@ describe('LedgerPostingService · asientos automáticos', () => {
       expect(side('debit')).toBe(side('credit'));
       expect(amountOn(ACC.INVENTARIO, 'debit')).toBe(2_500_000);
       expect(amountOn(ACC.PROVEEDORES, 'credit')).toBe(2_500_000);
+    });
+
+    it('compra a crédito de un responsable de IVA: inventario a la base, IVA a la 2408, CxP por el total', async () => {
+      await service.postPurchaseReceipt({
+        receiptId: 'r2',
+        date: '2026-10-13',
+        sedeId: SEDE,
+        amount: 100_000,
+        ivaDescontable: 19_000,
+        onCredit: true,
+        number: 'OC-000006',
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.INVENTARIO, 'debit')).toBe(100_000);
+      expect(amountOn(ACC.IVA_POR_PAGAR, 'debit')).toBe(19_000);
+      expect(amountOn(ACC.PROVEEDORES, 'credit')).toBe(119_000);
+    });
+
+    it('compra de contado en efectivo: sale de Caja por el total', async () => {
+      await service.postPurchaseReceipt({
+        receiptId: 'r3',
+        date: '2026-10-13',
+        sedeId: SEDE,
+        amount: 100_000,
+        ivaDescontable: 19_000,
+        onCredit: false,
+        paymentMethod: 'cash',
+        number: 'OC-000007',
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.CAJA, 'credit')).toBe(119_000);
+      expect(amountOn(ACC.BANCOS, 'credit')).toBe(0);
+    });
+
+    it('compra de contado por transferencia: sale de Bancos, no de Caja', async () => {
+      await service.postPurchaseReceipt({
+        receiptId: 'r4',
+        date: '2026-10-13',
+        sedeId: SEDE,
+        amount: 100_000,
+        ivaDescontable: 19_000,
+        onCredit: false,
+        paymentMethod: 'transfer',
+        number: 'OC-000008',
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.BANCOS, 'credit')).toBe(119_000);
+      expect(amountOn(ACC.CAJA, 'credit')).toBe(0);
     });
 
     it('nómina causada: gasto de personal contra salarios por pagar', async () => {

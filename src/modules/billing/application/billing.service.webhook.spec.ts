@@ -35,6 +35,33 @@ import { BillingService } from './billing.service';
  * El servicio se instancia DIRECTAMENTE con dependencias mockeadas. El
  * constructor es: (businesses, wompi, subs, payments).
  */
+/** Evalúa el subconjunto de filtros de Mongo que usa el servicio. */
+function coincide(doc: any, filtro: Record<string, any>): boolean {
+  return Object.entries(filtro).every(([k, cond]) => {
+    if (k === '_id') return true;
+    if (k === '$or') return (cond as any[]).some((c) => coincide(doc, c));
+    if (k === '$and') return (cond as any[]).every((c) => coincide(doc, c));
+    const v = doc[k];
+    if (cond && typeof cond === 'object' && !(cond instanceof Date)) {
+      if ('$ne' in cond) return v !== cond.$ne;
+      if ('$lte' in cond) return v != null && v <= cond.$lte;
+      if ('$in' in cond) return cond.$in.includes(v);
+      return false;
+    }
+    if (cond === null) return v == null;
+    return v === cond;
+  });
+}
+
+/** Aplica `$set`, `$unset` y `$addToSet` sobre el documento. */
+function aplicar(doc: any, cambio: Record<string, any>): void {
+  Object.assign(doc, cambio.$set ?? {});
+  for (const k of Object.keys(cambio.$unset ?? {})) delete doc[k];
+  for (const [k, v] of Object.entries(cambio.$addToSet ?? {})) {
+    doc[k] = Array.from(new Set([...(doc[k] ?? []), v]));
+  }
+}
+
 describe('BillingService.handleWebhook', () => {
   const BIZ = '68b0f3c2a1d4e5f6a7b8c9d0';
 
@@ -46,6 +73,13 @@ describe('BillingService.handleWebhook', () => {
   /** Tarjeta guardada de la empresa; `null` = nunca registró una. */
   let tarjetaGuardada: any;
   let service: BillingService;
+  /**
+   * Estado que la API de la pasarela devuelve al consultar la transacción. Lo
+   * fija `evento()`: un evento legítimo dice lo mismo que la API.
+   */
+  let estadoReal: string;
+  /** Órdenes con que los barridos pidieron los pagos. */
+  let ordenes: any[];
 
   /** Pago pendiente a la espera de que la pasarela confirme. */
   function pago(over: Record<string, unknown> = {}) {
@@ -86,9 +120,57 @@ describe('BillingService.handleWebhook', () => {
       updatePlan: vi.fn().mockResolvedValue(undefined),
       addDocCredits: vi.fn().mockResolvedValue(undefined),
     };
-    wompi = { configured: true, verifyEvent: vi.fn().mockReturnValue(true) };
-    subs = { findOne: vi.fn(() => ({ exec: () => Promise.resolve(sub) })) };
-    payments = { findOne: vi.fn(() => ({ exec: () => Promise.resolve(doc) })) };
+    wompi = {
+      configured: true,
+      verifyEvent: vi.fn().mockReturnValue(true),
+      // La transacción tal como la reporta la API: coincide con el pago.
+      getTransaction: vi.fn((id: string) =>
+        Promise.resolve({
+          id,
+          status: estadoReal,
+          reference: doc?.reference,
+          amount_in_cents: doc?.amountInCents,
+          currency: 'COP',
+        }),
+      ),
+    };
+    subs = {
+      findOne: vi.fn(() => ({ exec: () => Promise.resolve(sub) })),
+      find: vi.fn(() => ({ exec: () => Promise.resolve([]) })),
+    };
+    ordenes = [];
+    payments = {
+      // Barridos: devuelve el pago si cumple el filtro y anota el orden pedido.
+      find: vi.fn((filtro: any) => {
+        const res = () => Promise.resolve(doc && coincide(doc, filtro) ? [doc] : []);
+        return {
+          sort: (o: any) => {
+            ordenes.push(o);
+            return { limit: () => ({ exec: res }) };
+          },
+          exec: res,
+        };
+      }),
+      findOne: vi.fn(() => ({ exec: () => Promise.resolve(doc) })),
+      // Operaciones atómicas como las haría Mongo: comprobar y cambiar en un
+      // solo paso sobre el documento "de la base" (`doc`).
+      findOneAndUpdate: vi.fn((filtro: any, cambio: any) => ({
+        exec: () => {
+          if (!doc || !coincide(doc, filtro)) return Promise.resolve(null);
+          aplicar(doc, cambio);
+          return Promise.resolve(doc);
+        },
+      })),
+      updateOne: vi.fn((filtro: any, cambio: any) => ({
+        exec: () => {
+          if (!doc || !coincide(doc, filtro)) {
+            return Promise.resolve({ modifiedCount: 0 });
+          }
+          aplicar(doc, cambio);
+          return Promise.resolve({ modifiedCount: 1 });
+        },
+      })),
+    };
 
     tarjetaGuardada = tarjetaGuardada ?? null;
     paymentMethods = {
@@ -108,6 +190,7 @@ describe('BillingService.handleWebhook', () => {
 
   /** Evento de la pasarela con el estado indicado. */
   function evento(status: string, reference = 'ref-1') {
+    estadoReal = status;
     return {
       event: 'transaction.updated',
       data: { transaction: { id: 'tx-1', reference, status } },
@@ -309,6 +392,344 @@ describe('BillingService.handleWebhook', () => {
       });
 
       expect(r).toEqual({ received: true });
+    });
+  });
+
+  describe('verificación contra la API de la pasarela', () => {
+    it('consulta la transacción del evento antes de aplicar', async () => {
+      build(pago());
+
+      await service.handleWebhook(evento('APPROVED'));
+
+      expect(wompi.getTransaction).toHaveBeenCalledWith('tx-1');
+      expect(businesses.updatePlan).toHaveBeenCalledOnce();
+    });
+
+    it('no aplica si la API dice otro estado que el evento', async () => {
+      // Un evento viejo de aprobado reenviado sobre una transacción anulada.
+      const { doc } = build(pago());
+      const e = evento('APPROVED');
+      estadoReal = 'VOIDED';
+
+      await service.handleWebhook(e);
+
+      expect(businesses.updatePlan).not.toHaveBeenCalled();
+      expect(doc.applied).toBe(false);
+      expect(doc.status).toBe('pending');
+    });
+
+    it('no aplica si el monto cobrado no es el del pago', async () => {
+      const { doc } = build(pago());
+      wompi.getTransaction.mockResolvedValueOnce({
+        id: 'tx-1',
+        status: 'APPROVED',
+        reference: 'ref-1',
+        amount_in_cents: 100,
+        currency: 'COP',
+      });
+
+      await service.handleWebhook(evento('APPROVED'));
+
+      expect(businesses.updatePlan).not.toHaveBeenCalled();
+      expect(doc.applied).toBe(false);
+    });
+
+    it('no aplica si la moneda no es COP', async () => {
+      build(pago());
+      wompi.getTransaction.mockResolvedValueOnce({
+        id: 'tx-1',
+        status: 'APPROVED',
+        reference: 'ref-1',
+        amount_in_cents: 9_900_000,
+        currency: 'USD',
+      });
+
+      await service.handleWebhook(evento('APPROVED'));
+
+      expect(businesses.updatePlan).not.toHaveBeenCalled();
+    });
+
+    it('no aplica si la transacción es de otra referencia', async () => {
+      // Una transacción aprobada barata de otra compra no paga este plan.
+      build(pago());
+      wompi.getTransaction.mockResolvedValueOnce({
+        id: 'tx-1',
+        status: 'APPROVED',
+        reference: 'otra-ref',
+        amount_in_cents: 9_900_000,
+        currency: 'COP',
+      });
+
+      await service.handleWebhook(evento('APPROVED'));
+
+      expect(businesses.updatePlan).not.toHaveBeenCalled();
+    });
+
+    it('no aplica si el evento trae otra transacción que la del pago', async () => {
+      build(pago({ wompiTransactionId: 'tx-original' }));
+
+      await service.handleWebhook(evento('APPROVED'));
+
+      expect(wompi.getTransaction).not.toHaveBeenCalled();
+      expect(businesses.updatePlan).not.toHaveBeenCalled();
+    });
+
+    it('si la API no responde, falla para que la pasarela reintente', async () => {
+      const { doc } = build(pago());
+      wompi.getTransaction.mockRejectedValueOnce(new Error('timeout'));
+
+      await expect(service.handleWebhook(evento('APPROVED'))).rejects.toThrow();
+      expect(businesses.updatePlan).not.toHaveBeenCalled();
+      expect(doc.applied).toBe(false);
+    });
+  });
+
+  describe('aplicación única ante llamadas concurrentes', () => {
+    it('dos webhooks a la vez extienden la suscripción una sola vez', async () => {
+      // Cada request lee SU copia del pago (applied: false en las dos); solo
+      // la reserva atómica en la base decide quién aplica.
+      const base = pago();
+      const sub = suscripcion();
+      build(base, sub);
+      payments.findOne = vi.fn(() => ({
+        exec: () => Promise.resolve({ ...base, save: vi.fn() }),
+      }));
+
+      await Promise.all([
+        service.handleWebhook(evento('APPROVED')),
+        service.handleWebhook(evento('APPROVED')),
+      ]);
+
+      expect(businesses.updatePlan).toHaveBeenCalledOnce();
+      expect(sub.save).toHaveBeenCalledOnce();
+    });
+
+    it('webhook y consulta del frontend a la vez no acreditan dos veces', async () => {
+      const base = pago({ kind: 'docPackage', docPackages: 1, wompiTransactionId: 'tx-1' });
+      build(base);
+      payments.findOne = vi.fn(() => ({
+        exec: () => Promise.resolve({ ...base, save: vi.fn() }),
+      }));
+      estadoReal = 'APPROVED';
+
+      await Promise.all([
+        service.handleWebhook(evento('APPROVED')),
+        service.syncPayment(BIZ, 'ref-1'),
+      ]);
+
+      expect(businesses.addDocCredits).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('efectos que fallan a mitad', () => {
+    it('si activar el plan falla, el pago NO queda aplicado y el reintento lo completa', async () => {
+      const { doc, sub } = build(pago());
+      businesses.updatePlan.mockRejectedValueOnce(new Error('control-plane caído'));
+
+      await expect(service.handleWebhook(evento('APPROVED'))).rejects.toThrow();
+      expect(doc.applied).toBe(false);
+      expect(sub.save).not.toHaveBeenCalled();
+
+      // Wompi reintenta al no recibir 200: esta vez sí se aplica, una vez.
+      await service.handleWebhook(evento('APPROVED'));
+      expect(doc.applied).toBe(true);
+      expect(sub.save).toHaveBeenCalledOnce();
+    });
+
+    it('si acreditar documentos falla, el reintento los acredita una sola vez', async () => {
+      const { doc } = build(pago({ kind: 'docPackage', docPackages: 1 }));
+      businesses.addDocCredits.mockRejectedValueOnce(new Error('timeout'));
+
+      await expect(service.handleWebhook(evento('APPROVED'))).rejects.toThrow();
+      await service.handleWebhook(evento('APPROVED'));
+      await service.handleWebhook(evento('APPROVED'));
+
+      expect(doc.applied).toBe(true);
+      // 1 intento fallido + 1 exitoso; el tercer evento ya no acredita.
+      expect(businesses.addDocCredits).toHaveBeenCalledTimes(2);
+    });
+
+    it('un paso ya hecho no se repite al retomar (documentos no se duplican)', async () => {
+      // El proceso murió después de acreditar y antes de cerrar el pago.
+      const { doc } = build(
+        pago({
+          kind: 'docPackage',
+          docPackages: 1,
+          status: 'approved',
+          applyVersion: 2,
+          effectsDone: ['docCredits'],
+        }),
+      );
+
+      await service.runBillingCycle();
+
+      expect(businesses.addDocCredits).not.toHaveBeenCalled();
+      expect(doc.applied).toBe(true);
+    });
+
+    it('el barrido retoma un pago aprobado que quedó sin efectos', async () => {
+      const { doc, sub } = build(pago({ status: 'approved', applyVersion: 2 }));
+
+      await service.runBillingCycle();
+
+      expect(businesses.updatePlan).toHaveBeenCalledOnce();
+      expect(sub.save).toHaveBeenCalledOnce();
+      expect(doc.applied).toBe(true);
+    });
+
+    it('no pisa una aplicación en curso de otro proceso', async () => {
+      build(pago({ status: 'approved', applyVersion: 2, applyingAt: new Date() }));
+
+      await service.runBillingCycle();
+
+      expect(businesses.updatePlan).not.toHaveBeenCalled();
+    });
+
+    it('una reserva vencida (proceso muerto) se puede retomar', async () => {
+      const { doc } = build(
+        pago({
+          status: 'approved',
+          applyVersion: 2,
+          applyingAt: new Date(Date.now() - 60 * 60 * 1000),
+        }),
+      );
+
+      await service.runBillingCycle();
+
+      expect(businesses.updatePlan).toHaveBeenCalledOnce();
+      expect(doc.applied).toBe(true);
+    });
+  });
+
+  describe('pagos aprobados por el código anterior', () => {
+    // El código anterior marcaba `approved` y `applied` juntos, sin
+    // `applyVersion`. Una fila así no dice qué efectos se hicieron: re-aplicarla
+    // podría acreditar documentos o abrir un período por segunda vez. Se deja
+    // para revisión a mano (src/datos/2026-10-pagos-aprobados-legado-informe.ts).
+    it('el barrido no re-aplica un pago aprobado sin marca de versión', async () => {
+      const { doc } = build(pago({ kind: 'docPackage', docPackages: 1, status: 'approved' }));
+
+      await service.runBillingCycle();
+
+      expect(businesses.addDocCredits).not.toHaveBeenCalled();
+      expect(doc.applied).toBe(false);
+    });
+
+    it('un webhook tampoco lo re-aplica', async () => {
+      build(pago({ status: 'approved' }));
+
+      await service.handleWebhook(evento('APPROVED'));
+
+      expect(businesses.updatePlan).not.toHaveBeenCalled();
+    });
+
+    it('la reserva marca la versión, y así el barrido sí retoma lo nuevo', async () => {
+      const { doc } = build(pago());
+      businesses.updatePlan.mockRejectedValueOnce(new Error('caído'));
+
+      await expect(service.handleWebhook(evento('APPROVED'))).rejects.toThrow();
+      expect(doc.applyVersion).toBe(2);
+
+      await service.runBillingCycle();
+      expect(doc.applied).toBe(true);
+    });
+
+    it('acredita los documentos con el id del pago, para que no se dupliquen', async () => {
+      build(pago({ kind: 'docPackage', docPackages: 1 }));
+
+      await service.handleWebhook(evento('APPROVED'));
+
+      expect(businesses.addDocCredits.mock.calls[0][2]).toBe('pay1');
+    });
+  });
+
+  describe('rechazo idempotente', () => {
+    it('un DECLINED repetido suma un solo intento fallido', async () => {
+      const { sub } = build(pago(), suscripcion({ failedAttempts: 0 }));
+
+      await service.handleWebhook(evento('DECLINED'));
+      await service.handleWebhook(evento('DECLINED'));
+
+      expect(sub.failedAttempts).toBe(1);
+    });
+
+    it('un rechazo con una copia vieja no pisa un pago ya aprobado en la base', async () => {
+      // La base ya tiene el pago aprobado; esta request leyó antes (pending).
+      const base = pago({ status: 'approved', applied: true, wompiTransactionId: 'tx-1' });
+      const { sub } = build(base);
+      payments.findOne = vi.fn(() => ({
+        exec: () =>
+          Promise.resolve({
+            ...base,
+            status: 'pending',
+            applied: false,
+            save: vi.fn(function (this: any) {
+              base.status = this.status;
+              return Promise.resolve();
+            }),
+          }),
+      }));
+
+      await service.handleWebhook(evento('DECLINED'));
+
+      expect(base.status).toBe('approved');
+      expect(sub.status).toBe('active');
+    });
+  });
+
+  describe('verificación también fuera del webhook', () => {
+    it('la consulta del frontend no aplica si el monto no coincide', async () => {
+      const { doc } = build(pago({ wompiTransactionId: 'tx-1' }));
+      wompi.getTransaction.mockResolvedValueOnce({
+        id: 'tx-1',
+        status: 'APPROVED',
+        reference: 'ref-1',
+        amount_in_cents: 100,
+        currency: 'COP',
+      });
+
+      await service.syncPayment(BIZ, 'ref-1');
+
+      expect(businesses.updatePlan).not.toHaveBeenCalled();
+      expect(doc.applied).toBe(false);
+    });
+
+    it('el barrido no aplica si la referencia no coincide', async () => {
+      const { doc } = build(
+        pago({ wompiTransactionId: 'tx-1', createdAt: new Date(0) }),
+      );
+      wompi.getTransaction.mockResolvedValueOnce({
+        id: 'tx-1',
+        status: 'APPROVED',
+        reference: 'otra-ref',
+        amount_in_cents: 9_900_000,
+        currency: 'COP',
+      });
+
+      await service.runBillingCycle();
+
+      expect(businesses.updatePlan).not.toHaveBeenCalled();
+      expect(doc.applied).toBe(false);
+    });
+  });
+
+  describe('barrido de pendientes', () => {
+    it('consulta primero los que hace más tiempo no se revisan', async () => {
+      build(pago({ wompiTransactionId: 'tx-1', createdAt: new Date(0) }));
+      estadoReal = 'PENDING';
+
+      await service.runBillingCycle();
+
+      expect(ordenes).toContainEqual({ lastReconcileAt: 1, createdAt: 1 });
+    });
+
+    it('anota la consulta aunque siga pendiente, para rotar el cupo', async () => {
+      const { doc } = build(pago({ wompiTransactionId: 'tx-1', createdAt: new Date(0) }));
+      estadoReal = 'PENDING';
+
+      await service.runBillingCycle();
+
+      expect(doc.lastReconcileAt).toBeInstanceOf(Date);
     });
   });
 });

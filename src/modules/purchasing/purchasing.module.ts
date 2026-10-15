@@ -12,7 +12,9 @@ import {
   Counter,
   CounterSchema,
 } from '../sales/infrastructure/schemas/counter.schema';
+import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
 import { CoreAuthModule } from '../core-auth/core-auth.module';
+import { ControlModule } from '../control/control.module';
 import { CoreTaxModule } from '../core-tax/core-tax.module';
 import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
 import { InventoryModule } from '../inventory/inventory.module';
@@ -25,10 +27,12 @@ import { PurchasingController } from './infrastructure/purchasing.controller';
     CoreTaxModule,
     CoreLedgerModule,
     InventoryModule,
+    ControlModule,
     TenantMongooseModule.forFeature([
       { name: PurchaseOrder.name, schema: PurchaseOrderSchema },
       { name: FinancePayable.name, schema: FinancePayableSchema },
       { name: Counter.name, schema: CounterSchema },
+      { name: Sede.name, schema: SedeSchema },
     ]),
   ],
   controllers: [PurchasingController],

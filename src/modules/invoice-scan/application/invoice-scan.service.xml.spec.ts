@@ -28,7 +28,7 @@ describe('InvoiceScanService.upload · con XML de la DIAN', () => {
   const user = { userId: 'u1', email: 'due@negocio.com' } as unknown as JwtUser;
   const ctx = { businessId: 'b1', dbName: 'biz_b1', plan: 'pro' } as never;
   const file = {
-    buffer: Buffer.from('soporte'),
+    buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]),
     mimetype: 'image/jpeg',
     size: 1024,
     originalname: 'factura.jpg',

@@ -175,6 +175,26 @@ describe('RolesService · permisos vigentes de cada rol', () => {
       expect(fila.permissionsCustomized).toBe(true);
       expect(fila.permissions).toEqual([PERMISSIONS.POS_SELL]);
     });
+
+    // Regresión: la pantalla manda el formulario entero, así que renombrar el
+    // rol reenvía los mismos permisos. Eso no es "editarlos" y no debe congelar
+    // un Dueño/Administrador que debería seguir recibiendo funciones nuevas.
+    it('renombrar con los mismos permisos vigentes NO congela el rol', async () => {
+      const vigentes = await service.permissionsForRole(ROLES.ADMIN);
+      const fila: any = {
+        ...storedRole(ROLES.ADMIN, [...ALL_PERMISSIONS]),
+        save: vi.fn(() => Promise.resolve()),
+      };
+      roleModel.findById = vi.fn(() => ({ exec: () => Promise.resolve(fila) }));
+
+      await service.update('id-admin', {
+        name: 'Gerente general',
+        permissions: [...vigentes].reverse(),
+      });
+
+      expect(fila.name).toBe('Gerente general');
+      expect(fila.permissionsCustomized).toBeFalsy();
+    });
   });
 
   /**
@@ -199,7 +219,7 @@ describe('RolesService · permisos vigentes de cada rol', () => {
       );
 
       await expect(
-        service.update('id-owner', { permissions: sinRoles }, { role: ROLES.OWNER }),
+        service.update('id-owner', { permissions: sinRoles }, { role: ROLES.OWNER, permissions: [...ALL_PERMISSIONS] }),
       ).rejects.toThrow(/tu propio rol/i);
     });
 
@@ -210,7 +230,7 @@ describe('RolesService · permisos vigentes de cada rol', () => {
       );
 
       await expect(
-        service.update('id-owner', { permissions: sinUsuarios }, { role: ROLES.OWNER }),
+        service.update('id-owner', { permissions: sinUsuarios }, { role: ROLES.OWNER, permissions: [...ALL_PERMISSIONS] }),
       ).rejects.toThrow(/tu propio rol/i);
     });
 
@@ -225,7 +245,7 @@ describe('RolesService · permisos vigentes de cada rol', () => {
       await service.update(
         'id-admin',
         { permissions: sinRoles },
-        { role: ROLES.OWNER },
+        { role: ROLES.OWNER, permissions: [...ALL_PERMISSIONS] },
       );
 
       expect(fila.permissions).not.toContain(PERMISSIONS.ROLES_MANAGE);
@@ -240,7 +260,7 @@ describe('RolesService · permisos vigentes de cada rol', () => {
       await service.update(
         'id-owner',
         { permissions: sinProduccion },
-        { role: ROLES.OWNER },
+        { role: ROLES.OWNER, permissions: [...ALL_PERMISSIONS] },
       );
 
       expect(fila.permissions).not.toContain(PERMISSIONS.PRODUCTION_MANAGE);

@@ -34,11 +34,6 @@ export const PRODUCT_IMAGE_TYPES: Readonly<Record<string, string>> = {
 /** Etiqueta legible de los formatos aceptados, para los mensajes de error. */
 export const PRODUCT_IMAGE_TYPES_LABEL = 'JPG, PNG, WebP o AVIF';
 
-/** Extensión con la que guardar un tipo MIME, o `null` si no se acepta. */
-export function imageExtension(mimetype: string): string | null {
-  return PRODUCT_IMAGE_TYPES[mimetype.toLowerCase()] ?? null;
-}
-
 /**
  * Lo que necesitamos de un archivo subido. Se declara aquí en vez de usar
  * `Express.Multer.File` para no añadir `@types/multer` al proyecto por cuatro

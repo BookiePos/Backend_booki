@@ -63,6 +63,10 @@ export class Business {
   @Prop({ default: 0 })
   docCredits?: number;
 
+  /** Pagos cuyos créditos ya se sumaron (idempotencia de `addDocCredits`). */
+  @Prop({ type: [String], default: [] })
+  docCreditPayments?: string[];
+
   /** Facturas leídas por foto en el mes en curso (`scansPeriod`). */
   @Prop({ default: 0 })
   scansThisMonth?: number;

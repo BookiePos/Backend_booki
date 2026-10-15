@@ -41,36 +41,43 @@ export class ReportsController {
   @RequirePermissions(PERMISSIONS.REPORTS_VIEW)
   @Get('income-statement')
   incomeStatement(
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('sedeId') sedeId?: string,
+    @Query('from') from: string | undefined,
+    @Query('to') to: string | undefined,
+    @Query('sedeId') sedeId: string | undefined,
+    @CurrentUser() user: JwtUser,
   ) {
-    return this.reports.incomeStatement({ from, to, sedeId });
+    return this.reports.incomeStatement({ from, to, sedeId }, user);
   }
 
   @RequirePermissions(PERMISSIONS.REPORTS_VIEW)
   @Get('balance-sheet')
-  balanceSheet(@Query('to') to?: string, @Query('sedeId') sedeId?: string) {
-    return this.reports.balanceSheet({ to, sedeId });
+  balanceSheet(
+    @Query('to') to: string | undefined,
+    @Query('sedeId') sedeId: string | undefined,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.reports.balanceSheet({ to, sedeId }, user);
   }
 
   @RequirePermissions(PERMISSIONS.REPORTS_VIEW)
   @Get('trial-balance')
   trialBalance(
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('sedeId') sedeId?: string,
+    @Query('from') from: string | undefined,
+    @Query('to') to: string | undefined,
+    @Query('sedeId') sedeId: string | undefined,
+    @CurrentUser() user: JwtUser,
   ) {
-    return this.reports.trialBalance({ from, to, sedeId });
+    return this.reports.trialBalance({ from, to, sedeId }, user);
   }
 
   @RequirePermissions(PERMISSIONS.REPORTS_VIEW)
   @Get('sales')
   salesReport(
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('sedeId') sedeId?: string,
+    @Query('from') from: string | undefined,
+    @Query('to') to: string | undefined,
+    @Query('sedeId') sedeId: string | undefined,
+    @CurrentUser() user: JwtUser,
   ) {
-    return this.reports.salesReport({ from, to, sedeId });
+    return this.reports.salesReport({ from, to, sedeId }, user);
   }
 }

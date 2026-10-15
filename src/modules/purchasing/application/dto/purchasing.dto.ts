@@ -3,6 +3,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsIn,
   IsInt,
   IsMongoId,
   IsOptional,
@@ -11,6 +12,10 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import {
+  PAYMENT_METHODS,
+  type FinancePaymentMethod,
+} from '../../../finance/domain/finance.constants';
 
 export class PurchaseLineDto {
   @IsOptional()
@@ -140,6 +145,14 @@ export class ReceivePurchaseOrderDto {
   @IsOptional()
   @IsBoolean()
   generatePayable?: boolean;
+
+  /**
+   * Con qué se pagó una compra de contado (sin CxP): efectivo sale de Caja;
+   * transferencia o tarjeta, de Bancos. Sin él se asume efectivo.
+   */
+  @IsOptional()
+  @IsIn(PAYMENT_METHODS)
+  paymentMethod?: FinancePaymentMethod;
 
   /** Vencimiento de la CxP (si se genera). Por defecto, 30 días. */
   @IsOptional()

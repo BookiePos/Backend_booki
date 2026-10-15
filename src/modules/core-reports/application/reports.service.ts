@@ -3,6 +3,12 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Sale, SaleDocument } from '../../sales/infrastructure/schemas/sale.schema';
 import { LedgerService, TrialBalanceRow } from '../../core-ledger/application/ledger.service';
+import { balancePorSedes } from '../../core-ledger/domain/ledger-sede-scope';
+import {
+  SedeScopeUser,
+  alcanceDeSedes,
+  resolveSedeScope,
+} from '../../core-auth/domain/sede-access';
 
 /** Una línea (cuenta) de un estado financiero. */
 interface StatementLine {
@@ -15,6 +21,10 @@ interface StatementLine {
  * Motor de reportes. Los estados financieros LEEN DEL LEDGER (nunca de las
  * tablas operativas), tal como exige el estándar transversal. El reporte de
  * ventas sí consulta la operación para dar una vista rápida del día a día.
+ *
+ * Todos respetan el alcance por sede del usuario (checklist 3.3): una sede
+ * ajena es 403 y, sin sede, el informe se arma solo con las suyas. El Dueño y
+ * `sede.view_all` ven la empresa entera.
  */
 @Injectable()
 export class ReportsService {
@@ -54,8 +64,12 @@ export class ReportsService {
   }
 
   /** Estado de resultados: ingresos − gastos según el ledger del rango. */
-  async incomeStatement(query: { from?: string; to?: string; sedeId?: string }) {
-    const tb = await this.ledger.trialBalance(query);
+  async incomeStatement(
+    query: { from?: string; to?: string; sedeId?: string },
+    user: SedeScopeUser,
+  ) {
+    const sedes = resolveSedeScope(user, query.sedeId);
+    const tb = await this.balance({ from: query.from, to: query.to }, sedes);
     const income = this.linesOf(tb.rows, 'income');
     const expense = this.linesOf(tb.rows, 'expense');
     const totalIngresos = this.sum(income);
@@ -64,6 +78,7 @@ export class ReportsService {
       from: query.from,
       to: query.to,
       sedeId: query.sedeId ?? null,
+      ...alcanceDeSedes(sedes),
       ingresos: income,
       totalIngresos,
       gastos: expense,
@@ -73,8 +88,12 @@ export class ReportsService {
   }
 
   /** Balance general a una fecha (todo el ledger hasta `to`). */
-  async balanceSheet(query: { to?: string; sedeId?: string }) {
-    const tb = await this.ledger.trialBalance({ to: query.to, sedeId: query.sedeId });
+  async balanceSheet(
+    query: { to?: string; sedeId?: string },
+    user: SedeScopeUser,
+  ) {
+    const sedes = resolveSedeScope(user, query.sedeId);
+    const tb = await this.balance({ to: query.to }, sedes);
     const activos = this.linesOf(tb.rows, 'asset');
     const pasivos = this.linesOf(tb.rows, 'liability');
     const patrimonio = this.linesOf(tb.rows, 'equity');
@@ -89,6 +108,7 @@ export class ReportsService {
     return {
       to: query.to ?? null,
       sedeId: query.sedeId ?? null,
+      ...alcanceDeSedes(sedes),
       activos,
       totalActivo,
       pasivos,
@@ -100,14 +120,33 @@ export class ReportsService {
     };
   }
 
-  async trialBalance(query: { from?: string; to?: string; sedeId?: string }) {
-    return this.ledger.trialBalance(query);
+  async trialBalance(
+    query: { from?: string; to?: string; sedeId?: string },
+    user: SedeScopeUser,
+  ) {
+    const sedes = resolveSedeScope(user, query.sedeId);
+    const tb = await this.balance({ from: query.from, to: query.to }, sedes);
+    return { ...tb, ...alcanceDeSedes(sedes) };
+  }
+
+  /** Balance de comprobación del ledger, limitado a las sedes del alcance. */
+  private balance(
+    query: { from?: string; to?: string },
+    sedeIds: string[] | null,
+  ) {
+    return balancePorSedes((q) => this.ledger.trialBalance(q), query, sedeIds);
   }
 
   /** Ventas por día (operación): ingresos, tiquetes y ticket promedio. */
-  async salesReport(query: { from?: string; to?: string; sedeId?: string }) {
+  async salesReport(
+    query: { from?: string; to?: string; sedeId?: string },
+    user: SedeScopeUser,
+  ) {
     const match: Record<string, unknown> = { status: 'completed' };
-    if (query.sedeId) match.sedeId = new Types.ObjectId(query.sedeId);
+    const sedes = resolveSedeScope(user, query.sedeId);
+    if (sedes) {
+      match.sedeId = { $in: sedes.map((s) => new Types.ObjectId(s)) };
+    }
     if (query.from || query.to) {
       const range: Record<string, Date> = {};
       if (query.from) range.$gte = new Date(`${query.from}T00:00:00`);

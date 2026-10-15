@@ -102,6 +102,48 @@ describe('planPayment · qué se cobra ahora', () => {
       planPayment(mesa, [{ productId: 'pizza', qty: 0 }]),
     ).toThrow(/mayor que cero/i);
   });
+
+  it('el cobro que salda la cuenta cobra TODO lo que falta, aunque sea un resto menor que EPSILON', () => {
+    // Quedan 0,334 y se pide 0,3336: los 0,0004 de diferencia ya no son deuda
+    // para cerrar la comanda, pero sí plata y mercancía. Se cobran aquí.
+    const casi = [{ productId: 'pizza', qty: 1, paidQty: 0.666 }];
+    const plan = planPayment(casi, [{ productId: 'pizza', qty: 0.3336 }]);
+    expect(plan.fullyPaid).toBe(true);
+    expect(plan.paidAfter).toEqual([1]);
+    expect(plan.lines[0]!.qty).toBeCloseTo(0.334, 12);
+  });
+
+  it('el resto chiquito de OTRO producto también entra en el cobro que cierra', () => {
+    const mesaCasi = [
+      { productId: 'pizza', qty: 1, paidQty: 0 },
+      { productId: 'cerveza', qty: 1, paidQty: 0.9998 },
+    ];
+    const plan = planPayment(mesaCasi, [{ productId: 'pizza', qty: 1 }]);
+    expect(plan.fullyPaid).toBe(true);
+    expect(plan.paidAfter).toEqual([1, 1]);
+    expect(plan.lines.map((l) => l.productId).sort()).toEqual(['cerveza', 'pizza']);
+  });
+
+  it('no cobra de más: pedir un pelo por encima de lo que queda cobra solo lo que queda', () => {
+    const plan = planPayment(
+      [
+        { productId: 'pizza', qty: 1, paidQty: 0.5 },
+        { productId: 'cerveza', qty: 2, paidQty: 0 },
+      ],
+      [{ productId: 'pizza', qty: 0.5004 }],
+    );
+    expect(plan.lines).toEqual([{ productId: 'pizza', qty: 0.5 }]);
+    expect(plan.paidAfter).toEqual([1, 0]);
+  });
+
+  it('sin subconjunto cobra también los restos menores que EPSILON', () => {
+    const plan = planPayment([
+      { productId: 'pizza', qty: 1, paidQty: 0 },
+      { productId: 'cerveza', qty: 1, paidQty: 0.9998 },
+    ]);
+    expect(plan.lines.map((l) => l.productId).sort()).toEqual(['cerveza', 'pizza']);
+    expect(plan.paidAfter).toEqual([1, 1]);
+  });
 });
 
 describe('evenShare · partes iguales', () => {

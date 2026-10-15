@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
+import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import {
@@ -19,6 +20,8 @@ import { LedgerPostingService } from '../../core-ledger/application/ledger-posti
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import { buildReturnPlan, prorateLots, ReturnPlan } from '../domain/sale-return';
+import { cop, sumBy } from '../../finance/domain/money.util';
+import type { SaleTaxKind } from '../../core-tax/domain/sale-tax';
 
 /**
  * Devoluciones parciales de venta.
@@ -68,18 +71,27 @@ export class SaleReturnsService {
    * separado pasaría la validación y el cliente saldría con más plata de la que
    * puso.
    */
-  private async alreadyReturned(
-    saleId: Types.ObjectId,
-  ): Promise<Map<string, number>> {
+  private async alreadyReturned(saleId: Types.ObjectId): Promise<{
+    qty: Map<string, number>;
+    money: Map<string, { refund: number; refundTax: number }>;
+  }> {
     const previas = await this.model.find({ saleId }).exec();
-    const total = new Map<string, number>();
+    const qty = new Map<string, number>();
+    // La plata ya devuelta por línea: la última devolución salda exacto lo
+    // que falte de lo pagado (ítem 1.11), sin pesos colgando.
+    const money = new Map<string, { refund: number; refundTax: number }>();
     for (const p of previas) {
       for (const l of p.lines) {
         const key = l.productId.toString();
-        total.set(key, (total.get(key) ?? 0) + l.qty);
+        qty.set(key, (qty.get(key) ?? 0) + l.qty);
+        const m = money.get(key) ?? { refund: 0, refundTax: 0 };
+        money.set(key, {
+          refund: m.refund + (l.refund ?? 0),
+          refundTax: m.refundTax + (l.refundTax ?? 0),
+        });
       }
     }
-    return total;
+    return { qty, money };
   }
 
   /**
@@ -162,7 +174,8 @@ export class SaleReturnsService {
           taxAmount: l.taxAmount,
         })),
         dto.lines,
-        yaDevuelto,
+        yaDevuelto.qty,
+        yaDevuelto.money,
       );
     } catch (err) {
       throw new BadRequestException(
@@ -210,6 +223,19 @@ export class SaleReturnsService {
       userId: user.userId,
       userEmail: user.email,
     });
+
+    // Una anulación pudo tomar la venta entre la revisión de arriba y el
+    // registro: esa anulación revierte TODO el stock y el ingreso, y esta
+    // devolución lo haría otra vez. Con el registro ya creado se vuelve a
+    // mirar; la anulación, a su vez, cuenta las devoluciones después de su
+    // flip, así que en cualquier orden al menos una de las dos se retira.
+    const ahora = await this.sales.getOrFail(saleId);
+    if (ahora.status === 'void') {
+      await this.model.deleteOne({ _id: registro._id }).exec();
+      throw new BadRequestException(
+        'La venta se anuló mientras se registraba la devolución: ya se devolvió completa',
+      );
+    }
 
     // La mercancía vuelve al inventario, a los mismos lotes de los que salió.
     // También cuando se va a merma: primero entra y después se da de baja, para
@@ -307,14 +333,32 @@ export class SaleReturnsService {
       }
     }
 
+    // El impuesto devuelto se reversa contra la cuenta en que se causó: el INC
+    // de una venta de restaurante vuelve a la 2495, no a la 2408. Las líneas
+    // anteriores a `taxKind` eran IVA.
+    const kindOf = new Map(
+      sale.lines.map((l) => [l.productId.toString(), l.taxKind ?? 'iva']),
+    );
+    // Cada impuesto se suma por su tipo con `sumBy`, como en la venta (taxOf):
+    // `refundTax − incDevuelto` redondeaba dos veces y podía mandar un peso de
+    // INC a la cuenta del IVA.
+    const taxOf = (kind: SaleTaxKind) =>
+      sumBy(
+        registro.lines.filter((l) => kindOf.get(l.productId.toString()) === kind),
+        (l) => l.refundTax,
+      );
+    const incDevuelto = taxOf('inc');
+    const ivaDevuelto = taxOf('iva');
+
     await this.ledgerPosting.postSaleReturn({
       returnId: registro._id.toString(),
       saleNumber: sale.saleNumber,
-      date: new Date().toISOString().slice(0, 10),
+      date: fechaColombia(),
       sedeId: registro.sedeId.toString(),
       refundTotal: registro.refundTotal,
-      tax: registro.refundTax,
-      cogs: Math.round(cogs),
+      tax: ivaDevuelto,
+      consumptionTax: incDevuelto,
+      cogs: cop(cogs),
       // Una nota a favor o un cambio por otro producto no sacan plata hoy: la
       // contrapartida es lo que el negocio le queda debiendo al cliente.
       refundMethod: dto.refundMethod,

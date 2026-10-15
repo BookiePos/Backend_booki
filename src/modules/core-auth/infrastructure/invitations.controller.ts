@@ -18,7 +18,7 @@ import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { JwtUser } from './jwt.strategy';
 import { PERMISSIONS } from '../domain/permissions';
-import { setRefreshCookie } from './auth-cookie';
+import { sessionBody, setRefreshCookie } from './auth-cookie';
 
 @Controller('invitations')
 export class InvitationsController {
@@ -36,20 +36,23 @@ export class InvitationsController {
   @RequirePermissions(PERMISSIONS.USERS_MANAGE)
   @Post()
   create(@Body() dto: CreateInvitationDto, @CurrentUser() user: JwtUser) {
-    return this.invitations.create(dto, user.userId);
+    return this.invitations.create(dto, user);
   }
 
   @RequirePermissions(PERMISSIONS.USERS_MANAGE)
   @Post(':id/resend')
-  resend(@Param('id') id: string) {
-    return this.invitations.resend(id);
+  resend(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.invitations.resend(id, user);
   }
 
   @RequirePermissions(PERMISSIONS.USERS_MANAGE)
   @Delete(':id')
   @HttpCode(204)
-  async revoke(@Param('id') id: string): Promise<void> {
-    await this.invitations.revoke(id);
+  async revoke(
+    @Param('id') id: string,
+    @CurrentUser() user: JwtUser,
+  ): Promise<void> {
+    await this.invitations.revoke(id, user);
   }
 
   // ---- Rutas públicas para aceptar la invitación ----
@@ -70,6 +73,6 @@ export class InvitationsController {
   ) {
     const result = await this.invitations.accept(token, dto);
     setRefreshCookie(res, result.tokens.refreshToken, this.config);
-    return result;
+    return sessionBody(result);
   }
 }

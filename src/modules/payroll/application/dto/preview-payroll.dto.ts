@@ -4,6 +4,7 @@ import {
   IsNumber,
   IsObject,
   IsOptional,
+  Matches,
   Min,
 } from 'class-validator';
 import { PayrollNovedades } from '../../domain/payroll-calc';
@@ -38,4 +39,9 @@ export class PreviewPayrollDto {
   @IsOptional()
   @IsObject()
   novedades?: PayrollNovedades;
+
+  /** Período simulado (YYYY-MM): fija la jornada vigente y el divisor de la hora. */
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}$/, { message: 'period debe ser YYYY-MM' })
+  period?: string;
 }

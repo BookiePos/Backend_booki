@@ -79,7 +79,7 @@ describe('CatalogService · imagen del producto', () => {
   }
 
   const jpg: UploadedImage = {
-    buffer: Buffer.from('imagen'),
+    buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]),
     mimetype: 'image/jpeg',
     size: 6,
   };
@@ -133,7 +133,7 @@ describe('CatalogService · imagen del producto', () => {
     expect(deps.storage.remove).not.toHaveBeenCalled();
   });
 
-  it('rechaza un formato que no es imagen, sin tocar el store', async () => {
+  it('rechaza por contenido un HTML que declara image/png, sin tocar el store', async () => {
     const product = makeProduct(orden);
     const deps = makeDeps(product, orden);
     const service = makeService(deps);
@@ -142,7 +142,8 @@ describe('CatalogService · imagen del producto', () => {
       TenantContext.run(ctx, () =>
         service.setImage(productId, {
           ...jpg,
-          mimetype: 'application/pdf',
+          buffer: Buffer.from('<html><script>alert(1)</script></html>'),
+          mimetype: 'image/png',
         }),
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
@@ -160,6 +161,18 @@ describe('CatalogService · imagen del producto', () => {
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(deps.storage.upload).not.toHaveBeenCalled();
+  });
+
+  it('un PNG real con mimetype falso se guarda como png (Content-Type del contenido)', async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const deps = makeDeps(makeProduct(orden), orden);
+    const service = makeService(deps);
+    await TenantContext.run(ctx, () =>
+      service.setImage(productId, { ...jpg, buffer: png, mimetype: 'application/pdf' }),
+    );
+    const [pathname, , contentType] = deps.storage.upload.mock.calls[0] ?? [];
+    expect(pathname).toMatch(/.png$/);
+    expect(contentType).toBe('image/png');
   });
 
   it('quitar la foto limpia la ficha y borra el archivo', async () => {

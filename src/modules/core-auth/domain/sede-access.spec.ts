@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import {
   canViewAllSedes,
   allowedSedeIds,
   hasSedeAccess,
   assertSedeAccess,
+  resolveSedeScope,
+  alcanceDeSedes,
   SedeScopeUser,
 } from './sede-access';
 import { PERMISSIONS } from './permissions';
@@ -72,5 +74,51 @@ describe('assertSedeAccess', () => {
 
   it('lanza ForbiddenException si el usuario no tiene acceso', () => {
     expect(() => assertSedeAccess(normal, 's9')).toThrow(ForbiddenException);
+  });
+});
+
+describe('resolveSedeScope', () => {
+  const A = '64b000000000000000000001';
+  const B = '64b000000000000000000002';
+  const AJENA = '64b000000000000000000009';
+  const user: SedeScopeUser = { role: ROLES.CASHIER, permissions: [], sedeIds: [A, B] };
+
+  it('si pide una sede suya, el alcance es solo esa', () => {
+    expect(resolveSedeScope(user, B)).toEqual([B]);
+  });
+
+  it('si pide una sede ajena, 403', () => {
+    expect(() => resolveSedeScope(user, AJENA)).toThrow(ForbiddenException);
+  });
+
+  it('si no pide sede, el alcance son sus sedes', () => {
+    expect(resolveSedeScope(user)).toEqual([A, B]);
+  });
+
+  it('quien ve todas: sin filtro si no pide, o la sede que pida', () => {
+    expect(resolveSedeScope(owner)).toBeNull();
+    expect(resolveSedeScope(conViewAll, AJENA)).toEqual([AJENA]);
+  });
+
+  it('un sedeId con formato inválido es 400, también para quien ve todas', () => {
+    expect(() => resolveSedeScope(user, 'no-es-un-id')).toThrow(BadRequestException);
+    expect(() => resolveSedeScope(owner, 'sede1')).toThrow(BadRequestException);
+  });
+
+  it('sedeIds: [] sin sede pedida no ve nada; pidiendo una, 403', () => {
+    const sinSedes: SedeScopeUser = { role: ROLES.CASHIER, permissions: [], sedeIds: [] };
+    expect(resolveSedeScope(sinSedes)).toEqual([]);
+    expect(() => resolveSedeScope(sinSedes, A)).toThrow(ForbiddenException);
+  });
+});
+
+describe('alcanceDeSedes', () => {
+  it('null es la empresa completa', () => {
+    expect(alcanceDeSedes(null)).toEqual({ alcance: 'empresa' });
+  });
+
+  it('una lista, aun vacía, es alcance por sedes', () => {
+    expect(alcanceDeSedes(['x'])).toEqual({ alcance: 'sedes', sedes: ['x'] });
+    expect(alcanceDeSedes([])).toEqual({ alcance: 'sedes', sedes: [] });
   });
 });

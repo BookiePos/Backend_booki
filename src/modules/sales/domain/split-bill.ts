@@ -46,6 +46,21 @@ export function remainingOf(
   return out;
 }
 
+/**
+ * Lo ya cobrado de cada producto, sumando sus renglones. La venta lo usa para
+ * cobrar cada parte sobre el acumulado: así las partes suman exacto la cuenta
+ * en pesos, sin que el redondeo de cada una deje un peso por fuera.
+ */
+export function paidByProduct(
+  lines: readonly OrderLineState[],
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const l of lines) {
+    out.set(l.productId, (out.get(l.productId) ?? 0) + (l.paidQty ?? 0));
+  }
+  return out;
+}
+
 /** Si ya no queda nada por cobrar. */
 export function isFullyPaid(lines: readonly OrderLineState[]): boolean {
   return [...remainingOf(lines).values()].every((q) => q <= EPSILON);
@@ -82,7 +97,8 @@ export function planPayment(
   const pedido = new Map<string, number>();
   if (!requested || requested.length === 0) {
     for (const [productId, qty] of falta) {
-      if (qty > EPSILON) pedido.set(productId, qty);
+      // Sin umbral: un resto de 0,0004 también se cobra (ítem 1.11).
+      if (qty > 0) pedido.set(productId, qty);
     }
   } else {
     for (const r of requested) {
@@ -103,7 +119,28 @@ export function planPayment(
             : `De ese producto solo quedan ${disponible} por pagar`,
         );
       }
+      // Pedir un pelo de más (dentro del umbral) no cobra de más.
+      pedido.set(productId, Math.min(qty, disponible));
     }
+  }
+
+  /*
+   * El cobro que salda la cuenta cobra TODO lo que falta, también los restos
+   * por debajo de EPSILON —de este producto o de otro—. Antes la comanda se
+   * cerraba con esos restos sin cobrar: poca cantidad, pero mercancía y
+   * plata que nadie pagaba. Las líneas quedan pagadas exacto (`paidQty = qty`).
+   */
+  const pedidoTotal = [...pedido.values()].reduce((s, q) => s + q, 0);
+  if (total - pedidoTotal <= EPSILON) {
+    const todo = new Map<string, number>();
+    for (const [productId, qty] of falta) {
+      if (qty > 0) todo.set(productId, qty);
+    }
+    return {
+      lines: [...todo.entries()].map(([productId, qty]) => ({ productId, qty })),
+      paidAfter: lines.map((l) => Math.max(l.qty, l.paidQty ?? 0)),
+      fullyPaid: true,
+    };
   }
 
   // Se reparte lo cobrado sobre las líneas, en orden, hasta agotar cada

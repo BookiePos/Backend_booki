@@ -17,6 +17,8 @@ export interface JwtUser {
   businessId?: string;
   /** Giro del negocio (restaurante | retail). */
   tipoNegocio?: BusinessType;
+  /** Sesión: jti del refresh token con el que se emitió este access token. */
+  sid?: string;
 }
 
 interface AccessPayload {
@@ -30,6 +32,9 @@ interface AccessPayload {
   biz?: string;
   /** Giro del negocio (restaurante | retail). */
   biztype?: BusinessType;
+  sid?: string;
+  /** Tipo de token (ítem 3.7): aquí solo vale `'access'`. */
+  typ?: string;
 }
 
 @Injectable()
@@ -46,6 +51,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (!payload?.sub) {
       throw new UnauthorizedException();
     }
+    // Ítem 3.7: el Bearer solo acepta access tokens. Un token sin `typ` es de
+    // antes de este cambio y se rechaza también: vive 15 minutos y el
+    // frontend, ante el 401, refresca solo y recibe uno con `typ`. El coste
+    // del despliegue es un refresh transparente, no un re-login.
+    if (payload.typ !== 'access') {
+      throw new UnauthorizedException('Tipo de token inválido');
+    }
     return {
       userId: payload.sub,
       email: payload.email,
@@ -55,6 +67,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       sedeIds: payload.sedeIds ?? [],
       businessId: payload.biz,
       tipoNegocio: payload.biztype,
+      sid: payload.sid,
     };
   }
 }

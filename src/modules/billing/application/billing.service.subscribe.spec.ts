@@ -87,6 +87,10 @@ describe('BillingService.subscribe', () => {
       updateOne: vi.fn(() => ({ exec: () => Promise.resolve(undefined) })),
     };
     payments = {
+      // Reserva atómica de `applyApproved`: aquí siempre la gana este proceso
+      // (la carrera entre dos procesos se prueba en billing.service.webhook.spec).
+      findOneAndUpdate: vi.fn(() => ({ exec: () => Promise.resolve({}) })),
+      updateOne: vi.fn(() => ({ exec: () => Promise.resolve({ modifiedCount: 1 }) })),
       create: vi.fn((doc: any) => {
         pago = { ...doc, _id: 'pay1', save: vi.fn().mockResolvedValue(undefined) };
         return Promise.resolve(pago);

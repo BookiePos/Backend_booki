@@ -38,6 +38,76 @@ export interface RecargoFactores {
   extraNocturnaDominical: number;
 }
 
+/**
+ * Jornada máxima semanal vigente desde una fecha (YYYY-MM-DD). Rige hasta el
+ * `desde` del tramo siguiente.
+ */
+export interface JornadaTramo {
+  desde: string;
+  horasSemana: number;
+}
+
+/**
+ * Reducción gradual de la jornada máxima legal (Ley 2101 de 2021, art. 3, que
+ * modificó el art. 161 CST; la ley rige desde el 15-jul-2021). Antes del primer
+ * tramo rige la jornada de 48 h del texto anterior del art. 161.
+ */
+export const JORNADA_MAXIMA_ANTERIOR = 48;
+export const JORNADA_TRAMOS_LEY_2101: JornadaTramo[] = [
+  { desde: '2023-07-15', horasSemana: 47 },
+  { desde: '2024-07-15', horasSemana: 46 },
+  { desde: '2025-07-15', horasSemana: 44 },
+  { desde: '2026-07-15', horasSemana: 42 },
+];
+
+/** Valor de un recargo vigente desde una fecha (YYYY-MM-DD). */
+export interface RecargoTramo {
+  desde: string;
+  factor: number;
+}
+
+/**
+ * Recargo por trabajo en día de descanso obligatorio (dominical o festivo).
+ * Art. 179 CST, modificado por la Ley 2466 de 2025, art. 14, parágrafo
+ * transitorio: 80 % desde el 1-jul-2025, 90 % desde el 1-jul-2026 y 100 %
+ * («plena aplicación») desde el 1-jul-2027. Antes rige el 75 % del texto que
+ * dejó el art. 26 de la Ley 789 de 2002.
+ */
+export const RECARGO_DOMINICAL_ANTERIOR = 0.75;
+export const RECARGO_DOMINICAL_LEY_2466: RecargoTramo[] = [
+  { desde: '2025-07-01', factor: 0.8 },
+  { desde: '2026-07-01', factor: 0.9 },
+  { desde: '2027-07-01', factor: 1 },
+];
+
+/**
+ * Recargos mínimos del art. 168 CST: nocturno 35 %, extra diurna 25 %, extra
+ * nocturna 75 %. Lo configurado solo puede subirlos (CST art. 13: mínimos).
+ */
+export const RECARGOS_MINIMOS_ART_168 = {
+  recargoNocturno: 0.35,
+  extraDiurna: 0.25,
+  extraNocturna: 0.75,
+} as const;
+
+/** Hora (0-23) en que empieza el trabajo nocturno desde una fecha. */
+export interface FranjaNocturnaTramo {
+  desde: string;
+  desdeHora: number;
+}
+
+/**
+ * Inicio de la franja nocturna. Art. 160 CST, modificado por la Ley 2466 de
+ * 2025, art. 10: nocturno de 7 p.m. a 6 a.m., vigente seis meses después de la
+ * sanción (25-jun-2025), es decir, desde el 25-dic-2025 (parágrafo 2). Antes
+ * rige el texto de la Ley 1846 de 2017: de 9 p.m. a 6 a.m.
+ */
+export const NOCTURNO_DESDE_HORA_ANTERIOR = 21;
+export const FRANJA_NOCTURNA_LEY_2466: FranjaNocturnaTramo[] = [
+  { desde: '2025-12-25', desdeHora: 19 },
+];
+export const NOCTURNO_HASTA_HORA = 6;
+
 export interface PayrollSettingsData {
   year: number;
   smmlv: number;
@@ -79,6 +149,25 @@ export interface PayrollSettingsData {
   limiteGlobalUvtMes: number;
 
   recargos: RecargoFactores;
+
+  /**
+   * Jornadas PACTADAS por la empresa, por vigencia (art. 161 CST permite
+   * pactar por debajo de la máxima legal, nunca por encima). La tabla legal no
+   * se copia aquí: vive en `JORNADA_TRAMOS_LEY_2101` y la jornada vigente es el
+   * menor entre el pacto vigente y el tramo legal vigente (`jornadaSemanalVigente`).
+   * Los expedientes guardados antes copiaban la tabla legal; esas filas se
+   * ignoran al leer.
+   */
+  jornadaTramos?: JornadaTramo[];
+
+  /**
+   * Recargo dominical/festivo pactado por encima del legal (factor). No se
+   * guarda en el expediente: lo pone `PayrollService` desde la vigencia de
+   * `recargo.dominical_festivo` que haya creado una persona en Parámetros. El
+   * legal por fecha (`RECARGO_DOMINICAL_LEY_2466`) es el piso; `recargos.dominical`
+   * y los combinados del expediente ya no se leen.
+   */
+  recargoDominicalPactado?: number;
 
   /** La empresa está sujeta a exoneración de aportes (art. 114-1 ET). */
   empresaExoneradaAportes: boolean;
@@ -147,7 +236,8 @@ export const DEFAULT_PAYROLL_SETTINGS: PayrollSettingsData = {
   limiteGlobalPorc: 0.4,
   limiteGlobalUvtMes: 1340 / 12,
 
-  // Recargos Ley 2466/2025 (2026 2º semestre: dominical 90%). Editables.
+  // Recargos del art. 168 CST. El dominical y los combinados se calculan por
+  // fecha (`recargosVigentes`); estos valores quedan solo como referencia.
   recargos: {
     recargoNocturno: 0.35,
     dominical: 0.9,
@@ -158,8 +248,9 @@ export const DEFAULT_PAYROLL_SETTINGS: PayrollSettingsData = {
     extraNocturnaDominical: 1.65,
   },
 
+  jornadaTramos: [],
+
   empresaExoneradaAportes: true,
 };
 
-export const HORAS_MES = 240;
 export const DIAS_MES = 30;

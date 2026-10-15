@@ -2,7 +2,10 @@ import { Module } from '@nestjs/common';
 import { JwtModule, JwtModuleOptions } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
-import { jwtSecret } from '../../shared/config/jwt-secrets';
+import {
+  jwtRefreshSecret,
+  jwtSecret,
+} from '../../shared/config/jwt-secrets';
 import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import { APP_GUARD } from '@nestjs/core';
 import { User, UserSchema } from './infrastructure/schemas/user.schema';
@@ -46,13 +49,18 @@ import { FeatureGuard } from './infrastructure/guards/feature.guard';
     ]),
     JwtModule.registerAsync({
       inject: [ConfigService],
-      useFactory: (config: ConfigService): JwtModuleOptions =>
-        ({
+      useFactory: (config: ConfigService): JwtModuleOptions => {
+        // Ítem 3.7: el secreto de refresh se lee al refrescar, no al arrancar.
+        // Se valida aquí para que un entorno sin él (o con el mismo valor que
+        // el de acceso) no arranque, en vez de fallar en el primer login.
+        jwtRefreshSecret(config);
+        return {
           secret: jwtSecret(config),
           signOptions: {
             expiresIn: config.get<string>('JWT_ACCESS_EXPIRES') ?? '15m',
           },
-        }) as JwtModuleOptions,
+        } as JwtModuleOptions;
+      },
     }),
   ],
   controllers: [

@@ -75,6 +75,8 @@ describe('BillingService · ciclo de vida del cobro', () => {
     return {
       _id: 'pay1',
       businessId: BIZ,
+      reference: 'r',
+      amountInCents: 22_990_000,
       kind: 'renewal',
       plan: 'control',
       status: 'pending',
@@ -106,7 +108,14 @@ describe('BillingService · ciclo de vida del cobro', () => {
         .mockResolvedValue({ id: 'tx-1', status: 'PENDING' }),
       getTransaction: vi
         .fn()
-        .mockResolvedValue({ id: 'tx-1', status: opts.estadoConsulta ?? 'APPROVED' }),
+        // Lo que responde la API: la transacción del pago, por su monto en COP.
+        .mockResolvedValue({
+          id: 'tx-1',
+          status: opts.estadoConsulta ?? 'APPROVED',
+          reference: 'r',
+          amount_in_cents: 22_990_000,
+          currency: 'COP',
+        }),
     };
     subs = {
       findOne: vi.fn(() => ({ exec: () => Promise.resolve(sub) })),
@@ -119,11 +128,21 @@ describe('BillingService · ciclo de vida del cobro', () => {
       findOneAndUpdate: vi.fn(),
     };
     payments = {
+      // Reserva atómica de `applyApproved`: aquí siempre la gana este proceso
+      // (la carrera entre dos procesos se prueba en billing.service.webhook.spec).
+      findOneAndUpdate: vi.fn(() => ({ exec: () => Promise.resolve({}) })),
+      updateOne: vi.fn(() => ({ exec: () => Promise.resolve({ modifiedCount: 1 }) })),
       create: vi.fn(),
       findOne: vi.fn(() => ({ exec: () => Promise.resolve(pagoPendiente()) })),
-      find: vi.fn(() => ({
+      // Solo el barrido de pendientes recibe pagos; el de aprobados a medias no.
+      find: vi.fn((filtro: any) => ({
         sort: () => ({
-          limit: () => ({ exec: () => Promise.resolve(opts.pendientes ?? []) }),
+          limit: () => ({
+            exec: () =>
+              Promise.resolve(
+                filtro.status === 'pending' ? (opts.pendientes ?? []) : [],
+              ),
+          }),
         }),
       })),
     };
@@ -155,7 +174,7 @@ describe('BillingService · ciclo de vida del cobro', () => {
       await expect(
         service.handleWebhook({
           event: 'transaction.updated',
-          data: { transaction: { id: 'tx', reference: 'r', status: 'APPROVED' } },
+          data: { transaction: { id: 'tx-1', reference: 'r', status: 'APPROVED' } },
         }),
       ).rejects.toBeInstanceOf(ForbiddenException);
       // Sin llaves, el secreto es la cadena vacía: validar la firma no protege
@@ -169,7 +188,7 @@ describe('BillingService · ciclo de vida del cobro', () => {
 
       await service.handleWebhook({
         event: 'transaction.updated',
-        data: { transaction: { id: 'tx', reference: 'r', status: 'APPROVED' } },
+        data: { transaction: { id: 'tx-1', reference: 'r', status: 'APPROVED' } },
       });
 
       expect(wompi.verifyEvent).toHaveBeenCalledOnce();
@@ -239,7 +258,13 @@ describe('BillingService · ciclo de vida del cobro', () => {
       build({ pendientes: [a, b] });
       wompi.getTransaction
         .mockRejectedValueOnce(new Error('pasarela caída'))
-        .mockResolvedValue({ id: 'tx-b', status: 'APPROVED' });
+        .mockResolvedValue({
+          id: 'tx-b',
+          status: 'APPROVED',
+          reference: 'r',
+          amount_in_cents: 22_990_000,
+          currency: 'COP',
+        });
 
       const r = await service.runBillingCycle();
 
@@ -339,7 +364,7 @@ describe('BillingService · ciclo de vida del cobro', () => {
 
       await service.handleWebhook({
         event: 'transaction.updated',
-        data: { transaction: { id: 'tx', reference: 'r', status: 'APPROVED' } },
+        data: { transaction: { id: 'tx-1', reference: 'r', status: 'APPROVED' } },
       });
       return (sub.currentPeriodEnd as Date).toISOString().slice(0, 10);
     }

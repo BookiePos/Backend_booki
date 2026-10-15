@@ -8,6 +8,10 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { randomBytes } from 'crypto';
+import {
+  IMAGE_MIMES,
+  validateUploadedFile,
+} from '../../../shared/storage/file-signature';
 import { StorageService } from '../../../shared/storage/storage.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { BusinessService } from '../../control/application/business.service';
@@ -17,6 +21,7 @@ import { PurchasingService } from '../../purchasing/application/purchasing.servi
 import { FinanceService } from '../../finance/application/finance.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { cop } from '../../finance/domain/money.util';
+import type { FinancePaymentMethod } from '../../finance/domain/finance.constants';
 import {
   InvoiceScan,
   InvoiceScanDocument,
@@ -24,10 +29,11 @@ import {
 } from '../infrastructure/schemas/invoice-scan.schema';
 import {
   INVOICE_IMAGE_MAX_BYTES,
+  INVOICE_FREE_EXTRACTIONS,
   INVOICE_IMAGE_TYPES_LABEL,
+  INVOICE_TEXT_MAX_CHARS,
   InvoiceScanStatus,
   ScanAction,
-  invoiceImageExtension,
   taxCodeForRate,
 } from '../domain/invoice-scan.constants';
 import {
@@ -91,17 +97,18 @@ export class InvoiceScanService {
      */
     xml?: string,
   ): Promise<InvoiceScanDocument> {
-    const extension = invoiceImageExtension(file.mimetype);
-    if (!extension) {
-      throw new BadRequestException(
-        `Formato no admitido. Usa ${INVOICE_IMAGE_TYPES_LABEL}.`,
-      );
-    }
     if (file.size > INVOICE_IMAGE_MAX_BYTES) {
       throw new BadRequestException(
         `La imagen supera los ${Math.round(INVOICE_IMAGE_MAX_BYTES / 1024 / 1024)} MB.`,
       );
     }
+    // El tipo sale de los bytes, no del mimetype que declara el cliente.
+    const detected = validateUploadedFile(
+      file.buffer,
+      IMAGE_MIMES,
+      INVOICE_IMAGE_TYPES_LABEL,
+    );
+    const extension = detected.ext;
 
     // El XML se interpreta ANTES de cobrar y de subir nada: uno que no es una
     // factura de la DIAN se rechaza sin costarle un escaneo al negocio.
@@ -126,7 +133,7 @@ export class InvoiceScanService {
     await this.businesses.consumeScan(ctx.businessId, ctx.plan);
 
     const pathname = `facturas/${ctx.businessId}/${Date.now()}-${randomBytes(6).toString('hex')}.${extension}`;
-    const stored = await this.storage.upload(pathname, file.buffer, file.mimetype);
+    const stored = await this.storage.upload(pathname, file.buffer, detected.mime);
 
     const conTexto = Boolean(text && text.trim().length > 0);
     const scan = await this.scans.create({
@@ -191,11 +198,33 @@ export class InvoiceScanService {
     const page = scan.pages[0];
     if (!page) throw new BadRequestException('La factura no tiene imagen');
 
+    // Tope de costo: la subida pagó un escaneo y cubre unas pocas lecturas; las
+    // siguientes gastan cuota del plan (402 si ya no queda), antes de llamar al
+    // modelo. El contador sube con un $inc atómico y se decide con el valor que
+    // devuelve la base: dos extract a la vez no pueden contar una sola.
+    const bumped = await this.scans
+      .findOneAndUpdate({ _id: scan._id }, { $inc: { extractions: 1 } }, { new: true })
+      .exec();
+    if ((bumped?.extractions ?? 0) > INVOICE_FREE_EXTRACTIONS) {
+      try {
+        const ctx = TenantContext.currentOrThrow();
+        await this.businesses.consumeScan(ctx.businessId, ctx.plan);
+      } catch (err) {
+        // Sin cuota no hubo lectura: se devuelve el incremento.
+        await this.scans
+          .updateOne({ _id: scan._id }, { $inc: { extractions: -1 } })
+          .exec();
+        throw err;
+      }
+    }
+
     try {
       // Con texto del PDF no se usa visión: los caracteres ya son exactos y
       // reconocerlos otra vez solo puede introducir errores en los precios.
       const result = page.text
-        ? await this.extractor.extractText(page.text)
+        ? await this.extractor.extractText(
+            page.text.slice(0, INVOICE_TEXT_MAX_CHARS),
+          )
         : await this.extractor.extract(
             ...(await this.downloadArgs(page.imageUrl)),
           );
@@ -215,6 +244,11 @@ export class InvoiceScanService {
       );
       await scan.save();
     } catch (err) {
+      // Decisión: NO se revierte el $inc ni se devuelve el escaneo. No existe
+      // un reembolso de cuota (BusinessService solo tiene consumeScan), y
+      // revertir el contador sin reembolsar cobraría doble en el reintento; las
+      // lecturas gratis (INVOICE_FREE_EXTRACTIONS) ya están pensadas para cubrir
+      // fallos, y no contarlas dejaría reintentos fallidos ilimitados.
       const message = err instanceof Error ? err.message : String(err);
       scan.status = 'failed';
       scan.error = message;
@@ -308,6 +342,10 @@ export class InvoiceScanService {
     const targetDraft = normalizeDraft(target.draft);
     const sourceDraft = normalizeDraft(source.draft);
 
+    // Cada factura ya pagó su escaneo; la unión conserva el MAYOR contador de
+    // lecturas con IA (no la suma, que castigaría unir dos facturas legítimas)
+    // para que extract -> merge -> split no devuelva el contador a cero.
+    target.extractions = Math.max(target.extractions ?? 0, source.extractions ?? 0);
     target.pages.push(...source.pages);
     // Las líneas se concatenan; la cabecera y los totales se quedan con los de
     // la primera página, que es donde vienen impresos.
@@ -360,6 +398,8 @@ export class InvoiceScanService {
     return this.scans.create({
       pages: [page],
       status: 'uploaded',
+      // Hereda el contador: separar una página no reinicia el tope de lecturas.
+      extractions: scan.extractions ?? 0,
       createdByEmail: user.email,
       history: [
         {
@@ -450,7 +490,11 @@ export class InvoiceScanService {
    * la suya), así que la garantía real es que un reintento no duplica: lo ya
    * hecho queda anotado en `appliedTo` y se salta.
    */
-  async apply(id: string, user: JwtUser): Promise<InvoiceScanDocument> {
+  async apply(
+    id: string,
+    user: JwtUser,
+    opts: { paymentMethod?: FinancePaymentMethod } = {},
+  ): Promise<InvoiceScanDocument> {
     const scan = await this.getOrFail(id);
     if (scan.status === 'applied') return scan;
 
@@ -537,6 +581,9 @@ export class InvoiceScanService {
             qty: item.qty,
           })),
           generatePayable: draft.invoice.paymentTerms !== 'contado',
+          // De contado se acredita el medio real (Caja o Bancos), no uno fijo.
+          paymentMethod:
+            draft.invoice.paymentTerms === 'contado' ? opts.paymentMethod : undefined,
           dueDate: draft.invoice.dueDate,
           docNumber: draft.invoice.number,
           note: 'Recepción automática desde factura escaneada',
@@ -556,6 +603,8 @@ export class InvoiceScanService {
             amount: item.amount,
             date: draft.invoice.issueDate ?? todayLocal(),
             status: draft.invoice.paymentTerms === 'contado' ? 'paid' : 'payable',
+            paymentMethod:
+              draft.invoice.paymentTerms === 'contado' ? opts.paymentMethod : undefined,
             supplierId,
             supplierName,
             note: `Factura ${draft.invoice.number ?? 'sin número'}`,

@@ -14,6 +14,10 @@ import {
   ORDER_TYPES,
   OrderType,
 } from '../../../delivery/domain/delivery.constants';
+import {
+  SALE_TAX_KINDS,
+  SaleTaxKind,
+} from '../../../core-tax/domain/sale-tax';
 
 export type SaleDocument = HydratedDocument<Sale>;
 
@@ -66,15 +70,29 @@ class SaleLine {
   @Prop({ trim: true })
   discountName?: string;
 
-  /** Tarifa de IVA aplicada a la línea (0/5/19). El precio ya la incluye. */
+  /**
+   * Tarifa de IVA aplicada a la línea (0/5/19). El precio ya la incluye.
+   * En una línea con INC es 0: el INC no es IVA (ver `taxKind`/`taxRate`).
+   */
   @Prop({ default: 0, min: 0 })
   ivaRate!: number;
 
-  /** Base gravable de la línea (neto sin IVA), para la factura electrónica. */
+  /**
+   * Qué impuesto lleva `taxAmount`: IVA (2408), INC de restaurante (2495) o
+   * ninguno (no responsable). Las ventas anteriores a este campo eran IVA.
+   */
+  @Prop({ enum: SALE_TAX_KINDS, default: 'iva' })
+  taxKind!: SaleTaxKind;
+
+  /** Tarifa del impuesto de la línea, sea IVA o INC (19, 8, 0…). */
+  @Prop({ default: 0, min: 0 })
+  taxRate!: number;
+
+  /** Base gravable de la línea (neto sin impuesto), para la factura electrónica. */
   @Prop({ default: 0, min: 0 })
   taxBase!: number;
 
-  /** IVA de la línea (incluido en el precio), para la factura electrónica. */
+  /** Impuesto de la línea (IVA o INC, incluido en el precio). */
   @Prop({ default: 0, min: 0 })
   taxAmount!: number;
 
@@ -322,7 +340,7 @@ export class Sale {
   @Prop({ default: 0, min: 0 })
   taxableBase!: number;
 
-  /** IVA total (incluido en los precios). Informativo para la factura. */
+  /** Impuesto total, IVA + INC (incluido en los precios). El desglose va por línea (`taxKind`). */
   @Prop({ default: 0, min: 0 })
   taxTotal!: number;
 

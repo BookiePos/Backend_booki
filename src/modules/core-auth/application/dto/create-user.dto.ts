@@ -9,6 +9,7 @@ import {
   MinLength,
   ValidateIf,
 } from 'class-validator';
+import { POLITICA_CONTRASENA } from './password-policy';
 
 export class CreateUserDto {
   // Email opcional: si no se pasa, se sintetiza a partir del username. Debe
@@ -31,13 +32,7 @@ export class CreateUserDto {
   username?: string;
 
   @IsString()
-  @IsStrongPassword({
-    minLength: 8,
-    minLowercase: 1,
-    minUppercase: 1,
-    minNumbers: 1,
-    minSymbols: 1,
-  })
+  @IsStrongPassword(POLITICA_CONTRASENA)
   password!: string;
 
   @IsString()

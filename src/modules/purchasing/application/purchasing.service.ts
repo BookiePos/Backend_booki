@@ -27,6 +27,11 @@ import {
   assertSedeAccess,
 } from '../../core-auth/domain/sede-access';
 import { PurchaseOrderStatus } from '../domain/purchasing.constants';
+import { Sede, SedeDocument } from '../../sedes/infrastructure/schemas/sede.schema';
+import { BusinessService } from '../../control/application/business.service';
+import { perfilFiscalDeSede } from '../../core-tax/application/perfil-fiscal';
+import { admiteIvaDescontable } from '../../core-tax/domain/sale-tax';
+import { cop } from '../../finance/domain/money.util';
 import {
   CreatePurchaseOrderDto,
   PurchaseLineDto,
@@ -47,6 +52,11 @@ export class PurchasingService {
     private readonly products: ProductsService,
     private readonly tax: TaxService,
     private readonly ledgerPosting: LedgerPostingService,
+    /** Responsabilidad de IVA de la sede: decide si el IVA de la compra descuenta. */
+    @InjectModel(Sede.name)
+    private readonly sedeModel: Model<SedeDocument>,
+    /** Control-plane: el giro del negocio cuando el token no lo trae. */
+    private readonly businesses: BusinessService,
   ) {}
 
   /**
@@ -255,7 +265,18 @@ export class PurchasingService {
       );
     }
 
+    // IVA de la factura: descontable (2408) para el responsable de IVA; mayor
+    // valor del costo del inventario para quien no lo es o causa INC (arts.
+    // 437 y 488 ET; NIIF Pymes 13.6). Mismo perfil fiscal que la venta.
+    const descuentaIva = admiteIvaDescontable(
+      await perfilFiscalDeSede(
+        { sedes: this.sedeModel, businesses: this.businesses },
+        po.sedeId.toString(),
+      ),
+    );
+
     let receivedValue = 0;
+    let receivedTax = 0;
     for (const rl of dto.lines) {
       const line = po.lines[rl.lineIndex];
       if (!line) {
@@ -290,6 +311,17 @@ export class PurchasingService {
         continue;
       }
 
+      // IVA de lo recibido: la parte del IVA del renglón por lo acumulado menos
+      // la que ya llevaban las recepciones anteriores. Las parciales suman
+      // exactamente el IVA del renglón, sin fracciones de peso.
+      const ivaRenglon = line.taxAmount ?? 0;
+      const acumulado = advanced.lines[rl.lineIndex]?.qtyReceived ?? line.qtyReceived + rl.qty;
+      const lineTax =
+        line.qty > 0
+          ? cop((ivaRenglon * acumulado) / line.qty) -
+            cop((ivaRenglon * (acumulado - rl.qty)) / line.qty)
+          : 0;
+
       // Entra al inventario únicamente si el renglón está mapeado a un producto.
       if (line.productId) {
         await this.stock.entry(
@@ -297,7 +329,12 @@ export class PurchasingService {
             productId: line.productId.toString(),
             sedeId: po.sedeId.toString(),
             qty: rl.qty,
-            unitCost: line.unitCost,
+            // Sin IVA descontable, el IVA es costo: el lote lo lleva para que
+            // el costo de venta (FEFO) lo recoja.
+            unitCost:
+              descuentaIva || line.qty <= 0
+                ? line.unitCost
+                : line.unitCost + ivaRenglon / line.qty,
             // Si el renglón vino en bultos, el inventario convierte: entran
             // 75.000 g a $3,80 y no 3 unidades a $95.000.
             inPurchaseUnits: line.inPurchaseUnits || undefined,
@@ -313,9 +350,11 @@ export class PurchasingService {
       // Mantén el documento en memoria sincronizado con el avance persistido.
       line.qtyReceived += rl.qty;
       receivedValue += Math.round(line.unitCost * rl.qty);
+      receivedTax += lineTax;
     }
 
-    // Genera CxP por el valor efectivamente reservado en ESTA llamada. Como el
+    // Genera CxP por el TOTAL de la factura (base + IVA) reservado en ESTA
+    // llamada: es lo que se le debe al proveedor. Como el
     // avance de qtyReceived se reserva atómicamente arriba, un reintento del
     // mismo request no vuelve a reservar nada (los renglones se saltan con
     // `continue`), `receivedValue` queda en 0 y NO se crea una CxP duplicada.
@@ -332,7 +371,7 @@ export class PurchasingService {
           docNumber: dto.docNumber ?? po.number,
           issueDate: dto.date,
           dueDate,
-          amount: receivedValue,
+          amount: receivedValue + receivedTax,
           paidAmount: 0,
           status: 'open',
           payments: [],
@@ -349,7 +388,12 @@ export class PurchasingService {
       return po;
     }
 
-    po.receipts.push({
+    // Id propio de la recepción: estable y único aunque dos recepciones
+    // concurrentes lean la orden con el mismo número de recepciones. Es el
+    // sourceId del asiento, y el ledger descarta un sourceId repetido.
+    const receiptOid = new Types.ObjectId();
+    const receipt = {
+      _id: receiptOid,
       date: dto.date,
       lines: dto.lines.map((l) => ({
         lineIndex: l.lineIndex,
@@ -360,28 +404,31 @@ export class PurchasingService {
       note: dto.note,
       userEmail: user.email,
       payableId,
-    } as unknown as (typeof po.receipts)[number]);
+    } as unknown as (typeof po.receipts)[number];
+    po.receipts.push(receipt);
 
     po.status = this.computeStatus(po);
     // El avance de qtyReceived ya se persistió atómicamente arriba; aquí solo
-    // se guardan los metadatos (receipts, status). Usamos $set explícito para
-    // no re-escribir `lines` (evita pisar el avance persistido si hubo carrera).
-    po.markModified('receipts');
+    // se guardan los metadatos. La recepción se AGREGA ($push): reescribir la
+    // lista con $set borraría la de una recepción concurrente. Tampoco se toca
+    // `lines` (evita pisar el avance persistido si hubo carrera).
     await this.orders
       .updateOne(
         { _id: po._id },
-        { $set: { receipts: po.receipts, status: po.status } },
+        { $push: { receipts: receipt }, $set: { status: po.status } },
       )
       .exec();
 
-    // Asiento de la recepción: entra a Inventario contra CxP (si se generó) o
-    // Caja (pago de contado). Best-effort.
+    // Asiento de la recepción: Inventario (+ IVA descontable) contra CxP, si se
+    // generó, o contra el medio con que se pagó de contado. Best-effort.
     await this.ledgerPosting.postPurchaseReceipt({
-      receiptId: `${po._id.toString()}:${po.receipts.length - 1}`,
+      receiptId: `${po._id.toString()}:${receiptOid.toString()}`,
       date: dto.date,
       sedeId: po.sedeId.toString(),
-      amount: receivedValue,
+      amount: descuentaIva ? receivedValue : receivedValue + receivedTax,
+      ivaDescontable: descuentaIva ? receivedTax : 0,
       onCredit: !!dto.generatePayable,
+      paymentMethod: dto.paymentMethod,
       number: po.number,
       userEmail: user.email,
     });
