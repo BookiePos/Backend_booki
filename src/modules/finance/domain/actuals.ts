@@ -3,8 +3,25 @@ import { SaleDocument } from '../../sales/infrastructure/schemas/sale.schema';
 import { PayrollRunDocument } from '../../payroll/infrastructure/schemas/payroll-run.schema';
 import { FinanceExpenseDocument } from '../infrastructure/schemas/finance-expense.schema';
 import { CategoryKind } from './finance.constants';
-import { cop } from './money.util';
+import { cop, sumBy } from './money.util';
 
+/**
+ * Diferencia conocida con el libro (checklist 1.13). El «Real» sale de los
+ * documentos operativos en su estado ACTUAL: una venta anulada o un gasto
+ * borrado no cuenta en ningún mes, y un gasto editado cuenta con sus datos
+ * nuevos en su fecha. El libro, en cambio, reversa en el período en que se
+ * anula (C. Co. art. 57; E.T. art. 484; ver `fechaDeReversa` en
+ * `core-ledger/domain/fecha-contable.ts`): si el original es de un mes
+ * anterior, ese mes conserva la operación y el mes de la anulación lleva la
+ * reversa. Dentro del mismo mes coinciden.
+ *
+ * Por eso, cuando se anula o corrige algo de un mes anterior, el P&L del mes
+ * original muestra menos que el libro y el del mes de la anulación muestra
+ * más, por el mismo valor: el acumulado de los dos meses coincide. Igualarlos
+ * mes a mes exige guardar cuándo se anuló cada venta y el histórico de cada
+ * gasto (hoy no existen), o leer el P&L del libro. Para declarar, manda el
+ * libro.
+ */
 /** Rango de fechas inclusivo en formato YYYY-MM-DD. */
 export interface DateRange {
   from: string; // YYYY-MM-DD
@@ -16,6 +33,30 @@ export interface ActualsModels {
   sales: Model<SaleDocument>;
   runs: Model<PayrollRunDocument>;
   expenses: Model<FinanceExpenseDocument>;
+  /**
+   * Si la sede descuenta el IVA de sus gastos (arts. 437 y 488 ET). Lo resuelve
+   * `ivaDescontablePorSede` (core-tax) con el mismo perfil que la venta.
+   */
+  admiteIvaDescontable: (sedeId?: string) => boolean;
+  /**
+   * Σ IVA descontable de las recepciones de compra del rango+sede. Sale del
+   * libro (débitos a la 2408 de `purchase_receipt`, netos de sus reversas):
+   * la recepción no guarda su IVA en otro documento.
+   */
+  ivaDescontableDeCompras: (range: DateRange, sedeIds: string[] | null) => Promise<number>;
+}
+
+/**
+ * Lo que un gasto pesa en resultados: la base y, si su sede NO descuenta el
+ * IVA (no responsable o restaurante con INC, arts. 437 y 488 ET), también el
+ * IVA, que es mayor valor del gasto. Mismo criterio que su asiento.
+ */
+export function costoDelGasto(
+  admiteIvaDescontable: ActualsModels['admiteIvaDescontable'],
+  e: { amount?: number; taxAmount?: number; sedeId?: { toString(): string } },
+): number {
+  const iva = admiteIvaDescontable(e.sedeId?.toString()) ? 0 : e.taxAmount || 0;
+  return (e.amount || 0) + iva;
 }
 
 /** Convierte 'YYYY-MM-DD' a Date de inicio de día (hora local). */
@@ -127,7 +168,7 @@ async function payrollActual(
   return cop(total);
 }
 
-/** Σ `finance_expenses.amount` de una categoría en el rango+sede. */
+/** Σ costo de los gastos de una categoría en el rango+sede (ver `costoDelGasto`). */
 async function expenseActual(
   models: ActualsModels,
   categoryId: string | null,
@@ -139,36 +180,101 @@ async function expenseActual(
     ...sedeMatch(sedeIds),
   };
   if (categoryId) filter.categoryId = new Types.ObjectId(categoryId);
-  const expenses = await models.expenses.find(filter).select('amount').exec();
-  return cop(expenses.reduce((a, e) => a + (e.amount || 0), 0));
+  const expenses = await models.expenses
+    .find(filter)
+    .select('amount taxAmount sedeId')
+    .exec();
+  return sumBy(expenses, (e) => costoDelGasto(models.admiteIvaDescontable, e));
 }
 
-/** Σ IVA generado (ventas) − Σ IVA descontable (gastos) del rango+sede. */
+/**
+ * IVA e INC generados por las ventas completadas del rango+sede, por separado.
+ *
+ * `taxTotal` mezcla los dos: un restaurante causa INC (cuenta 2495), no IVA
+ * (2408), y se declaran en formularios distintos. El INC se toma de las líneas
+ * con `taxKind: 'inc'`; el resto del impuesto es IVA, incluidas las líneas sin
+ * `taxKind` (ventas anteriores a ese campo, que eran IVA) y las `ninguno`, que
+ * llevan impuesto 0. Ambos se acumulan sin redondear y se cierran con `cop()`
+ * al final, con el mismo criterio.
+ */
+export async function ivaEIncDeVentas(
+  models: ActualsModels,
+  range: DateRange,
+  sedeIds: string[] | null,
+): Promise<{ iva: number; inc: number }> {
+  const sales = await models.sales
+    .find({
+      status: 'completed',
+      createdAt: { $gte: startOfDay(range.from), $lt: endExclusive(range.to) },
+      ...sedeMatch(sedeIds),
+    })
+    .select('taxTotal lines.taxKind lines.taxAmount')
+    .exec();
+  let iva = 0;
+  let inc = 0;
+  for (const s of sales) {
+    const incVenta = (s.lines ?? [])
+      .filter((l) => l.taxKind === 'inc')
+      .reduce((a, l) => a + (l.taxAmount || 0), 0);
+    inc += incVenta;
+    iva += (s.taxTotal || 0) - incVenta;
+  }
+  return { iva: cop(iva), inc: cop(inc) };
+}
+
+/**
+ * Σ IVA pagado en los gastos del rango+sede que es descontable. Quien no es
+ * responsable de IVA, o causa INC en vez de IVA, no tiene IVA descontable
+ * (arts. 437 y 488 ET): para esas sedes el IVA del gasto es mayor valor del
+ * gasto y no se resta de nada. Sin esto, un restaurante mostraba un saldo de
+ * IVA «a favor» que no existe.
+ */
+export async function ivaDescontableDeGastos(
+  models: ActualsModels,
+  range: DateRange,
+  sedeIds: string[] | null,
+): Promise<number> {
+  const expenses = await models.expenses
+    .find({ date: { $gte: range.from, $lte: range.to }, ...sedeMatch(sedeIds) })
+    .select('taxAmount sedeId')
+    .exec();
+  return sumBy(
+    expenses.filter((e) => models.admiteIvaDescontable(e.sedeId?.toString())),
+    (e) => e.taxAmount || 0,
+  );
+}
+
+/**
+ * Σ IVA descontable del rango+sede: el de los gastos y el de las compras. Es
+ * lo mismo que el libro debita a la 2408 por esos dos eventos.
+ */
+export async function ivaDescontableTotal(
+  models: ActualsModels,
+  range: DateRange,
+  sedeIds: string[] | null,
+): Promise<number> {
+  const [gastos, compras] = await Promise.all([
+    ivaDescontableDeGastos(models, range, sedeIds),
+    models.ivaDescontableDeCompras(range, sedeIds),
+  ]);
+  return cop(gastos + compras);
+}
+
+/**
+ * Σ IVA generado (ventas) − Σ IVA descontable (gastos y compras) del
+ * rango+sede. Solo IVA: el INC no es parte de la categoría IVA (2408) ni
+ * admite descontables.
+ */
 async function taxActual(
   models: ActualsModels,
   range: DateRange,
   sedeIds: string[] | null,
 ): Promise<number> {
-  const [sales, expenses] = await Promise.all([
-    models.sales
-      .find({
-        status: 'completed',
-        createdAt: {
-          $gte: startOfDay(range.from),
-          $lt: endExclusive(range.to),
-        },
-        ...sedeMatch(sedeIds),
-      })
-      .select('taxTotal')
-      .exec(),
-    models.expenses
-      .find({ date: { $gte: range.from, $lte: range.to }, ...sedeMatch(sedeIds) })
-      .select('taxAmount')
-      .exec(),
+  const [generado, descontable] = await Promise.all([
+    ivaEIncDeVentas(models, range, sedeIds),
+    ivaDescontableTotal(models, range, sedeIds),
   ]);
-  const generado = sales.reduce((a, s) => a + (s.taxTotal || 0), 0);
-  const descontable = expenses.reduce((a, e) => a + (e.taxAmount || 0), 0);
-  return cop(generado - descontable);
+  return cop(generado.iva - descontable);
 }
 
 /**
@@ -177,8 +283,8 @@ async function taxActual(
  * - income → Σ ventas.taxableBase (neto sin IVA)
  * - cogs   → Σ costo de components[]
  * - payroll→ Σ payroll_runs.totals.costo del período
- * - expense→ Σ finance_expenses.amount de la categoría
- * - tax    → Σ IVA ventas − Σ IVA gastos
+ * - expense→ Σ costo de los gastos de la categoría (con el IVA no descontable)
+ * - tax    → Σ IVA ventas (sin el INC) − Σ IVA descontable (gastos y compras)
  * - other  → 0 (sin fuente automática)
  */
 export async function actualForCategory(

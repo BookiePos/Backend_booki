@@ -37,7 +37,8 @@ import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
  * cambia es lo que entra al inventario al recibir.
  *
  * Constructor:
- *   (orders, payables, counterModel, stock, products, tax, ledgerPosting)
+ *   (orders, payables, counterModel, stock, products, tax, ledgerPosting,
+ *    sedes, businesses)
  */
 describe('PurchasingService · compra en presentación', () => {
   const sedeId = new Types.ObjectId();
@@ -97,6 +98,12 @@ describe('PurchasingService · compra en presentación', () => {
         postPurchase: vi.fn(),
         postPurchaseReceipt: vi.fn().mockResolvedValue(undefined),
       } as never,
+      {
+        findById: vi.fn(() => ({
+          select: () => ({ exec: () => Promise.resolve(null) }),
+        })),
+      } as never,
+      { findById: async () => null } as never,
     );
   }
 
