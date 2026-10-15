@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { LedgerService, PostLine } from './ledger.service';
 import { LedgerConciliacionService } from './ledger-conciliacion.service';
 import { ACC } from '../domain/ledger.constants';
-import { cop } from '../../finance/domain/money.util';
+import { cop, sumBy } from '../../finance/domain/money.util';
 
 /**
  * Posteo automático al ledger desde los eventos de negocio (venta, gasto,
@@ -426,25 +426,54 @@ export class LedgerPostingService {
 
   // ── Nómina ────────────────────────────────────────────────────────────────────
 
-  /** Nómina causada: débito Gastos de personal, crédito Salarios por pagar. */
+  /**
+   * Nómina causada (ítem 1.9). Débito a gastos de personal por el costo del
+   * empleador y el pasivo separado por concepto, para que cada cuenta se pueda
+   * pagar y conciliar sola (PILA, retención, fondos, empleados):
+   *   2505 neto a pagar · 2370 salud, pensión y FSP del empleado + aportes del
+   *   empleador · 2610 provisiones · 2365 retención en la fuente · 1305 el
+   *   consumo fiado que se descontó, que cancela la CxC del empleado.
+   * El débito es la suma de los créditos, así que el asiento cuadra exacto.
+   */
   async postPayrollRun(input: {
     runId: string;
     date: string;
     sedeId?: string;
-    amount: number;
     period: string;
+    partes: {
+      neto: number;
+      seguridadSocialEmpleado: number;
+      retencionFuente: number;
+      fiado: number;
+      aportesEmpleador: number;
+      provisiones: number;
+    };
     userEmail?: string;
   }): Promise<void> {
-    const amount = Math.round(input.amount);
-    if (amount <= 0) return;
+    const p = input.partes;
+    const creditos: [string, number][] = [
+      [ACC.SALARIOS_POR_PAGAR, cop(p.neto)],
+      [ACC.APORTES_NOMINA, cop(p.seguridadSocialEmpleado) + cop(p.aportesEmpleador)],
+      [ACC.PROVISIONES_LABORALES, cop(p.provisiones)],
+      [ACC.RETENCION_FUENTE, cop(p.retencionFuente)],
+      [ACC.CLIENTES, cop(p.fiado)],
+    ];
+    const costo = sumBy(creditos, ([, monto]) => monto);
+    if (costo <= 0) return;
     await this.safePost({
       date: input.date,
       sourceType: 'payroll_run',
       sourceId: input.runId,
       memo: `Nómina ${input.period}`,
       lines: [
-        { accountCode: ACC.GASTOS_PERSONAL, debit: amount, sedeId: input.sedeId },
-        { accountCode: ACC.SALARIOS_POR_PAGAR, credit: amount, sedeId: input.sedeId },
+        { accountCode: ACC.GASTOS_PERSONAL, debit: costo, sedeId: input.sedeId },
+        ...creditos
+          .filter(([, monto]) => monto > 0)
+          .map(([accountCode, monto]) => ({
+            accountCode,
+            credit: monto,
+            sedeId: input.sedeId,
+          })),
       ],
       userEmail: input.userEmail,
     });

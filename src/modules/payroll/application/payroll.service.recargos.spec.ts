@@ -187,4 +187,37 @@ describe('PayrollService.closeRun · deducciones amarradas', () => {
 
     expect(run.status).toBe('cerrada');
   });
+
+  it('el asiento recibe el pasivo separado por concepto, sumando las colillas (ítem 1.9)', async () => {
+    const colilla = (neto: number, otras: number) => ({
+      employeeId: 'e',
+      otrasDeduccionesDetalle: otras ? [{ concept: 'Consumo POS', amount: otras }] : [],
+      netoPagar: neto,
+      breakdown: {
+        deducciones: { salud: 40_000, pension: 40_000, fsp: 0, retencionFuente: 10_000, otras },
+        aportesEmpleador: { total: 150_000 },
+        provisiones: { total: 120_000 },
+      },
+    });
+    const run = {
+      ...corrida([]),
+      slips: [colilla(900_000, 16_900), colilla(1_000_000, 0)],
+    };
+    const { service, ledgerPosting } = armar({ run, aplicadas: [{ amount: 16_900 }] });
+
+    await service.closeRun(String(run._id));
+
+    expect(ledgerPosting.postPayrollRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        partes: {
+          neto: 1_900_000,
+          seguridadSocialEmpleado: 160_000,
+          retencionFuente: 20_000,
+          fiado: 16_900,
+          aportesEmpleador: 300_000,
+          provisiones: 240_000,
+        },
+      }),
+    );
+  });
 });

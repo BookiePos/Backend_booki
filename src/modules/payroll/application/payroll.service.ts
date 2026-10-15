@@ -70,6 +70,7 @@ import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { ParamsService } from '../../core-params/application/params.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { sumBy } from '../../finance/domain/money.util';
+import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 
 export interface PreviewResult {
   input: {
@@ -905,18 +906,32 @@ export class PayrollService {
     run.closedAt = new Date();
     await run.save();
 
-    // Asiento contable de la nómina causada (gasto de personal / salarios por
-    // pagar). Best-effort e idempotente por (payroll_run, runId): igual que el
-    // posteo de ventas, un fallo del ledger NO tumba el cierre de la corrida (la
-    // corrida es la fuente de verdad y el asiento puede reconstruirse). Se usa
-    // `totals.costo` (costo total empleador: devengados + aportes + provisiones)
-    // como monto del gasto de personal.
+    // Asiento contable de la nómina causada, con el pasivo separado por
+    // concepto (ítem 1.9). Best-effort e idempotente por (payroll_run, runId):
+    // igual que el posteo de ventas, un fallo del ledger NO tumba el cierre de
+    // la corrida (la corrida es la fuente de verdad y el asiento puede
+    // reconstruirse). Las partes salen de las colillas: su suma es el costo del
+    // empleador (devengados + aportes + provisiones).
+    const ded = (sl: (typeof run.slips)[number]) => sl.breakdown?.deducciones;
     await this.ledgerPosting.postPayrollRun({
       runId: run._id.toString(),
-      date: (run.closedAt ?? new Date()).toLocaleDateString('en-CA'),
+      date: fechaColombia(run.closedAt ?? new Date()),
       sedeId: run.sedeId ? run.sedeId.toString() : undefined,
-      amount: Math.round(run.totals?.costo ?? 0),
       period: run.period,
+      partes: {
+        neto: sumBy(run.slips, (sl) => sl.netoPagar ?? 0),
+        seguridadSocialEmpleado: sumBy(
+          run.slips,
+          (sl) => (ded(sl)?.salud ?? 0) + (ded(sl)?.pension ?? 0) + (ded(sl)?.fsp ?? 0),
+        ),
+        retencionFuente: sumBy(run.slips, (sl) => ded(sl)?.retencionFuente ?? 0),
+        fiado: sumBy(run.slips, (sl) => ded(sl)?.otras ?? 0),
+        aportesEmpleador: sumBy(
+          run.slips,
+          (sl) => sl.breakdown?.aportesEmpleador?.total ?? 0,
+        ),
+        provisiones: sumBy(run.slips, (sl) => sl.breakdown?.provisiones?.total ?? 0),
+      },
       userEmail: run.createdByEmail,
     });
 

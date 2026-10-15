@@ -53,7 +53,11 @@ export const ACC = {
    * impuestos por pagar); no es la 2368, que es la ReteICA.
    */
   INC_POR_PAGAR: '2495',
+  /** Salud, pensión y FSP retenidos al empleado + aportes del empleador (PUC 2370). */
+  APORTES_NOMINA: '2370',
   SALARIOS_POR_PAGAR: '2505',
+  /** Cesantías, intereses, prima y vacaciones causadas (PUC 2610). */
+  PROVISIONES_LABORALES: '2610',
   INGRESOS_VENTAS: '4135',
   GASTOS_PERSONAL: '5105',
   GASTOS_SERVICIOS: '5135',
@@ -86,10 +90,12 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   // al cambio guardan ahí IVA/INC hasta correr la reclasificación (src/datos).
   { code: '2367', name: 'Impuesto a las ventas retenido (ReteIVA)', type: 'liability' },
   { code: '2368', name: 'Impuesto de industria y comercio retenido (ReteICA)', type: 'liability' },
+  { code: '2370', name: 'Retenciones y aportes de nómina', type: 'liability' },
   { code: '2380', name: 'Propinas por pagar', type: 'liability' },
   { code: '2408', name: 'Impuesto sobre las ventas por pagar (IVA)', type: 'liability' },
   { code: '2495', name: 'Impuesto nacional al consumo por pagar', type: 'liability' },
   { code: '2505', name: 'Salarios por pagar', type: 'liability' },
+  { code: '2610', name: 'Para obligaciones laborales', type: 'liability' },
   // Patrimonio
   { code: '3105', name: 'Capital', type: 'equity' },
   { code: '3605', name: 'Resultado del ejercicio', type: 'equity' },

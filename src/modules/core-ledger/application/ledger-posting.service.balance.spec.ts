@@ -402,18 +402,52 @@ describe('LedgerPostingService · asientos automáticos', () => {
       expect(amountOn(ACC.CAJA, 'credit')).toBe(0);
     });
 
-    it('nómina causada: gasto de personal contra salarios por pagar', async () => {
+    it('nómina causada: el pasivo se separa por concepto (ítem 1.9)', async () => {
       await service.postPayrollRun({
         runId: 'n1',
         date: '2026-09-30',
         sedeId: SEDE,
-        amount: 4_800_000,
         period: '2026-09',
+        partes: {
+          neto: 2_900_000,
+          seguridadSocialEmpleado: 260_000,
+          retencionFuente: 40_000,
+          fiado: 50_000,
+          aportesEmpleador: 950_000,
+          provisiones: 600_000,
+        },
       });
 
       expect(side('debit')).toBe(side('credit'));
+      // Costo del empleador = todo lo que se causa.
       expect(amountOn(ACC.GASTOS_PERSONAL, 'debit')).toBe(4_800_000);
-      expect(amountOn(ACC.SALARIOS_POR_PAGAR, 'credit')).toBe(4_800_000);
+      expect(amountOn(ACC.SALARIOS_POR_PAGAR, 'credit')).toBe(2_900_000);
+      // Salud, pensión y FSP del empleado + aportes del empleador.
+      expect(amountOn(ACC.APORTES_NOMINA, 'credit')).toBe(1_210_000);
+      expect(amountOn(ACC.PROVISIONES_LABORALES, 'credit')).toBe(600_000);
+      expect(amountOn(ACC.RETENCION_FUENTE, 'credit')).toBe(40_000);
+      // El consumo fiado descontado cancela la CxC del empleado.
+      expect(amountOn(ACC.CLIENTES, 'credit')).toBe(50_000);
+    });
+
+    it('nómina sin retención ni fiado no abre esos renglones', async () => {
+      await service.postPayrollRun({
+        runId: 'n2',
+        date: '2026-09-30',
+        period: '2026-09',
+        partes: {
+          neto: 1_000_000,
+          seguridadSocialEmpleado: 80_000,
+          retencionFuente: 0,
+          fiado: 0,
+          aportesEmpleador: 300_000,
+          provisiones: 200_000,
+        },
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(lines().some((l) => l.accountCode === ACC.RETENCION_FUENTE)).toBe(false);
+      expect(lines().some((l) => l.accountCode === ACC.CLIENTES)).toBe(false);
     });
 
     it('no postea asientos en cero (recepción o nómina sin monto)', async () => {
@@ -428,8 +462,15 @@ describe('LedgerPostingService · asientos automáticos', () => {
       await service.postPayrollRun({
         runId: 'n0',
         date: '2026-09-30',
-        amount: 0,
         period: '2026-09',
+        partes: {
+          neto: 0,
+          seguridadSocialEmpleado: 0,
+          retencionFuente: 0,
+          fiado: 0,
+          aportesEmpleador: 0,
+          provisiones: 0,
+        },
       });
 
       expect(ledger.post).not.toHaveBeenCalled();
