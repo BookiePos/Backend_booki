@@ -110,7 +110,7 @@ function gateCobertura(ruta, log) {
     return;
   }
   const piso = techos.coberturaLineasPiso;
-  const cifra = `${pct.toFixed(1)} % de líneas`;
+  const cifra = `${pct.toFixed(2)} % de líneas`;
   if (typeof piso !== 'number') {
     registrar('cobertura', cifra, 'FALLA', 'falta «coberturaLineasPiso» en techos.json', log);
   } else if (pct < piso) {
