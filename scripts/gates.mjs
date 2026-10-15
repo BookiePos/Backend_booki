@@ -98,11 +98,42 @@ function gateTsc(nombre, clave, argsTsc) {
 gateTsc('tsc-codigo', 'tscCodigo', ['-p', 'tsconfig.build.json']);
 gateTsc('tsc-tests', 'tscConTests', ['-p', 'tsconfig.json']);
 
+// --- cobertura ---------------------------------------------------------------
+// Ítem 5.1. Al revés que los techos: el PISO solo sube. Si la cobertura de
+// líneas baja del piso, FALLA; si lo supera por un punto o más, también falla
+// y pide subirlo, para que la mejora quede fijada.
+function gateCobertura(ruta, log) {
+  const rep = existsSync(ruta) ? leerJson(ruta) : null;
+  const pct = rep?.total?.lines?.pct;
+  if (typeof pct !== 'number') {
+    registrar('cobertura', '—', 'SIN MEDIR', 'no hubo resumen de cobertura', log);
+    return;
+  }
+  const piso = techos.coberturaLineasPiso;
+  const cifra = `${pct.toFixed(1)} % de líneas`;
+  if (typeof piso !== 'number') {
+    registrar('cobertura', cifra, 'FALLA', 'falta «coberturaLineasPiso» en techos.json', log);
+  } else if (pct < piso) {
+    registrar('cobertura', cifra, 'FALLA', `piso ${piso}: la cobertura BAJÓ`, log);
+  } else if (pct >= piso + 1) {
+    registrar('cobertura', cifra, 'FALLA', `piso ${piso} holgado: sube «coberturaLineasPiso» a ${Math.floor(pct)}`, log);
+  } else {
+    registrar('cobertura', cifra, 'OK', `piso ${piso}`, log);
+  }
+}
+
 // --- vitest ------------------------------------------------------------------
 {
   const json = join(tmpdir(), `gates-vitest-${SELLO}.json`);
-  const r = correr('vitest', 'pnpm', ['exec', 'vitest', 'run', '--reporter=json', `--outputFile=${json}`]);
+  const dirCobertura = join(tmpdir(), `gates-cobertura-${SELLO}`);
+  const r = correr('vitest', 'pnpm', [
+    'exec', 'vitest', 'run', '--reporter=json', `--outputFile=${json}`,
+    '--coverage.enabled', '--coverage.reporter=json-summary',
+    `--coverage.reportsDirectory=${dirCobertura}`,
+  ]);
   const rep = leerJson(json);
+  gateCobertura(join(dirCobertura, 'coverage-summary.json'), r.log);
+  rmSync(dirCobertura, { recursive: true, force: true });
   const total = rep?.numTotalTests ?? 0;
   if (!rep || total === 0) {
     registrar('vitest', '—', 'SIN MEDIR', rep ? '0 tests ejecutados' : 'no hubo reporte json', r.log);
