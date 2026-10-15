@@ -2,7 +2,7 @@
   "tscCodigo": 0,
   "tscConTests": 0,
   "lintErrores": 1,
-  "coberturaLineasPiso": 48,
+  "coberturaLineasPiso": 50,
   "dineroPorModulo": {
     "attendance": 2,
     "billing": 1,
