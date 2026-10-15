@@ -37,7 +37,18 @@ describe('RecurringExpenseScheduler.sweep', () => {
   it('todas las empresas bien: ok con las cifras', async () => {
     await expect(scheduler.sweep()).resolves.toEqual({
       estado: 'ok',
-      cifras: { empresas: 2, generados: 2, fallidas: 0 },
+      cifras: { empresas: 2, procesadas: 2, pendientes: 0, generados: 2, fallidas: 0 },
+    });
+  });
+
+  it('sin tiempo para empezar: las empresas quedan pendientes y el cron lo ve (ítem 2.10)', async () => {
+    const r = await scheduler.sweep({ hasta: Date.now() - 1 });
+
+    expect(finance.runRecurring).not.toHaveBeenCalled();
+    expect(r).toMatchObject({
+      estado: 'error',
+      detalle: '2 empresa(s) sin procesar por tiempo',
+      cifras: { empresas: 2, procesadas: 0, pendientes: 2 },
     });
   });
 
