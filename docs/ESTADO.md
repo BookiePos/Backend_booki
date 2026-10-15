@@ -28,14 +28,8 @@ y anota aquí el resultado.
 - **Fluid compute en Vercel: sin comprobar.** Confirmar que está activo en el proyecto
   `backend`. Sin él la función tiene un límite de 10–60 s; un corte entre la reserva del
   cobro y `wompi.createTransaction` dejaría ese período sin cobrar hasta que alguien lo note.
-- **Facturación electrónica (APIDIAN): en pausa.** La rama `feat/factura-electronica-apidian`
-  se borró el 2026-10-12 por decisión del dueño (no se usará todavía). Su trabajo no se perdió:
-  los PR #49 (Backend) y #44 (Frontend) se mezclaron en `fix/cobros-pendientes-y-tarjeta-guardada`,
-  que sigue en GitHub y **no está en `main`**. Cuando se retome, esa rama va a pedir subir techos
-  o arreglar deuda (lint 4 vs 2 en `main`, `einvoicing` 7 redondeos vs 4, `sales` 22 vs 21),
-  regenerar `Frontend/scripts/permisos-backend.json` (añade `einvoicing.configure`). Si trae
-  barridos propios, deben engancharse a `/cron/diario` (en `main` no hay ninguno de facturación
-  electrónica).
+- **Facturación electrónica real: sin integración.** No hay proveedor elegido ni código de
+  transmisión a la DIAN; `einvoicing` solo genera el documento y el CUFE en ambiente de pruebas.
 
 ## Gates en `fix/hallazgos-estado` (2026-10-12)
 
