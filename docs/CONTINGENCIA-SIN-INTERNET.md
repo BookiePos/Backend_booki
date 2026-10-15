@@ -21,7 +21,8 @@ vender. Va dirigido al cajero y al dueño; conviene imprimirlo y dejarlo en la c
 ## Cuando vuelve la conexión
 
 1. **Digita las ventas manuales** en el POS, en el orden del talonario, en el mismo
-   turno de caja. En la nota de cada venta escribe «Contingencia #<número>».
+   turno de caja. En cada comprobante de papel anota el número que el sistema le dio
+   a la venta, así cada papel queda enlazado a su registro.
 2. **Cuadra:** la suma de los comprobantes debe ser igual a lo registrado. El arqueo
    del turno se hace después de digitar todo.
 3. **Inventario:** las ventas digitadas descuentan stock al registrarse; si algo se
