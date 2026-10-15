@@ -7,7 +7,10 @@ import { NoPermissionRequired } from '../../core-auth/infrastructure/decorators/
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
-import { allowedSedeIds } from '../../core-auth/domain/sede-access';
+import {
+  allowedSedeIds,
+  assertSedeAccess,
+} from '../../core-auth/domain/sede-access';
 
 @Controller('sedes')
 export class SedesController {
@@ -31,9 +34,16 @@ export class SedesController {
     return this.sedes.create(dto);
   }
 
+  // Editar exige además tener acceso a ESA sede: un Gerente de la sede A con
+  // `sede.manage` no toca el nombre ni la resolución DIAN de la sede B.
   @RequirePermissions(PERMISSIONS.SEDE_MANAGE)
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateSedeDto) {
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateSedeDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    assertSedeAccess(user, id);
     return this.sedes.update(id, dto);
   }
 }
