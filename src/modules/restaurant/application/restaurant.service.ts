@@ -30,6 +30,7 @@ import {
 } from '../domain/restaurant.constants';
 import { ParamsService } from '../../core-params/application/params.service';
 import { TaxService } from '../../core-tax/application/tax.service';
+import { nombreDeMesa } from '../domain/nombre-mesa';
 import {
   AddItemsDto,
   CancelOrderDto,
@@ -372,12 +373,12 @@ export class RestaurantService {
 
     this.recomputeTotals(order);
     const note =
-      `Restaurante · Mesa ${order.tableName} · Comanda ${order.number}` +
+      `Restaurante · ${nombreDeMesa(order.tableName)} · Comanda ${order.number}` +
       (order.tipAmount > 0 ? ` · Propina sugerida $${order.tipAmount}` : '');
     const posOrder = await this.posOrders.open(
       {
         sedeId: order.sedeId.toString(),
-        label: `Mesa ${order.tableName}`,
+        label: nombreDeMesa(order.tableName),
         note,
         lines: order.items.map((i) => ({
           productId: i.productId!.toString(),
