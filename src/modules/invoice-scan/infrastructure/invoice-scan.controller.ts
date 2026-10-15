@@ -11,12 +11,15 @@ import {
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
+import { AI_THROTTLE } from './ai-throttle';
 import { FileInterceptor } from '@nestjs/platform-express';
 import {
   InvoiceScanService,
   type UploadedInvoiceImage,
 } from '../application/invoice-scan.service';
 import {
+  ApplyInvoiceScanDto,
   MergeInvoiceScanDto,
   SplitInvoiceScanDto,
   UpdateInvoiceScanDto,
@@ -24,6 +27,8 @@ import {
 import { ApplyAsExpenseDto } from '../application/dto/apply-as-expense.dto';
 import {
   INVOICE_IMAGE_MAX_BYTES,
+  INVOICE_TEXT_MAX_CHARS,
+  INVOICE_XML_MAX_CHARS,
   INVOICE_SCAN_STATUSES,
   InvoiceScanStatus,
 } from '../domain/invoice-scan.constants';
@@ -70,6 +75,7 @@ export class InvoiceScanController {
    * suben en varias llamadas y el cliente muestra el progreso.
    */
   @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
+  @Throttle(AI_THROTTLE)
   @Post()
   @UseInterceptors(
     FileInterceptor('file', {
@@ -78,7 +84,8 @@ export class InvoiceScanController {
         // Los campos de texto del multipart (texto del PDF, XML de la factura
         // electrónica) tienen por defecto un tope de 1 MB en multer. Un XML
         // firmado de la DIAN, con su respuesta de validación adentro, puede
-        // pasarlo y la subida fallaba con "Field value too long".
+        // pasarlo y la subida fallaba con "Field value too long". El tope de
+        // `text` (200 KB, va a la IA) y el de `xml` (2 MB) se aplican en el handler.
         fieldSize: 3 * 1024 * 1024,
       },
     }),
@@ -102,11 +109,24 @@ export class InvoiceScanController {
     if (!file) {
       throw new BadRequestException('Adjunta la imagen en el campo "file"');
     }
+    // Tope de costo de IA: el texto del PDF va al modelo y no pasa de ~200 KB.
+    // El XML no usa IA, pero se acota a 2 MB (por debajo del fieldSize).
+    for (const [name, value, max] of [
+      ['text', text, INVOICE_TEXT_MAX_CHARS],
+      ['xml', xml, INVOICE_XML_MAX_CHARS],
+    ] as const) {
+      if (value && value.length > max) {
+        throw new BadRequestException(
+          `El campo "${name}" supera los ${max / 1000} KB permitidos.`,
+        );
+      }
+    }
     return this.scans.upload(file, user, text, xml);
   }
 
   /** Lee la factura con el modelo. Se puede reintentar si falla. */
   @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
+  @Throttle(AI_THROTTLE)
   @Post(':id/extract')
   extract(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.scans.extract(id, user);
@@ -146,8 +166,12 @@ export class InvoiceScanController {
   /** Aplica la factura aprobada: inventario, gastos, CxP y proveedor. */
   @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
   @Post(':id/apply')
-  apply(@Param('id') id: string, @CurrentUser() user: JwtUser) {
-    return this.scans.apply(id, user);
+  apply(
+    @Param('id') id: string,
+    @Body() dto: ApplyInvoiceScanDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.scans.apply(id, user, dto);
   }
 
   /**

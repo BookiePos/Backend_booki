@@ -15,6 +15,23 @@ import {
 } from 'class-validator';
 import { LINE_TARGETS, LineTarget } from '../../domain/invoice-scan.constants';
 import { ITEM_TYPES, ItemType } from '../../../inventory/domain/inventory.constants';
+import {
+  PAYMENT_METHODS,
+  type FinancePaymentMethod,
+} from '../../../finance/domain/finance.constants';
+
+/**
+ * Opciones al aplicar la factura. Todo opcional: el cuerpo vacío sigue valiendo.
+ *
+ * `paymentMethod`: con qué se pagó una factura de contado. Efectivo sale de
+ * Caja; transferencia o tarjeta, de Bancos (la recepción y los gastos). Sin él,
+ * la mercancía se asume pagada en efectivo, como antes.
+ */
+export class ApplyInvoiceScanDto {
+  @IsOptional()
+  @IsIn(PAYMENT_METHODS)
+  paymentMethod?: FinancePaymentMethod;
+}
 
 /** Cómo se emparejó un renglón; mismos valores que `LineDecision.matchedBy`. */
 export const MATCHED_BY = ['alias', 'barcode', 'sku', 'name', 'manual', 'none'] as const;

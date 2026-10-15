@@ -214,6 +214,10 @@ export class InvoiceScan {
   })
   status!: InvoiceScanStatus;
 
+  /** Lecturas con IA hechas a esta factura (tope de costo, ver INVOICE_FREE_EXTRACTIONS). */
+  @Prop({ default: 0 })
+  extractions?: number;
+
   /** Borrador normalizado (estructura `ExtractedInvoice`), editable. */
   @Prop({ type: Object })
   draft?: unknown;
