@@ -101,7 +101,7 @@ function armar(opts: {
   return { service, created, attendance, ledgerPosting };
 }
 
-const USER = { email: 'dueno@x.co' } as any;
+const USER = { email: 'dueno@x.co', role: 'owner', permissions: [], sedeIds: [] } as any;
 const DOMINGO = { employeeId: 'e1', workDate: '2026-09-13', checkIn: '08:00', checkOut: '16:00' };
 
 describe('PayrollService.createRun · recargos de Turnos', () => {

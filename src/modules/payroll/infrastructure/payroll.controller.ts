@@ -42,8 +42,8 @@ export class PayrollController {
 
   @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)
   @Post('preview')
-  preview(@Body() dto: PreviewPayrollDto) {
-    return this.payroll.preview(dto);
+  preview(@Body() dto: PreviewPayrollDto, @CurrentUser() user: JwtUser) {
+    return this.payroll.preview(dto, user);
   }
 
   @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)
@@ -52,17 +52,18 @@ export class PayrollController {
     @Query('employeeId') employeeId: string,
     @Query('from') from: string,
     @Query('to') to: string,
+    @CurrentUser() user: JwtUser,
   ) {
     if (!employeeId || !from || !to) {
       throw new BadRequestException('employeeId, from y to son obligatorios');
     }
-    return this.payroll.novedadesTurnos(employeeId, from, to);
+    return this.payroll.novedadesTurnos(employeeId, from, to, user);
   }
 
   @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)
   @Post('liquidacion')
-  liquidacion(@Body() dto: LiquidacionDto) {
-    return this.payroll.liquidacion(dto);
+  liquidacion(@Body() dto: LiquidacionDto, @CurrentUser() user: JwtUser) {
+    return this.payroll.liquidacion(dto, user);
   }
 
   @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
@@ -73,14 +74,14 @@ export class PayrollController {
 
   @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)
   @Get('runs')
-  listRuns() {
-    return this.payroll.listRuns();
+  listRuns(@CurrentUser() user: JwtUser) {
+    return this.payroll.listRuns(user);
   }
 
   @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)
   @Get('runs/:id')
-  getRun(@Param('id') id: string) {
-    return this.payroll.getRun(id);
+  getRun(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.payroll.getRun(id, user);
   }
 
   @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
@@ -91,14 +92,14 @@ export class PayrollController {
 
   @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
   @Post('runs/:id/close')
-  closeRun(@Param('id') id: string) {
-    return this.payroll.closeRun(id);
+  closeRun(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.payroll.closeRun(id, user);
   }
 
   @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
   @Delete('runs/:id')
-  async removeRun(@Param('id') id: string) {
-    await this.payroll.removeRun(id);
+  async removeRun(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    await this.payroll.removeRun(id, user);
     return { ok: true };
   }
 
@@ -107,8 +108,9 @@ export class PayrollController {
   sendSlip(
     @Param('id') id: string,
     @Param('employeeId') employeeId: string,
+    @CurrentUser() user: JwtUser,
   ) {
-    return this.payroll.sendSlip(id, employeeId);
+    return this.payroll.sendSlip(id, employeeId, user);
   }
 
   // ── Deducciones de empleado ─────────────────────────────────────────────────
@@ -118,8 +120,9 @@ export class PayrollController {
   listDeductions(
     @Query('employeeId') employeeId?: string,
     @Query('status') status?: DeductionStatus,
+    @CurrentUser() user?: JwtUser,
   ) {
-    return this.payroll.listDeductions({ employeeId, status });
+    return this.payroll.listDeductions({ employeeId, status }, user);
   }
 
   @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)

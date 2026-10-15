@@ -12,6 +12,8 @@ import { CreateEmployeeDto } from '../application/dto/create-employee.dto';
 import { UpdateEmployeeDto } from '../application/dto/update-employee.dto';
 import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
+import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
+import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 
 @Controller('employees')
 export class EmployeesController {
@@ -19,8 +21,8 @@ export class EmployeesController {
 
   @RequirePermissions(PERMISSIONS.EMPLOYEES_VIEW)
   @Get()
-  list() {
-    return this.employees.list();
+  list(@CurrentUser() user: JwtUser) {
+    return this.employees.list(user);
   }
 
   // Selector liviano para el POS (fiado/consumo de empleado). Gated pos.sell.
@@ -32,26 +34,30 @@ export class EmployeesController {
 
   @RequirePermissions(PERMISSIONS.EMPLOYEES_VIEW)
   @Get(':id')
-  get(@Param('id') id: string) {
-    return this.employees.getOrFail(id);
+  get(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.employees.getOrFail(id, user);
   }
 
   @RequirePermissions(PERMISSIONS.EMPLOYEES_MANAGE)
   @Post()
-  create(@Body() dto: CreateEmployeeDto) {
-    return this.employees.create(dto);
+  create(@Body() dto: CreateEmployeeDto, @CurrentUser() user: JwtUser) {
+    return this.employees.create(dto, user);
   }
 
   @RequirePermissions(PERMISSIONS.EMPLOYEES_MANAGE)
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateEmployeeDto) {
-    return this.employees.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateEmployeeDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.employees.update(id, dto, user);
   }
 
   @RequirePermissions(PERMISSIONS.EMPLOYEES_MANAGE)
   @Delete(':id')
-  async remove(@Param('id') id: string) {
-    await this.employees.remove(id);
+  async remove(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    await this.employees.remove(id, user);
     return { ok: true };
   }
 }

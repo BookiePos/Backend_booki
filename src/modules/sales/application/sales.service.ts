@@ -1206,6 +1206,17 @@ export class SalesService {
     return { count: sales.length, total };
   }
 
+  /**
+   * La venta, solo si es de una sede del usuario (ítem 3.9). `GET /sales/:id`
+   * devolvía la venta de cualquier sede a quien tuviera `pos.sell`.
+   */
+  async getForUser(id: string, user: JwtUser): Promise<SaleDocument> {
+    const sale = await this.getOrFail(id);
+    const sede = sale.sedeId as unknown as { _id?: Types.ObjectId } | null;
+    assertSedeAccess(user, String(sede?._id ?? sede));
+    return sale;
+  }
+
   async getOrFail(id: string): Promise<SaleDocument> {
     const sale = Types.ObjectId.isValid(id)
       ? await this.saleModel

@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -68,6 +69,11 @@ import {
   MotivoRetiro,
 } from '../domain/liquidacion-calc';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
+import {
+  allowedSedeIds,
+  assertSedeAccess,
+  type SedeScopeUser,
+} from '../../core-auth/domain/sede-access';
 import { ParamsService } from '../../core-params/application/params.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { cop, sumBy } from '../../finance/domain/money.util';
@@ -112,6 +118,7 @@ export class PayrollService {
   async sendSlip(
     runId: string,
     employeeId: string,
+    user?: SedeScopeUser,
   ): Promise<{
     sent: boolean;
     simulated?: boolean;
@@ -119,7 +126,7 @@ export class PayrollService {
     error?: string;
     id?: string;
   }> {
-    const run = await this.getRun(runId);
+    const run = await this.getRun(runId, user);
     const slip = run.slips.find((s) => s.employeeId === employeeId);
     if (!slip) {
       throw new NotFoundException('Desprendible no encontrado en esta corrida.');
@@ -195,7 +202,9 @@ export class PayrollService {
     employeeId: string,
     from: string,
     to: string,
+    user?: SedeScopeUser,
   ): Promise<NovedadesTurnos> {
+    if (user) await this.empleadoEnAlcance(employeeId, user);
     const s = await this.parametrosEn(to);
     // Desde el lunes de la semana de `from`: el tope semanal de la jornada se
     // llena también con los días previos de esa semana.
@@ -286,7 +295,11 @@ export class PayrollService {
     return doc;
   }
 
-  async preview(dto: PreviewPayrollDto): Promise<PreviewResult> {
+  async preview(
+    dto: PreviewPayrollDto,
+    user?: SedeScopeUser,
+  ): Promise<PreviewResult> {
+    if (user && dto.employeeId) await this.empleadoEnAlcance(dto.employeeId, user);
     const s = await this.parametrosEn(
       dto.period ? fechaCorteDePeriodo(dto.period) : undefined,
     );
@@ -340,6 +353,16 @@ export class PayrollService {
     dto: CreateRunDto,
     user: JwtUser,
   ): Promise<PayrollRunDocument> {
+    // Quien no ve todas las sedes liquida solo la nómina de una de las suyas:
+    // la consolidada lleva el salario de toda la empresa (ítem 3.9).
+    if (allowedSedeIds(user) !== null) {
+      if (dto.coverage !== 'sede' || !dto.sedeId) {
+        throw new ForbiddenException(
+          'Solo puedes liquidar la nómina de una de tus sedes.',
+        );
+      }
+      assertSedeAccess(user, dto.sedeId);
+    }
     const s = await this.parametrosEn(fechaCorteDePeriodo(dto.period));
     // La exoneración de aportes no se presume (ítem 1.15): sin respuesta
     // explícita no se liquida, porque de ella depende si se pagan salud, SENA
@@ -448,7 +471,9 @@ export class PayrollService {
     const run = Types.ObjectId.isValid(id)
       ? await this.runs.findById(id).exec()
       : null;
-    if (!run) throw new NotFoundException('Corrida no encontrada');
+    if (!run || !this.corridaEnAlcance(run, user)) {
+      throw new NotFoundException('Corrida no encontrada');
+    }
     if (run.status !== 'borrador') {
       throw new BadRequestException(
         'Solo se puede recalcular una corrida en borrador.',
@@ -687,7 +712,9 @@ export class PayrollService {
     user: JwtUser,
   ): Promise<PayrollDeductionDocument> {
     const emp = await this.employees.findById(dto.employeeId).exec();
-    if (!emp) throw new NotFoundException('Empleado no encontrado');
+    if (!emp || !this.sedeEnAlcance(user, emp.sedeId)) {
+      throw new NotFoundException('Empleado no encontrado');
+    }
     return this.deductions.create({
       employeeId: emp.id,
       employeeName: `${emp.firstName} ${emp.lastName}`.trim(),
@@ -760,11 +787,16 @@ export class PayrollService {
       .exec();
   }
 
-  async listDeductions(query: {
-    employeeId?: string;
-    status?: DeductionStatus;
-  }): Promise<PayrollDeductionDocument[]> {
+  async listDeductions(
+    query: {
+      employeeId?: string;
+      status?: DeductionStatus;
+    },
+    user?: SedeScopeUser,
+  ): Promise<PayrollDeductionDocument[]> {
     const filter: Record<string, unknown> = {};
+    const sedes = user ? allowedSedeIds(user) : null;
+    if (sedes) filter.sedeId = { $in: sedes.map((id) => new Types.ObjectId(id)) };
     if (query.employeeId) filter.employeeId = query.employeeId;
     if (query.status) filter.status = query.status;
     return this.deductions.find(filter).sort({ createdAt: -1 }).exec();
@@ -772,9 +804,12 @@ export class PayrollService {
 
   private async deductionOrFail(
     id: string,
+    user?: SedeScopeUser,
   ): Promise<PayrollDeductionDocument> {
     const d = await this.deductions.findById(id).exec();
-    if (!d) throw new NotFoundException('Deducción no encontrada');
+    if (!d || (user && !this.sedeEnAlcance(user, d.sedeId))) {
+      throw new NotFoundException('Deducción no encontrada');
+    }
     return d;
   }
 
@@ -783,7 +818,7 @@ export class PayrollService {
     id: string,
     user: JwtUser,
   ): Promise<PayrollDeductionDocument> {
-    const d = await this.deductionOrFail(id);
+    const d = await this.deductionOrFail(id, user);
     if (d.status !== 'pending') {
       throw new BadRequestException(
         `Solo se aprueban deducciones pendientes (estado actual: ${d.status}).`,
@@ -800,7 +835,7 @@ export class PayrollService {
     id: string,
     user: JwtUser,
   ): Promise<PayrollDeductionDocument> {
-    const d = await this.deductionOrFail(id);
+    const d = await this.deductionOrFail(id, user);
     if (d.status !== 'pending') {
       throw new BadRequestException(
         `Solo se rechazan deducciones pendientes (estado actual: ${d.status}).`,
@@ -813,7 +848,10 @@ export class PayrollService {
     return d;
   }
 
-  async liquidacion(dto: LiquidacionDto): Promise<{
+  async liquidacion(
+    dto: LiquidacionDto,
+    user?: SedeScopeUser,
+  ): Promise<{
     input: {
       employeeId?: string;
       employeeName?: string;
@@ -826,6 +864,7 @@ export class PayrollService {
     };
     breakdown: LiquidacionBreakdown;
   }> {
+    if (user && dto.employeeId) await this.empleadoEnAlcance(dto.employeeId, user);
     const s = await this.parametrosEn(dto.fechaFin);
     let salarioBase = dto.salarioBase ?? 0;
     let salaryType: SalaryType = (dto.salaryType as SalaryType) ?? 'ordinario';
@@ -887,26 +926,61 @@ export class PayrollService {
     };
   }
 
-  listRuns(): Promise<PayrollRunDocument[]> {
+  listRuns(user?: SedeScopeUser): Promise<PayrollRunDocument[]> {
+    const sedes = user ? allowedSedeIds(user) : null;
+    const filter = sedes
+      ? {
+          coverage: 'sede',
+          sedeId: { $in: sedes.map((id) => new Types.ObjectId(id)) },
+        }
+      : {};
     return this.runs
-      .find()
+      .find(filter)
       .select('-slips')
       .sort({ createdAt: -1 })
       .limit(60)
       .exec();
   }
 
-  async getRun(id: string): Promise<PayrollRunDocument> {
+  async getRun(id: string, user?: SedeScopeUser): Promise<PayrollRunDocument> {
     const run = Types.ObjectId.isValid(id)
       ? await this.runs.findById(id).exec()
       : null;
-    if (!run) throw new NotFoundException('Corrida de nómina no encontrada');
+    if (!run || (user && !this.corridaEnAlcance(run, user))) {
+      throw new NotFoundException('Corrida de nómina no encontrada');
+    }
     return run;
   }
 
+  // ─── Alcance por sede (ítem 3.9) ──────────────────────────────────────────
+  // Sin `user` (llamadas internas) no se filtra. Lo de otra sede da 404, igual
+  // que si no existiera. Lo que no tiene sede es de la empresa y solo lo ve
+  // quien la ve entera.
+
+  private sedeEnAlcance(user: SedeScopeUser, sedeId?: Types.ObjectId): boolean {
+    const sedes = allowedSedeIds(user);
+    return sedes === null || (!!sedeId && sedes.includes(sedeId.toString()));
+  }
+
+  /** La consolidada (`all`) solo la ve quien ve todas las sedes. */
+  private corridaEnAlcance(run: PayrollRunDocument, user: SedeScopeUser): boolean {
+    if (allowedSedeIds(user) === null) return true;
+    return run.coverage === 'sede' && this.sedeEnAlcance(user, run.sedeId);
+  }
+
+  private async empleadoEnAlcance(employeeId: string, user: SedeScopeUser): Promise<void> {
+    if (allowedSedeIds(user) === null) return;
+    const emp = Types.ObjectId.isValid(employeeId)
+      ? await this.employees.findById(employeeId).select('sedeId').exec()
+      : null;
+    if (!emp || !this.sedeEnAlcance(user, emp.sedeId)) {
+      throw new NotFoundException('Empleado no encontrado');
+    }
+  }
+
   /** Cierra una corrida (borrador → cerrada). Queda fija en el historial. */
-  async closeRun(id: string): Promise<PayrollRunDocument> {
-    const run = await this.getRun(id);
+  async closeRun(id: string, user?: SedeScopeUser): Promise<PayrollRunDocument> {
+    const run = await this.getRun(id, user);
     if (run.status === 'cerrada') {
       throw new BadRequestException('La nómina ya está cerrada.');
     }
@@ -963,8 +1037,8 @@ export class PayrollService {
     return run;
   }
 
-  async removeRun(id: string): Promise<void> {
-    const run = await this.getRun(id);
+  async removeRun(id: string, user?: SedeScopeUser): Promise<void> {
+    const run = await this.getRun(id, user);
     if (run.status === 'cerrada') {
       throw new BadRequestException(
         'No se puede eliminar una nómina cerrada. Es el comprobante del período.',
