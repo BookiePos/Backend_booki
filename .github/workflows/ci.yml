@@ -46,6 +46,11 @@ jobs:
       - name: Gates (con build)
         run: node scripts/gates.mjs --build
 
+      # Ítem 4.10: techo de 0 críticas y 0 altas en las dependencias de
+      # producción. Las moderadas sin parche quedan anotadas en el checklist.
+      - name: Auditoría de dependencias (prod, alta o crítica falla)
+        run: pnpm audit --prod --audit-level high
+
       - name: Secretos en las líneas añadidas del PR
         if: github.event_name == 'pull_request'
         run: node scripts/check-no-secrets.mjs --desde origin/${{ github.base_ref }}
