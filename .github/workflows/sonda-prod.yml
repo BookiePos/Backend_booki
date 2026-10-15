@@ -1,0 +1,58 @@
+name: Sonda de producción
+
+# Corre `scripts/sonda-prod.mjs` (solo lectura) cada vez que Vercel termina bien
+# un despliegue de producción del backend (ítem 2.8). Vercel reporta el
+# despliegue a GitHub como un `deployment_status`.
+#
+# Secretos del repositorio (Settings → Secrets and variables → Actions):
+#   SONDA_EMAIL, SONDA_PASSWORD  cuenta de prueba PROPIA de la sonda en producción
+#                                (no la de un cliente ni la del dueño)
+# Variable del repositorio:
+#   SONDA_API_URL                p. ej. https://api.bookipos.com
+# Mientras falten, el job deja un aviso y termina sin fallar.
+
+on:
+  deployment_status:
+
+permissions:
+  contents: read
+
+jobs:
+  sonda:
+    if: >-
+      github.event.deployment_status.state == 'success' &&
+      github.event.deployment.environment == 'Production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SONDA_API_URL: ${{ vars.SONDA_API_URL }}
+      SONDA_EMAIL: ${{ secrets.SONDA_EMAIL }}
+      SONDA_PASSWORD: ${{ secrets.SONDA_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.deployment.sha }}
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Sonda
+        run: |
+          if [ -z "$SONDA_API_URL" ] || [ -z "$SONDA_EMAIL" ] || [ -z "$SONDA_PASSWORD" ]; then
+            echo "::warning::Sonda sin configurar: faltan SONDA_API_URL (variable) o SONDA_EMAIL/SONDA_PASSWORD (secretos)."
+            exit 0
+          fi
+          node scripts/sonda-prod.mjs
+
+      - name: Resumen
+        if: always()
+        run: |
+          {
+            echo "### Sonda de producción"
+            echo "- Commit desplegado: \`${{ github.event.deployment.sha }}\`"
+            echo "- Despliegue: ${{ github.event.deployment_status.environment_url }}"
+            echo "- Anótalo en \`docs/ESTADO.md\` al cerrar la sesión."
+          } >> "$GITHUB_STEP_SUMMARY"
