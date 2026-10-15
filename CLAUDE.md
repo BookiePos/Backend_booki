@@ -127,10 +127,12 @@ recorte a su Administrador sin que el despliegue siguiente le deshaga el cambio
 en silencio; el precio, que hay que decirlo en la UI, es que un rol tocado a
 mano ya no recibe las capacidades nuevas solo. Ver `permisosVigentes`.
 
-Lo único que `update` sigue prohibiendo es **dejarse fuera a uno mismo**: quitar
-`roles.manage` o `users.manage` del rol que tiene puesto quien edita. Nadie
-podría devolvérselo y la cuenta solo se rescataría desde la base. Sobre
-cualquier otro rol sí se puede.
+`update` prohíbe **dejarse fuera a uno mismo** (quitar `roles.manage` o
+`users.manage` del rol que tiene puesto quien edita) y **subirse de rango**: al
+rol Dueño solo lo toca un Dueño y nunca pierde esas dos llaves; quien no es
+Dueño no edita los permisos de su propio rol; nadie añade a un rol (ni al
+crearlo) permisos que no tiene. Ver `assertPuedeEditarRol` y, para usuarios e
+invitaciones, `UsersService.assertPuedeEditar`.
 
 Gerente, Cajero y los roles a medida NO reciben nada automáticamente, y es a
 propósito: son editables, así que su fila es la verdad y regalarles cada

@@ -15,6 +15,16 @@ import { UpdateRoleDto } from './dto/update-role.dto';
 import { ALL_PERMISSIONS, PERMISSIONS, Permission } from '../domain/permissions';
 import { SYSTEM_ROLES, ROLES } from '../domain/roles';
 
+/**
+ * Quien crea, edita o borra un rol. Es el `JwtUser` de la request (misma forma
+ * que `GestorDeUsuarios`, sin depender de infraestructura). Los flujos internos
+ * (semillas, registro) no lo pasan.
+ */
+export interface EditorDeRoles {
+  role: string;
+  permissions: string[];
+}
+
 /** Vista plana de un rol para la API (incluye conteo de usuarios). */
 export interface RoleView {
   id: string;
@@ -127,8 +137,9 @@ export class RolesService {
     return delCodigo ? [...delCodigo] : [];
   }
 
-  async create(dto: CreateRoleDto): Promise<RoleView> {
+  async create(dto: CreateRoleDto, editor?: EditorDeRoles): Promise<RoleView> {
     this.assertValidPermissions(dto.permissions);
+    if (editor) this.assertPuedeConceder(editor, dto.permissions);
     const key = await this.uniqueSlug(dto.name);
     const created = await this.roleModel.create({
       key,
@@ -141,17 +152,21 @@ export class RolesService {
   }
 
   /**
-   * `editor` es quien está haciendo el cambio. Se usa solo para una cosa: no
-   * dejar que se quite a sí mismo la llave con la que entró aquí.
+   * `editor` es quien está haciendo el cambio. Con él se cierran las puertas a
+   * la cuenta del Dueño (ítem 3.1) y la de dejarse fuera a uno mismo; ver
+   * `assertPuedeEditarRol`.
    */
   async update(
     id: string,
     dto: UpdateRoleDto,
-    editor?: { role: string },
+    editor?: EditorDeRoles,
   ): Promise<RoleView> {
     const role = await this.roleModel.findById(id).exec();
     if (!role) {
       throw new NotFoundException('Rol no encontrado');
+    }
+    if (editor) {
+      this.assertPuedeEditarRol(role, dto, editor);
     }
     if (dto.name !== undefined) {
       role.name = dto.name.trim();
@@ -162,10 +177,20 @@ export class RolesService {
     if (dto.permissions !== undefined) {
       this.assertValidPermissions(dto.permissions);
       this.assertNoSelfLockout(role.key, dto.permissions, editor);
-      role.permissions = dto.permissions;
-      // A partir de aquí manda esta fila y no el código: es lo que evita que el
-      // despliegue siguiente le deshaga el recorte en silencio.
-      role.permissionsCustomized = true;
+      this.assertDuenoConservaLaLlave(role.key, dto.permissions);
+      // La pantalla reenvía el formulario entero: renombrar un Dueño o
+      // Administrador manda los mismos permisos. Eso no es editarlos, y marcarlo
+      // como tal congelaría el rol (dejaría de recibir funciones nuevas).
+      const vigentes = new Set(permisosVigentes(role));
+      const nuevos = new Set(dto.permissions);
+      const cambia =
+        vigentes.size !== nuevos.size || [...nuevos].some((p) => !vigentes.has(p));
+      if (cambia) {
+        role.permissions = dto.permissions;
+        // A partir de aquí manda esta fila y no el código: es lo que evita que el
+        // despliegue siguiente le deshaga el recorte en silencio.
+        role.permissionsCustomized = true;
+      }
     }
     await role.save();
     const userCount = await this.userModel
@@ -174,6 +199,11 @@ export class RolesService {
     return this.toView(role, userCount);
   }
 
+  /**
+   * Borrar no necesita reglas de rango: solo se borran roles a medida y sin
+   * usuarios, así que quitarlo no le resta acceso a nadie. Quien tiene un rol
+   * no puede borrarlo porque ese rol tiene, al menos, un usuario: él.
+   */
   async remove(id: string): Promise<void> {
     const role = await this.roleModel.findById(id).exec();
     if (!role) {
@@ -247,10 +277,10 @@ export class RolesService {
    * pueda devolver el permiso porque el único que podía era yo. La cuenta queda
    * muerta y solo se rescata metiendo mano en la base de datos.
    *
-   * Por eso se bloquea solo ese caso, y solo sobre el rol que el editor tiene
-   * puesto. Sobre CUALQUIER otro rol —incluido Dueño, si quien edita no es
-   * dueño— se puede hacer lo que se quiera: siempre quedará alguien que pueda
-   * deshacerlo.
+   * Por eso se bloquea ese caso sobre el rol que el editor tiene puesto. Hoy
+   * solo llega aquí el Dueño editando el rol Dueño: quien no es Dueño ya no
+   * edita los permisos de su propio rol (`assertPuedeEditarRol`). Se conserva
+   * por el mensaje, que explica el porqué mejor que el invariante genérico.
    */
   private assertNoSelfLockout(
     roleKey: string,
@@ -269,6 +299,75 @@ export class RolesService {
         'nadie podría devolvértelo y te quedarías fuera de esta pantalla para siempre. ' +
         'Hazlo desde otra cuenta que tenga esos permisos.',
     );
+  }
+
+  /**
+   * `roles.manage` no puede ser un atajo hacia arriba (ítem 3.1). Sin estas
+   * reglas, un Administrador se añadía a SU PROPIO rol `sede.view_all` o lo que
+   * le faltara, y podía recortar el rol Dueño hasta dejar al Dueño fuera.
+   *  - Al rol Dueño solo lo toca un Dueño (nombre incluido).
+   *  - Quien no es Dueño no edita los permisos del rol que tiene puesto: se lo
+   *    pide a otro. Reenviar la misma lista (la pantalla manda el formulario
+   *    entero) no cuenta como editarla.
+   *  - Nadie añade a un rol permisos que él no tiene. El Dueño queda fuera de
+   *    esta regla: es la raíz de la confianza y, si alguien recortó el rol
+   *    Dueño, no hay nadie por encima que pueda devolverle lo recortado.
+   */
+  private assertPuedeEditarRol(
+    role: RoleDocument,
+    dto: UpdateRoleDto,
+    editor: EditorDeRoles,
+  ): void {
+    const esDueno = editor.role === ROLES.OWNER;
+    if (role.key === ROLES.OWNER && !esDueno) {
+      throw new ForbiddenException('Solo el Dueño puede editar el rol Dueño');
+    }
+    if (dto.permissions === undefined || esDueno) return;
+    const actuales = new Set(permisosVigentes(role));
+    const nuevos = dto.permissions.filter((p) => !actuales.has(p));
+    const cambian =
+      nuevos.length > 0 || new Set(dto.permissions).size !== actuales.size;
+    if (role.key === editor.role && cambian) {
+      throw new ForbiddenException(
+        'No puedes cambiar los permisos de tu propio rol: pídeselo a otra persona que gestione roles.',
+      );
+    }
+    this.assertPuedeConceder(editor, nuevos);
+  }
+
+  private assertPuedeConceder(
+    editor: EditorDeRoles,
+    permissions: string[],
+  ): void {
+    if (editor.role === ROLES.OWNER) return;
+    const propios = new Set(editor.permissions);
+    const ajenos = permissions.filter((p) => !propios.has(p));
+    if (ajenos.length > 0) {
+      throw new ForbiddenException(
+        `No puedes conceder permisos que no tienes: ${ajenos.join(', ')}`,
+      );
+    }
+  }
+
+  /**
+   * Invariante, no permiso: el rol Dueño nunca pierde la gestión de usuarios ni
+   * de roles, la edite quien la edite (o un flujo interno). Sin ellas nadie en
+   * la empresa podría volver a abrir estas pantallas.
+   */
+  private assertDuenoConservaLaLlave(
+    roleKey: string,
+    permissions: string[],
+  ): void {
+    if (roleKey !== ROLES.OWNER) return;
+    const next = new Set(permissions);
+    const perdidas = [PERMISSIONS.ROLES_MANAGE, PERMISSIONS.USERS_MANAGE].filter(
+      (p) => !next.has(p),
+    );
+    if (perdidas.length > 0) {
+      throw new BadRequestException(
+        `El rol Dueño no puede perder: ${perdidas.join(', ')}`,
+      );
+    }
   }
 
   private assertValidPermissions(permissions: string[]): void {

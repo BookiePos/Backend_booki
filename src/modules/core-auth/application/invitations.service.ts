@@ -15,7 +15,7 @@ import {
   InvitationStatus,
 } from '../infrastructure/schemas/invitation.schema';
 import { User } from '../infrastructure/schemas/user.schema';
-import { UsersService } from './users.service';
+import { GestorDeUsuarios, UsersService } from './users.service';
 import { RolesService } from './roles.service';
 import { MailService } from './mail.service';
 import { AuthService, AuthTokens, AuthUserView } from './auth.service';
@@ -93,13 +93,19 @@ export class InvitationsService {
   /** Crea una invitación, la envía por correo y devuelve el enlace. */
   async create(
     dto: CreateInvitationDto,
-    inviterUserId?: string,
+    inviter?: GestorDeUsuarios,
   ): Promise<CreatedInvitationView> {
     const email = dto.email.toLowerCase().trim();
+    const inviterUserId = inviter?.userId;
 
     const role = await this.roles.findByKey(dto.role);
     if (!role) {
       throw new BadRequestException('Rol no válido');
+    }
+    // Invitar es asignar un rol por adelantado: mismas reglas que al crear el
+    // usuario a mano. Sin esto, `role: "owner"` abría la puerta al Dueño.
+    if (inviter) {
+      await this.users.assertPuedeAsignarRol(inviter, role.key);
     }
 
     const existingUser = await this.users.findByEmail(email);
@@ -108,6 +114,16 @@ export class InvitationsService {
     }
 
     // Revoca invitaciones pendientes previas para el mismo correo (re-invitar).
+    // Revocarlas es tocarlas: no vale re-invitar como Cajero el correo al que
+    // el Dueño invitó como Dueño y anularle así la invitación en silencio.
+    if (inviter) {
+      const previas = await this.invitationModel
+        .find({ email, status: 'pending' })
+        .exec();
+      for (const previa of previas) {
+        await this.users.assertPuedeAsignarRol(inviter, previa.role);
+      }
+    }
     await this.invitationModel
       .updateMany(
         { email, status: 'pending' },
@@ -162,14 +178,26 @@ export class InvitationsService {
     });
   }
 
-  /** Reenvía una invitación pendiente: nuevo token, nueva expiración, correo. */
-  async resend(id: string): Promise<CreatedInvitationView> {
+  /**
+   * Reenvía una invitación pendiente: nuevo token, nueva expiración, correo.
+   *
+   * La respuesta trae el enlace nuevo, así que reenviar equivale a invitar con
+   * ese rol: sin la comprobación, un Administrador reenviaba la invitación de
+   * Dueño, se quedaba el enlace y la aceptaba él mismo.
+   */
+  async resend(
+    id: string,
+    actor?: GestorDeUsuarios,
+  ): Promise<CreatedInvitationView> {
     const invitation = await this.invitationModel.findById(id).exec();
     if (!invitation) {
       throw new NotFoundException('Invitación no encontrada');
     }
     if (invitation.status === 'accepted') {
       throw new BadRequestException('La invitación ya fue aceptada');
+    }
+    if (actor) {
+      await this.users.assertPuedeAsignarRol(actor, invitation.role);
     }
     const role = await this.roles.findByKey(invitation.role);
     if (!role) {
@@ -200,14 +228,20 @@ export class InvitationsService {
     };
   }
 
-  /** Revoca una invitación (deja de ser válida). */
-  async revoke(id: string): Promise<void> {
+  /**
+   * Revoca una invitación (deja de ser válida). Mismo criterio que reenviar:
+   * solo quien podría haberla hecho la anula.
+   */
+  async revoke(id: string, actor?: GestorDeUsuarios): Promise<void> {
     const invitation = await this.invitationModel.findById(id).exec();
     if (!invitation) {
       throw new NotFoundException('Invitación no encontrada');
     }
     if (invitation.status === 'accepted') {
       throw new BadRequestException('La invitación ya fue aceptada');
+    }
+    if (actor) {
+      await this.users.assertPuedeAsignarRol(actor, invitation.role);
     }
     invitation.status = 'revoked';
     await invitation.save();

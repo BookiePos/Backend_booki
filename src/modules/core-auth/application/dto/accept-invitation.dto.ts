@@ -1,4 +1,5 @@
 import { IsString, IsStrongPassword, MinLength } from 'class-validator';
+import { POLITICA_CONTRASENA } from './password-policy';
 
 export class AcceptInvitationDto {
   @IsString()
@@ -6,12 +7,6 @@ export class AcceptInvitationDto {
   name!: string;
 
   @IsString()
-  @IsStrongPassword({
-    minLength: 8,
-    minLowercase: 1,
-    minUppercase: 1,
-    minNumbers: 1,
-    minSymbols: 1,
-  })
+  @IsStrongPassword(POLITICA_CONTRASENA)
   password!: string;
 }

@@ -1,8 +1,9 @@
-import { IsString, MinLength } from 'class-validator';
+import { IsString, IsStrongPassword } from 'class-validator';
+import { POLITICA_CONTRASENA } from './password-policy';
 
 export class ResetPasswordDto {
-  /** Nueva contraseña. Mismo mínimo que al crear un usuario. */
+  /** Nueva contraseña. Misma política que el registro (ítem 4.9). */
   @IsString()
-  @MinLength(6)
+  @IsStrongPassword(POLITICA_CONTRASENA)
   password!: string;
 }

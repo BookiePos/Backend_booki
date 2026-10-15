@@ -16,7 +16,6 @@ import { AuthService } from '../application/auth.service';
 import { UsersService } from '../application/users.service';
 import { RegistrationService } from '../application/registration.service';
 import { LoginDto } from '../application/dto/login.dto';
-import { RefreshDto } from '../application/dto/refresh.dto';
 import { RegisterDto } from '../application/dto/register.dto';
 import { ForgotPasswordDto } from '../application/dto/forgot-password.dto';
 import { ResetPasswordDto } from '../application/dto/reset-password.dto';
@@ -26,9 +25,10 @@ import { NoPermissionRequired } from './decorators/no-permission-required.decora
 import { CurrentUser } from './decorators/current-user.decorator';
 import { JwtUser } from './jwt.strategy';
 import {
-  REFRESH_COOKIE,
   setRefreshCookie,
   clearRefreshCookie,
+  refreshTokenFromCookie,
+  sessionBody,
 } from './auth-cookie';
 
 @Controller('auth')
@@ -41,15 +41,6 @@ export class AuthController {
     private readonly config: ConfigService,
   ) {}
 
-  /** Toma el refresh token de la cookie HttpOnly; acepta el body como respaldo
-   *  para clientes aún no migrados. */
-  private refreshTokenFrom(req: Request, dto: RefreshDto): string | undefined {
-    const fromCookie = (req.cookies as Record<string, string> | undefined)?.[
-      REFRESH_COOKIE
-    ];
-    return fromCookie ?? dto.refreshToken;
-  }
-
   // Anti fuerza-bruta: 5 intentos por 5 minutos por IP.
   @Throttle({ default: { limit: 5, ttl: 300_000 } })
   @Public()
@@ -61,7 +52,7 @@ export class AuthController {
   ) {
     const result = await this.auth.login(dto.email, dto.password);
     setRefreshCookie(res, result.tokens.refreshToken, this.config);
-    return result;
+    return sessionBody(result);
   }
 
   /** Alta pública de una empresa nueva (tenant) + su dueño. */
@@ -75,7 +66,7 @@ export class AuthController {
   ) {
     const result = await this.registration.register(dto);
     setRefreshCookie(res, result.tokens.refreshToken, this.config);
-    return result;
+    return sessionBody(result);
   }
 
   @Throttle({ default: { limit: 10, ttl: 300_000 } })
@@ -83,17 +74,17 @@ export class AuthController {
   @Post('refresh')
   @HttpCode(200)
   async refresh(
-    @Body() dto: RefreshDto,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
-  ) {
-    const token = this.refreshTokenFrom(req, dto);
+  ): Promise<{ accessToken: string }> {
+    // Solo cookie: el body se ignora (sin @Body no se valida ni se lee).
+    const token = refreshTokenFromCookie(req);
     if (!token) {
       throw new UnauthorizedException('Refresh token ausente');
     }
     const tokens = await this.auth.refresh(token);
     setRefreshCookie(res, tokens.refreshToken, this.config);
-    return tokens;
+    return { accessToken: tokens.accessToken };
   }
 
   /**
@@ -153,11 +144,10 @@ export class AuthController {
   @Post('logout')
   @HttpCode(204)
   async logout(
-    @Body() dto: RefreshDto,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
-    const token = this.refreshTokenFrom(req, dto);
+    const token = refreshTokenFromCookie(req);
     if (token) await this.auth.logout(token);
     clearRefreshCookie(res, this.config);
   }

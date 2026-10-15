@@ -4,8 +4,10 @@ import {
   IsMongoId,
   IsOptional,
   IsString,
+  IsStrongPassword,
   MinLength,
 } from 'class-validator';
+import { POLITICA_CONTRASENA } from './password-policy';
 
 export class UpdateUserDto {
   @IsOptional()
@@ -31,8 +33,9 @@ export class UpdateUserDto {
   @IsMongoId({ each: true })
   sedeIds?: string[];
 
+  /** Solo si se cambia. Misma política que el registro (ítem 4.9). */
   @IsOptional()
   @IsString()
-  @MinLength(6)
+  @IsStrongPassword(POLITICA_CONTRASENA)
   password?: string;
 }

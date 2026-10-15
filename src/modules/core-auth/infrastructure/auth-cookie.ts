@@ -1,4 +1,4 @@
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import type { ConfigService } from '@nestjs/config';
 
 /**
@@ -64,4 +64,23 @@ export function setRefreshCookie(
 export function clearRefreshCookie(res: Response, config: ConfigService): void {
   // clearCookie debe usar las mismas opciones (path/domain/sameSite) que set.
   res.clearCookie(REFRESH_COOKIE, baseOptions(config));
+}
+
+/**
+ * Quita el refresh token de una sesión antes de devolverla en el body. El
+ * refresh solo viaja en la cookie HttpOnly: si saliera en el JSON, cualquier
+ * script de la página (un XSS) podría leerlo y la cookie no protegería nada.
+ */
+export function sessionBody<T extends { tokens: { accessToken: string } }>(
+  session: T,
+): Omit<T, 'tokens'> & { tokens: { accessToken: string } } {
+  return { ...session, tokens: { accessToken: session.tokens.accessToken } };
+}
+
+/** El refresh token de la petición, SOLO desde la cookie (nunca del body). */
+export function refreshTokenFromCookie(req: Request): string | undefined {
+  const value = (req.cookies as Record<string, unknown> | undefined)?.[
+    REFRESH_COOKIE
+  ];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }

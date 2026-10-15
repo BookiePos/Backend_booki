@@ -20,6 +20,14 @@ export class RefreshToken {
 
   @Prop({ default: false })
   revoked!: boolean;
+
+  /**
+   * Cuándo se revocó POR ROTACIÓN (al cambiarlo por uno nuevo). Distingue un
+   * token rotado —cuya reutilización delata un robo (ítem 4.9)— de uno
+   * revocado por cierre de sesión o por cambio de contraseña, que no la delata.
+   */
+  @Prop({ type: Date })
+  rotatedAt?: Date;
 }
 
 export const RefreshTokenSchema = SchemaFactory.createForClass(RefreshToken);

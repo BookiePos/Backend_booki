@@ -69,7 +69,8 @@ await paso('GET /health', '/health', { headers: json }, (b) => {
   return null;
 });
 
-// El login responde { tokens: { accessToken, refreshToken }, user } (ver auth.controller.ts).
+// El login responde { tokens: { accessToken }, user } (ver auth.controller.ts); el refresh
+// token viaja solo en la cookie HttpOnly y esta sonda no lo necesita.
 const login = await paso(
   'POST /auth/login',
   '/auth/login',
