@@ -219,8 +219,9 @@ export class LedgerPostingService {
     if (total > 0) {
       lines.push({ accountCode: contrapartida, credit: total, sedeId: input.sedeId });
       if (income > 0) {
+        // 4175 y no 4135: la devolución resta del ingreso pero se ve aparte.
         lines.push({
-          accountCode: ACC.INGRESOS_VENTAS,
+          accountCode: ACC.DEVOLUCIONES_VENTAS,
           debit: income,
           sedeId: input.sedeId,
         });

@@ -376,6 +376,9 @@ export class SalesService {
     const taxProfile: SaleTaxProfile = {
       tipoNegocio: await this.tipoNegocio(),
       responsabilidadFiscal: sede.responsabilidadFiscal,
+      responsableIva: sede.responsableIva,
+      responsableInc: sede.responsableInc,
+      franquicia: sede.franquicia,
     };
     const incRate = causesInc(taxProfile)
       ? (await this.tax.resolveRate(INC_RESTAURANTE_CODE)).rate
@@ -393,7 +396,15 @@ export class SalesService {
     );
     const linesWithTax = lineTotals.map((l, i) => {
       const finalNet = l.lineTotal - l.discountAmount - (saleShares[i] ?? 0);
-      const { kind: taxKind, rate } = saleTaxFor(taxProfile, l.product, incRate);
+      const { kind: taxKind, rate } = saleTaxFor(
+        taxProfile,
+        {
+          ivaType: l.product.ivaType,
+          ivaRate: l.product.ivaRate,
+          tratamiento: l.product.tratamientoFiscal,
+        },
+        incRate,
+      );
       const { base, tax: iva } = splitTaxIncluded(finalNet, rate);
       return {
         ...l,

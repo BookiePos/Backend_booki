@@ -1,6 +1,8 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 import {
+  REGIMEN_RENTA,
+  RegimenRenta,
   RESPONSABILIDAD_FISCAL,
   ResponsabilidadFiscal,
   TIPO_PERSONA,
@@ -79,6 +81,26 @@ export class Sede {
 
   @Prop({ enum: RESPONSABILIDAD_FISCAL })
   responsabilidadFiscal?: ResponsabilidadFiscal;
+
+  // ── Perfil fiscal completo (ítem 1.17). Opcionales: sin dato se infiere del
+  // giro y de `responsabilidadFiscal`, como antes. ───────────────────────────
+  /** Responsable de IVA (RUT 48) o no (RUT 49). */
+  @Prop()
+  responsableIva?: boolean;
+
+  /** Responsable de INC (RUT 33) o no (RUT 34, art. 512-13 ET). */
+  @Prop()
+  responsableInc?: boolean;
+
+  /** Expendio de comidas bajo franquicia: causa IVA, no INC (art. 426 par.). */
+  @Prop()
+  franquicia?: boolean;
+
+  @Prop({ enum: REGIMEN_RENTA })
+  regimenRenta?: RegimenRenta;
+
+  @Prop()
+  granContribuyente?: boolean;
 
   /** Código CIIU de actividad económica. */
   @Prop({ trim: true })

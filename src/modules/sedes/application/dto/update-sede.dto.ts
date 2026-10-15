@@ -8,6 +8,8 @@ import {
   ValidateNested,
 } from 'class-validator';
 import {
+  REGIMEN_RENTA,
+  RegimenRenta,
   RESPONSABILIDAD_FISCAL,
   ResponsabilidadFiscal,
   TIPO_PERSONA,
@@ -62,6 +64,27 @@ export class UpdateSedeDto {
   @IsOptional()
   @IsIn(RESPONSABILIDAD_FISCAL as readonly string[])
   responsabilidadFiscal?: ResponsabilidadFiscal;
+
+  // Perfil fiscal completo (ítem 1.17).
+  @IsOptional()
+  @IsBoolean()
+  responsableIva?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  responsableInc?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  franquicia?: boolean;
+
+  @IsOptional()
+  @IsIn(REGIMEN_RENTA as readonly string[])
+  regimenRenta?: RegimenRenta;
+
+  @IsOptional()
+  @IsBoolean()
+  granContribuyente?: boolean;
 
   @IsOptional()
   @IsString()

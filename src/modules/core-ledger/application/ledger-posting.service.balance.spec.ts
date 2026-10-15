@@ -171,7 +171,10 @@ describe('LedgerPostingService · asientos automáticos', () => {
       expect(side('debit')).toBe(side('credit'));
       expect(amountOn(ACC.INC_POR_PAGAR, 'debit')).toBe(2_222);
       expect(amountOn(ACC.IVA_POR_PAGAR, 'debit')).toBe(0);
-      expect(amountOn(ACC.INGRESOS_VENTAS, 'debit')).toBe(27_778);
+      // Ítem 1.17: la devolución va a 4175, así ventas y devoluciones se ven
+      // por separado (renglones del formulario 300/310).
+      expect(amountOn(ACC.DEVOLUCIONES_VENTAS, 'debit')).toBe(27_778);
+      expect(amountOn(ACC.INGRESOS_VENTAS, 'debit')).toBe(0);
     });
 
     it('sin IVA no abre el renglón de impuesto y el ingreso es el total', async () => {

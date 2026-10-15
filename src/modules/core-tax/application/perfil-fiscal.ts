@@ -36,9 +36,28 @@ export async function perfilFiscalDeSede(
   const tipoNegocio = await tipoNegocioActivo(fuentes.businesses);
   const sede = await fuentes.sedes
     .findById(sedeId)
-    .select('responsabilidadFiscal')
+    .select(CAMPOS_FISCALES)
     .exec();
-  return { tipoNegocio, responsabilidadFiscal: sede?.responsabilidadFiscal };
+  return perfilDe(tipoNegocio, sede);
+}
+
+/** Campos de la sede que forman su perfil fiscal (ítem 1.17). */
+const CAMPOS_FISCALES = 'responsabilidadFiscal responsableIva responsableInc franquicia';
+
+function perfilDe(
+  tipoNegocio: BusinessType | undefined,
+  sede: Pick<
+    SedeDocument,
+    'responsabilidadFiscal' | 'responsableIva' | 'responsableInc' | 'franquicia'
+  > | null,
+): SaleTaxProfile {
+  return {
+    tipoNegocio,
+    responsabilidadFiscal: sede?.responsabilidadFiscal,
+    responsableIva: sede?.responsableIva,
+    responsableInc: sede?.responsableInc,
+    franquicia: sede?.franquicia,
+  };
 }
 
 /**
@@ -51,17 +70,14 @@ export async function ivaDescontablePorSede(
 ): Promise<(sedeId?: string) => boolean> {
   const tipoNegocio = await tipoNegocioActivo(fuentes.businesses);
   const porGiro = admiteIvaDescontable({ tipoNegocio });
-  // Un restaurante (INC) no descuenta en ninguna sede: no hace falta leerlas.
-  if (!porGiro) return () => false;
+  // Cada sede se decide con su perfil: una franquicia de restaurante sí
+  // descuenta IVA aunque el giro diga restaurante (ítem 1.17).
   const sedes = await fuentes.sedes
     .find({})
-    .select('_id responsabilidadFiscal')
+    .select(`_id ${CAMPOS_FISCALES}`)
     .exec();
   const admite = new Map(
-    sedes.map((s) => [
-      String(s._id),
-      admiteIvaDescontable({ tipoNegocio, responsabilidadFiscal: s.responsabilidadFiscal }),
-    ]),
+    sedes.map((s) => [String(s._id), admiteIvaDescontable(perfilDe(tipoNegocio, s))]),
   );
   return (sedeId) => (sedeId ? (admite.get(sedeId) ?? porGiro) : porGiro);
 }

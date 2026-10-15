@@ -7,6 +7,8 @@ import {
   IVA_TYPES,
   IvaRate,
   IvaType,
+  TRATAMIENTOS_FISCALES,
+  TratamientoFiscal,
 } from '../../domain/catalog.constants';
 
 /** Línea de receta: un ingrediente de inventario y cuánto consume. */
@@ -55,6 +57,10 @@ export class CatalogProduct {
   /** Tratamiento de IVA: gravado / exento / excluido. */
   @Prop({ required: true, enum: [...IVA_TYPES], default: 'gravado' })
   ivaType!: IvaType;
+
+  /** Expendio (INC en restaurante) o mercancía revendida (IVA). Ítem 1.17. */
+  @Prop({ enum: [...TRATAMIENTOS_FISCALES] })
+  tratamientoFiscal?: TratamientoFiscal;
 
   /** Cómo se abastece: directo del inventario o con receta. */
   @Prop({ required: true, enum: CATALOG_SOURCE_TYPES, default: 'inventory' })

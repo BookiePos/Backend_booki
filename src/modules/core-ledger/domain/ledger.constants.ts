@@ -61,6 +61,8 @@ export const ACC = {
   /** Cesantías, intereses, prima y vacaciones causadas (PUC 2610). */
   PROVISIONES_LABORALES: '2610',
   INGRESOS_VENTAS: '4135',
+  /** Devoluciones en ventas (PUC 4175): resta del ingreso, separada de él. */
+  DEVOLUCIONES_VENTAS: '4175',
   GASTOS_PERSONAL: '5105',
   GASTOS_SERVICIOS: '5135',
   GASTOS_DIVERSOS: '5195',

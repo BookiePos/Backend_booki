@@ -117,3 +117,60 @@ describe('admiteIvaDescontable · IVA de compras', () => {
     expect(admiteIvaDescontable({})).toBe(true);
   });
 });
+
+/**
+ * Ítem 1.17: el perfil fiscal con las responsabilidades del RUT explícitas.
+ * Si no se diligencian, el comportamiento es el de antes (se infiere del giro
+ * y de `responsabilidadFiscal`).
+ */
+describe('saleTaxFor · perfil fiscal completo (ítem 1.17)', () => {
+  const GRAVADO_19 = { ivaType: 'gravado', ivaRate: 19 } as const;
+  const INC = 8;
+
+  it('franquicia de restaurante: IVA, no INC (art. 426 par. ET; Oficio DIAN 1283/2020)', () => {
+    expect(
+      saleTaxFor({ tipoNegocio: 'restaurante', franquicia: true, responsableIva: true }, GRAVADO_19, INC),
+    ).toEqual({ kind: 'iva', rate: 19 });
+  });
+
+  it('restaurante no responsable de INC (art. 512-13): no discrimina impuesto', () => {
+    expect(
+      saleTaxFor({ tipoNegocio: 'restaurante', responsableInc: false }, GRAVADO_19, INC),
+    ).toEqual({ kind: 'ninguno', rate: 0 });
+  });
+
+  it('mercancía revendida en un restaurante: lleva el IVA del bien, no INC', () => {
+    expect(
+      saleTaxFor(
+        { tipoNegocio: 'restaurante', responsableIva: true },
+        { ...GRAVADO_19, tratamiento: 'mercancia' },
+        INC,
+      ),
+    ).toEqual({ kind: 'iva', rate: 19 });
+  });
+
+  it('mercancía en un restaurante no responsable de IVA: sin impuesto', () => {
+    expect(
+      saleTaxFor(
+        { tipoNegocio: 'restaurante', responsableIva: false },
+        { ...GRAVADO_19, tratamiento: 'mercancia' },
+        INC,
+      ),
+    ).toEqual({ kind: 'ninguno', rate: 0 });
+  });
+
+  it('SIMPLE en retail que no es responsable de IVA (art. 437 par. 3): sin impuesto', () => {
+    expect(
+      saleTaxFor(
+        { tipoNegocio: 'retail', responsabilidadFiscal: 'regimen_simple', responsableIva: false },
+        GRAVADO_19,
+        INC,
+      ),
+    ).toEqual({ kind: 'ninguno', rate: 0 });
+  });
+
+  it('la franquicia sí descuenta IVA; el restaurante con INC no', () => {
+    expect(admiteIvaDescontable({ tipoNegocio: 'restaurante', franquicia: true })).toBe(true);
+    expect(admiteIvaDescontable({ tipoNegocio: 'restaurante' })).toBe(false);
+  });
+});
