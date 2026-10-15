@@ -65,11 +65,21 @@ export class BusinessService {
     return new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 7);
   }
 
-  /** Suma créditos de documentos comprados en paquetes (no expiran). */
-  async addDocCredits(id: string, docs: number): Promise<void> {
+  /**
+   * Suma créditos de documentos comprados en paquetes (no expiran).
+   *
+   * Idempotente por pago: la suma y el registro de `paymentId` van en el mismo
+   * update atómico, y el filtro excluye los pagos ya acreditados. Un reintento
+   * de la facturación (webhook repetido, barrido que retoma un pago a medias)
+   * no vuelve a sumar.
+   */
+  async addDocCredits(id: string, docs: number, paymentId: string): Promise<void> {
     if (docs <= 0) return;
     await this.businesses
-      .updateOne({ _id: id }, { $inc: { docCredits: docs } })
+      .updateOne(
+        { _id: id, docCreditPayments: { $ne: paymentId } },
+        { $inc: { docCredits: docs }, $addToSet: { docCreditPayments: paymentId } },
+      )
       .exec();
   }
 

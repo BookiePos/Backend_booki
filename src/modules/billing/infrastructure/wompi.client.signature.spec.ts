@@ -1,5 +1,21 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
+
+// Se espía `timingSafeEqual` para comprobar que la comparación del checksum
+// pasa por ella y no por `===` (que corta en el primer byte distinto).
+const { timingSafeEqualSpy } = vi.hoisted(() => ({
+  timingSafeEqualSpy: { calls: 0 },
+}));
+vi.mock('node:crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:crypto')>();
+  return {
+    ...actual,
+    timingSafeEqual: (a: NodeJS.ArrayBufferView, b: NodeJS.ArrayBufferView) => {
+      timingSafeEqualSpy.calls++;
+      return actual.timingSafeEqual(a, b);
+    },
+  };
+});
 
 import { WompiClient } from './wompi.client';
 
@@ -106,6 +122,18 @@ describe('WompiClient · firma e integridad', () => {
   });
 
   describe('checksum del evento', () => {
+    /** Instante "ahora" de las pruebas: un minuto después del evento. */
+    const AHORA_MS = 1_757_000_000 * 1000 + 60_000;
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(AHORA_MS);
+      timingSafeEqualSpy.calls = 0;
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
     /** Arma un evento firmado como lo haría la pasarela. */
     function evento(over: {
       status?: string;
@@ -216,28 +244,139 @@ describe('WompiClient · firma e integridad', () => {
     it('firma exactamente los campos que la pasarela dice haber firmado', () => {
       // Si se ignorara `properties` y se firmara siempre lo mismo, un evento
       // con otra lista pasaría con un checksum que no le corresponde.
-      const e = evento({ properties: ['transaction.id'] });
-
-      expect(client().verifyEvent(e)).toBe(true);
-      const mentiroso = evento({ properties: ['transaction.id'] });
-      mentiroso.signature.properties = ['transaction.status'];
+      const orden = [
+        'transaction.amount_in_cents',
+        'transaction.id',
+        'transaction.status',
+      ];
+      expect(client().verifyEvent(evento({ properties: orden }))).toBe(true);
+      const mentiroso = evento({ properties: orden });
+      mentiroso.signature.properties = [
+        'transaction.id',
+        'transaction.status',
+        'transaction.amount_in_cents',
+      ];
       expect(client().verifyEvent(mentiroso)).toBe(false);
     });
 
     it('una propiedad que no existe cuenta como vacía, no revienta', () => {
       const timestamp = 1_757_000_000;
+      const properties = [
+        'transaction.id',
+        'transaction.status',
+        'transaction.amount_in_cents',
+        'transaction.no_existe',
+      ];
       const checksum = createHash('sha256')
-        .update(`${timestamp}eventos_secreto`)
+        .update(`tx-1APPROVED9900000${timestamp}eventos_secreto`)
         .digest('hex');
 
       const e = {
         event: 'transaction.updated',
-        data: { transaction: { id: 'tx-1' } },
+        data: {
+          transaction: { id: 'tx-1', status: 'APPROVED', amount_in_cents: 9_900_000 },
+        },
         timestamp,
-        signature: { checksum, properties: ['transaction.no_existe'] },
+        signature: { checksum, properties },
       };
 
       expect(client().verifyEvent(e)).toBe(true);
+    });
+
+    describe('forma del evento', () => {
+      it('properties que no es una lista se rechaza sin reventar', () => {
+        const e = evento() as any;
+        e.signature.properties = 'transaction.id';
+
+        expect(() => client().verifyEvent(e)).not.toThrow();
+        expect(client().verifyEvent(e)).toBe(false);
+      });
+
+      it('properties con elementos que no son texto se rechaza', () => {
+        const e = evento() as any;
+        e.signature.properties = [{ x: 1 }, 'transaction.status', 'transaction.amount_in_cents'];
+
+        expect(client().verifyEvent(e)).toBe(false);
+      });
+
+      it('data que no es un objeto se rechaza', () => {
+        const e = evento() as any;
+        e.data = 'basura';
+
+        expect(client().verifyEvent(e)).toBe(false);
+      });
+
+      it('exige que la firma cubra id, estado y monto de la transacción', () => {
+        // Una firma que solo cubre el id deja el estado y el monto sin
+        // proteger: se podría cambiar DECLINED por APPROVED sin romperla.
+        for (const falta of [
+          'transaction.id',
+          'transaction.status',
+          'transaction.amount_in_cents',
+        ]) {
+          const properties = [
+            'transaction.id',
+            'transaction.status',
+            'transaction.amount_in_cents',
+          ].filter((p) => p !== falta);
+          expect(client().verifyEvent(evento({ properties }))).toBe(false);
+        }
+      });
+    });
+
+    describe('ventana de tiempo', () => {
+      it('acepta un reintento de la pasarela de hace casi un día', () => {
+        // Wompi reintenta a los 30 min, 3 h y 24 h con el mismo evento firmado.
+        const ts = Math.floor(AHORA_MS / 1000) - 24 * 3600;
+
+        expect(client().verifyEvent(evento({ timestamp: ts }))).toBe(true);
+      });
+
+      it('rechaza un evento bien firmado pero más viejo que la ventana', () => {
+        const ts = Math.floor(AHORA_MS / 1000) - 26 * 3600;
+
+        expect(client().verifyEvent(evento({ timestamp: ts }))).toBe(false);
+      });
+
+      it('rechaza un evento fechado en el futuro más allá del desfase de reloj', () => {
+        const ts = Math.floor(AHORA_MS / 1000) + 10 * 60;
+
+        expect(client().verifyEvent(evento({ timestamp: ts }))).toBe(false);
+      });
+
+      it('tolera un desfase de reloj pequeño hacia el futuro', () => {
+        const ts = Math.floor(AHORA_MS / 1000) + 60;
+
+        expect(client().verifyEvent(evento({ timestamp: ts }))).toBe(true);
+      });
+
+      it('rechaza una marca de tiempo que no es un número', () => {
+        const e = evento() as any;
+        e.timestamp = 'mañana';
+
+        expect(client().verifyEvent(e)).toBe(false);
+      });
+    });
+
+    describe('comparación en tiempo constante', () => {
+      it('compara el checksum con timingSafeEqual', () => {
+        expect(client().verifyEvent(evento())).toBe(true);
+        expect(timingSafeEqualSpy.calls).toBe(1);
+      });
+
+      it('un checksum de otra longitud se rechaza sin reventar', () => {
+        const e = evento();
+        e.signature.checksum = e.signature.checksum.slice(0, 10);
+
+        expect(client().verifyEvent(e)).toBe(false);
+      });
+
+      it('un checksum con caracteres no hexadecimales se rechaza', () => {
+        const e = evento();
+        e.signature.checksum = 'z'.repeat(64);
+
+        expect(client().verifyEvent(e)).toBe(false);
+      });
     });
   });
 });

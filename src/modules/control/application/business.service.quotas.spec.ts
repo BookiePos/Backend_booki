@@ -169,19 +169,33 @@ describe('BusinessService · cupo de documentos electrónicos', () => {
     it('suma los documentos del paquete al saldo', async () => {
       build(true, true);
 
-      await service.addDocCredits(BIZ, 500);
+      await service.addDocCredits(BIZ, 500, 'pay1');
 
       expect(businesses.updateOne).toHaveBeenCalledOnce();
       expect(businesses.updateOne.mock.calls[0][1]).toEqual({
         $inc: { docCredits: 500 },
+        $addToSet: { docCreditPayments: 'pay1' },
+      });
+    });
+
+    it('un mismo pago no acredita dos veces: el filtro excluye los ya acreditados', async () => {
+      // El suma y el registro del pago van en el MISMO update atómico: si el
+      // pago ya está en la lista, el filtro no casa y no se suma nada.
+      build(true, true);
+
+      await service.addDocCredits(BIZ, 500, 'pay1');
+
+      expect(businesses.updateOne.mock.calls[0][0]).toEqual({
+        _id: BIZ,
+        docCreditPayments: { $ne: 'pay1' },
       });
     });
 
     it('acreditar cero o menos no toca el saldo', async () => {
       build(true, true);
 
-      await service.addDocCredits(BIZ, 0);
-      await service.addDocCredits(BIZ, -10);
+      await service.addDocCredits(BIZ, 0, 'pay1');
+      await service.addDocCredits(BIZ, -10, 'pay2');
 
       expect(businesses.updateOne).not.toHaveBeenCalled();
     });

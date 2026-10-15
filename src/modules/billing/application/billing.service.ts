@@ -33,16 +33,23 @@ import {
   PaymentMethod,
   PaymentMethodDocument,
 } from '../infrastructure/schemas/payment-method.schema';
-import { WompiCardSource, WompiClient } from '../infrastructure/wompi.client';
+import {
+  WompiCardSource,
+  WompiClient,
+  WompiTransaction,
+} from '../infrastructure/wompi.client';
 import { SubscribeDto } from './dto/subscribe.dto';
 import { SavePaymentMethodDto } from './dto/save-payment-method.dto';
 import {
+  APPLY_LEASE_MS,
+  APPLY_VERSION,
   BILLING_CYCLES,
   BillingCycle,
   MAX_CHARGE_RETRIES,
   PENDING_RECONCILE_AFTER_MS,
   PENDING_RECONCILE_LIMIT,
   RETRY_COOLDOWN_MS,
+  WOMPI_CURRENCY,
   mapWompiStatus,
 } from '../domain/billing.constants';
 
@@ -269,7 +276,8 @@ export class BillingService {
     ) {
       try {
         const tx = await this.wompi.getTransaction(payment.wompiTransactionId);
-        await this.syncTransaction(payment, tx.status);
+        const status = this.verifiedStatus(payment, tx, payment.wompiTransactionId);
+        if (status) await this.syncTransaction(payment, status);
       } catch (err) {
         // Consultar es un extra sobre el webhook: si la pasarela no responde se
         // devuelve lo que hay guardado y el cron reintenta más tarde.
@@ -347,12 +355,61 @@ export class BillingService {
 
     const payment = await this.payments.findOne({ reference: tx.reference }).exec();
     if (!payment) return { received: true };
-    if (!payment.wompiTransactionId && tx.id) {
-      payment.wompiTransactionId = tx.id;
+
+    // La firma prueba que el evento salió de Wompi, no que siga siendo cierto:
+    // un evento viejo reenviado dentro de la ventana, o uno de otra
+    // transacción con la misma referencia, aplicaría un pago que no es. Se
+    // pregunta a la API (fuente de verdad) y solo se aplica si todo coincide.
+    const txId = payment.wompiTransactionId ?? tx.id;
+    if (!txId || (tx.id && tx.id !== txId)) {
+      this.logger.warn(
+        `Evento de ${tx.reference} con transacción ${tx.id ?? '—'} distinta de la del pago: se ignora.`,
+      );
+      return { received: true };
+    }
+    // Si la API falla se deja propagar el error: sin un 200 Wompi reintenta.
+    const real = await this.wompi.getTransaction(txId);
+    const status = this.verifiedStatus(payment, real, txId);
+    if (!status) return { received: true };
+    if (status !== tx.status) {
+      this.logger.warn(
+        `Evento de ${payment.reference} dice ${tx.status} y la API ${status}: no se aplica.`,
+      );
+      return { received: true };
+    }
+    if (!payment.wompiTransactionId) {
+      payment.wompiTransactionId = txId;
       await payment.save();
     }
-    await this.syncTransaction(payment, tx.status);
+    await this.syncTransaction(payment, status);
     return { received: true };
+  }
+
+  /**
+   * Estado de la transacción según la API, SOLO si es la del pago: misma
+   * transacción, referencia, moneda y monto. Si algo no coincide devuelve
+   * `null` y no se aplica nada: un estado de otra transacción (o de un monto
+   * menor) no puede activar ni suspender este pago.
+   */
+  private verifiedStatus(
+    payment: PaymentDocument,
+    real: WompiTransaction,
+    txId: string,
+  ): string | null {
+    const coincide =
+      real.id === txId &&
+      real.reference === payment.reference &&
+      real.currency === WOMPI_CURRENCY &&
+      Number(real.amount_in_cents) === payment.amountInCents;
+    if (!coincide) {
+      this.logger.error(
+        `Transacción ${txId} no coincide con el pago ${payment.reference} ` +
+          `(id ${real.id}, monto ${real.amount_in_cents}/${payment.amountInCents}, ` +
+          `moneda ${real.currency}, referencia ${real.reference}): no se aplica.`,
+      );
+      return null;
+    }
+    return real.status;
   }
 
   /** Estado de facturación de una empresa (para el panel). */
@@ -428,7 +485,8 @@ export class BillingService {
     let charged = 0;
     let suspended = 0;
 
-    const reconciled = await this.reconcilePending();
+    const reconciled =
+      (await this.reconcilePending()) + (await this.resumeUnfinishedApprovals());
 
     const due = await this.subs
       .find({ status: 'active', nextChargeAt: { $lte: now } })
@@ -493,16 +551,27 @@ export class BillingService {
         wompiTransactionId: { $ne: null },
         createdAt: { $lte: limite },
       })
-      .sort({ createdAt: 1 })
+      // Primero los que hace más tiempo no se consultan (nunca = primero): si
+      // no, un centenar de pagos atascados acapararía el cupo cada día y los
+      // nuevos no se revisarían nunca.
+      .sort({ lastReconcileAt: 1, createdAt: 1 })
       .limit(PENDING_RECONCILE_LIMIT)
       .exec();
 
     let resueltos = 0;
     for (const payment of pendientes) {
       try {
-        const tx = await this.wompi.getTransaction(payment.wompiTransactionId!);
-        if (mapWompiStatus(tx.status) === 'pending') continue;
-        await this.syncTransaction(payment, tx.status);
+        await this.payments
+          .updateOne(
+            { _id: payment._id },
+            { $set: { lastReconcileAt: new Date() } },
+          )
+          .exec();
+        const txId = payment.wompiTransactionId!;
+        const tx = await this.wompi.getTransaction(txId);
+        const status = this.verifiedStatus(payment, tx, txId);
+        if (!status || mapWompiStatus(status) === 'pending') continue;
+        await this.syncTransaction(payment, status);
         resueltos++;
       } catch (err) {
         this.logger.error(
@@ -513,6 +582,42 @@ export class BillingService {
       }
     }
     return resueltos;
+  }
+
+  /**
+   * Retoma los pagos aprobados cuyos efectos no terminaron (un fallo o un
+   * proceso muerto a mitad de `applyApproved`). Sin esto quedaban cobrados y
+   * sin servicio: el webhook y la consulta solo miran pagos pendientes.
+   */
+  private async resumeUnfinishedApprovals(): Promise<number> {
+    const caducada = new Date(Date.now() - APPLY_LEASE_MS);
+    const aMedias = await this.payments
+      .find({
+        status: 'approved',
+        applied: { $ne: true },
+        // Solo los que reservó este protocolo: uno aprobado por el código
+        // anterior no dice qué efectos hizo y re-aplicarlo podría duplicarlos.
+        applyVersion: APPLY_VERSION,
+        $or: [{ applyingAt: null }, { applyingAt: { $lte: caducada } }],
+      })
+      .sort({ updatedAt: 1 })
+      .limit(PENDING_RECONCILE_LIMIT)
+      .exec();
+
+    let retomados = 0;
+    for (const payment of aMedias) {
+      try {
+        await this.applyApproved(payment);
+        if (payment.applied) retomados++;
+      } catch (err) {
+        this.logger.error(
+          `No se pudo completar el pago aprobado ${payment.reference}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    return retomados;
   }
 
   /**
@@ -620,9 +725,19 @@ export class BillingService {
       await this.applyApproved(payment);
       return;
     }
-    if (payment.applied) return; // ya se aplicó antes; no degradar
+    if (payment.applied || status === 'pending') return; // no degradar
+    // Transición atómica desde `pending`: la copia en memoria puede estar
+    // vieja (otro proceso ya lo aprobó) y un evento de rechazo repetido no
+    // debe sumar otro intento fallido ni acelerar la cancelación.
+    const transicion = await this.payments
+      .findOneAndUpdate(
+        { _id: payment._id, status: 'pending', applied: { $ne: true } },
+        { $set: { status } },
+        { new: true },
+      )
+      .exec();
+    if (!transicion) return;
     payment.status = status;
-    await payment.save();
 
     if (status === 'declined' || status === 'error' || status === 'voided') {
       const sub = await this.subs.findOne({ businessId: payment.businessId }).exec();
@@ -639,42 +754,122 @@ export class BillingService {
     }
   }
 
-  /** Aplica los entitlements de un pago aprobado. Idempotente. */
+  /**
+   * Aplica los entitlements de un pago aprobado. Idempotente.
+   *
+   * Tres fases, porque el webhook, la consulta del frontend y el barrido
+   * pueden llegar a la vez, cada uno con su copia en `applied: false`:
+   *   1. RESERVA atómica (`applyingAt`, caduca a los `APPLY_LEASE_MS`): solo
+   *      uno aplica; los demás salen sin tocar nada.
+   *   2. EFECTOS por pasos (`effectsDone`): cada paso se anota al terminar,
+   *      así que un reintento salta lo ya hecho (acreditar documentos o
+   *      avanzar el período no son idempotentes por sí solos).
+   *   3. CIERRE: `applied: true` solo cuando todo terminó. Si un efecto falla
+   *      se libera la reserva y el error sube: el webhook responde 500 y Wompi
+   *      reintenta, y si no, `resumeUnfinishedApprovals` lo retoma.
+   * Queda una ventana: si el proceso muere entre un efecto y su anotación,
+   * ese paso se repite al retomar. Es preferible a perderlo (cobrado sin
+   * servicio) y exige una caída exactamente entre dos escrituras.
+   */
   private async applyApproved(payment: PaymentDocument): Promise<void> {
     if (payment.applied) return;
+    const ahora = new Date();
+    const reservado = await this.payments
+      .findOneAndUpdate(
+        {
+          _id: payment._id,
+          applied: { $ne: true },
+          $and: [
+            {
+              $or: [
+                { applyingAt: null },
+                {
+                  applyingAt: {
+                    $lte: new Date(ahora.getTime() - APPLY_LEASE_MS),
+                  },
+                },
+              ],
+            },
+            // Un `approved` sin versión es del código anterior: no se toca.
+            { $or: [{ status: { $ne: 'approved' } }, { applyVersion: APPLY_VERSION }] },
+          ],
+        },
+        {
+          $set: { status: 'approved', applyingAt: ahora, applyVersion: APPLY_VERSION },
+        },
+        { new: true },
+      )
+      .exec();
     payment.status = 'approved';
+    if (!reservado) return; // otro proceso lo aplicó o lo está aplicando
+
+    const hechos = new Set<string>(reservado.effectsDone ?? []);
+    const paso = async (nombre: string, efecto: () => Promise<unknown>) => {
+      if (hechos.has(nombre)) return;
+      await efecto();
+      await this.payments
+        .updateOne({ _id: payment._id }, { $addToSet: { effectsDone: nombre } })
+        .exec();
+      hechos.add(nombre);
+    };
+
+    try {
+      if (payment.kind === 'docPackage') {
+        await paso('docCredits', () =>
+          this.businesses.addDocCredits(
+            payment.businessId,
+            (payment.docPackages ?? 0) * DOCS_PER_PACKAGE,
+            String(payment._id),
+          ),
+        );
+      } else {
+        // subscription | renewal → activa plan+complementos y avanza el período.
+        await paso('plan', () =>
+          this.businesses.updatePlan(payment.businessId, {
+            plan: payment.plan as BusinessPlan,
+            addOns: payment.addOns,
+            status: 'active',
+          }),
+        );
+        await paso('period', () => this.advancePeriod(payment));
+      }
+    } catch (err) {
+      // Se suelta la reserva (solo si sigue siendo nuestra) para que el
+      // reintento no espere a que caduque.
+      await this.payments
+        .updateOne(
+          { _id: payment._id, applyingAt: ahora },
+          { $set: { applyingAt: null } },
+        )
+        .exec()
+        .catch(() => undefined);
+      throw err;
+    }
+
+    await this.payments
+      .updateOne(
+        { _id: payment._id },
+        { $set: { applied: true, applyingAt: null } },
+      )
+      .exec();
     payment.applied = true;
-    await payment.save();
+  }
 
-    if (payment.kind === 'docPackage') {
-      await this.businesses.addDocCredits(
-        payment.businessId,
-        (payment.docPackages ?? 0) * DOCS_PER_PACKAGE,
-      );
-      return;
-    }
-
-    // subscription | renewal → activa plan+complementos y avanza el período.
-    await this.businesses.updatePlan(payment.businessId, {
-      plan: payment.plan as BusinessPlan,
-      addOns: payment.addOns,
-      status: 'active',
-    });
-
+  /** Deja la suscripción al día y abre el período que paga este cobro. */
+  private async advancePeriod(payment: PaymentDocument): Promise<void> {
     const sub = await this.subs.findOne({ businessId: payment.businessId }).exec();
-    if (sub) {
-      const from =
-        sub.currentPeriodEnd && sub.currentPeriodEnd > new Date()
-          ? sub.currentPeriodEnd
-          : new Date();
-      const end = this.advance(from, sub.billingCycle as BillingCycle);
-      sub.status = 'active';
-      sub.currentPeriodEnd = end;
-      sub.nextChargeAt = end;
-      sub.failedAttempts = 0;
-      sub.lastTransactionId = payment.wompiTransactionId;
-      await sub.save();
-    }
+    if (!sub) return;
+    const from =
+      sub.currentPeriodEnd && sub.currentPeriodEnd > new Date()
+        ? sub.currentPeriodEnd
+        : new Date();
+    const end = this.advance(from, sub.billingCycle as BillingCycle);
+    sub.status = 'active';
+    sub.currentPeriodEnd = end;
+    sub.nextChargeAt = end;
+    sub.failedAttempts = 0;
+    sub.lastTransactionId = payment.wompiTransactionId;
+    await sub.save();
   }
 
   /**

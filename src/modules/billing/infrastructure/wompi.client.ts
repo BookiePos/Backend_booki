@@ -1,18 +1,24 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import {
   WompiConfig,
   isWompiConfigured,
   wompiConfig,
 } from '../domain/wompi.config';
-import { WOMPI_CURRENCY } from '../domain/billing.constants';
+import {
+  WEBHOOK_SIGNED_PROPERTIES,
+  WEBHOOK_MAX_AGE_MS,
+  WEBHOOK_MAX_FUTURE_SKEW_MS,
+  WOMPI_CURRENCY,
+} from '../domain/billing.constants';
 
 export interface WompiTransaction {
   id: string;
   status: string;
   reference: string;
   amount_in_cents: number;
+  currency?: string;
 }
 
 /**
@@ -235,19 +241,54 @@ export class WompiClient {
   /**
    * Valida el checksum de un evento del webhook. Wompi lo calcula como
    * SHA256(concat(valores de `signature.properties`) + timestamp + eventsSecret).
+   *
+   * Además exige que el `timestamp` (segundos UNIX, firmado) caiga en la
+   * ventana `WEBHOOK_MAX_AGE_MS` / `WEBHOOK_MAX_FUTURE_SKEW_MS`, y compara en
+   * tiempo constante: con `===` el tiempo de respuesta delata cuántos
+   * caracteres iniciales del checksum se acertaron.
    */
   verifyEvent(event: WompiEvent): boolean {
-    const properties = event.signature?.properties;
+    const properties: unknown = event.signature?.properties;
     const checksum = event.signature?.checksum;
-    if (!properties || !checksum || event.timestamp === undefined) {
+    const data: unknown = event.data;
+    if (!checksum || event.timestamp === undefined) return false;
+    // El cuerpo llega sin DTO: una forma inesperada debe dar 403, no un
+    // TypeError (500) que además haría reintentar a la pasarela.
+    if (
+      !Array.isArray(properties) ||
+      !properties.every((p) => typeof p === 'string') ||
+      !data ||
+      typeof data !== 'object' ||
+      Array.isArray(data)
+    ) {
       return false;
     }
-    const concat = properties
-      .map((path) => String(this.resolve(event.data ?? {}, path) ?? ''))
+    // Una firma que no cubre id, estado y monto deja sin proteger justo lo que
+    // decide si se activa un plan.
+    if (!WEBHOOK_SIGNED_PROPERTIES.every((p) => properties.includes(p))) {
+      return false;
+    }
+    if (!this.withinWindow(event.timestamp)) return false;
+    // Un SHA256 en hex son 64 caracteres; cualquier otra cosa no es una firma
+    // y se descarta antes de comparar (timingSafeEqual exige igual longitud).
+    if (!/^[0-9a-f]{64}$/i.test(String(checksum))) return false;
+    const concat = (properties as string[])
+      .map((path) =>
+        String(this.resolve(data as Record<string, unknown>, path) ?? ''),
+      )
       .join('');
     const raw = `${concat}${event.timestamp}${this.cfg.eventsSecret}`;
-    const computed = createHash('sha256').update(raw).digest('hex');
-    return computed.toUpperCase() === String(checksum).toUpperCase();
+    const computed = createHash('sha256').update(raw).digest();
+    return timingSafeEqual(computed, Buffer.from(String(checksum), 'hex'));
+  }
+
+  /** El `timestamp` del evento (segundos UNIX) está dentro de la ventana. */
+  private withinWindow(timestamp: unknown): boolean {
+    if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+      return false;
+    }
+    const delta = Date.now() - timestamp * 1000;
+    return delta <= WEBHOOK_MAX_AGE_MS && delta >= -WEBHOOK_MAX_FUTURE_SKEW_MS;
   }
 
   /** Resuelve una ruta tipo "transaction.status" dentro de `data`. */

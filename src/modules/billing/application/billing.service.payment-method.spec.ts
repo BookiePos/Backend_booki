@@ -63,6 +63,7 @@ describe('BillingService · tarjeta guardada y confirmación del cobro', () => {
             _id: 'pay1',
             businessId: BIZ,
             reference: 'sub-biz1-1',
+            amountInCents: 22_990_000,
             kind: 'subscription',
             plan: 'control',
             addOns: {},
@@ -107,9 +108,13 @@ describe('BillingService · tarjeta guardada y confirmación del cobro', () => {
       createTransaction: vi
         .fn()
         .mockResolvedValue({ id: 'tx-1', status: 'PENDING' }),
+      // La transacción del pago tal como la reporta la API.
       getTransaction: vi.fn().mockResolvedValue({
         id: 'tx-1',
         status: opts.estadoConsulta ?? 'APPROVED',
+        reference: 'sub-biz1-1',
+        amount_in_cents: 22_990_000,
+        currency: 'COP',
       }),
     };
     subs = {
@@ -118,6 +123,10 @@ describe('BillingService · tarjeta guardada y confirmación del cobro', () => {
       updateOne: vi.fn(() => ({ exec: () => Promise.resolve(undefined) })),
     };
     payments = {
+      // Reserva atómica de `applyApproved`: aquí siempre la gana este proceso
+      // (la carrera entre dos procesos se prueba en billing.service.webhook.spec).
+      findOneAndUpdate: vi.fn(() => ({ exec: () => Promise.resolve({}) })),
+      updateOne: vi.fn(() => ({ exec: () => Promise.resolve({ modifiedCount: 1 }) })),
       create: vi.fn((doc: any) =>
         Promise.resolve({ ...doc, _id: 'pay1', save: vi.fn() }),
       ),

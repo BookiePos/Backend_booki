@@ -47,9 +47,36 @@ export class Payment {
   @Prop()
   docPackages?: number;
 
-  /** Ya se aplicaron los entitlements de este pago (idempotencia). */
+  /**
+   * Ya se aplicaron TODOS los entitlements de este pago (idempotencia). Se
+   * marca al terminar los efectos, no antes: si uno falla, el pago queda
+   * aprobado sin `applied` y el barrido lo retoma.
+   */
   @Prop({ default: false })
   applied!: boolean;
+
+  /**
+   * Reserva de la aplicación en curso (quién y desde cuándo). Caduca a los
+   * `APPLY_LEASE_MS` para que un proceso muerto a mitad no la deje tomada.
+   */
+  @Prop({ type: Date, default: null })
+  applyingAt?: Date | null;
+
+  /**
+   * Pasos de la aplicación ya hechos (`docCredits`, `plan`, `period`). Al
+   * retomar un pago a medias se saltan: acreditar documentos o avanzar el
+   * período no son idempotentes por sí solos.
+   */
+  @Prop({ type: [String], default: [] })
+  effectsDone!: string[];
+
+  /** Versión del protocolo con que se reservó la aplicación (`APPLY_VERSION`). */
+  @Prop()
+  applyVersion?: number;
+
+  /** Última vez que el barrido consultó este pago a la pasarela. */
+  @Prop({ type: Date, default: null })
+  lastReconcileAt?: Date | null;
 }
 
 export const PaymentSchema = SchemaFactory.createForClass(Payment);
