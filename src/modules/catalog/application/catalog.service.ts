@@ -21,9 +21,12 @@ import { CatalogSourceType } from '../domain/catalog.constants';
 import {
   PRODUCT_IMAGE_MAX_BYTES,
   PRODUCT_IMAGE_TYPES_LABEL,
-  imageExtension,
   type UploadedImage,
 } from '../../../shared/storage/product-image';
+import {
+  IMAGE_MIMES,
+  validateUploadedFile,
+} from '../../../shared/storage/file-signature';
 import { StorageService } from '../../../shared/storage/storage.service';
 import { ProductsService } from '../../inventory/application/products.service';
 import { Product } from '../../inventory/infrastructure/schemas/product.schema';
@@ -251,17 +254,18 @@ export class CatalogService {
       : null;
     if (!product) throw new NotFoundException('Producto no encontrado');
 
-    const extension = imageExtension(file.mimetype);
-    if (!extension) {
-      throw new BadRequestException(
-        `Formato de imagen no admitido. Usa ${PRODUCT_IMAGE_TYPES_LABEL}.`,
-      );
-    }
     if (file.size > PRODUCT_IMAGE_MAX_BYTES) {
       throw new BadRequestException(
         `La imagen supera los ${Math.round(PRODUCT_IMAGE_MAX_BYTES / 1024 / 1024)} MB.`,
       );
     }
+    // El tipo sale de los bytes, no del mimetype que declara el cliente.
+    const detected = validateUploadedFile(
+      file.buffer,
+      IMAGE_MIMES,
+      PRODUCT_IMAGE_TYPES_LABEL,
+    );
+    const extension = detected.ext;
 
     // La ruta lleva la empresa delante: en un store compartido por todos los
     // tenants, eso mantiene separado lo de cada negocio y hace evidente de quién
@@ -272,7 +276,7 @@ export class CatalogService {
     const stored = await this.storage.upload(
       pathname,
       file.buffer,
-      file.mimetype,
+      detected.mime,
     );
 
     const previous = product.imagePathname;

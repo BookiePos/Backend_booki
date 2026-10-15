@@ -13,9 +13,12 @@ import { CatalogService } from '../../catalog/application/catalog.service';
 import {
   PRODUCT_IMAGE_MAX_BYTES,
   PRODUCT_IMAGE_TYPES_LABEL,
-  imageExtension,
   type UploadedImage,
 } from '../../../shared/storage/product-image';
+import {
+  IMAGE_MIMES,
+  validateUploadedFile,
+} from '../../../shared/storage/file-signature';
 import { StorageService } from '../../../shared/storage/storage.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import {
@@ -182,17 +185,18 @@ export class ProductsService {
   async setImage(id: string, file: UploadedImage): Promise<ProductDocument> {
     const product = await this.getOrFail(id);
 
-    const extension = imageExtension(file.mimetype);
-    if (!extension) {
-      throw new BadRequestException(
-        `Formato de imagen no admitido. Usa ${PRODUCT_IMAGE_TYPES_LABEL}.`,
-      );
-    }
     if (file.size > PRODUCT_IMAGE_MAX_BYTES) {
       throw new BadRequestException(
         `La imagen supera los ${Math.round(PRODUCT_IMAGE_MAX_BYTES / 1024 / 1024)} MB.`,
       );
     }
+    // El tipo sale de los bytes, no del mimetype que declara el cliente.
+    const detected = validateUploadedFile(
+      file.buffer,
+      IMAGE_MIMES,
+      PRODUCT_IMAGE_TYPES_LABEL,
+    );
+    const extension = detected.ext;
 
     // Prefijo propio (`inventario/`) y no el del catálogo: son fichas distintas
     // y conviene poder mirar el bucket y saber de quién es cada archivo. La
@@ -203,7 +207,7 @@ export class ProductsService {
     const stored = await this.storage.upload(
       pathname,
       file.buffer,
-      file.mimetype,
+      detected.mime,
     );
 
     const previous = product.imagePathname;
