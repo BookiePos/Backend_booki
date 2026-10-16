@@ -494,6 +494,10 @@ export class PayrollService {
       );
     }
 
+    // Si un cierre fallido alcanzó a dejar arrastres de esta corrida, ya no
+    // valen: las colillas van a cambiar. El próximo cierre los vuelve a crear.
+    await this.anularArrastresDe(run);
+
     // Devuelve a "approved" las deducciones que esta corrida había aplicado,
     // para volver a considerarlas (junto con las aprobadas desde entonces).
     await this.deductions
@@ -647,6 +651,7 @@ export class PayrollService {
         otrasDeduccionesDetalle: empDeductions.map((d) => ({
           concept: d.concept,
           amount: d.amount,
+          ...(d.source === 'arrastre' ? { source: d.source } : {}),
         })),
         totalDevengado: breakdown.devengados.total,
         totalDeducciones: breakdown.deducciones.total,
@@ -1040,10 +1045,15 @@ export class PayrollService {
     // deducciones", solo el fiado del POS (`source: 'sale'`) cancela la 1305
     // que abrió la venta; las manuales (libranzas, embargos) son un pasivo con
     // un tercero. El neto negativo de una colilla no se paga: queda a cargo del
-    // empleado (1365).
+    // empleado (1365) y se arrastra a la nómina siguiente; el arrastre que esta
+    // corrida descuenta de la anterior (`source: 'arrastre'`) cancela esa 1365.
     const ded = (sl: (typeof run.slips)[number]) => sl.breakdown?.deducciones;
     const fiado = sumBy(
       aplicadas.filter((d) => d.source === 'sale'),
+      (d) => d.amount,
+    );
+    const arrastre = sumBy(
+      aplicadas.filter((d) => d.source === 'arrastre'),
       (d) => d.amount,
     );
     const partes: PartesNomina = {
@@ -1055,7 +1065,8 @@ export class PayrollService {
       ),
       retencionFuente: sumBy(run.slips, (sl) => ded(sl)?.retencionFuente ?? 0),
       fiado,
-      otrasDeducciones: sumBy(run.slips, (sl) => ded(sl)?.otras ?? 0) - fiado,
+      arrastre,
+      otrasDeducciones: sumBy(run.slips, (sl) => ded(sl)?.otras ?? 0) - fiado - arrastre,
       aportesEmpleador: sumBy(
         run.slips,
         (sl) => sl.breakdown?.aportesEmpleador?.total ?? 0,
@@ -1071,6 +1082,10 @@ export class PayrollService {
         `No se puede cerrar la nómina: ${(err as Error).message}`,
       );
     }
+
+    // El saldo a cargo se arrastra ANTES de marcarla cerrada: si esto falla, la
+    // corrida sigue en borrador y se puede volver a cerrar (es idempotente).
+    await this.crearArrastres(run);
 
     run.status = 'cerrada';
     run.closedAt = new Date();
@@ -1098,6 +1113,7 @@ export class PayrollService {
         'No se puede eliminar una nómina cerrada. Es el comprobante del período.',
       );
     }
+    await this.anularArrastresDe(run);
     // Devuelve las deducciones aplicadas a 'approved' para poder re-nominarlas.
     await this.deductions
       .updateMany(
@@ -1110,6 +1126,86 @@ export class PayrollService {
       .exec();
     await run.deleteOne();
   }
+
+  // ── Arrastre del saldo a cargo del empleado (ítem 1.9) ─────────────────────
+  // Una colilla con neto negativo no se paga: el saldo queda en la 1365. Sin
+  // esto nadie lo cobraba; el cierre lo convierte en una deducción aprobada
+  // para la nómina siguiente, que al aplicarse cancela la 1365.
+
+  /**
+   * Crea (o deja como estaba) una deducción `arrastre` por cada colilla con
+   * neto negativo. Idempotente por (corrida, empleado): cerrar dos veces o
+   * reintentar un cierre fallido no la duplica. No se aplica el tope del art.
+   * 149 CST: la nómina no lo aplica a ninguna deducción hoy.
+   */
+  private async crearArrastres(run: PayrollRunDocument): Promise<void> {
+    const runId = run._id.toString();
+    const siguiente = periodoSiguiente(run.period);
+    for (const sl of run.slips) {
+      const saldo = cop(-(sl.netoPagar ?? 0));
+      if (saldo <= 0) continue;
+      await this.deductions
+        .updateOne(
+          {
+            source: 'arrastre',
+            sourceId: runId,
+            employeeId: sl.employeeId,
+            status: { $ne: 'cancelled' },
+          },
+          {
+            $setOnInsert: {
+              employeeName: sl.employeeName,
+              docNumber: sl.docNumber,
+              sedeId: sl.sedeId,
+              concept: `Saldo a cargo de nómina ${run.period}`,
+              amount: saldo,
+              date: `${siguiente}-01`,
+              status: 'approved',
+              note: `Neto negativo de la nómina ${run.period}; se descuenta en la siguiente.`,
+              createdByEmail: run.createdByEmail,
+            },
+          },
+          { upsert: true },
+        )
+        .exec();
+    }
+  }
+
+  /**
+   * Anula los arrastres que creó el cierre de esta corrida. Se llama al borrar
+   * o recalcular una corrida en borrador (un cierre que falló después de
+   * crearlos) y es el gancho para cuando una corrida cerrada se reabra. Si una
+   * nómina siguiente ya lo descontó, no se anula a escondidas: hay que borrar
+   * o recalcular esa primero.
+   */
+  async anularArrastresDe(run: PayrollRunDocument): Promise<void> {
+    const runId = run._id.toString();
+    const aplicado = await this.deductions
+      .findOne({ source: 'arrastre', sourceId: runId, status: 'applied' })
+      .exec();
+    if (aplicado) {
+      throw new BadRequestException(
+        `El saldo a cargo de ${aplicado.employeeName} de esta nómina ya se descontó en la nómina ${aplicado.appliedPeriod ?? ''}`.trim() +
+          '. Elimina o recalcula esa nómina primero.',
+      );
+    }
+    await this.deductions
+      .updateMany(
+        {
+          source: 'arrastre',
+          sourceId: runId,
+          status: { $in: ['pending', 'approved'] },
+        },
+        { $set: { status: 'cancelled' } },
+      )
+      .exec();
+  }
+}
+
+/** Período siguiente a `YYYY-MM`. */
+function periodoSiguiente(period: string): string {
+  const [y, m] = period.split('-').map(Number) as [number, number];
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
 }
 
 /** Aviso de turnos del período con entrada y sin salida (ítem 1.19). */

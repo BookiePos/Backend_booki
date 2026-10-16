@@ -43,8 +43,8 @@ export class PayrollSlip {
   breakdown!: PayrollBreakdown;
 
   /** Detalle de "otras deducciones" aplicadas (consumos de empleado, etc.). */
-  @Prop({ type: [{ concept: String, amount: Number }], default: [] })
-  otrasDeduccionesDetalle!: { concept: string; amount: number }[];
+  @Prop({ type: [{ concept: String, amount: Number, source: String }], default: [] })
+  otrasDeduccionesDetalle!: { concept: string; amount: number; source?: string }[];
 
   @Prop({ required: true })
   totalDevengado!: number;

@@ -76,6 +76,7 @@ function armar(opts: {
       select: () => exec(opts.aplicadas ?? []),
     })),
     updateMany: () => exec({ matchedCount: 0 }),
+    updateOne: () => exec({ matchedCount: 0, upsertedCount: 1 }),
   };
   const params = {
     number: async (_k: string, fb: number) => fb,
@@ -226,6 +227,7 @@ describe('PayrollService.closeRun · deducciones amarradas', () => {
           seguridadSocialEmpleado: 160_000,
           retencionFuente: 20_000,
           fiado: 16_900,
+          arrastre: 0,
           otrasDeducciones: 0,
           aportesEmpleador: 300_000,
           provisiones: 240_000,

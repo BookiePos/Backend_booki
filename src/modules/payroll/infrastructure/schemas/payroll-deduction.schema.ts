@@ -12,8 +12,17 @@ export const DEDUCTION_STATUSES = [
 ] as const;
 export type DeductionStatus = (typeof DEDUCTION_STATUSES)[number];
 
-export const DEDUCTION_SOURCES = ['sale', 'manual'] as const;
+/**
+ * - `sale`: fiado del POS (cancela la 1305 que abrió la venta).
+ * - `manual`: libranzas, embargos, préstamos de terceros (2370).
+ * - `arrastre`: saldo a cargo del empleado que dejó una colilla con neto
+ *   negativo; lo crea el cierre de la corrida de origen (`sourceId` = id de
+ *   esa corrida) y cancela la 1365 en la nómina siguiente. No se crea a mano.
+ */
+export const DEDUCTION_SOURCES = ['sale', 'manual', 'arrastre'] as const;
 export type DeductionSource = (typeof DEDUCTION_SOURCES)[number];
+/** Orígenes que se pueden crear por la API (el arrastre lo crea el cierre). */
+export const DEDUCTION_SOURCES_API = ['sale', 'manual'] as const;
 
 /**
  * Deducción a la nómina de un empleado (p.ej. un consumo/fiado del propio
@@ -81,3 +90,4 @@ export const PayrollDeductionSchema =
 
 PayrollDeductionSchema.index({ employeeId: 1, status: 1 });
 PayrollDeductionSchema.index({ status: 1, date: -1 });
+PayrollDeductionSchema.index({ source: 1, sourceId: 1, employeeId: 1 });
