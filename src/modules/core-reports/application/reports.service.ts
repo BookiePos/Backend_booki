@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Sale, SaleDocument } from '../../sales/infrastructure/schemas/sale.schema';
+import { BY_METHOD_PIPELINE } from './by-method.pipeline';
 import { LedgerService, TrialBalanceRow } from '../../core-ledger/application/ledger.service';
 import { balancePorSedes } from '../../core-ledger/domain/ledger-sede-scope';
 import {
@@ -173,67 +174,8 @@ export class ReportsService {
               },
               { $sort: { _id: 1 } },
             ],
-            // Un cobro mixto (ítem 6.9) aparece en cada medio que usó: el
-            // ingreso se reparte en proporción a lo que cubrió cada medio (así
-            // la suma por medios sigue siendo el ingreso total) y `collected`
-            // es lo que de verdad entró por ese medio, con propina y domicilio.
-            // Un tiquete mixto cuenta en cada medio.
-            byMethod: [
-              {
-                $project: {
-                  total: 1,
-                  due: {
-                    $add: [
-                      '$total',
-                      { $ifNull: ['$tip', 0] },
-                      { $ifNull: ['$deliveryFee', 0] },
-                    ],
-                  },
-                  parts: {
-                    $cond: [
-                      { $gt: [{ $size: { $ifNull: ['$payments', []] } }, 0] },
-                      '$payments',
-                      [
-                        {
-                          method: '$payment.method',
-                          amount: {
-                            $add: [
-                              '$total',
-                              { $ifNull: ['$tip', 0] },
-                              { $ifNull: ['$deliveryFee', 0] },
-                            ],
-                          },
-                        },
-                      ],
-                    ],
-                  },
-                },
-              },
-              { $unwind: '$parts' },
-              {
-                $group: {
-                  _id: '$parts.method',
-                  revenue: {
-                    $sum: {
-                      $cond: [
-                        { $gt: ['$due', 0] },
-                        {
-                          $multiply: [
-                            '$total',
-                            { $divide: ['$parts.amount', '$due'] },
-                          ],
-                        },
-                        '$total',
-                      ],
-                    },
-                  },
-                  collected: { $sum: '$parts.amount' },
-                  tickets: { $sum: 1 },
-                },
-              },
-              { $set: { revenue: { $round: ['$revenue', 0] } } },
-              { $sort: { revenue: -1 } },
-            ],
+            // Cobro mixto (ítem 6.9): ver `BY_METHOD_PIPELINE`.
+            byMethod: BY_METHOD_PIPELINE,
             bySede: [
               {
                 $group: {

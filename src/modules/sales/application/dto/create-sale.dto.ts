@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   ArrayNotEmpty,
   IsArray,
+  IsDefined,
   IsBoolean,
   IsIn,
   IsInt,
@@ -224,7 +225,8 @@ export class CreateSaleDto {
    * Pago con un solo medio: la API de siempre, que sigue funcionando igual.
    * Obligatorio si no viene `payments`.
    */
-  @ValidateIf((o: CreateSaleDto) => o.payments === undefined)
+  @ValidateIf((o: CreateSaleDto) => o.payments == null)
+  @IsDefined({ message: 'Falta el medio de pago: manda payment o payments' })
   @ValidateNested()
   @Type(() => SalePaymentDto)
   payment?: SalePaymentDto;

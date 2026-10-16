@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   ArrayNotEmpty,
   IsArray,
+  IsDefined,
   IsBoolean,
   IsMongoId,
   IsNumber,
@@ -36,7 +37,8 @@ export class CheckoutLineDto {
 /** Liquidación de una cuenta abierta: pago, descuento y cliente (factura). */
 export class CheckoutOrderDto {
   /** Pago con un solo medio. Obligatorio si no viene `payments`. */
-  @ValidateIf((o: CheckoutOrderDto) => o.payments === undefined)
+  @ValidateIf((o: CheckoutOrderDto) => o.payments == null)
+  @IsDefined({ message: 'Falta el medio de pago: manda payment o payments' })
   @ValidateNested()
   @Type(() => SalePaymentDto)
   payment?: SalePaymentDto;
