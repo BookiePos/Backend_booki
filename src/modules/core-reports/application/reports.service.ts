@@ -270,10 +270,21 @@ export class ReportsService {
     };
   }
 
+  /**
+   * Las líneas de un tipo de cuenta, con el saldo CON SIGNO en su lado natural.
+   *
+   * Antes se tomaba el valor absoluto, y eso volteaba las cuentas de saldo
+   * contrario: la 4175 (devoluciones en ventas, saldo débito dentro de los
+   * ingresos) SUMABA al ingreso en vez de restarle, y la 7205/7305 (costos
+   * absorbidos, saldo crédito) sumaban al gasto. Con $10.000.000 vendidos y
+   * $2.000.000 devueltos el estado de resultados decía $12.000.000 de
+   * ingresos y el balance general dejaba de cuadrar. Un IVA a favor (2408 con
+   * saldo débito) salía como pasivo positivo por la misma razón.
+   */
   private linesOf(rows: TrialBalanceRow[], type: string): StatementLine[] {
     return rows
       .filter((r) => r.type === type)
-      .map((r) => ({ code: r.code, name: r.name, amount: Math.abs(r.balance) }))
+      .map((r) => ({ code: r.code, name: r.name, amount: r.balance }))
       .filter((l) => l.amount !== 0);
   }
 

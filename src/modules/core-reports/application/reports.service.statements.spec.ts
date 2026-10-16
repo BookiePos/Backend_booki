@@ -127,6 +127,25 @@ describe('ReportsService · estados financieros', () => {
       expect(r.ingresos).toHaveLength(1);
     });
 
+    it('las devoluciones (4175) RESTAN del ingreso, no suman (ítem 1.16)', async () => {
+      // La 4175 es de ingreso pero su saldo es débito: el ledger la entrega
+      // negativa en el lado natural del ingreso. Con el valor absoluto, $10 M
+      // vendidos y $2 M devueltos salían como $12 M de ingresos.
+      build([
+        fila('4135', 'Ingresos por ventas', 'income', 10_000_000),
+        fila('4175', 'Devoluciones en ventas', 'income', -2_000_000),
+        fila('6135', 'Costo de venta', 'expense', 4_000_000),
+        fila('7205', 'Mano de obra absorbida', 'expense', -500_000),
+      ]);
+
+      const r = await service.incomeStatement({}, DUENO);
+
+      expect(r.totalIngresos).toBe(8_000_000);
+      expect(r.ingresos.find((l) => l.code === '4175')?.amount).toBe(-2_000_000);
+      expect(r.totalGastos).toBe(3_500_000);
+      expect(r.utilidadNeta).toBe(4_500_000);
+    });
+
     it('sin movimiento en el periodo todo sale en cero, no falla', async () => {
       build([]);
 
@@ -188,6 +207,24 @@ describe('ReportsService · estados financieros', () => {
       expect(r.cuadra).toBe(true);
     });
 
+    it('con devoluciones y un IVA a favor sigue cuadrando (ítem 1.16)', async () => {
+      // Venta 10 M − devolución 2 M = caja 8 M; un IVA a favor de 300.000
+      // (2408 con saldo débito, negativo en el lado del pasivo) contra 300.000
+      // menos de caja. Con el valor absoluto el balance no cuadraba.
+      build([
+        fila('1105', 'Caja', 'asset', 7_700_000),
+        fila('2408', 'IVA por pagar', 'liability', -300_000),
+        fila('4135', 'Ingresos por ventas', 'income', 10_000_000),
+        fila('4175', 'Devoluciones en ventas', 'income', -2_000_000),
+      ]);
+
+      const r = await service.balanceSheet({}, DUENO);
+
+      expect(r.resultadoEjercicio).toBe(8_000_000);
+      expect(r.totalPasivo).toBe(-300_000);
+      expect(r.cuadra).toBe(true);
+    });
+
     it('avisa cuando NO cuadra, en vez de disimularlo', async () => {
       // Balance incoherente: el activo no corresponde con pasivo + patrimonio.
       build([
@@ -226,8 +263,12 @@ describe('ReportsService · alcance por sede', () => {
     sedeIds,
   });
 
+  // El saldo en su lado natural, como lo entrega `LedgerService.trialBalance`:
+  // débito − crédito para activo y gasto, crédito − débito para el resto.
   function fila(code: string, type: string, debit: number, credit: number) {
-    return { code, name: code, type, typeLabel: type, debit, credit, balance: credit - debit };
+    const deudora = type === 'asset' || type === 'expense';
+    const balance = deudora ? debit - credit : credit - debit;
+    return { code, name: code, type, typeLabel: type, debit, credit, balance };
   }
 
   let ledger: any;
