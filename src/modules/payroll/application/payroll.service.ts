@@ -78,7 +78,7 @@ import { ParamsService } from '../../core-params/application/params.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { cop, sumBy } from '../../finance/domain/money.util';
 import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
-import { diasDescansoRemunerado } from '../domain/descanso-remunerado';
+import { diasALiquidar } from '../domain/descanso-remunerado';
 
 export interface PreviewResult {
   input: {
@@ -599,17 +599,17 @@ export class PayrollService {
       const input: PayrollInput = {
         salarioBase: e.salary ?? 0,
         salaryType: (e.salaryType as SalaryType) ?? 'ordinario',
-        // Días con turno + descansos remunerados que ganó (domingos de semanas
-        // completas y festivos), con el tope de 30 (ítem 1.19).
+        // Días con turno + descansos remunerados que ganó (domingos y días no
+        // laborables de semanas completas, festivos), sobre el mes comercial
+        // de 30 días: el mes completo paga 30 aunque tenga 28 o 31 (ítem 1.19).
         diasTrabajados: Math.min(
           DIAS_MES,
-          turnos.diasTrabajados +
-            diasDescansoRemunerado(
-              new Set(registros.map((r) => r.workDate)),
-              from,
-              to,
-              s.diasLaborablesSemana ?? 6,
-            ),
+          diasALiquidar(
+            new Set(registros.filter((r) => r.checkIn && r.checkOut).map((r) => r.workDate)),
+            from,
+            to,
+            s.diasLaborablesSemana ?? 6,
+          ),
         ),
         arlRiskLevel: e.arlRiskLevel as ArlLevel | undefined,
         novedades: Object.keys(novedades).length > 0 ? novedades : undefined,
