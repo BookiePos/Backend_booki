@@ -52,6 +52,12 @@ function cumple(d: Doc, filtro: Doc): boolean {
 function aplicar(d: Doc, upd: Doc) {
   Object.assign(d, upd.$set ?? {});
   for (const k of Object.keys(upd.$unset ?? {})) delete d[k];
+  for (const [de, a] of Object.entries((upd.$rename ?? {}) as Record<string, string>)) {
+    if (de in d) {
+      d[a] = d[de];
+      delete d[de];
+    }
+  }
 }
 
 function almacen(iniciales: Doc[] = []) {
@@ -280,10 +286,50 @@ describe('PayrollService · arrastre del saldo a cargo (1365)', () => {
     await service.closeRun(id());
     await service.anularArrastresDe(run as any);
     expect(arrastres(deductions).map((d) => d.status)).toEqual(['cancelled']);
+    // El anulado sale del índice único: ya no lleva `sourceId`.
+    expect(arrastres(deductions)[0]).toMatchObject({ sourceIdAnulado: run._id.toString() });
+    expect(arrastres(deductions)[0]!.sourceId).toBeUndefined();
 
     run.status = 'borrador';
     await service.closeRun(id());
     expect(arrastres(deductions).map((d) => d.status)).toEqual(['cancelled', 'approved']);
+  });
+
+  it('re-cierre después de recalcular: anula el viejo y crea uno con el saldo nuevo', async () => {
+    run.save.mockRejectedValueOnce(new Error('falla'));
+    const { service, deductions } = armar({ run });
+    await expect(service.closeRun(id())).rejects.toThrow();
+    run.status = 'borrador';
+
+    // Recalcular anula el arrastre del cierre fallido (y vuelve a armar las colillas).
+    await (service as any).anularArrastresDe(run);
+    run.slips = [slip('e1', -30_000), slip('e2', 900_000)];
+    await service.closeRun(id());
+
+    expect(arrastres(deductions).map((d) => [d.status, d.amount])).toEqual([
+      ['cancelled', 50_000],
+      ['approved', 30_000],
+    ]);
+  });
+
+  it('si el upsert choca con el índice único (cierre simultáneo), lo toma como «ya existe»', async () => {
+    const { service, deductions } = armar({ run });
+    deductions.updateOne.mockImplementationOnce(() => ({
+      exec: () => Promise.reject(Object.assign(new Error('E11000'), {
+        code: 11000,
+        keyPattern: { source: 1, sourceId: 1, employeeId: 1 },
+      })),
+    }));
+    await expect(service.closeRun(id())).resolves.toBeTruthy();
+  });
+
+  it('otro error del upsert no se traga: la corrida no se cierra', async () => {
+    const { service, deductions } = armar({ run });
+    deductions.updateOne.mockImplementationOnce(() => ({
+      exec: () => Promise.reject(Object.assign(new Error('E11000 otro'), { code: 11000, keyPattern: { otro: 1 } })),
+    }));
+    await expect(service.closeRun(id())).rejects.toThrow('E11000 otro');
+    expect(run.status).toBe('borrador');
   });
 
   it('si la nómina siguiente ya lo descontó, no lo anula a escondidas', async () => {

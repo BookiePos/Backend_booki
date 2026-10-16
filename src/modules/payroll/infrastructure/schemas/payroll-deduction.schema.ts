@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
+import { INDICE_ARRASTRE_VIVO } from '../../domain/payroll-deduction.indices';
 
 export type PayrollDeductionDocument = HydratedDocument<PayrollDeduction>;
 
@@ -68,6 +69,14 @@ export class PayrollDeduction {
   @Prop({ trim: true })
   sourceId?: string;
 
+  /**
+   * Corrida de origen de un arrastre anulado. Al anularlo, `sourceId` se mueve
+   * aquí para que deje de ocupar el índice único y un nuevo cierre pueda crear
+   * el arrastre vigente.
+   */
+  @Prop({ trim: true })
+  sourceIdAnulado?: string;
+
   @Prop({ trim: true })
   note?: string;
 
@@ -90,4 +99,4 @@ export const PayrollDeductionSchema =
 
 PayrollDeductionSchema.index({ employeeId: 1, status: 1 });
 PayrollDeductionSchema.index({ status: 1, date: -1 });
-PayrollDeductionSchema.index({ source: 1, sourceId: 1, employeeId: 1 });
+PayrollDeductionSchema.index(INDICE_ARRASTRE_VIVO.keys, INDICE_ARRASTRE_VIVO.options);

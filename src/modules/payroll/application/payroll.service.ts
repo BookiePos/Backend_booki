@@ -82,6 +82,8 @@ import {
 } from '../../core-ledger/application/ledger-posting.service';
 import { cop, sumBy } from '../../finance/domain/money.util';
 import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
+import { esDuplicadoEn } from '../../core-ledger/domain/journal-entry.indices';
+import { INDICE_ARRASTRE_VIVO } from '../domain/payroll-deduction.indices';
 import { diasALiquidar } from '../domain/descanso-remunerado';
 
 export interface PreviewResult {
@@ -1135,8 +1137,10 @@ export class PayrollService {
   /**
    * Crea (o deja como estaba) una deducción `arrastre` por cada colilla con
    * neto negativo. Idempotente por (corrida, empleado): cerrar dos veces o
-   * reintentar un cierre fallido no la duplica. No se aplica el tope del art.
-   * 149 CST: la nómina no lo aplica a ninguna deducción hoy.
+   * reintentar un cierre fallido no la duplica, y el índice único
+   * `arrastre_vivo_unico` lo garantiza ante dos cierres simultáneos: el que
+   * pierde recibe E11000 y lo toma como «ya existe». No se aplica el tope del
+   * art. 149 CST: la nómina no lo aplica a ninguna deducción hoy.
    */
   private async crearArrastres(run: PayrollRunDocument): Promise<void> {
     const runId = run._id.toString();
@@ -1144,30 +1148,30 @@ export class PayrollService {
     for (const sl of run.slips) {
       const saldo = cop(-(sl.netoPagar ?? 0));
       if (saldo <= 0) continue;
-      await this.deductions
-        .updateOne(
-          {
-            source: 'arrastre',
-            sourceId: runId,
-            employeeId: sl.employeeId,
-            status: { $ne: 'cancelled' },
-          },
-          {
-            $setOnInsert: {
-              employeeName: sl.employeeName,
-              docNumber: sl.docNumber,
-              sedeId: sl.sedeId,
-              concept: `Saldo a cargo de nómina ${run.period}`,
-              amount: saldo,
-              date: `${siguiente}-01`,
-              status: 'approved',
-              note: `Neto negativo de la nómina ${run.period}; se descuenta en la siguiente.`,
-              createdByEmail: run.createdByEmail,
+      try {
+        await this.deductions
+          .updateOne(
+            // Los anulados ya no tienen `sourceId` (ver anularArrastresDe).
+            { source: 'arrastre', sourceId: runId, employeeId: sl.employeeId },
+            {
+              $setOnInsert: {
+                employeeName: sl.employeeName,
+                docNumber: sl.docNumber,
+                sedeId: sl.sedeId,
+                concept: `Saldo a cargo de nómina ${run.period}`,
+                amount: saldo,
+                date: `${siguiente}-01`,
+                status: 'approved',
+                note: `Neto negativo de la nómina ${run.period}; se descuenta en la siguiente.`,
+                createdByEmail: run.createdByEmail,
+              },
             },
-          },
-          { upsert: true },
-        )
-        .exec();
+            { upsert: true },
+          )
+          .exec();
+      } catch (err) {
+        if (!esDuplicadoEn(err, INDICE_ARRASTRE_VIVO)) throw err;
+      }
     }
   }
 
@@ -1196,7 +1200,8 @@ export class PayrollService {
           sourceId: runId,
           status: { $in: ['pending', 'approved'] },
         },
-        { $set: { status: 'cancelled' } },
+        // Sale del índice único: un nuevo cierre puede crear el vigente.
+        { $set: { status: 'cancelled' }, $rename: { sourceId: 'sourceIdAnulado' } },
       )
       .exec();
   }
