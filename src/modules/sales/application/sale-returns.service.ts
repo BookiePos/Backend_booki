@@ -19,8 +19,13 @@ import { CajaService } from '../../caja/application/caja.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
-import { buildReturnPlan, prorateLots, ReturnPlan } from '../domain/sale-return';
-import { cop, sumBy } from '../../finance/domain/money.util';
+import {
+  buildReturnPlan,
+  cogsForReturn,
+  prorateLots,
+  ReturnPlan,
+} from '../domain/sale-return';
+import { sumBy } from '../../finance/domain/money.util';
 import type { SaleTaxKind } from '../../core-tax/domain/sale-tax';
 
 /**
@@ -74,13 +79,20 @@ export class SaleReturnsService {
   private async alreadyReturned(saleId: Types.ObjectId): Promise<{
     qty: Map<string, number>;
     money: Map<string, { refund: number; refundTax: number }>;
+    /** Lo que ya volvió de cada ítem de inventario (ítem 1.16). */
+    components: Map<string, number>;
   }> {
     const previas = await this.model.find({ saleId }).exec();
     const qty = new Map<string, number>();
     // La plata ya devuelta por línea: la última devolución salda exacto lo
     // que falte de lo pagado (ítem 1.11), sin pesos colgando.
     const money = new Map<string, { refund: number; refundTax: number }>();
+    const components = new Map<string, number>();
     for (const p of previas) {
+      for (const c of p.components ?? []) {
+        const key = c.productId.toString();
+        components.set(key, (components.get(key) ?? 0) + c.qty);
+      }
       for (const l of p.lines) {
         const key = l.productId.toString();
         qty.set(key, (qty.get(key) ?? 0) + l.qty);
@@ -91,7 +103,7 @@ export class SaleReturnsService {
         });
       }
     }
-    return { qty, money };
+    return { qty, money, components };
   }
 
   /**
@@ -102,8 +114,14 @@ export class SaleReturnsService {
    * lee del catálogo de HOY, pero el resultado se ACOTA a lo que la venta
    * consumió de verdad: si alguien editó la receta entre la venta y la
    * devolución, sin ese tope entraría al inventario mercancía que nunca salió.
+   * El tope descuenta lo que ya volvió en devoluciones anteriores (ítem 1.16):
+   * si no, dos devoluciones con la receta inflada metían el doble.
    */
-  private async unitsToReturn(sale: SaleDocument, plan: ReturnPlan) {
+  private async unitsToReturn(
+    sale: SaleDocument,
+    plan: ReturnPlan,
+    yaVolvio: ReadonlyMap<string, number>,
+  ) {
     const demand = new Map<string, number>();
     for (const l of plan.lines) {
       const product = await this.catalog
@@ -129,7 +147,7 @@ export class SaleReturnsService {
         (c) => c.productId.toString() === productId,
       );
       if (!componente) continue; // no salió de aquí: no puede volver aquí
-      const qty = Math.min(pedida, componente.qty);
+      const qty = Math.min(pedida, componente.qty - (yaVolvio.get(productId) ?? 0));
       if (qty <= 0) continue;
       units.push({
         productId,
@@ -183,7 +201,27 @@ export class SaleReturnsService {
       );
     }
 
-    const units = await this.unitsToReturn(sale, plan);
+    const units = await this.unitsToReturn(sale, plan, yaDevuelto.components);
+
+    // El costo de venta que deshace cada ítem que vuelve, con redondeo
+    // acumulado sobre lo ya devuelto (ítem 1.16). Si se va a merma NO se
+    // deshace: el inventario se perdió igual. Pero igual cuenta como devuelto,
+    // para que las siguientes no se repartan su parte del costo.
+    const components = units.map((u) => {
+      const componente = sale.components.find(
+        (c) => c.productId.toString() === u.productId,
+      );
+      const cogs =
+        dto.restock === 'inventory' && componente
+          ? cogsForReturn(
+              componente.cost ?? 0,
+              componente.qty,
+              yaDevuelto.components.get(u.productId) ?? 0,
+              u.qty,
+            )
+          : 0;
+      return { productId: new Types.ObjectId(u.productId), qty: u.qty, cogs };
+    });
     const porNombre = new Map(
       sale.lines.map((l) => [l.productId.toString(), l]),
     );
@@ -213,6 +251,7 @@ export class SaleReturnsService {
           refundTax: l.refundTax,
         };
       }),
+      components,
       reason: dto.reason,
       restock: dto.restock,
       wasteRecorded: false,
@@ -299,7 +338,7 @@ export class SaleReturnsService {
       }
     }
 
-    await this.postToLedger(registro, sale, units, dto);
+    await this.postToLedger(registro, sale, dto);
     return registro;
   }
 
@@ -314,24 +353,10 @@ export class SaleReturnsService {
   private async postToLedger(
     registro: SaleReturnDocument,
     sale: SaleDocument,
-    units: { productId: string; qty: number; unitCost?: number }[],
     dto: CreateSaleReturnDto,
   ): Promise<void> {
-    // El costo de lo que vuelve al inventario, para deshacer su costo de venta.
-    // Si se fue a merma NO se deshace: el inventario se perdió igual.
-    let cogs = 0;
-    if (dto.restock === 'inventory') {
-      for (const u of units) {
-        const componente = sale.components.find(
-          (c) => c.productId.toString() === u.productId,
-        );
-        const unitario =
-          componente && componente.qty > 0
-            ? (componente.cost ?? 0) / componente.qty
-            : 0;
-        cogs += unitario * u.qty;
-      }
-    }
+    // El costo ya repartido por ítem al armar el registro (0 si fue merma).
+    const cogs = sumBy(registro.components ?? [], (c) => c.cogs);
 
     // El impuesto devuelto se reversa contra la cuenta en que se causó: el INC
     // de una venta de restaurante vuelve a la 2495, no a la 2408. Las líneas
@@ -358,7 +383,7 @@ export class SaleReturnsService {
       refundTotal: registro.refundTotal,
       tax: ivaDevuelto,
       consumptionTax: incDevuelto,
-      cogs: cop(cogs),
+      cogs,
       // Una nota a favor o un cambio por otro producto no sacan plata hoy: la
       // contrapartida es lo que el negocio le queda debiendo al cliente.
       refundMethod: dto.refundMethod,

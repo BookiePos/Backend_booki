@@ -211,6 +211,30 @@ export function buildReturnPlan(
 }
 
 /**
+ * Costo de venta que se deshace al devolver `qty` de un ítem de inventario
+ * del que la venta consumió `soldQty` por un costo total `cost`, cuando ya se
+ * habían devuelto `priorQty` (ítem 1.16).
+ *
+ * Mismo redondeo acumulado que el reembolso: cada devolución lleva el costo
+ * de lo devuelto HASTA ella menos el de lo devuelto antes. Así 1 + 1 + 1 de
+ * un costo de $10.000 deshacen 3.333 + 3.334 + 3.333 y no 333 × 3 = 9.999,
+ * que dejaba un peso de costo de venta por mercancía que ya volvió entera.
+ *
+ * `priorQty` cuenta también lo que se fue a merma: esa parte no deshace su
+ * costo, pero ya salió del reparto y no se la pueden llevar las siguientes.
+ */
+export function cogsForReturn(
+  cost: number,
+  soldQty: number,
+  priorQty: number,
+  qty: number,
+): number {
+  if (!(soldQty > 0) || !(qty > 0)) return 0;
+  const hasta = (q: number) => cop((cost * Math.min(Math.max(q, 0), soldQty)) / soldQty);
+  return clampNonNegative(hasta(priorQty + qty) - hasta(priorQty));
+}
+
+/**
  * Reparte las porciones de lote que consumió la venta entre lo que vuelve.
  *
  * Si de un insumo salieron 500 g repartidos en dos lotes y vuelve la quinta

@@ -36,6 +36,26 @@ export class SaleReturnLine {
 
 const SaleReturnLineSchema = SchemaFactory.createForClass(SaleReturnLine);
 
+/**
+ * Lo que volvió de cada ítem de inventario y el costo de venta que deshizo
+ * (0 si se fue a merma). Las devoluciones siguientes lo suman para repartir
+ * el costo con redondeo acumulado y para no devolver al inventario más de lo
+ * que la venta consumió (ítem 1.16). Vacío en las devoluciones anteriores.
+ */
+@Schema({ _id: false })
+export class SaleReturnComponent {
+  @Prop({ type: Types.ObjectId, ref: 'Product', required: true })
+  productId!: Types.ObjectId;
+
+  @Prop({ required: true, min: 0 })
+  qty!: number;
+
+  @Prop({ default: 0, min: 0 })
+  cogs!: number;
+}
+
+const SaleReturnComponentSchema = SchemaFactory.createForClass(SaleReturnComponent);
+
 export type SaleReturnDocument = HydratedDocument<SaleReturn>;
 
 /**
@@ -60,6 +80,9 @@ export class SaleReturn {
 
   @Prop({ type: [SaleReturnLineSchema], required: true })
   lines!: SaleReturnLine[];
+
+  @Prop({ type: [SaleReturnComponentSchema], default: [] })
+  components!: SaleReturnComponent[];
 
   @Prop({ required: true, enum: RETURN_REASONS })
   reason!: ReturnReason;
