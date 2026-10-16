@@ -362,4 +362,25 @@ describe('PayrollService.createRun · descanso remunerado (ítem 1.19)', () => {
     expect(slip.alertas).toHaveLength(1);
     expect(slip.alertas[0]).toContain('3 días');
   });
+
+  it('olvidar la salida no quita el día ni el domingo de esa semana, y la colilla lo avisa', async () => {
+    const turnos: { employeeId: string; workDate: string; checkIn: string; checkOut: string }[] = [
+      { employeeId: 'e1', workDate: '2026-08-31', checkIn: '08:00', checkOut: '15:00' },
+    ];
+    for (let d = 1; d <= 30; d++) {
+      const fecha = `2026-09-${String(d).padStart(2, '0')}`;
+      if (new Date(`${fecha}T12:00:00Z`).getUTCDay() === 0) continue; // domingo
+      // El miércoles 9 el cajero marcó la entrada y olvidó la salida.
+      const checkOut = fecha === '2026-09-09' ? '' : '15:00';
+      turnos.push({ employeeId: 'e1', workDate: fecha, checkIn: '08:00', checkOut });
+    }
+    const { service, created } = armar({ turnos });
+
+    await service.createRun({ period: '2026-09' } as any, USER);
+
+    const slip = (created[0]!.slips as any[])[0];
+    expect(slip.diasTrabajados).toBe(30);
+    expect(slip.alertas).toHaveLength(1);
+    expect(slip.alertas[0]).toContain('1 turno(s) sin salida');
+  });
 });

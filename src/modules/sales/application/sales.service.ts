@@ -856,8 +856,14 @@ export class SalesService {
           // Sin deducción la venta fiada no se cobra a nadie: se deshace la
           // venta (aún sin asiento ni tesorería) y se reabre la ventana de
           // compensación para que el llamador devuelva el stock.
-          await this.saleModel.deleteOne({ _id: sale._id }).exec();
-          holder.sale = undefined;
+          try {
+            await this.saleModel.deleteOne({ _id: sale._id }).exec();
+            holder.sale = undefined;
+          } catch (errBorrado) {
+            this.logger.error(
+              `CONCILIAR: la venta ${sale._id.toString()} quedó fiada sin deducción de nómina y no se pudo deshacer: ${(errBorrado as Error).message}`,
+            );
+          }
           throw err;
         }
       } else {
