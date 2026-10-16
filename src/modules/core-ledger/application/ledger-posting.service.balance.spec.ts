@@ -493,6 +493,94 @@ describe('LedgerPostingService · asientos automáticos', () => {
       expect(lines().some((l) => l.accountCode === ACC.CLIENTES)).toBe(false);
     });
 
+    it('nómina: las deducciones manuales van a la 2370 en su renglón, no a la 1305 (ítem 1.9)', async () => {
+      await service.postPayrollRun({
+        runId: 'n3',
+        date: '2026-09-30',
+        sedeId: SEDE,
+        period: '2026-09',
+        partes: {
+          neto: 1_000_000,
+          seguridadSocialEmpleado: 80_000,
+          retencionFuente: 0,
+          fiado: 16_900,
+          otrasDeducciones: 200_000,
+          aportesEmpleador: 300_000,
+          provisiones: 200_000,
+        },
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.CLIENTES, 'credit')).toBe(16_900);
+      const terceros = lines().filter(
+        (l) => l.accountCode === ACC.DEDUCCIONES_NOMINA_TERCEROS && l.memo,
+      );
+      expect(terceros).toHaveLength(1);
+      expect(terceros[0]!.credit).toBe(200_000);
+      expect(amountOn(ACC.APORTES_NOMINA, 'credit')).toBe(380_000 + 200_000);
+    });
+
+    it('nómina con neto negativo: el saldo se debita a la 1365 y el asiento cuadra', async () => {
+      await service.postPayrollRun({
+        runId: 'n4',
+        date: '2026-09-30',
+        period: '2026-09',
+        partes: {
+          neto: 1_000_000,
+          saldoACargoEmpleados: 50_000,
+          seguridadSocialEmpleado: 0,
+          retencionFuente: 0,
+          fiado: 0,
+          otrasDeducciones: 150_000,
+          aportesEmpleador: 0,
+          provisiones: 0,
+        },
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.CXC_TRABAJADORES, 'debit')).toBe(50_000);
+      expect(amountOn(ACC.GASTOS_PERSONAL, 'debit')).toBe(1_100_000);
+    });
+
+    it('nómina sin costo pero con deducciones: reclasifica la deuda, cuadrado y sin gasto', async () => {
+      await service.postPayrollRun({
+        runId: 'n5',
+        date: '2026-09-30',
+        period: '2026-09',
+        partes: {
+          neto: 0,
+          saldoACargoEmpleados: 30_000,
+          seguridadSocialEmpleado: 0,
+          retencionFuente: 0,
+          fiado: 30_000,
+          aportesEmpleador: 0,
+          provisiones: 0,
+        },
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(lines().some((l) => l.accountCode === ACC.GASTOS_PERSONAL)).toBe(false);
+      expect(amountOn(ACC.CXC_TRABAJADORES, 'debit')).toBe(30_000);
+    });
+
+    it('nómina con partes que no cuadran falla de forma explícita y no postea', async () => {
+      const base = { runId: 'n6', date: '2026-09-30', period: '2026-09' };
+      const cero = {
+        seguridadSocialEmpleado: 0,
+        retencionFuente: 0,
+        fiado: 0,
+        aportesEmpleador: 0,
+        provisiones: 0,
+      };
+      await expect(
+        service.postPayrollRun({ ...base, partes: { ...cero, neto: -10_000 } }),
+      ).rejects.toThrow();
+      await expect(
+        service.postPayrollRun({ ...base, partes: { ...cero, neto: 0, saldoACargoEmpleados: 10_000 } }),
+      ).rejects.toThrow();
+      expect(ledger.post).not.toHaveBeenCalled();
+    });
+
     it('no postea asientos en cero (recepción o nómina sin monto)', async () => {
       await service.postPurchaseReceipt({
         receiptId: 'r0',
