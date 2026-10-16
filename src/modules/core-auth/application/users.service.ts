@@ -305,6 +305,7 @@ export class UsersService {
     if (user.role === ROLES.OWNER && actor.role !== ROLES.OWNER) {
       throw new ForbiddenException('Solo el Dueño puede editar al Dueño');
     }
+    await this.assertGestionaSusSedes(actor, user);
     const cambiaRol =
       dto.role !== undefined && dto.role.toLowerCase() !== user.role;
     const extrasNuevos =
@@ -358,6 +359,32 @@ export class UsersService {
           'No puedes cambiar la contraseña, el rol, los permisos ni las sedes, ni desactivar, a alguien con permisos que tú no tienes.',
         );
       }
+    }
+  }
+
+  /**
+   * Quien no ve todas las sedes solo gestiona a usuarios de SUS sedes (ítem
+   * 4.11). Las reglas de arriba comparaban permisos y no sedes, así que un
+   * Administrador de la sede A le cambiaba la contraseña a un cajero de la B y
+   * entraba con su cuenta. El objetivo tampoco puede ver todas las sedes: eso
+   * sería gestionar a alguien con más alcance que uno.
+   */
+  private async assertGestionaSusSedes(
+    actor: GestorDeUsuarios,
+    user: UserDocument,
+  ): Promise<void> {
+    if (user.id === actor.userId || canViewAllSedes(actor)) return;
+    const propias = new Set(actor.sedeIds);
+    const sedesDelObjetivo = user.sedeIds.map((s) => s.toString());
+    const objetivoVeTodas = canViewAllSedes({
+      role: user.role,
+      permissions: await this.effectivePermissions(user),
+      sedeIds: sedesDelObjetivo,
+    });
+    if (objetivoVeTodas || sedesDelObjetivo.some((s) => !propias.has(s))) {
+      throw new ForbiddenException(
+        'No puedes gestionar usuarios de sedes a las que no tienes acceso',
+      );
     }
   }
 
