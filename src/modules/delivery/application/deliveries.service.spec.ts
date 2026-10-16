@@ -283,4 +283,26 @@ describe('DeliveriesService · seguimiento y cuadre', () => {
     expect(andres!.efectivoRecaudado).toBe(0);
     expect(andres!.domiciliosCobrados).toBe(0);
   });
+
+  it('domicilio mixto (ítem 6.9): el repartidor trae solo la parte en efectivo', async () => {
+    const mixta = {
+      ...venta({ saleNumber: 'FV-9', status: 'entregado', courier: 'Andrés', method: 'card' }),
+      // $35.000 a pagar: $15.000 con tarjeta y $20.000 en efectivo.
+      payments: [
+        { method: 'card', amount: 15_000 },
+        { method: 'cash', amount: 20_000 },
+      ],
+    };
+    build([
+      mixta,
+      venta({ saleNumber: 'FV-10', status: 'entregado', courier: 'Andrés', method: 'cash' }),
+    ]);
+
+    const filas = await service.list({ sedeId: sedeId.toString() }, user);
+    expect(filas.find((f) => f.saleNumber === 'FV-9')!.cashAmount).toBe(20_000);
+
+    const [andres] = await service.settlement({ sedeId: sedeId.toString() }, user);
+    expect(andres!.efectivoRecaudado).toBe(20_000 + 35_000);
+  });
 });
+

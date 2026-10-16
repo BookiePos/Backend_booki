@@ -6,6 +6,7 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Sale } from '../../sales/infrastructure/schemas/sale.schema';
+import { cashAmountOf } from '../../sales/domain/sale-payments';
 import {
   DELIVERY_STATUS_LABELS,
   DeliveryStatus,
@@ -33,6 +34,8 @@ export interface DeliveryRow {
   /** Lo que el cliente pagó en total. */
   grandTotal: number;
   paymentMethod: string;
+  /** Efectivo neto de la venta (todo si fue de contado, la parte si fue mixta). */
+  cashAmount: number;
   dispatchedAt?: string;
   deliveredAt?: string;
   failureReason?: string;
@@ -123,6 +126,9 @@ export class DeliveriesService {
           total: v.total,
           grandTotal: cop(v.total + (v.tip ?? 0) + (v.deliveryFee ?? 0)),
           paymentMethod: v.payment?.method ?? 'cash',
+          // Lo que el repartidor recoge en efectivo: todo en una venta de
+          // contado, solo esa parte en un cobro mixto (ítem 6.9).
+          cashAmount: cashAmountOf(v),
           dispatchedAt: d.dispatchedAt?.toISOString(),
           deliveredAt: d.deliveredAt?.toISOString(),
           failureReason: d.failureReason,
@@ -230,7 +236,7 @@ export class DeliveriesService {
 
       if (f.status === 'entregado') {
         acc.entregados += 1;
-        if (f.paymentMethod === 'cash') acc.efectivoRecaudado += f.grandTotal;
+        acc.efectivoRecaudado += f.cashAmount;
         acc.domiciliosCobrados += f.fee;
       } else if (f.status === 'en_camino') {
         acc.enCamino += 1;

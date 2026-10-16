@@ -186,6 +186,20 @@ class SalePayment {
 }
 const SalePaymentSchema = SchemaFactory.createForClass(SalePayment);
 
+/**
+ * Una parte de un cobro mixto (ítem 6.9): cuánto cubrió cada medio. Monto NETO:
+ * el efectivo ya sin el vuelto, así que la suma es exactamente lo cobrado.
+ */
+@Schema({ _id: false })
+class SalePaymentPart {
+  @Prop({ required: true, enum: PAYMENT_METHODS })
+  method!: PaymentMethod;
+
+  @Prop({ required: true, min: 0 })
+  amount!: number;
+}
+const SalePaymentPartSchema = SchemaFactory.createForClass(SalePaymentPart);
+
 /** Datos del cliente para la factura (todos opcionales). */
 @Schema({ _id: false })
 class SaleCustomer {
@@ -373,8 +387,21 @@ export class Sale {
   @Prop({ type: SaleDeliverySchema })
   delivery?: SaleDelivery;
 
+  /**
+   * Medio de pago. En un cobro mixto es el medio que más cubrió (lo que leen
+   * los módulos que solo conocen un medio, como la factura electrónica), y
+   * `received`/`change` son el efectivo entregado y su vuelto.
+   */
   @Prop({ type: SalePaymentSchema, required: true })
   payment!: SalePayment;
+
+  /**
+   * Reparto del cobro mixto, una parte por medio. Vacío en las ventas de un
+   * solo medio (y en las de antes del ítem 6.9): ahí `payment.method` cubrió
+   * todo. Léelo con `salePartsOf` (domain/sale-payments.ts), no a mano.
+   */
+  @Prop({ type: [SalePaymentPartSchema], default: undefined })
+  payments?: SalePaymentPart[];
 
   /** Datos del cliente para la factura (opcional). */
   @Prop({ type: SaleCustomerSchema })

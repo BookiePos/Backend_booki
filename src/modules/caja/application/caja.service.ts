@@ -19,6 +19,7 @@ import {
   CajaMovementDocument,
 } from '../infrastructure/schemas/caja-movement.schema';
 import { Sale, SaleDocument } from '../../sales/infrastructure/schemas/sale.schema';
+import { cashAmountOf } from '../../sales/domain/sale-payments';
 import { Order, OrderDocument } from '../../sales/infrastructure/schemas/order.schema';
 import { Sede, SedeDocument } from '../../sedes/infrastructure/schemas/sede.schema';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
@@ -561,12 +562,10 @@ export class CajaService {
     ]);
     const salesTotal = sales.reduce((a, s) => a + s.total, 0);
     // El efectivo del cajón incluye lo cobrado encima del total: la propina
-    // (`tip`) y el envío (`deliveryFee`); la venta se paga con un único método,
-    // así que en una venta en efectivo todo el monto a pagar entra al cajón.
-    const cashSalesTotal = sumBy(
-      sales.filter((s) => s.payment.method === 'cash'),
-      (s) => s.total + (s.tip ?? 0) + (s.deliveryFee ?? 0),
-    );
+    // (`tip`) y el envío (`deliveryFee`). En una venta de contado todo el
+    // monto a pagar entra al cajón; en un cobro mixto (ítem 6.9), solo la
+    // parte en efectivo, neta del vuelto (`cashAmountOf`).
+    const cashSalesTotal = sumBy(sales, (s) => cashAmountOf(s));
     const movementsIn = movements
       .filter((m) => m.type === 'in')
       .reduce((a, m) => a + m.amount, 0);

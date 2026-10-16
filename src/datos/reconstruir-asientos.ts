@@ -57,6 +57,8 @@ export interface VentaGuardada {
   deliveryFee?: number;
   tip?: number;
   paymentMethod: string;
+  /** Reparto del cobro mixto (ítem 6.9); vacío o ausente en un solo medio. */
+  payments?: { method: string; amount: number }[];
   lines: { taxKind?: string; taxAmount?: number }[];
   components: { cost?: number }[];
   createdAt: Date;
@@ -138,7 +140,8 @@ export function insumoVenta(v: VentaGuardada): Parameters<Posting['postSale']>[0
     deliveryFee,
     tip: cop(v.tip ?? 0),
     paymentMethod: v.paymentMethod,
-    onCredit: v.paymentMethod === 'credit',
+    payments: v.payments && v.payments.length > 1 ? v.payments : undefined,
+    onCredit: v.paymentMethod === 'credit' && !(v.payments && v.payments.length > 1),
     userEmail: AUTOR,
   };
 }

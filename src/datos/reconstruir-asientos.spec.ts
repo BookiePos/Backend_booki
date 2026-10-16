@@ -138,6 +138,19 @@ describe('reconstruir asientos faltantes', () => {
     expect(insumoVenta(venta({ paymentMethod: 'credit' }))!.onCredit).toBe(true);
   });
 
+  it('cobro mixto (ítem 6.9): el reparto pasa al asiento y no se trata como fiado entero', () => {
+    const payments = [
+      { method: 'credit', amount: 100_000 },
+      { method: 'cash', amount: 35_900 },
+    ];
+    const mixta = insumoVenta(venta({ paymentMethod: 'credit', payments }))!;
+    expect(mixta.payments).toEqual(payments);
+    expect(mixta.onCredit).toBe(false);
+    // Un reparto de un solo medio es una venta de siempre.
+    const uno = insumoVenta(venta({ payments: [{ method: 'cash', amount: 1 }] }))!;
+    expect(uno.payments).toBeUndefined();
+  });
+
   it('las recepciones parciales reparten el IVA del renglón sin perder un peso', () => {
     const r = recepcionesDeOrden(orden(), true);
     const ivas = r.map((x) => (x.tipo === 'postear' ? x.input.ivaDescontable! : -1));

@@ -80,7 +80,7 @@ function fuentes(app: INestApplicationContext): FuentesReconstruccion {
     ventas: async () => {
       const docs = await sales
         .find({})
-        .select('saleNumber sedeId status total deliveryFee tip payment.method lines.taxKind lines.taxAmount components.cost createdAt')
+        .select('saleNumber sedeId status total deliveryFee tip payment.method payments lines.taxKind lines.taxAmount components.cost createdAt')
         .lean()
         .exec();
       return docs.map(
@@ -93,6 +93,7 @@ function fuentes(app: INestApplicationContext): FuentesReconstruccion {
           deliveryFee: s.deliveryFee,
           tip: s.tip,
           paymentMethod: s.payment?.method,
+          payments: s.payments?.map((p) => ({ method: p.method, amount: p.amount })),
           lines: s.lines ?? [],
           components: s.components ?? [],
           createdAt: (s as unknown as { createdAt: Date }).createdAt,

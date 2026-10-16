@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Sale, SaleDocument } from '../../sales/infrastructure/schemas/sale.schema';
+import { BY_METHOD_PIPELINE } from './by-method.pipeline';
 import { LedgerService, TrialBalanceRow } from '../../core-ledger/application/ledger.service';
 import { balancePorSedes } from '../../core-ledger/domain/ledger-sede-scope';
 import {
@@ -173,16 +174,8 @@ export class ReportsService {
               },
               { $sort: { _id: 1 } },
             ],
-            byMethod: [
-              {
-                $group: {
-                  _id: '$payment.method',
-                  revenue: { $sum: '$total' },
-                  tickets: { $sum: 1 },
-                },
-              },
-              { $sort: { revenue: -1 } },
-            ],
+            // Cobro mixto (ítem 6.9): ver `BY_METHOD_PIPELINE`.
+            byMethod: BY_METHOD_PIPELINE,
             bySede: [
               {
                 $group: {
@@ -221,7 +214,12 @@ export class ReportsService {
       ])
       .exec()) as {
       days: { _id: string; revenue: number; tax: number; tickets: number }[];
-      byMethod: { _id: string; revenue: number; tickets: number }[];
+      byMethod: {
+        _id: string;
+        revenue: number;
+        collected: number;
+        tickets: number;
+      }[];
       bySede: { _id: Types.ObjectId; revenue: number; tickets: number }[];
       topProducts: {
         _id: Types.ObjectId;
@@ -242,6 +240,7 @@ export class ReportsService {
     const byMethod = (facet?.byMethod ?? []).map((r) => ({
       method: r._id ?? 'desconocido',
       revenue: r.revenue,
+      collected: r.collected,
       tickets: r.tickets,
     }));
     const bySede = (facet?.bySede ?? []).map((r) => ({

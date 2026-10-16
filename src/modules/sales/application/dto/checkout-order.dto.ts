@@ -1,12 +1,16 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  ArrayNotEmpty,
   IsArray,
+  IsDefined,
   IsBoolean,
   IsMongoId,
   IsNumber,
   IsOptional,
   IsPositive,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import {
@@ -14,6 +18,7 @@ import {
   SaleDiscountDto,
   SalePackagingDto,
   SalePaymentDto,
+  SalePaymentPartDto,
   SaleSellerDto,
 } from './create-sale.dto';
 
@@ -31,9 +36,21 @@ export class CheckoutLineDto {
 
 /** Liquidación de una cuenta abierta: pago, descuento y cliente (factura). */
 export class CheckoutOrderDto {
+  /** Pago con un solo medio. Obligatorio si no viene `payments`. */
+  @ValidateIf((o: CheckoutOrderDto) => o.payments == null)
+  @IsDefined({ message: 'Falta el medio de pago: manda payment o payments' })
   @ValidateNested()
   @Type(() => SalePaymentDto)
-  payment!: SalePaymentDto;
+  payment?: SalePaymentDto;
+
+  /** Cobro mixto (ítem 6.9): ver `CreateSaleDto.payments`. */
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(8)
+  @ValidateNested({ each: true })
+  @Type(() => SalePaymentPartDto)
+  payments?: SalePaymentPartDto[];
 
   /**
    * Subconjunto que se cobra ahora, para dividir la cuenta de una mesa.

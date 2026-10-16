@@ -123,6 +123,13 @@ export class LedgerPostingService {
      */
     tip?: number;
     paymentMethod?: string;
+    /**
+     * Cobro mixto (ítem 6.9): cuánto cubrió cada medio, neto del vuelto. Su
+     * suma es total + domicilio + propina. Cada medio va a su cuenta: efectivo
+     * a Caja, tarjeta y transferencia a Bancos, la parte fiada a Clientes.
+     * Con `payments` no se miran `paymentMethod` ni `onCredit`.
+     */
+    payments?: readonly { method: string; amount: number }[];
     onCredit?: boolean;
     userEmail?: string;
   }): Promise<void> {
@@ -132,17 +139,28 @@ export class LedgerPostingService {
     const delivery = cop(input.deliveryFee ?? 0);
     const income = total - tax - inc + delivery;
     const cogs = cop(input.cogs);
-    const tip = input.onCredit ? 0 : cop(input.tip ?? 0);
-    const debitAccount = input.onCredit
-      ? ACC.CLIENTES
-      : this.funding(input.paymentMethod);
+    const mixed = input.payments && input.payments.length > 0 ? input.payments : undefined;
+    const tip = !mixed && input.onCredit ? 0 : cop(input.tip ?? 0);
+
+    // Débitos por cuenta: un medio de pago, o varios en un cobro mixto (dos
+    // medios que van a la misma cuenta se juntan en un renglón).
+    const debits = new Map<string, number>();
+    if (mixed) {
+      for (const p of mixed) {
+        const account = p.method === 'credit' ? ACC.CLIENTES : this.funding(p.method);
+        debits.set(account, (debits.get(account) ?? 0) + cop(p.amount));
+      }
+    } else {
+      const debitAccount = input.onCredit
+        ? ACC.CLIENTES
+        : this.funding(input.paymentMethod);
+      debits.set(debitAccount, total + delivery + tip);
+    }
 
     const lines: PostLine[] = [
-      {
-        accountCode: debitAccount,
-        debit: total + delivery + tip,
-        sedeId: input.sedeId,
-      },
+      ...[...debits.entries()]
+        .filter(([, debit]) => debit > 0)
+        .map(([accountCode, debit]) => ({ accountCode, debit, sedeId: input.sedeId })),
       { accountCode: ACC.INGRESOS_VENTAS, credit: income, sedeId: input.sedeId },
     ];
     if (tip > 0) {
