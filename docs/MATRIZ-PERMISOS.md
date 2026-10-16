@@ -208,7 +208,7 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `POST /payroll/runs/:id/close` | `payroll.manage` | ✓ | ✓ | · | · |
 | `DELETE /payroll/runs/:id` | `payroll.manage` | ✓ | ✓ | · | · |
 | `POST /payroll/runs/:id/slips/:employeeId/send` | `payroll.manage` | ✓ | ✓ | · | · |
-| `GET /payroll/deductions` | `payroll.view` | ✓ | ✓ | · | · |
+| `GET /payroll/deductions` | `payroll.view` o `payroll.deduction.approve` | ✓ | ✓ | ✓ | · |
 | `POST /payroll/deductions` | `payroll.manage` | ✓ | ✓ | · | · |
 | `POST /payroll/deductions/:id/approve` | `payroll.deduction.approve` | ✓ | ✓ | ✓ | · |
 | `POST /payroll/deductions/:id/reject` | `payroll.deduction.approve` | ✓ | ✓ | ✓ | · |

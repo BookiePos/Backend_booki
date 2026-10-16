@@ -6,7 +6,10 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
-import { PERMISSIONS_KEY } from '../decorators/require-permissions.decorator';
+import {
+  ANY_PERMISSION_KEY,
+  PERMISSIONS_KEY,
+} from '../decorators/require-permissions.decorator';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { NO_PERMISSION_KEY } from '../decorators/no-permission-required.decorator';
 import { Permission } from '../../domain/permissions';
@@ -44,13 +47,12 @@ export class PermissionsGuard implements CanActivate {
       return true;
     }
 
-    const required = this.reflector.getAllAndOverride<Permission[]>(
-      PERMISSIONS_KEY,
-      [context.getHandler(), context.getClass()],
-    );
+    // La política del método manda sobre la de la clase, sea "todos" o "alguno".
+    const politica =
+      this.politica(context.getHandler()) ?? this.politica(context.getClass());
 
     // Deny-by-default: sin @RequirePermissions ni opt-out explícito, se cierra.
-    if (!required || required.length === 0) {
+    if (!politica) {
       throw new ForbiddenException(
         'Endpoint sin permiso declarado (cerrado por omisión)',
       );
@@ -60,10 +62,27 @@ export class PermissionsGuard implements CanActivate {
       .switchToHttp()
       .getRequest<Request & { user?: JwtUser }>();
     const granted = new Set(request.user?.permissions ?? []);
-    const ok = required.every((permission) => granted.has(permission));
+    const ok =
+      politica.modo === 'alguno'
+        ? politica.permisos.some((permission) => granted.has(permission))
+        : politica.permisos.every((permission) => granted.has(permission));
     if (!ok) {
       throw new ForbiddenException('No tiene permisos para esta acción');
     }
     return true;
+  }
+
+  /** `@RequirePermissions` (todos) o `@RequireAnyPermission` (alguno) de un método o clase. */
+  private politica(
+    target: object,
+  ): { modo: 'todos' | 'alguno'; permisos: Permission[] } | null {
+    const todos = this.reflector.get<Permission[] | undefined>(PERMISSIONS_KEY, target as never);
+    if (todos && todos.length > 0) return { modo: 'todos', permisos: todos };
+    const alguno = this.reflector.get<Permission[] | undefined>(
+      ANY_PERMISSION_KEY,
+      target as never,
+    );
+    if (alguno && alguno.length > 0) return { modo: 'alguno', permisos: alguno };
+    return null;
   }
 }

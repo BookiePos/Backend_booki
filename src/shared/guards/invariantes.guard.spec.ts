@@ -47,7 +47,7 @@ const techos = JSON.parse(
 // ---------------------------------------------------------------------------
 
 const HTTP = /^\s*@(Get|Post|Put|Patch|Delete|All)\(/;
-const POLITICA = /^\s*@(RequirePermissions|Public|NoPermissionRequired)\(/;
+const POLITICA = /^\s*@(RequirePermissions|RequireAnyPermission|Public|NoPermissionRequired)\(/;
 /** Firma de un método de clase (sangría de 2 espacios, sin `@`). */
 const FIRMA = /^ {2}(?:async\s+)?([A-Za-z_]\w*)\s*[(<]/;
 /** Línea que cierra el miembro anterior de la clase. */

@@ -30,7 +30,8 @@ function walk(dir: string): string[] {
 type Politica =
   | { tipo: 'publico' }
   | { tipo: 'sesion' }
-  | { tipo: 'permisos'; permisos: string[] };
+  | { tipo: 'permisos'; permisos: string[] }
+  | { tipo: 'alguno'; permisos: string[] };
 
 interface Endpoint {
   ruta: string;
@@ -54,7 +55,9 @@ function politicaDe(bloque: string): Politica | null {
   if (/@Public\(/.test(bloque)) return { tipo: 'publico' };
   if (/@NoPermissionRequired\(/.test(bloque)) return { tipo: 'sesion' };
   const req = /@RequirePermissions\(([\s\S]*?)\)\s*(?:\n|$)/.exec(bloque);
-  return req ? { tipo: 'permisos', permisos: permisosDe(req[1]!) } : null;
+  if (req) return { tipo: 'permisos', permisos: permisosDe(req[1]!) };
+  const alguno = /@RequireAnyPermission\(([\s\S]*?)\)\s*(?:\n|$)/.exec(bloque);
+  return alguno ? { tipo: 'alguno', permisos: permisosDe(alguno[1]!) } : null;
 }
 
 function endpointsDe(file: string): Endpoint[] {
@@ -93,13 +96,18 @@ const ENDPOINTS = walk(SRC)
 
 const ROL = Object.fromEntries(SYSTEM_ROLES.map((r) => [r.key, new Set<string>(r.permissions)]));
 
-/** Igual que `PermissionsGuard`: hacen falta TODOS los permisos pedidos. */
+/** Igual que `PermissionsGuard`: TODOS los pedidos, o UNO con `@RequireAnyPermission`. */
 function puede(rol: string, e: Endpoint): boolean {
+  if (e.politica.tipo === 'alguno') return e.politica.permisos.some((p) => ROL[rol]!.has(p));
   if (e.politica.tipo !== 'permisos') return true;
   return e.politica.permisos.every((p) => ROL[rol]!.has(p));
 }
 
-const puedeRuta = (rol: string, ruta: string): boolean => {
+/** Pide algún permiso (no es público ni basta la sesión). */
+const conPermiso = (e: Endpoint): boolean =>
+  e.politica.tipo === 'permisos' || e.politica.tipo === 'alguno';
+
+const puedeRuta =(rol: string, ruta: string): boolean => {
   const e = ENDPOINTS.find((x) => x.ruta === ruta);
   if (!e) throw new Error(`No existe el endpoint ${ruta}`);
   return puede(rol, e);
@@ -115,7 +123,9 @@ function matrizMarkdown(): string {
         ? 'público'
         : e.politica.tipo === 'sesion'
           ? 'con sesión'
-          : e.politica.permisos.map((p) => `\`${p}\``).join(' + ');
+          : e.politica.permisos
+              .map((p) => `\`${p}\``)
+              .join(e.politica.tipo === 'alguno' ? ' o ' : ' + ');
     const marcas = COLUMNAS.map((r) => (puede(r, e) ? '✓' : '·'));
     return `| \`${e.ruta}\` | ${quien} | ${marcas.join(' | ')} |`;
   });
@@ -165,7 +175,7 @@ describe('matriz de permisos por rol (ítem 3.10)', () => {
       /^\w+ \/(users|roles|invitations|payroll|ledger|billing|audit|finance|employees)\b/.test(
         e.ruta,
       ),
-    ).filter((e) => e.politica.tipo === 'permisos' && puede(ROLES.CASHIER, e));
+    ).filter((e) => conPermiso(e) && puede(ROLES.CASHIER, e));
     // A propósito: nombre y documento de los empleados activos, para cargarles
     // un consumo (fiado) desde el POS. Sin salario ni datos de contacto.
     expect(prohibidos.map((e) => e.ruta)).toEqual(['GET /employees/lookup']);
@@ -178,12 +188,14 @@ describe('matriz de permisos por rol (ítem 3.10)', () => {
       'POST /inventory/adjustments',
       'GET /employees',
       'POST /payroll/deductions/:id/approve',
+      // Sin la cola no hay qué aprobar: antes exigía `payroll.view` y daba 403.
+      'GET /payroll/deductions',
     ]) {
       expect(puedeRuta(ROLES.MANAGER, ruta), ruta).toBe(true);
     }
     const prohibidos = ENDPOINTS.filter((e) =>
       /^\w+ \/(users|roles|invitations|billing)\b/.test(e.ruta),
-    ).filter((e) => e.politica.tipo === 'permisos' && puede(ROLES.MANAGER, e));
+    ).filter((e) => conPermiso(e) && puede(ROLES.MANAGER, e));
     expect(prohibidos.map((e) => e.ruta)).toEqual([]);
     for (const ruta of ['POST /payroll/runs', 'POST /employees', 'PUT /payroll/settings']) {
       expect(puedeRuta(ROLES.MANAGER, ruta), ruta).toBe(false);
