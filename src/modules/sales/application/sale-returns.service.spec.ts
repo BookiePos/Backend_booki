@@ -362,6 +362,31 @@ describe('SaleReturnsService.create · lo que se mueve', () => {
     expect(units[0].qty).toBe(10);
   });
 
+  it('el tope descuenta lo que ya volvió en devoluciones anteriores (ítem 1.16)', async () => {
+    // Ya volvieron 8 de las 10 que consumió la venta; con la receta inflada a
+    // 25 por unidad, sin descontar lo anterior entrarían otras 10.
+    build(
+      venta(),
+      [
+        {
+          lines: [{ productId: GASEOSA, qty: 2, refund: 5_000, refundTax: 798 }],
+          components: [{ productId: INV_GASEOSA, qty: 8, cogs: 7_200 }],
+        },
+      ],
+      25,
+    );
+
+    await service.create(saleId.toString(), devolucion(), user);
+
+    const units = stock.reverseSale.mock.calls[0][1];
+    expect(units[0].qty).toBe(2);
+    // Y el costo es el de esas 2 que faltaban: 9.000 − 7.200.
+    expect(ledger.postSaleReturn.mock.calls[0][0].cogs).toBe(1_800);
+    expect(creado.components).toEqual([
+      expect.objectContaining({ qty: 2, cogs: 1_800 }),
+    ]);
+  });
+
   it('si la venta se anuló mientras se registraba, borra el registro y no mueve nada', async () => {
     // Revisión inicial: completada. Al volver a mirar tras crear el registro,
     // una anulación simultánea ya la tomó (y revertirá todo el stock).

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildReturnPlan, prorateLots, refundForLine } from './sale-return';
+import { buildReturnPlan, cogsForReturn, prorateLots, refundForLine } from './sale-return';
 
 /**
  * Devolución parcial: cuánta plata sale.
@@ -287,5 +287,23 @@ describe('prorateLots · a qué lote vuelve la mercancía', () => {
 
   it('un producto sin lotes no inventa ninguno', () => {
     expect(prorateLots([], 10, 2)).toEqual([]);
+  });
+});
+
+describe('cogsForReturn · el costo que se deshace (ítem 1.16)', () => {
+  it('1 + 1 + 1 de un costo de $10.000 deshacen los $10.000, no $9.999', () => {
+    const partes = [0, 1, 2].map((prior) => cogsForReturn(10_000, 3, prior, 1));
+    expect(partes).toEqual([3_333, 3_334, 3_333]);
+    expect(partes.reduce((s, p) => s + p, 0)).toBe(10_000);
+  });
+
+  it('no deshace más costo que el de lo consumido por la venta', () => {
+    expect(cogsForReturn(10_000, 3, 2, 5)).toBe(3_333);
+    expect(cogsForReturn(10_000, 3, 3, 1)).toBe(0);
+  });
+
+  it('sin cantidad vendida o devuelta no hay costo', () => {
+    expect(cogsForReturn(10_000, 0, 0, 1)).toBe(0);
+    expect(cogsForReturn(10_000, 3, 0, 0)).toBe(0);
   });
 });
