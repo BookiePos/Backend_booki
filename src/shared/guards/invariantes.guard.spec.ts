@@ -193,6 +193,52 @@ describe('guardián · dinero', () => {
   });
 });
 
+/**
+ * Ventas, caja, libro y nómina tienen el techo en 0 (ítem 1.16). Ahí tampoco se
+ * cuela un `Math.floor`/`ceil`/`trunc` sobre importes: truncar pesos pierde
+ * plata igual que redondear a mano. Los que hay son de CANTIDADES o FECHAS y
+ * están contados por archivo; uno nuevo hace fallar esto hasta que alguien
+ * diga qué es.
+ */
+const MODULOS_CERRADOS = ['sales', 'caja', 'core-ledger', 'payroll'];
+const TRUNCADO = /Math\.(floor|ceil|trunc)\(/g;
+const TRUNCADOS_PERMITIDOS: Record<string, number> = {
+  // Fracción de cantidad al dividir la cuenta (milésimas de unidad).
+  'modules/sales/domain/split-bill.ts': 1,
+  // Unidades vendibles que alcanzan con el stock de un componente.
+  'modules/sales/application/sales.service.ts': 1,
+  // Cálculo de la Pascua (Butcher) para los festivos.
+  'modules/payroll/domain/colombia-holidays.ts': 7,
+};
+
+describe('guardián · dinero en módulos cerrados', () => {
+  const porArchivo: Record<string, number> = {};
+  for (const file of FUENTES) {
+    const r = rel(file);
+    if (!MODULOS_CERRADOS.includes(r.split('/')[1] ?? '')) continue;
+    if (!r.startsWith('modules/')) continue;
+    readFileSync(file, 'utf8')
+      .split(/\r?\n/)
+      .forEach((line) => {
+        if (esComentario(line)) return;
+        const n = line.match(TRUNCADO)?.length ?? 0;
+        if (n > 0) porArchivo[r] = (porArchivo[r] ?? 0) + n;
+      });
+  }
+
+  it('los cuatro tienen el techo de redondeo a mano en 0', () => {
+    for (const m of MODULOS_CERRADOS) expect(techos.dineroPorModulo[m]).toBe(0);
+  });
+
+  it('solo truncan cantidades y fechas, en los archivos contados', () => {
+    expect(
+      porArchivo,
+      'Math.floor/ceil/trunc nuevo en ventas, caja, libro o nómina: si es plata usa cop(); ' +
+        'si es una cantidad, agrégalo a TRUNCADOS_PERMITIDOS con el porqué',
+    ).toEqual(TRUNCADOS_PERMITIDOS);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 3. Tenancy: el modelo es un proxy inerte fuera de una request
 // ---------------------------------------------------------------------------
