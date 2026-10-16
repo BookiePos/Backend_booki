@@ -139,6 +139,29 @@ describe('PayrollService · alcance por sede', () => {
     expect(deductions.create).not.toHaveBeenCalled();
   });
 
+  it('el consumo POS (sinAlcanceDeSede) acepta un empleado de otra sede o sin sede', async () => {
+    for (const sedeId of [sedeB, undefined]) {
+      const { service, deductions } = makeService({
+        empleado: { id: 'e1', firstName: 'A', lastName: 'B', docNumber: '1', sedeId },
+      });
+      await service.createDeduction(
+        { employeeId: 'e1', concept: 'x', amount: 1000, source: 'sale' } as never,
+        adminA,
+        { sinAlcanceDeSede: true },
+      );
+      expect(deductions.create).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('assertEmpleadoParaConsumo: rechaza al inexistente y al inactivo', async () => {
+    const inexistente = makeService().service;
+    await expect(inexistente.assertEmpleadoParaConsumo('x')).rejects.toThrow();
+    const inactivo = makeService({ empleado: { status: 'retirado' } }).service;
+    await expect(inactivo.assertEmpleadoParaConsumo('x')).rejects.toThrow();
+    const activo = makeService({ empleado: { status: 'activo' } }).service;
+    await expect(activo.assertEmpleadoParaConsumo('x')).resolves.toBeUndefined();
+  });
+
   it('los consumos: lista los de sus sedes y no aprueba los de otra', async () => {
     const { service, deductions } = makeService({
       deduccion: { status: 'pending', sedeId: sedeB, save: vi.fn() },

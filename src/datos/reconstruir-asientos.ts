@@ -35,7 +35,10 @@ import { cop, sumBy } from '../modules/finance/domain/money.util';
  *   Caja o Bancos dejaría el libro mal en vez de incompleto.
  * - Recepciones anteriores al `_id` de la recepción: su asiento usaba otro
  *   `sourceId` y no se puede saber si ya existe.
- * - Pendientes de otros orígenes (abonos, devoluciones, nómina).
+ * - Pendientes de otros orígenes (abonos, devoluciones, nómina, órdenes de
+ *   producción): el asiento de una orden depende del valor terminado y de la
+ *   mano de obra del momento en que se cerró, y no se puede rehacer sin
+ *   adivinarlos. Su origen sí está reservado (`production_order`).
  */
 
 export const AUTOR = 'datos:reconstruir-asientos';

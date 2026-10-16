@@ -229,6 +229,9 @@ export class SalesService {
             'El consumo a crédito requiere seleccionar un empleado',
           );
         }
+        // Antes de vender ni tocar inventario: un empleado inexistente o
+        // inactivo dejaría una venta fiada sin deducción.
+        await this.payroll.assertEmpleadoParaConsumo(dto.payment.employeeId);
       } else {
         throw new BadRequestException(
           'Una venta a crédito requiere elegir un cliente registrado o un empleado',
@@ -836,17 +839,27 @@ export class SalesService {
       if (dto.payment.debtorType === 'employee') {
         // Empleado → deducción de nómina (pendiente de aprobación). Aparecerá
         // en la colilla al aprobarse y correr la nómina.
-        await this.payroll.createDeduction(
-          {
-            employeeId: dto.payment.employeeId!,
-            concept: `Consumo POS ${saleNumber}`,
-            amount: fiado,
-            date: today,
-            source: 'sale',
-            sourceId: sale._id.toString(),
-          },
-          user,
-        );
+        try {
+          await this.payroll.createDeduction(
+            {
+              employeeId: dto.payment.employeeId!,
+              concept: `Consumo POS ${saleNumber}`,
+              amount: fiado,
+              date: today,
+              source: 'sale',
+              sourceId: sale._id.toString(),
+            },
+            user,
+            { sinAlcanceDeSede: true },
+          );
+        } catch (err) {
+          // Sin deducción la venta fiada no se cobra a nadie: se deshace la
+          // venta (aún sin asiento ni tesorería) y se reabre la ventana de
+          // compensación para que el llamador devuelva el stock.
+          await this.saleModel.deleteOne({ _id: sale._id }).exec();
+          holder.sale = undefined;
+          throw err;
+        }
       } else {
         // Cliente registrado → cuenta por cobrar (CxC) enlazada a la venta.
         const customer = await this.customers.getOrFail(

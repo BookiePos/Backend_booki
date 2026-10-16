@@ -706,7 +706,10 @@ describe('SalesService.create (IVA incluido + prorrateo de descuento)', () => {
   });
 
   it('el fiado a un empleado se fecha con el día de Colombia', async () => {
-    const payroll = { createDeduction: vi.fn().mockResolvedValue(undefined) };
+    const payroll = {
+      createDeduction: vi.fn().mockResolvedValue(undefined),
+      assertEmpleadoParaConsumo: vi.fn().mockResolvedValue(undefined),
+    };
     const conFiado = new SalesService(
       saleModel,
       counterModel,

@@ -76,6 +76,9 @@ describe('SalesService.create · domicilio', () => {
   let treasury: any;
   let receivableModel: any;
   let payroll: any;
+  let deleteOne: any;
+  let reverseSale: any;
+  let sell: any;
   let service: SalesService;
 
   /** @param zona lo que devuelve `deliveryZones.refFor` */
@@ -84,7 +87,20 @@ describe('SalesService.create · domicilio', () => {
     ledger = { postSale: vi.fn().mockResolvedValue(undefined) };
     treasury = { post: vi.fn().mockResolvedValue(undefined) };
     receivableModel = { create: vi.fn().mockResolvedValue({}) };
-    payroll = { createDeduction: vi.fn().mockResolvedValue({}) };
+    payroll = {
+      createDeduction: vi.fn().mockResolvedValue({}),
+      assertEmpleadoParaConsumo: vi.fn().mockResolvedValue(undefined),
+    };
+    deleteOne = vi.fn(() => ({ exec: () => Promise.resolve({}) }));
+    reverseSale = vi.fn().mockResolvedValue(undefined);
+    sell = vi.fn((_s: string, lines: any[]) =>
+      Promise.resolve(
+        lines.map((l) => ({
+          product: { _id: INV, sku: 'x', name: 'x', unit: 'und' },
+          portions: [{ lot: { _id: new Types.ObjectId(), unitCost: 500 }, qty: l.qty }],
+        })),
+      ),
+    );
 
     service = new SalesService(
       {
@@ -92,6 +108,7 @@ describe('SalesService.create · domicilio', () => {
           creada = { ...doc, _id: new Types.ObjectId() };
           return Promise.resolve(creada);
         }),
+        deleteOne,
       } as never,
       {
         findOneAndUpdate: vi.fn(() => ({
@@ -110,18 +127,7 @@ describe('SalesService.create · domicilio', () => {
       } as never,
       {} as never, // discountModel
       receivableModel as never,
-      {
-        sell: vi.fn((_s: string, lines: any[]) =>
-          Promise.resolve(
-            lines.map((l) => ({
-              product: { _id: INV, sku: 'x', name: 'x', unit: 'und' },
-              portions: [
-                { lot: { _id: new Types.ObjectId(), unitCost: 500 }, qty: l.qty },
-              ],
-            })),
-          ),
-        ),
-      } as never,
+      { sell, reverseSale } as never,
       {} as never, // products
       { findOrFail: vi.fn().mockResolvedValue({ _id: sedeId }) } as never,
       {
@@ -339,5 +345,53 @@ describe('SalesService.create · domicilio', () => {
 
     expect(payroll.createDeduction).toHaveBeenCalledTimes(1);
     expect(payroll.createDeduction.mock.calls[0][0].amount).toBe(16_900);
+    // El consumo es de esta sede aunque el empleado sea de otra o no tenga
+    // sede: la deducción se crea sin el alcance de sede del cajero.
+    expect(payroll.createDeduction.mock.calls[0][2]).toEqual({ sinAlcanceDeSede: true });
+  });
+
+  it('fiado a un empleado inexistente o inactivo: rechaza ANTES de vender ni tocar stock', async () => {
+    build();
+    payroll.assertEmpleadoParaConsumo.mockRejectedValue(new Error('sin empleado'));
+
+    await expect(
+      service.create(
+        venta({
+          payment: {
+            method: 'credit',
+            debtorType: 'employee',
+            employeeId: new Types.ObjectId().toString(),
+          },
+        }),
+        user,
+      ),
+    ).rejects.toThrow('sin empleado');
+
+    expect(sell).not.toHaveBeenCalled();
+    expect(creada).toBeUndefined();
+    expect(payroll.createDeduction).not.toHaveBeenCalled();
+  });
+
+  it('si la deducción falla tras crear la venta: se borra la venta y se devuelve el stock', async () => {
+    build();
+    payroll.createDeduction.mockRejectedValue(new Error('falló la deducción'));
+
+    await expect(
+      service.create(
+        venta({
+          payment: {
+            method: 'credit',
+            debtorType: 'employee',
+            employeeId: new Types.ObjectId().toString(),
+          },
+        }),
+        user,
+      ),
+    ).rejects.toThrow('falló la deducción');
+
+    expect(deleteOne).toHaveBeenCalledWith({ _id: creada._id });
+    expect(reverseSale).toHaveBeenCalledTimes(1);
+    expect(ledger.postSale).not.toHaveBeenCalled();
+    expect(treasury.post).not.toHaveBeenCalled();
   });
 });

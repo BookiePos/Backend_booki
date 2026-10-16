@@ -706,13 +706,28 @@ export class PayrollService {
 
   // ── Deducciones de empleado (consumos, descuentos) ──────────────────────────
 
+  /**
+   * Verifica, sin crear nada, que el empleado existe y está activo. Ventas lo
+   * llama ANTES de vender para no dejar una venta fiada sin deducción.
+   */
+  async assertEmpleadoParaConsumo(employeeId: string): Promise<void> {
+    const emp = await this.employees.findById(employeeId).select('status').exec();
+    if (!emp || emp.status !== 'activo') {
+      throw new BadRequestException('El empleado seleccionado no existe o no está activo');
+    }
+  }
+
   /** Crea una deducción; nace 'pending' (requiere aprobación para descontarse). */
   async createDeduction(
     dto: CreateDeductionDto,
     user: JwtUser,
+    opts: { sinAlcanceDeSede?: boolean } = {},
   ): Promise<PayrollDeductionDocument> {
     const emp = await this.employees.findById(dto.employeeId).exec();
-    if (!emp || !this.sedeEnAlcance(user, emp.sedeId)) {
+    // `sinAlcanceDeSede` es solo para el consumo POS (ventas): el empleado
+    // consumió en esta sede aunque sea de otra o no tenga sede. El endpoint
+    // HTTP sí aplica el alcance de sede del usuario.
+    if (!emp || (!opts.sinAlcanceDeSede && !this.sedeEnAlcance(user, emp.sedeId))) {
       throw new NotFoundException('Empleado no encontrado');
     }
     return this.deductions.create({
