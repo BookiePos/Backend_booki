@@ -11,6 +11,7 @@ Gestor de paquetes: **pnpm** (existe un `package-lock.json` residual: no lo uses
 | `pnpm build` | Compila con `tsc -p tsconfig.json` a `dist/` |
 | `pnpm test` | Tests unitarios con vitest (`src/**/*.spec.ts`) |
 | `pnpm test:watch` | Vitest en watch |
+| `pnpm test:integracion` | Integración con Mongo real (mongodb-memory-server): tenancy e idempotencia del ledger (`src/**/*.integracion.ts`). Aparte de `pnpm test`; job `integracion` del CI |
 | `pnpm seed` / `seed:demo` / `seed:payroll` | Semillas (compilan antes con tsc) |
 | `pnpm eval:facturas [carpeta]` | Compara los extractores de facturas (Qwen vs GLM) sobre imágenes reales |
 | `pnpm lint` | ESLint (`eslint.config.mjs`). La deuda que ya había está congelada en `scripts/techos.json` |
