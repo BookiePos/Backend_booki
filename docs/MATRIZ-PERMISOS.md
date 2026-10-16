@@ -196,6 +196,8 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `POST /invoice-scans/:id/apply` | `purchasing.manage` | ✓ | ✓ | ✓ | · |
 | `POST /invoice-scans/:id/apply-expense` | `purchasing.manage` | ✓ | ✓ | ✓ | · |
 | `DELETE /invoice-scans/:id` | `purchasing.manage` | ✓ | ✓ | ✓ | · |
+| `GET /onboarding/plantillas` | `onboarding.template` | ✓ | ✓ | · | · |
+| `POST /onboarding/plantilla` | `onboarding.template` | ✓ | ✓ | · | · |
 | `GET /payroll/settings` | `payroll.view` | ✓ | ✓ | · | · |
 | `PUT /payroll/settings` | `payroll.manage` | ✓ | ✓ | · | · |
 | `POST /payroll/preview` | `payroll.view` | ✓ | ✓ | · | · |

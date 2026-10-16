@@ -1,0 +1,261 @@
+import 'reflect-metadata';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
+import { Types } from 'mongoose';
+
+// Ver orders.service.checkout.spec.ts: neutraliza los decoradores de esquema.
+vi.mock('@nestjs/mongoose', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nestjs/mongoose')>();
+  return {
+    ...actual,
+    Prop: () => () => undefined,
+    Schema: () => () => undefined,
+    SchemaFactory: {
+      createForClass: () => ({ index: () => undefined, pre: () => undefined }),
+    },
+  };
+});
+
+import { OnboardingService } from './onboarding.service';
+import { OnboardingController } from '../infrastructure/onboarding.controller';
+import { PERMISSIONS_KEY } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
+import { PERMISSIONS } from '../../core-auth/domain/permissions';
+import { SYSTEM_ROLES } from '../../core-auth/domain/roles';
+import { TenantContext } from '../../../shared/tenancy/tenant-context';
+import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
+import { itemsDe, plantillaDe } from '../domain/plantillas';
+
+/**
+ * Servicio instanciado DIRECTAMENTE con fakes en memoria. Constructor (orden):
+ *   catalogModel, productModel, categoryModel, catalog, products, stock, restaurant, sedes
+ */
+describe('OnboardingService.aplicar', () => {
+  const sedeId = new Types.ObjectId().toString();
+  const user = {
+    userId: 'u1',
+    email: 'admin@erp.local',
+    role: 'admin',
+    permissions: [PERMISSIONS.ONBOARDING_TEMPLATE],
+    sedeIds: [sedeId],
+  } as unknown as JwtUser;
+
+  let catalogo: { sku: string; name: string; salePrice: number; ivaRate: number; ivaType: string; tratamientoFiscal?: string }[];
+  let inventario: { _id: Types.ObjectId; sku: string }[];
+  let categorias: { _id: Types.ObjectId; name: string; active: boolean; save: () => Promise<void> }[];
+  let mesas: { zone: string; name: string }[];
+  let entradas: { productId: string; qty: number }[];
+  let svc: OnboardingService;
+
+  const coincide = (sku: string, filtro: any): boolean => {
+    if (!filtro?.sku) return true;
+    const f = filtro.sku;
+    if (f instanceof RegExp) return f.test(sku);
+    if (f.$not) return !f.$not.test(sku);
+    return sku === f;
+  };
+  const exec = <T>(v: T) => ({ exec: async () => v });
+
+  function armar() {
+    const catalogModel: any = {
+      exists: (f: any) => exec(catalogo.some((c) => coincide(c.sku, f)) ? { _id: 1 } : null),
+      countDocuments: (f: any) => exec(catalogo.filter((c) => coincide(c.sku, f)).length),
+    };
+    const productModel: any = {
+      findOne: (f: any) => exec(inventario.find((p) => p.sku === f.sku) ?? null),
+      countDocuments: (f: any) => exec(inventario.filter((p) => coincide(p.sku, f)).length),
+    };
+    const categoryModel: any = {
+      findOne: (f: any) => exec(categorias.find((c) => c.name === f.name) ?? null),
+      create: async (d: { name: string }) => {
+        const c = { _id: new Types.ObjectId(), name: d.name, active: true, save: async () => undefined };
+        categorias.push(c);
+        return c;
+      },
+    };
+    const products: any = {
+      create: vi.fn(async (d: { sku: string }) => {
+        const p = { _id: new Types.ObjectId(), sku: d.sku };
+        inventario.push(p);
+        return p;
+      }),
+    };
+    const catalog: any = {
+      create: vi.fn(async (d: any) => {
+        catalogo.push({
+          sku: d.sku,
+          name: d.name,
+          salePrice: d.salePrice,
+          ivaRate: d.ivaRate,
+          ivaType: d.ivaType,
+          tratamientoFiscal: d.tratamientoFiscal,
+        });
+      }),
+    };
+    const stock: any = {
+      entry: vi.fn(async (d: { productId: string; qty: number }) => {
+        entradas.push({ productId: d.productId, qty: d.qty });
+      }),
+    };
+    const restaurant: any = {
+      listTables: vi.fn(async () => mesas),
+      createTable: vi.fn(async (d: { name: string; zone: string }) => {
+        mesas.push({ zone: d.zone, name: d.name });
+      }),
+    };
+    const sedes: any = {
+      list: vi.fn(async () => [{ _id: new Types.ObjectId(sedeId) }]),
+      findOrFail: vi.fn(async () => ({})),
+    };
+    return new OnboardingService(
+      catalogModel,
+      productModel,
+      categoryModel,
+      catalog,
+      products,
+      stock,
+      restaurant,
+      sedes,
+    );
+  }
+
+  const aplicar = (dto: any, giro: 'restaurante' | 'retail' = 'restaurante') =>
+    TenantContext.run({ businessId: 'b1', dbName: 'biz_b1', tipoNegocio: giro }, () =>
+      svc.aplicar(dto, user),
+    );
+
+  beforeEach(() => {
+    catalogo = [];
+    inventario = [];
+    categorias = [];
+    mesas = [];
+    entradas = [];
+    svc = armar();
+  });
+
+  it('crea categorías, productos con precio, existencias y mesas', async () => {
+    const r = await aplicar({ tipo: 'restaurante' });
+    const total = itemsDe(plantillaDe('restaurante')!).length;
+    expect(r.productos).toEqual({ creados: total, omitidos: 0 });
+    expect(r.categorias).toEqual({ creadas: 4, existentes: 0 });
+    expect(r.mesas).toEqual({ creadas: 8, omitidas: 0 });
+    expect(catalogo).toHaveLength(total);
+    expect(entradas).toHaveLength(total);
+    expect(entradas.every((e) => e.qty === r.stockInicial)).toBe(true);
+    expect(r.sedeId).toBe(sedeId);
+  });
+
+  it('es idempotente: aplicarla dos veces no duplica nada ni exige confirmación', async () => {
+    await aplicar({ tipo: 'restaurante' });
+    const antes = { c: catalogo.length, i: inventario.length, m: mesas.length, e: entradas.length, k: categorias.length };
+    const r2 = await aplicar({ tipo: 'restaurante' });
+    expect(r2.productos.creados).toBe(0);
+    expect(r2.productos.omitidos).toBe(antes.c);
+    expect(r2.categorias).toEqual({ creadas: 0, existentes: 4 });
+    expect(r2.mesas).toEqual({ creadas: 0, omitidas: 8 });
+    expect({ c: catalogo.length, i: inventario.length, m: mesas.length, e: entradas.length, k: categorias.length }).toEqual(antes);
+  });
+
+  it('un reintento completa lo que quedó a medias sin duplicar el inventario', async () => {
+    const [primero] = itemsDe(plantillaDe('tienda')!);
+    inventario.push({ _id: new Types.ObjectId(), sku: primero!.sku }); // sobrevivió sin su vendible
+    const r = await aplicar({ tipo: 'tienda' }, 'retail');
+    expect(inventario.filter((p) => p.sku === primero!.sku)).toHaveLength(1);
+    expect(catalogo.some((c) => c.sku === primero!.sku)).toBe(true);
+    expect(r.productos.creados).toBe(itemsDe(plantillaDe('tienda')!).length);
+  });
+
+  it('rechaza si la empresa ya tiene productos propios, salvo confirmación explícita', async () => {
+    catalogo.push({ sku: 'MIO-1', name: 'Mi producto', salePrice: 1000, ivaRate: 19, ivaType: 'gravado' });
+    await expect(aplicar({ tipo: 'restaurante' })).rejects.toBeInstanceOf(ConflictException);
+    expect(catalogo).toHaveLength(1);
+
+    const r = await aplicar({ tipo: 'restaurante', confirmar: true });
+    expect(r.productos.creados).toBeGreaterThan(0);
+    expect(catalogo.some((c) => c.sku === 'MIO-1')).toBe(true); // no pisa lo propio
+  });
+
+  it('también cuenta como propio un ítem solo de inventario', async () => {
+    inventario.push({ _id: new Types.ObjectId(), sku: 'HARINA' });
+    await expect(aplicar({ tipo: 'panaderia' }, 'retail')).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('otra plantilla ya cargada cuenta como productos existentes (pide confirmar)', async () => {
+    await aplicar({ tipo: 'cafeteria' });
+    await expect(aplicar({ tipo: 'panaderia' })).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('restaurante: lo servido nace sin IVA como expendio (INC en la venta) y lo empacado con IVA 19', async () => {
+    const r = await aplicar({ tipo: 'restaurante' });
+    const bandeja = catalogo.find((c) => c.name === 'Bandeja paisa')!;
+    expect(bandeja).toMatchObject({ salePrice: 28000, ivaRate: 0, ivaType: 'excluido', tratamientoFiscal: 'expendio' });
+    const gaseosa = catalogo.find((c) => c.name === 'Gaseosa 400 ml')!;
+    expect(gaseosa).toMatchObject({ ivaRate: 19, ivaType: 'gravado', tratamientoFiscal: 'mercancia' });
+    expect(r.impuestos.conInc + r.impuestos.conIva + r.impuestos.excluidos).toBe(r.productos.creados);
+    expect(r.impuestos.conInc).toBeGreaterThan(0);
+  });
+
+  it('retail: el IVA del bien, sin INC ni mesas', async () => {
+    const r = await aplicar({ tipo: 'tienda' }, 'retail');
+    expect(catalogo.find((c) => c.name === 'Arroz 1 kg')).toMatchObject({ ivaRate: 0, ivaType: 'excluido' });
+    expect(catalogo.find((c) => c.name === 'Café molido 250 g')).toMatchObject({ ivaRate: 5, ivaType: 'gravado' });
+    expect(catalogo.find((c) => c.name === 'Detergente 1 kg')).toMatchObject({ ivaRate: 19 });
+    expect(catalogo.every((c) => c.tratamientoFiscal === undefined)).toBe(true);
+    expect(r.impuestos.conInc).toBe(0);
+    expect(r.mesas).toEqual({ creadas: 0, omitidas: 0 });
+  });
+
+  it('todo precio guardado es un peso entero', async () => {
+    await aplicar({ tipo: 'panaderia' }, 'retail');
+    expect(catalogo.every((c) => Number.isInteger(c.salePrice) && c.salePrice > 0)).toBe(true);
+  });
+
+  it('sin sede a la que tenga acceso, avisa en vez de fallar a medias', async () => {
+    (svc as any).sedes.list = vi.fn(async () => []);
+    await expect(aplicar({ tipo: 'tienda' }, 'retail')).rejects.toBeInstanceOf(BadRequestException);
+    expect(catalogo).toHaveLength(0);
+  });
+
+  it('una sede ajena se rechaza antes de tocar nada', async () => {
+    await expect(
+      aplicar({ tipo: 'tienda', sedeId: new Types.ObjectId().toString() }, 'retail'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(catalogo).toHaveLength(0);
+  });
+
+  it('sin giro conocido no adivina el impuesto', async () => {
+    await expect(
+      TenantContext.run({ businessId: 'b1', dbName: 'biz_b1' }, () => svc.aplicar({ tipo: 'tienda' } as any, user)),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('estado: cuenta productos propios sin contar los de plantilla', async () => {
+    await aplicar({ tipo: 'tienda' }, 'retail');
+    const e = await TenantContext.run({ businessId: 'b1', dbName: 'biz_b1', tipoNegocio: 'retail' }, () =>
+      svc.estado(),
+    );
+    expect(e.productosPropios).toBe(0);
+    expect(e.plantillas.find((p) => p.tipo === 'tienda')!.cargados).toBe(
+      itemsDe(plantillaDe('tienda')!).length,
+    );
+    expect(e.tipoNegocio).toBe('retail');
+  });
+});
+
+describe('permisos de /onboarding (deny-by-default)', () => {
+  const llave = (metodo: keyof OnboardingController) =>
+    Reflect.getMetadata(PERMISSIONS_KEY, OnboardingController.prototype[metodo]);
+
+  it('ambos handlers exigen onboarding.template', () => {
+    expect(llave('estado')).toEqual([PERMISSIONS.ONBOARDING_TEMPLATE]);
+    expect(llave('aplicar')).toEqual([PERMISSIONS.ONBOARDING_TEMPLATE]);
+  });
+
+  it('solo Dueño y Administrador lo reciben; Gerente y Cajero no', () => {
+    const tiene = (key: string) =>
+      SYSTEM_ROLES.find((r) => r.key === key)!.permissions.includes(PERMISSIONS.ONBOARDING_TEMPLATE);
+    expect(tiene('owner')).toBe(true);
+    expect(tiene('admin')).toBe(true);
+    expect(tiene('manager')).toBe(false);
+    expect(tiene('cashier')).toBe(false);
+  });
+});
