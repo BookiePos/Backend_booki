@@ -14,7 +14,10 @@ import { Throttle } from '@nestjs/throttler';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from '../application/auth.service';
 import { UsersService } from '../application/users.service';
-import { RegistrationService } from '../application/registration.service';
+import {
+  RESPUESTA_REGISTRO,
+  RegistrationService,
+} from '../application/registration.service';
 import { LoginDto } from '../application/dto/login.dto';
 import { RegisterDto } from '../application/dto/register.dto';
 import { ForgotPasswordDto } from '../application/dto/forgot-password.dto';
@@ -55,16 +58,32 @@ export class AuthController {
     return sessionBody(result);
   }
 
-  /** Alta pública de una empresa nueva (tenant) + su dueño. */
+  /**
+   * Alta pública de una empresa nueva (tenant) + su dueño, paso 1.
+   *
+   * Responde 202 con el mismo cuerpo exista o no el correo (ítem 4.11): antes
+   * un 409 «El correo ya está registrado» servía para averiguar qué correos
+   * tienen cuenta. La empresa se crea al confirmar el enlace del correo.
+   */
   @Throttle({ default: { limit: 5, ttl: 300_000 } })
   @Public()
   @Post('register')
+  @HttpCode(202)
+  async register(@Body() dto: RegisterDto) {
+    await this.registration.solicitar(dto);
+    return RESPUESTA_REGISTRO;
+  }
+
+  /** Paso 2: el enlace del correo crea la empresa y abre la sesión. */
+  @Throttle({ default: { limit: 10, ttl: 300_000 } })
+  @Public()
+  @Post('register/confirm/:token')
   @HttpCode(201)
-  async register(
-    @Body() dto: RegisterDto,
+  async confirmRegister(
+    @Param('token') token: string,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.registration.register(dto);
+    const result = await this.registration.confirmar(token);
     setRefreshCookie(res, result.tokens.refreshToken, this.config);
     return sessionBody(result);
   }

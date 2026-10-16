@@ -93,6 +93,8 @@ function handlersDe(file: string): Handler[] {
  */
 const PUBLICOS_PERMITIDOS = [
   'modules/billing/infrastructure/billing.controller.ts#webhook',
+  // Paso 2 del registro (ítem 4.11): lo autentica el token del correo.
+  'modules/core-auth/infrastructure/auth.controller.ts#confirmRegister',
   'modules/core-auth/infrastructure/auth.controller.ts#forgotPassword',
   'modules/core-auth/infrastructure/auth.controller.ts#login',
   'modules/core-auth/infrastructure/auth.controller.ts#logout',

@@ -64,7 +64,8 @@ function makeAuthController() {
     logout: vi.fn().mockResolvedValue(undefined),
   };
   const registration = {
-    register: vi.fn().mockResolvedValue({ ...SESSION, plan: 'pro' }),
+    solicitar: vi.fn().mockResolvedValue(undefined),
+    confirmar: vi.fn().mockResolvedValue({ ...SESSION, plan: 'pro' }),
   };
   const ctrl = new AuthController(
     auth as unknown as AuthService,
@@ -96,10 +97,17 @@ describe('AuthController — el refresh token nunca sale en el body', () => {
     );
   });
 
-  it('register: body sin refreshToken; conserva user y plan', async () => {
+  it('register: responde neutro, sin sesión ni cookie (ítem 4.11)', async () => {
+    const { ctrl, registration } = makeAuthController();
+    const body = await ctrl.register({ ownerEmail: 'x@y.co' } as never);
+    expect(registration.solicitar).toHaveBeenCalled();
+    expect(body).toEqual({ ok: true, message: expect.any(String) });
+  });
+
+  it('confirmRegister: body sin refreshToken; conserva user y plan', async () => {
     const { ctrl } = makeAuthController();
     const res = spyRes();
-    const body = await ctrl.register({} as never, res);
+    const body = await ctrl.confirmRegister('tok', res);
     expect(body.tokens).toEqual({ accessToken: 'acc' });
     expect(bodyLeaks(body, 'ref-secreto')).toBe(false);
     expect(body.plan).toBe('pro');

@@ -25,7 +25,7 @@ import { ALL_PERMISSIONS } from '../domain/permissions';
 import { ROLES } from '../domain/roles';
 import { canViewAllSedes } from '../domain/sede-access';
 
-const BCRYPT_ROUNDS = 10;
+export const BCRYPT_ROUNDS = 10;
 const DUENO_UNICO_MSG =
   'La empresa debe conservar al menos un Dueño activo: nombra otro Dueño antes.';
 
@@ -66,6 +66,12 @@ export class UsersService {
   async create(
     dto: CreateUserDto,
     actor?: GestorDeUsuarios,
+    /**
+     * Hash bcrypt ya calculado. Lo usa la confirmación del registro: la
+     * contraseña se hasheó al pedir el alta y en claro no se guarda en ninguna
+     * parte mientras espera el correo.
+     */
+    opciones?: { passwordHash?: string },
   ): Promise<UserDocument> {
     const ctx = TenantContext.currentOrThrow();
     const { businessId, dbName } = ctx;
@@ -112,7 +118,8 @@ export class UsersService {
       this.assertPuedeConceder(actor, dto.extraPermissions ?? []);
       this.assertPuedeRepartirSedes(actor, dto.sedeIds ?? []);
     }
-    const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
+    const passwordHash =
+      opciones?.passwordHash ?? (await bcrypt.hash(dto.password, BCRYPT_ROUNDS));
     const created = await this.userModel.create({
       email,
       username,
