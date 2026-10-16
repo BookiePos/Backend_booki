@@ -513,6 +513,7 @@ describe('InvitationsService · invitar como Dueño', () => {
       { get: () => undefined } as never,
       // Control-plane: la empresa del enlace existe (ítem 3.5).
       { findById: async (id: string) => ({ _id: id, plan: 'negocio' }) } as never,
+      { exists: async () => false } as never, // directorio global
     );
   });
 
@@ -555,7 +556,9 @@ describe('InvitationsService · invitar como Dueño', () => {
   it('el Dueño sí la reenvía', async () => {
     pendientes.push(invitacionDeDueno());
     const r = await enEmpresa(() => service.resend('inv-owner', dueno));
-    expect(r.inviteUrl).toContain(BUSINESS_ID);
+    expect(r.emailSent).toBe(true);
+    // Ítem 4.11: con el correo enviado, el enlace no vuelve a quien invita.
+    expect(r.inviteUrl).toBeUndefined();
   });
 
   it('un Administrador no revoca una invitación de Dueño', async () => {

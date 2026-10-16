@@ -47,6 +47,7 @@ describe('InvitationsService · contexto de empresa al aceptar', () => {
   let users: any;
   let roles: any;
   let auth: any;
+  let directory: any;
   let service: InvitationsService;
 
   beforeEach(() => {
@@ -84,6 +85,7 @@ describe('InvitationsService · contexto de empresa al aceptar', () => {
     auth = {
       issueSession: vi.fn().mockResolvedValue({ tokens: {}, user: {} }),
     };
+    directory = { exists: vi.fn().mockResolvedValue(false) };
 
     service = new InvitationsService(
       invitationModel as never,
@@ -96,6 +98,7 @@ describe('InvitationsService · contexto de empresa al aceptar', () => {
       { get: () => undefined } as never,
       // Control-plane: la empresa del enlace existe (ítem 3.5).
       { findById: async (id: string) => ({ _id: id, plan: 'negocio' }) } as never,
+      directory as never,
     );
   });
 
@@ -116,6 +119,19 @@ describe('InvitationsService · contexto de empresa al aceptar', () => {
     expect(users.create).toHaveBeenCalledOnce();
     expect(seenBusinessId).toBe(BUSINESS_ID);
     expect(auth.issueSession).toHaveBeenCalledOnce();
+  });
+
+  it('correo con cuenta en OTRA empresa: mismo código que en esta (ítem 4.11)', async () => {
+    directory.exists.mockResolvedValue(true);
+    await expect(
+      service.accept(`${BUSINESS_ID}.${RAW}`, {
+        name: 'Nuevo',
+        password: 'Secreta123',
+      } as never),
+    ).rejects.toMatchObject({
+      response: { code: INVITATION_ERRORS.EMAIL_TAKEN },
+    });
+    expect(users.create).not.toHaveBeenCalled();
   });
 
   it('un enlace sin empresa (formato viejo) se identifica, no revienta', async () => {
