@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import type { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose, { Connection, Types } from 'mongoose';
 import { TenantModelRegistry } from '../shared/tenancy/tenant-model.registry';
 import { createModelProxy } from '../shared/tenancy/model-proxy';
@@ -9,6 +9,7 @@ import {
   PayrollDeductionSchema,
 } from '../modules/payroll/infrastructure/schemas/payroll-deduction.schema';
 import { PayrollService } from '../modules/payroll/application/payroll.service';
+import { levantarMongod } from './mongo-real';
 
 /**
  * Arrastre del saldo a cargo (ítem 1.9) contra un Mongo real: dos cierres
@@ -46,7 +47,7 @@ describe('nómina · un arrastre vivo por corrida y empleado', () => {
   });
 
   beforeAll(async () => {
-    mongod = await MongoMemoryServer.create();
+    mongod = await levantarMongod();
     root = await mongoose.createConnection(mongod.getUri()).asPromise();
     registry = new TenantModelRegistry(root);
     const deductions = createModelProxy(() => modelo()) as never;

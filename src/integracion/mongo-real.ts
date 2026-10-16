@@ -44,8 +44,13 @@ const ESQUEMAS: Array<[string, never]> = [
   [LedgerPendiente.name, LedgerPendienteSchema as never],
 ];
 
+/** Arranca mongod en memoria con margen de sobra: el launchTimeout por defecto (10 s) falla en máquinas lentas. */
+export function levantarMongod(): Promise<MongoMemoryServer> {
+  return MongoMemoryServer.create({ instance: { launchTimeout: 60_000 } });
+}
+
 export async function levantarEntorno(): Promise<Entorno> {
-  const mongod = await MongoMemoryServer.create();
+  const mongod = await levantarMongod();
   const root = await mongoose.createConnection(mongod.getUri()).asPromise();
   const registry = new TenantModelRegistry(root);
 

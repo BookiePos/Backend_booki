@@ -1,7 +1,6 @@
 import {
   IsBoolean,
   IsIn,
-  IsMongoId,
   IsNumber,
   IsOptional,
   IsString,

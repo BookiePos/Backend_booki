@@ -148,7 +148,6 @@ async function seed(): Promise<void> {
 }
 
 seed().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error('Fallo el seed:', err);
   process.exit(1);
 });
