@@ -553,7 +553,6 @@ function printCredentials(
 }
 
 seedDemo().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error('Fallo el seed de demo:', err);
   process.exit(1);
 });

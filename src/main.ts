@@ -74,7 +74,6 @@ async function bootstrap(): Promise<void> {
 
 bootstrap().catch((err) => {
   // No crashea silenciosamente: log claro del fallo de arranque.
-  // eslint-disable-next-line no-console
   console.error('Fallo al arrancar el backend:', err);
   process.exit(1);
 });

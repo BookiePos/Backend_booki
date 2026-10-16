@@ -87,7 +87,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error('Fallo el seed de nómina:', err);
   process.exit(1);
 });
