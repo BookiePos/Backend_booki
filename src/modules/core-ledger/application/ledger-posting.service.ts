@@ -532,6 +532,11 @@ export interface PartesNomina {
   fiado: number;
   /** Deducciones manuales (libranzas, embargos, préstamos de terceros). */
   otrasDeducciones?: number;
+  /**
+   * Saldos a cargo de nóminas anteriores que esta corrida descuenta
+   * (`source: 'arrastre'`): cancelan la 1365 que abrió la corrida de origen.
+   */
+  arrastre?: number;
   aportesEmpleador: number;
   provisiones: number;
 }
@@ -551,13 +556,20 @@ export function lineasNominaCausada(p: PartesNomina, sedeId?: string): PostLine[
     [ACC.CLIENTES, cop(p.fiado)],
     [ACC.DEDUCCIONES_NOMINA_TERCEROS, cop(p.otrasDeducciones ?? 0)],
   ];
-  const saldo = cop(p.saldoACargoEmpleados ?? 0);
-  if (saldo < 0 || creditos.some(([, monto]) => monto < 0)) {
+  const arrastre = cop(p.arrastre ?? 0);
+  const saldoBruto = cop(p.saldoACargoEmpleados ?? 0);
+  if (saldoBruto < 0 || arrastre < 0 || creditos.some(([, monto]) => monto < 0)) {
     throw new Error(
       'El asiento de la nómina recibió un concepto negativo: el neto negativo de una colilla va como saldo a cargo del empleado.',
     );
   }
-  const totalCreditos = sumBy(creditos, ([, monto]) => monto);
+  // La 1365 se abre con el saldo que esta corrida deja a cargo y se cancela con
+  // el arrastre que cobra de la anterior. En el mismo asiento van netos en un
+  // solo renglón: si el empleado sigue debiendo, la 1365 crece por la
+  // diferencia; si pagó, baja.
+  const saldo = Math.max(0, saldoBruto - arrastre);
+  const cobro = Math.max(0, arrastre - saldoBruto);
+  const totalCreditos = sumBy(creditos, ([, monto]) => monto) + cobro;
   const costo = totalCreditos - saldo;
   if (costo < 0) {
     throw new Error(
@@ -575,5 +587,13 @@ export function lineasNominaCausada(p: PartesNomina, sedeId?: string): PostLine[
     const memo = i === creditos.length - 1 ? 'Deducciones de nómina a favor de terceros' : undefined;
     lines.push({ accountCode, credit: monto, sedeId, ...(memo ? { memo } : {}) });
   });
+  if (cobro > 0) {
+    lines.push({
+      accountCode: ACC.CXC_TRABAJADORES,
+      credit: cobro,
+      sedeId,
+      memo: 'Saldo a cargo de nóminas anteriores descontado',
+    });
+  }
   return lines;
 }

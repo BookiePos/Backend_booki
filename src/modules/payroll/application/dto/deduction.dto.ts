@@ -9,7 +9,7 @@ import {
   MinLength,
 } from 'class-validator';
 import {
-  DEDUCTION_SOURCES,
+  DEDUCTION_SOURCES_API,
   DeductionSource,
 } from '../../infrastructure/schemas/payroll-deduction.schema';
 
@@ -31,8 +31,9 @@ export class CreateDeductionDto {
   date?: string;
 
   @IsOptional()
-  @IsIn(DEDUCTION_SOURCES)
-  source?: DeductionSource;
+  // El arrastre del saldo a cargo lo crea el cierre de la nómina, no la API.
+  @IsIn(DEDUCTION_SOURCES_API)
+  source?: Exclude<DeductionSource, 'arrastre'>;
 
   @IsOptional()
   @IsString()

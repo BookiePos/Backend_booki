@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
+import { INDICE_ARRASTRE_VIVO } from '../../domain/payroll-deduction.indices';
 
 export type PayrollDeductionDocument = HydratedDocument<PayrollDeduction>;
 
@@ -12,8 +13,17 @@ export const DEDUCTION_STATUSES = [
 ] as const;
 export type DeductionStatus = (typeof DEDUCTION_STATUSES)[number];
 
-export const DEDUCTION_SOURCES = ['sale', 'manual'] as const;
+/**
+ * - `sale`: fiado del POS (cancela la 1305 que abrió la venta).
+ * - `manual`: libranzas, embargos, préstamos de terceros (2370).
+ * - `arrastre`: saldo a cargo del empleado que dejó una colilla con neto
+ *   negativo; lo crea el cierre de la corrida de origen (`sourceId` = id de
+ *   esa corrida) y cancela la 1365 en la nómina siguiente. No se crea a mano.
+ */
+export const DEDUCTION_SOURCES = ['sale', 'manual', 'arrastre'] as const;
 export type DeductionSource = (typeof DEDUCTION_SOURCES)[number];
+/** Orígenes que se pueden crear por la API (el arrastre lo crea el cierre). */
+export const DEDUCTION_SOURCES_API = ['sale', 'manual'] as const;
 
 /**
  * Deducción a la nómina de un empleado (p.ej. un consumo/fiado del propio
@@ -59,6 +69,14 @@ export class PayrollDeduction {
   @Prop({ trim: true })
   sourceId?: string;
 
+  /**
+   * Corrida de origen de un arrastre anulado. Al anularlo, `sourceId` se mueve
+   * aquí para que deje de ocupar el índice único y un nuevo cierre pueda crear
+   * el arrastre vigente.
+   */
+  @Prop({ trim: true })
+  sourceIdAnulado?: string;
+
   @Prop({ trim: true })
   note?: string;
 
@@ -81,3 +99,4 @@ export const PayrollDeductionSchema =
 
 PayrollDeductionSchema.index({ employeeId: 1, status: 1 });
 PayrollDeductionSchema.index({ status: 1, date: -1 });
+PayrollDeductionSchema.index(INDICE_ARRASTRE_VIVO.keys, INDICE_ARRASTRE_VIVO.options);
