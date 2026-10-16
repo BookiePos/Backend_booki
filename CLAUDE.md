@@ -1,7 +1,7 @@
 # BookiPos — Backend (API)
 
 API del POS BookiPos. NestJS 10 + MongoDB (Mongoose 9) + TypeScript. Node >= 20.
-Gestor de paquetes: **pnpm** (existe un `package-lock.json` residual: no lo uses).
+Gestor de paquetes: **pnpm**.
 
 ## Comandos
 
