@@ -161,6 +161,17 @@ export class OrdersService {
     return order;
   }
 
+  /**
+   * Una cuenta para mostrarla. Exige la sede, igual que listarlas o editarlas:
+   * el listado ya filtraba, pero por id se leía la cuenta de cualquier sede
+   * (ítem 3.10).
+   */
+  async getForUser(id: string, user: JwtUser): Promise<OrderDocument> {
+    const order = await this.getOrFail(id);
+    this.assertSedeAccess(this.sedeIdOf(order), user);
+    return order;
+  }
+
   private assertOpen(order: OrderDocument): void {
     if (order.status !== 'open') {
       throw new BadRequestException('La cuenta ya no está abierta');
