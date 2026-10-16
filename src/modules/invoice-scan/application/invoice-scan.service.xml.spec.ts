@@ -25,7 +25,14 @@ import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
  * sirve se rechaza ANTES de cobrar el escaneo y de subir la imagen.
  */
 describe('InvoiceScanService.upload · con XML de la DIAN', () => {
-  const user = { userId: 'u1', email: 'due@negocio.com' } as unknown as JwtUser;
+  // El Dueño: ve todas las sedes (las facturas se filtran por sede, ítem 3.10).
+  const user = {
+    userId: 'u1',
+    email: 'due@negocio.com',
+    role: 'owner',
+    permissions: [],
+    sedeIds: [],
+  } as unknown as JwtUser;
   const ctx = { businessId: 'b1', dbName: 'biz_b1', plan: 'pro' } as never;
   const file = {
     buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]),

@@ -16,7 +16,10 @@ import { CreateRunDto } from '../application/dto/create-run.dto';
 import { CreateDeductionDto } from '../application/dto/deduction.dto';
 import { LiquidacionDto } from '../application/dto/liquidacion.dto';
 import { DeductionStatus } from '../infrastructure/schemas/payroll-deduction.schema';
-import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
+import {
+  RequireAnyPermission,
+  RequirePermissions,
+} from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
 import { RequireFeature } from '../../core-auth/infrastructure/decorators/require-feature.decorator';
 import { PLAN_FEATURES } from '../../control/domain/plans';
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
@@ -115,7 +118,13 @@ export class PayrollController {
 
   // ── Deducciones de empleado ─────────────────────────────────────────────────
 
-  @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)
+  // La cola la ve quien consulta la nómina y también quien aprueba consumos:
+  // el Gerente tiene `payroll.deduction.approve` sin `payroll.view`, y sin esta
+  // lista no tenía nada que aprobar (la pantalla le daba 403). Ítem 3.10.
+  @RequireAnyPermission(
+    PERMISSIONS.PAYROLL_VIEW,
+    PERMISSIONS.PAYROLL_DEDUCTION_APPROVE,
+  )
   @Get('deductions')
   listDeductions(
     @Query('employeeId') employeeId?: string,

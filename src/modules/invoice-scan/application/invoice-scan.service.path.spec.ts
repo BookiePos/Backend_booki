@@ -29,7 +29,14 @@ import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
  * silencio: seguiría funcionando, solo que peor y más caro.
  */
 describe('InvoiceScanService · texto del PDF vs OCR', () => {
-  const user = { userId: 'u1', email: 'due@negocio.com' } as unknown as JwtUser;
+  // El Dueño: ve todas las sedes (las facturas se filtran por sede, ítem 3.10).
+  const user = {
+    userId: 'u1',
+    email: 'due@negocio.com',
+    role: 'owner',
+    permissions: [],
+    sedeIds: [],
+  } as unknown as JwtUser;
 
   function makeScan(text?: string) {
     return {

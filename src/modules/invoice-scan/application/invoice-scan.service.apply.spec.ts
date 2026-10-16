@@ -45,7 +45,14 @@ describe('InvoiceScanService.apply', () => {
   const categoryId = new Types.ObjectId();
   const ctx = { businessId: 'b1', dbName: 'biz_b1' };
 
-  const user = { userId: 'u1', email: 'due@negocio.com' } as unknown as JwtUser;
+  // El Dueño: ve todas las sedes (las facturas se filtran por sede, ítem 3.10).
+  const user = {
+    userId: 'u1',
+    email: 'due@negocio.com',
+    role: 'owner',
+    permissions: [],
+    sedeIds: [],
+  } as unknown as JwtUser;
 
   /** Factura del ejemplo: dos productos y un flete. */
   // Tipados con las clases reales: así los tests pueden tocar los campos opcionales

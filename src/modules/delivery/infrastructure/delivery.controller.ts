@@ -49,16 +49,22 @@ export class DeliveryController {
     return this.zones.create(dto);
   }
 
+  // Editar y desactivar exigen acceso a la sede DE LA ZONA, igual que crearla:
+  // sin esto un Gerente de una sede cambiaba las tarifas de otra (ítem 3.10).
   @RequirePermissions(PERMISSIONS.SEDE_MANAGE)
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateDeliveryZoneDto) {
-    return this.zones.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateDeliveryZoneDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.zones.update(id, dto, user);
   }
 
   /** Se desactiva, no se borra: las ventas viejas guardan lo que se cobró. */
   @RequirePermissions(PERMISSIONS.SEDE_MANAGE)
   @Delete(':id')
-  deactivate(@Param('id') id: string) {
-    return this.zones.deactivate(id);
+  deactivate(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.zones.deactivate(id, user);
   }
 }

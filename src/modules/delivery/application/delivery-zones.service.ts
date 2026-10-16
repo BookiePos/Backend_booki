@@ -10,6 +10,10 @@ import {
   UpdateDeliveryZoneDto,
 } from './dto/delivery-zone.dto';
 import { ZoneRef } from '../domain/delivery.constants';
+import {
+  assertSedeAccess,
+  type SedeScopeUser,
+} from '../../core-auth/domain/sede-access';
 
 /**
  * Zonas de domicilio con tarifa fija, por sede.
@@ -33,11 +37,13 @@ export class DeliveryZonesService {
     return this.model.find(filtro).sort({ fee: 1, name: 1 }).exec();
   }
 
-  async getOrFail(id: string): Promise<DeliveryZoneDocument> {
+  /** Con `user`, exige acceso a la sede de la zona (403 si es ajena). */
+  async getOrFail(id: string, user?: SedeScopeUser): Promise<DeliveryZoneDocument> {
     const doc = Types.ObjectId.isValid(id)
       ? await this.model.findById(id).exec()
       : null;
     if (!doc) throw new NotFoundException('Zona de domicilio no encontrada');
+    if (user) assertSedeAccess(user, doc.sedeId.toString());
     return doc;
   }
 
@@ -53,8 +59,9 @@ export class DeliveryZonesService {
   async update(
     id: string,
     dto: UpdateDeliveryZoneDto,
+    user: SedeScopeUser,
   ): Promise<DeliveryZoneDocument> {
-    const doc = await this.getOrFail(id);
+    const doc = await this.getOrFail(id, user);
     if (dto.name !== undefined) doc.name = dto.name.trim();
     if (dto.fee !== undefined) doc.fee = Math.round(dto.fee);
     if (dto.active !== undefined) doc.active = dto.active;
@@ -62,8 +69,8 @@ export class DeliveryZonesService {
     return doc;
   }
 
-  async deactivate(id: string): Promise<{ ok: boolean }> {
-    const doc = await this.getOrFail(id);
+  async deactivate(id: string, user: SedeScopeUser): Promise<{ ok: boolean }> {
+    const doc = await this.getOrFail(id, user);
     doc.active = false;
     await doc.save();
     return { ok: true };

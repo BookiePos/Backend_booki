@@ -29,7 +29,14 @@ import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
  * el cliente ve el mismo 503 se cobre o no.
  */
 describe('InvoiceScanService · cuota al subir', () => {
-  const user = { userId: 'u1', email: 'due@negocio.com' } as unknown as JwtUser;
+  // El Dueño: ve todas las sedes (las facturas se filtran por sede, ítem 3.10).
+  const user = {
+    userId: 'u1',
+    email: 'due@negocio.com',
+    role: 'owner',
+    permissions: [],
+    sedeIds: [],
+  } as unknown as JwtUser;
   const ctx = { businessId: 'b1', dbName: 'biz_b1', plan: 'pro' } as never;
 
   const file = {
