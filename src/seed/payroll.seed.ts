@@ -112,7 +112,10 @@ export async function seedPayroll(
   // respuesta la nómina no se liquida. Si ya la respondió, no se toca.
   const ajustes = await payrollSvc.getSettings();
   if (!ajustes.exoneracionConfirmada) {
-    await payrollSvc.updateSettings({ empresaExoneradaAportes: true } as never);
+    await payrollSvc.updateSettings({
+      empresaExoneradaAportes: true,
+      confirmarExoneracion: true,
+    } as never);
   }
 
   // 2) Cargos (idempotente por nombre).

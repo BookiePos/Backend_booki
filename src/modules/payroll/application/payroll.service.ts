@@ -292,9 +292,19 @@ export class PayrollService {
     dto: UpdatePayrollSettingsDto,
   ): Promise<PayrollSettingsDocument> {
     const doc = await this.getSettings();
-    Object.assign(doc, dto);
-    // Responder la exoneración, en uno u otro sentido, la deja confirmada.
-    if (dto.empresaExoneradaAportes !== undefined) doc.exoneracionConfirmada = true;
+    const { confirmarExoneracion, ...cambios } = dto;
+    Object.assign(doc, cambios);
+    // Solo la respuesta explícita a la pregunta (`PreguntaExoneracion`) deja la
+    // exoneración confirmada. Que llegue `empresaExoneradaAportes` no basta: el
+    // formulario de Ajustes puede mandarlo sin que nadie haya respondido.
+    if (confirmarExoneracion === true) {
+      if (cambios.empresaExoneradaAportes === undefined) {
+        throw new BadRequestException(
+          'Para confirmar la exoneración de aportes indica si la empresa está exonerada.',
+        );
+      }
+      doc.exoneracionConfirmada = true;
+    }
     await doc.save();
     return doc;
   }
