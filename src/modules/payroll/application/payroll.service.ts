@@ -75,7 +75,11 @@ import {
   type SedeScopeUser,
 } from '../../core-auth/domain/sede-access';
 import { ParamsService } from '../../core-params/application/params.service';
-import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
+import {
+  LedgerPostingService,
+  lineasNominaCausada,
+  type PartesNomina,
+} from '../../core-ledger/application/ledger-posting.service';
 import { cop, sumBy } from '../../finance/domain/money.util';
 import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 import { diasALiquidar } from '../domain/descanso-remunerado';
@@ -288,9 +292,19 @@ export class PayrollService {
     dto: UpdatePayrollSettingsDto,
   ): Promise<PayrollSettingsDocument> {
     const doc = await this.getSettings();
-    Object.assign(doc, dto);
-    // Responder la exoneración, en uno u otro sentido, la deja confirmada.
-    if (dto.empresaExoneradaAportes !== undefined) doc.exoneracionConfirmada = true;
+    const { confirmarExoneracion, ...cambios } = dto;
+    Object.assign(doc, cambios);
+    // Solo la respuesta explícita a la pregunta (`PreguntaExoneracion`) deja la
+    // exoneración confirmada. Que llegue `empresaExoneradaAportes` no basta: el
+    // formulario de Ajustes puede mandarlo sin que nadie haya respondido.
+    if (confirmarExoneracion === true) {
+      if (cambios.empresaExoneradaAportes === undefined) {
+        throw new BadRequestException(
+          'Para confirmar la exoneración de aportes indica si la empresa está exonerada.',
+        );
+      }
+      doc.exoneracionConfirmada = true;
+    }
     await doc.save();
     return doc;
   }
@@ -1006,7 +1020,7 @@ export class PayrollService {
     const esperadas = run.slips.flatMap((sl) => sl.otrasDeduccionesDetalle ?? []);
     const aplicadas = await this.deductions
       .find({ appliedRunId: run._id, status: 'applied' })
-      .select('amount')
+      .select('amount source')
       .exec();
     if (
       aplicadas.length !== esperadas.length ||
@@ -1016,36 +1030,58 @@ export class PayrollService {
         'Los consumos que descuentan las colillas no están amarrados a esta nómina. Recalcúlala antes de cerrarla.',
       );
     }
+
+    // Asiento contable de la nómina causada, con el pasivo separado por
+    // concepto (ítem 1.9). Las partes salen de las colillas: su suma es el
+    // costo del empleador (devengados + aportes + provisiones). De las "otras
+    // deducciones", solo el fiado del POS (`source: 'sale'`) cancela la 1305
+    // que abrió la venta; las manuales (libranzas, embargos) son un pasivo con
+    // un tercero. El neto negativo de una colilla no se paga: queda a cargo del
+    // empleado (1365).
+    const ded = (sl: (typeof run.slips)[number]) => sl.breakdown?.deducciones;
+    const fiado = sumBy(
+      aplicadas.filter((d) => d.source === 'sale'),
+      (d) => d.amount,
+    );
+    const partes: PartesNomina = {
+      neto: sumBy(run.slips, (sl) => Math.max(0, sl.netoPagar ?? 0)),
+      saldoACargoEmpleados: sumBy(run.slips, (sl) => Math.max(0, -(sl.netoPagar ?? 0))),
+      seguridadSocialEmpleado: sumBy(
+        run.slips,
+        (sl) => (ded(sl)?.salud ?? 0) + (ded(sl)?.pension ?? 0) + (ded(sl)?.fsp ?? 0),
+      ),
+      retencionFuente: sumBy(run.slips, (sl) => ded(sl)?.retencionFuente ?? 0),
+      fiado,
+      otrasDeducciones: sumBy(run.slips, (sl) => ded(sl)?.otras ?? 0) - fiado,
+      aportesEmpleador: sumBy(
+        run.slips,
+        (sl) => sl.breakdown?.aportesEmpleador?.total ?? 0,
+      ),
+      provisiones: sumBy(run.slips, (sl) => sl.breakdown?.provisiones?.total ?? 0),
+    };
+    // Se valida ANTES de cerrar: si las partes no dan un asiento cuadrado, la
+    // corrida sigue en borrador en vez de cerrarse sin asiento.
+    try {
+      lineasNominaCausada(partes);
+    } catch (err) {
+      throw new BadRequestException(
+        `No se puede cerrar la nómina: ${(err as Error).message}`,
+      );
+    }
+
     run.status = 'cerrada';
     run.closedAt = new Date();
     await run.save();
 
-    // Asiento contable de la nómina causada, con el pasivo separado por
-    // concepto (ítem 1.9). Best-effort e idempotente por (payroll_run, runId):
-    // igual que el posteo de ventas, un fallo del ledger NO tumba el cierre de
-    // la corrida (la corrida es la fuente de verdad y el asiento puede
-    // reconstruirse). Las partes salen de las colillas: su suma es el costo del
-    // empleador (devengados + aportes + provisiones).
-    const ded = (sl: (typeof run.slips)[number]) => sl.breakdown?.deducciones;
+    // Best-effort e idempotente por (payroll_run, runId): igual que el posteo
+    // de ventas, un fallo del ledger NO tumba el cierre de la corrida (la
+    // corrida es la fuente de verdad y el asiento puede reconstruirse).
     await this.ledgerPosting.postPayrollRun({
       runId: run._id.toString(),
       date: fechaColombia(run.closedAt ?? new Date()),
       sedeId: run.sedeId ? run.sedeId.toString() : undefined,
       period: run.period,
-      partes: {
-        neto: sumBy(run.slips, (sl) => sl.netoPagar ?? 0),
-        seguridadSocialEmpleado: sumBy(
-          run.slips,
-          (sl) => (ded(sl)?.salud ?? 0) + (ded(sl)?.pension ?? 0) + (ded(sl)?.fsp ?? 0),
-        ),
-        retencionFuente: sumBy(run.slips, (sl) => ded(sl)?.retencionFuente ?? 0),
-        fiado: sumBy(run.slips, (sl) => ded(sl)?.otras ?? 0),
-        aportesEmpleador: sumBy(
-          run.slips,
-          (sl) => sl.breakdown?.aportesEmpleador?.total ?? 0,
-        ),
-        provisiones: sumBy(run.slips, (sl) => sl.breakdown?.provisiones?.total ?? 0),
-      },
+      partes,
       userEmail: run.createdByEmail,
     });
 

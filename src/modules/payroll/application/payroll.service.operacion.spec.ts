@@ -156,10 +156,28 @@ describe('PayrollService · ajustes y simulación', () => {
   });
 
   it('responder la exoneración la deja confirmada', async () => {
-    const { service, settingsDoc } = armar();
-    await service.updateSettings({ empresaExoneradaAportes: false } as never);
+    const { service, settingsDoc } = armar({ settingsDoc: { exoneracionConfirmada: false, save: vi.fn() } });
+    await service.updateSettings({ empresaExoneradaAportes: false, confirmarExoneracion: true } as never);
     expect(settingsDoc!.exoneracionConfirmada).toBe(true);
+    expect(settingsDoc!.empresaExoneradaAportes).toBe(false);
+    expect(settingsDoc!.confirmarExoneracion).toBeUndefined();
     expect(settingsDoc!.save).toHaveBeenCalled();
+  });
+
+  it('guardar Ajustes con empresaExoneradaAportes no confirma la exoneración (ítem 1.15)', async () => {
+    const { service, settingsDoc } = armar({ settingsDoc: { exoneracionConfirmada: false, save: vi.fn() } });
+    await service.updateSettings({ empresaExoneradaAportes: true, smmlv: 1_423_500 } as never);
+    expect(settingsDoc!.empresaExoneradaAportes).toBe(true);
+    expect(settingsDoc!.exoneracionConfirmada).toBe(false);
+  });
+
+  it('confirmar sin decir si está exonerada se rechaza', async () => {
+    const { service, settingsDoc } = armar({ settingsDoc: { exoneracionConfirmada: false, save: vi.fn() } });
+    await expect(
+      service.updateSettings({ confirmarExoneracion: true } as never),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(settingsDoc!.exoneracionConfirmada).toBe(false);
+    expect(settingsDoc!.save).not.toHaveBeenCalled();
   });
 
   it('simula con el salario del expediente o con uno a mano', async () => {

@@ -40,6 +40,11 @@ export const ACC = {
   CAJA: '1105',
   BANCOS: '1110',
   CLIENTES: '1305',
+  /**
+   * Cuentas por cobrar a trabajadores (PUC 1365): lo que un empleado queda
+   * debiendo cuando sus deducciones superan lo devengado de la colilla.
+   */
+  CXC_TRABAJADORES: '1365',
   INVENTARIO: '1435',
   PROVEEDORES: '2205',
   RETENCION_FUENTE: '2365',
@@ -57,6 +62,13 @@ export const ACC = {
   PROPINAS_POR_PAGAR: '2380',
   /** Salud, pensión y FSP retenidos al empleado + aportes del empleador (PUC 2370). */
   APORTES_NOMINA: '2370',
+  /**
+   * Deducciones manuales de nómina (libranzas, embargos, cuotas a terceros):
+   * PUC 2370 (237050 embargos, 237055 libranzas, 237095 otros). El modelo de
+   * deducción no distingue el concepto, así que van todas aquí, en su propio
+   * renglón. No son la 1305: esa la cancela solo el fiado del POS.
+   */
+  DEDUCCIONES_NOMINA_TERCEROS: '2370',
   SALARIOS_POR_PAGAR: '2505',
   /** Cesantías, intereses, prima y vacaciones causadas (PUC 2610). */
   PROVISIONES_LABORALES: '2610',
@@ -93,6 +105,7 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   { code: '1105', name: 'Caja', type: 'asset' },
   { code: '1110', name: 'Bancos', type: 'asset' },
   { code: '1305', name: 'Clientes (CxC)', type: 'asset' },
+  { code: '1365', name: 'Cuentas por cobrar a trabajadores', type: 'asset' },
   { code: '1435', name: 'Inventario de mercancías', type: 'asset' },
   // Pasivo
   { code: '2205', name: 'Proveedores (CxP)', type: 'liability' },

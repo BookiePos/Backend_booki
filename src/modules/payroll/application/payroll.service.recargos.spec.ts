@@ -42,7 +42,7 @@ const EMP = {
 function armar(opts: {
   turnos?: { employeeId: string; workDate: string; checkIn: string; checkOut: string }[];
   dominicalParam?: { value: number; createdByEmail?: string };
-  aplicadas?: { amount: number }[];
+  aplicadas?: { amount: number; source?: 'sale' | 'manual' }[];
   run?: Record<string, unknown>;
   empleado?: Record<string, unknown>;
   /** Por defecto la empresa ya respondió la exoneración (ítem 1.15). */
@@ -211,7 +211,10 @@ describe('PayrollService.closeRun · deducciones amarradas', () => {
       ...corrida([]),
       slips: [colilla(900_000, 16_900), colilla(1_000_000, 0)],
     };
-    const { service, ledgerPosting } = armar({ run, aplicadas: [{ amount: 16_900 }] });
+    const { service, ledgerPosting } = armar({
+      run,
+      aplicadas: [{ amount: 16_900, source: 'sale' }],
+    });
 
     await service.closeRun(String(run._id));
 
@@ -219,14 +222,95 @@ describe('PayrollService.closeRun · deducciones amarradas', () => {
       expect.objectContaining({
         partes: {
           neto: 1_900_000,
+          saldoACargoEmpleados: 0,
           seguridadSocialEmpleado: 160_000,
           retencionFuente: 20_000,
           fiado: 16_900,
+          otrasDeducciones: 0,
           aportesEmpleador: 300_000,
           provisiones: 240_000,
         },
       }),
     );
+  });
+
+  it('solo el fiado del POS va como fiado; las deducciones manuales van aparte (ítem 1.9)', async () => {
+    const colilla = {
+      employeeId: 'e',
+      otrasDeduccionesDetalle: [
+        { concept: 'Consumo POS', amount: 16_900 },
+        { concept: 'Libranza Banco X', amount: 200_000 },
+      ],
+      netoPagar: 700_000,
+      breakdown: {
+        deducciones: { salud: 40_000, pension: 40_000, fsp: 0, retencionFuente: 0, otras: 216_900 },
+        aportesEmpleador: { total: 150_000 },
+        provisiones: { total: 120_000 },
+      },
+    };
+    const run = { ...corrida([]), slips: [colilla] };
+    const { service, ledgerPosting } = armar({
+      run,
+      aplicadas: [
+        { amount: 16_900, source: 'sale' },
+        { amount: 200_000, source: 'manual' },
+      ],
+    });
+
+    await service.closeRun(String(run._id));
+
+    const partes = (ledgerPosting.postPayrollRun.mock.calls[0] as any)[0].partes;
+    expect(partes.fiado).toBe(16_900);
+    expect(partes.otrasDeducciones).toBe(200_000);
+  });
+
+  it('una colilla con neto negativo queda a cargo del empleado y no resta del neto de los demás', async () => {
+    const colilla = (neto: number, otras: number) => ({
+      employeeId: 'e',
+      otrasDeduccionesDetalle: otras ? [{ concept: 'Embargo', amount: otras }] : [],
+      netoPagar: neto,
+      breakdown: {
+        deducciones: { salud: 0, pension: 0, fsp: 0, retencionFuente: 0, otras },
+        aportesEmpleador: { total: 0 },
+        provisiones: { total: 0 },
+      },
+    });
+    const run = { ...corrida([]), slips: [colilla(-50_000, 150_000), colilla(1_000_000, 0)] };
+    const { service, ledgerPosting } = armar({
+      run,
+      aplicadas: [{ amount: 150_000, source: 'manual' }],
+    });
+
+    await service.closeRun(String(run._id));
+
+    const partes = (ledgerPosting.postPayrollRun.mock.calls[0] as any)[0].partes;
+    expect(partes.neto).toBe(1_000_000);
+    expect(partes.saldoACargoEmpleados).toBe(50_000);
+    expect(run.status).toBe('cerrada');
+  });
+
+  it('si las partes no dan un asiento cuadrado la corrida no se cierra', async () => {
+    const run = {
+      ...corrida([]),
+      slips: [
+        {
+          employeeId: 'e',
+          otrasDeduccionesDetalle: [],
+          netoPagar: -10_000,
+          breakdown: {
+            deducciones: { salud: 0, pension: 0, fsp: 0, retencionFuente: 0, otras: 0 },
+            aportesEmpleador: { total: 0 },
+            provisiones: { total: 0 },
+          },
+        },
+      ],
+    };
+    const { service, ledgerPosting } = armar({ run, aplicadas: [] });
+
+    await expect(service.closeRun(String(run._id))).rejects.toBeInstanceOf(BadRequestException);
+    expect(run.status).toBe('borrador');
+    expect(run.save).not.toHaveBeenCalled();
+    expect(ledgerPosting.postPayrollRun).not.toHaveBeenCalled();
   });
 });
 
