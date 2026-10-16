@@ -4,9 +4,11 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { iniciarSentry } from './shared/monitoreo/sentry';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
+  if (iniciarSentry()) logger.log('Sentry activo.');
   const app = await NestFactory.create(AppModule, { bufferLogs: false });
 
   // Confiamos en UN salto de reverse proxy (Nginx/ingress/etc.) para que

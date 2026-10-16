@@ -31,6 +31,7 @@
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^10.4.22",
     "@nestjs/throttler": "^6.5.0",
+    "@sentry/node": "^11.7.0",
     "@supabase/supabase-js": "^2.114.0",
     "bcryptjs": "^3.0.3",
     "class-transformer": "^0.5.1",
