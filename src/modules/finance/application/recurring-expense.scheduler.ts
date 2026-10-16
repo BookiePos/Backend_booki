@@ -8,6 +8,15 @@ import { BusinessService } from '../../control/application/business.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { FinanceService } from './finance.service';
 import type { ResultadoBarrido } from '../../../shared/barridos/resultado-barrido';
+import { recorrerEmpresas } from '../../../shared/barridos/recorrer-empresas';
+
+/** Tiempo para recorrer empresas si nadie fija un plazo (la función dura 300 s). */
+const PRESUPUESTO_MS = 200_000;
+
+/** Día del año (1-366): rota el punto de partida del barrido. */
+function diaDelAnio(d = new Date()): number {
+  return Math.floor((d.getTime() - Date.UTC(d.getUTCFullYear(), 0, 0)) / 86_400_000);
+}
 
 /** Cada cuánto se revisa si hay gastos recurrentes por generar. */
 const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 h
@@ -61,7 +70,11 @@ export class RecurringExpenseScheduler implements OnModuleInit, OnModuleDestroy 
    * lanza (el temporizador lo llama con `void`): si alguna empresa falla, el
    * resto sigue y el fallo se devuelve para que `/cron/diario` lo vea.
    */
-  async sweep(): Promise<ResultadoBarrido> {
+  /**
+   * `hasta` (epoch ms): no empieza empresas nuevas después de ese momento. El
+   * cron lo fija para no pasar del tope de la función (ítem 2.10).
+   */
+  async sweep(opts: { hasta?: number } = {}): Promise<ResultadoBarrido> {
     if (this.running) {
       return { estado: 'omitido', detalle: 'ya hay un barrido de gastos recurrentes en marcha' };
     }
@@ -69,35 +82,53 @@ export class RecurringExpenseScheduler implements OnModuleInit, OnModuleDestroy 
     try {
       const businesses = await this.businesses.listActive();
       let total = 0;
-      const fallidas: string[] = [];
-      for (const biz of businesses) {
-        const businessId = biz._id.toString();
-        try {
-          const { generated } = await TenantContext.run(
-            { businessId, dbName: biz.dbName, tipoNegocio: biz.tipoNegocio },
-            () => this.finance.runRecurring({ onlyAuto: true }),
-          );
-          total += generated;
-          if (generated > 0) {
-            this.logger.log(
-              `Empresa ${businessId}: ${generated} gasto(s) recurrente(s) generado(s).`,
+      const { procesadas, pendientes, fallidas } = await recorrerEmpresas(
+        businesses,
+        async (biz) => {
+          const businessId = biz._id.toString();
+          try {
+            const { generated } = await TenantContext.run(
+              { businessId, dbName: biz.dbName, tipoNegocio: biz.tipoNegocio },
+              () => this.finance.runRecurring({ onlyAuto: true }),
             );
+            total += generated;
+            if (generated > 0) {
+              this.logger.log(
+                `Empresa ${businessId}: ${generated} gasto(s) recurrente(s) generado(s).`,
+              );
+            }
+          } catch (err) {
+            this.logger.error(
+              `Fallo generando gastos recurrentes de ${businessId}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+            throw err;
           }
-        } catch (err) {
-          fallidas.push(businessId);
-          this.logger.error(
-            `Fallo generando gastos recurrentes de ${businessId}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
-      }
+        },
+        {
+          hasta: opts.hasta ?? Date.now() + PRESUPUESTO_MS,
+          // El día del año rota el punto de partida (ver recorrerEmpresas).
+          desplazamiento: diaDelAnio(),
+          clave: (biz) => biz._id.toString(),
+        },
+      );
       if (total > 0) {
         this.logger.log(`Barrido recurrente: ${total} gasto(s) en total.`);
       }
-      const cifras = { empresas: businesses.length, generados: total, fallidas: fallidas.length };
-      if (fallidas.length > 0) {
-        return { estado: 'error', detalle: `falló en ${fallidas.length} empresa(s)`, cifras };
+      const cifras = {
+        empresas: businesses.length,
+        procesadas,
+        pendientes,
+        generados: total,
+        fallidas: fallidas.length,
+      };
+      if (fallidas.length > 0 || pendientes > 0) {
+        const partes = [
+          fallidas.length > 0 ? `falló en ${fallidas.length} empresa(s)` : '',
+          pendientes > 0 ? `${pendientes} empresa(s) sin procesar por tiempo` : '',
+        ].filter(Boolean);
+        return { estado: 'error', detalle: partes.join('; '), cifras };
       }
       return { estado: 'ok', cifras };
     } catch (err) {

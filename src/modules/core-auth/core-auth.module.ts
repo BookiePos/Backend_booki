@@ -22,6 +22,7 @@ import { ControlModule } from '../control/control.module';
 import { SedesModule } from '../sedes/sedes.module';
 import { UsersService } from './application/users.service';
 import { RolesService } from './application/roles.service';
+import { IntentosLoginService } from './application/intentos-login.service';
 import { AuthService } from './application/auth.service';
 import { RegistrationService } from './application/registration.service';
 import { MailService } from './application/mail.service';
@@ -77,6 +78,7 @@ import { FeatureGuard } from './infrastructure/guards/feature.guard';
     MailService,
     InvitationsService,
     PasswordResetService,
+    IntentosLoginService,
     JwtStrategy,
     // Guards globales: autenticación + permisos en toda la API.
     { provide: APP_GUARD, useClass: JwtAuthGuard },

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -24,6 +25,10 @@ import {
   CajaSession,
   CajaSessionDocument,
 } from '../../caja/infrastructure/schemas/caja-session.schema';
+import {
+  CajaMovement,
+  CajaMovementDocument,
+} from '../../caja/infrastructure/schemas/caja-movement.schema';
 import {
   Discount,
   DiscountDocument,
@@ -139,6 +144,12 @@ export class SalesService {
      */
     @InjectModel(SaleReturn.name)
     private readonly saleReturnModel: Model<SaleReturnDocument>,
+    /**
+     * Movimientos de caja: anular una venta en efectivo de un turno ya cerrado
+     * registra la salida del dinero en la caja abierta (ítem 1.12).
+     */
+    @InjectModel(CajaMovement.name)
+    private readonly cajaMovementModel: Model<CajaMovementDocument>,
   ) {}
 
   /**
@@ -218,6 +229,9 @@ export class SalesService {
             'El consumo a crédito requiere seleccionar un empleado',
           );
         }
+        // Antes de vender ni tocar inventario: un empleado inexistente o
+        // inactivo dejaría una venta fiada sin deducción.
+        await this.payroll.assertEmpleadoParaConsumo(dto.payment.employeeId);
       } else {
         throw new BadRequestException(
           'Una venta a crédito requiere elegir un cliente registrado o un empleado',
@@ -365,6 +379,9 @@ export class SalesService {
     const taxProfile: SaleTaxProfile = {
       tipoNegocio: await this.tipoNegocio(),
       responsabilidadFiscal: sede.responsabilidadFiscal,
+      responsableIva: sede.responsableIva,
+      responsableInc: sede.responsableInc,
+      franquicia: sede.franquicia,
     };
     const incRate = causesInc(taxProfile)
       ? (await this.tax.resolveRate(INC_RESTAURANTE_CODE)).rate
@@ -382,7 +399,15 @@ export class SalesService {
     );
     const linesWithTax = lineTotals.map((l, i) => {
       const finalNet = l.lineTotal - l.discountAmount - (saleShares[i] ?? 0);
-      const { kind: taxKind, rate } = saleTaxFor(taxProfile, l.product, incRate);
+      const { kind: taxKind, rate } = saleTaxFor(
+        taxProfile,
+        {
+          ivaType: l.product.ivaType,
+          ivaRate: l.product.ivaRate,
+          tratamiento: l.product.tratamientoFiscal,
+        },
+        incRate,
+      );
       const { base, tax: iva } = splitTaxIncluded(finalNet, rate);
       return {
         ...l,
@@ -814,17 +839,33 @@ export class SalesService {
       if (dto.payment.debtorType === 'employee') {
         // Empleado → deducción de nómina (pendiente de aprobación). Aparecerá
         // en la colilla al aprobarse y correr la nómina.
-        await this.payroll.createDeduction(
-          {
-            employeeId: dto.payment.employeeId!,
-            concept: `Consumo POS ${saleNumber}`,
-            amount: fiado,
-            date: today,
-            source: 'sale',
-            sourceId: sale._id.toString(),
-          },
-          user,
-        );
+        try {
+          await this.payroll.createDeduction(
+            {
+              employeeId: dto.payment.employeeId!,
+              concept: `Consumo POS ${saleNumber}`,
+              amount: fiado,
+              date: today,
+              source: 'sale',
+              sourceId: sale._id.toString(),
+            },
+            user,
+            { sinAlcanceDeSede: true },
+          );
+        } catch (err) {
+          // Sin deducción la venta fiada no se cobra a nadie: se deshace la
+          // venta (aún sin asiento ni tesorería) y se reabre la ventana de
+          // compensación para que el llamador devuelva el stock.
+          try {
+            await this.saleModel.deleteOne({ _id: sale._id }).exec();
+            holder.sale = undefined;
+          } catch (errBorrado) {
+            this.logger.error(
+              `CONCILIAR: la venta ${sale._id.toString()} quedó fiada sin deducción de nómina y no se pudo deshacer: ${(errBorrado as Error).message}`,
+            );
+          }
+          throw err;
+        }
       } else {
         // Cliente registrado → cuenta por cobrar (CxC) enlazada a la venta.
         const customer = await this.customers.getOrFail(
@@ -878,9 +919,10 @@ export class SalesService {
       tax: ivaTax,
       consumptionTax: incTax,
       cogs: cop(cogs),
-      // El domicilio es ingreso del negocio (a diferencia de la propina, que
-      // es del personal y por eso no aparece aquí), pero sin IVA que separar.
+      // El domicilio es ingreso del negocio, sin IVA que separar.
       deliveryFee,
+      // La propina entra con el cobro pero va al pasivo 2380 (ítem 1.10).
+      tip: cop(sale.tip ?? 0),
       paymentMethod: dto.payment.method,
       onCredit: isCredit,
       userEmail: user.email,
@@ -953,6 +995,22 @@ export class SalesService {
       throw new BadRequestException(
         'La venta tiene devoluciones registradas y no se puede anular: registra una devolución por lo que queda.',
       );
+    }
+
+    // Venta en efectivo de un turno ya cerrado: su dinero se contó en ese
+    // arqueo, así que devolverlo sale de la caja abierta hoy. Sin caja abierta
+    // no hay dónde registrar la salida y el arqueo de mañana no cuadraría: se
+    // rechaza antes de tocar nada (ítem 1.12).
+    let cajaParaSalida: CajaSessionDocument | null = null;
+    if (await this.esEfectivoDeTurnoCerrado(existing)) {
+      cajaParaSalida = await this.cajaSessionModel
+        .findOne({ sedeId: new Types.ObjectId(sedeId), status: 'open' })
+        .exec();
+      if (!cajaParaSalida) {
+        throw new ConflictException(
+          'La venta es de un turno ya cerrado y se pagó en efectivo: abre la caja para registrar la salida del dinero antes de anularla.',
+        );
+      }
     }
 
     // Guarda de concurrencia (Mongo standalone, sin transacciones): tomamos la
@@ -1036,7 +1094,34 @@ export class SalesService {
     await this.ledgerPosting.reverseSale(sale._id.toString(), user.email);
     // Reversa del auto-posteo a tesorería (si la venta fue tarjeta/transferencia).
     await this.treasury.reverse('sale', sale._id.toString());
+
+    if (cajaParaSalida) {
+      try {
+        await this.cajaMovementModel.create({
+          sessionId: cajaParaSalida._id,
+          sedeId: new Types.ObjectId(sedeId),
+          type: 'out',
+          // Lo que el cliente pagó en efectivo: total + propina + domicilio.
+          amount: cop(sale.total + (sale.tip ?? 0) + (sale.deliveryFee ?? 0)),
+          reason: 'Anulación de venta',
+          note: `Venta ${sale.saleNumber} de un turno cerrado`,
+          userId: user.userId,
+          userEmail: user.email,
+        });
+      } catch (err) {
+        this.logger.error(
+          `CONCILIAR: la venta ${sale._id.toString()} se anuló pero no se registró la salida de efectivo en la caja ${cajaParaSalida._id.toString()}: ${(err as Error).message}`,
+        );
+      }
+    }
     return this.getOrFail(sale.id);
+  }
+
+  /** Venta pagada en efectivo cuyo turno de caja ya se cerró (o no existe). */
+  private async esEfectivoDeTurnoCerrado(sale: SaleDocument): Promise<boolean> {
+    if (sale.payment?.method !== 'cash' || !sale.cajaSessionId) return false;
+    const turno = await this.cajaSessionModel.findById(sale.cajaSessionId).exec();
+    return turno?.status !== 'open';
   }
 
   /**
@@ -1138,6 +1223,17 @@ export class SalesService {
       .exec();
     const total = sales.reduce((sum, s) => sum + s.total, 0);
     return { count: sales.length, total };
+  }
+
+  /**
+   * La venta, solo si es de una sede del usuario (ítem 3.9). `GET /sales/:id`
+   * devolvía la venta de cualquier sede a quien tuviera `pos.sell`.
+   */
+  async getForUser(id: string, user: JwtUser): Promise<SaleDocument> {
+    const sale = await this.getOrFail(id);
+    const sede = sale.sedeId as unknown as { _id?: Types.ObjectId } | null;
+    assertSedeAccess(user, String(sede?._id ?? sede));
+    return sale;
   }
 
   async getOrFail(id: string): Promise<SaleDocument> {

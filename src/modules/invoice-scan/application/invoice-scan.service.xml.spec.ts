@@ -74,7 +74,7 @@ describe('InvoiceScanService.upload · con XML de la DIAN', () => {
     };
     const storage = {
       assertAvailable: vi.fn(),
-      upload: vi.fn().mockResolvedValue({ url: 'https://blob/f.jpg', pathname: 'f.jpg' }),
+      uploadPrivado: vi.fn().mockResolvedValue({ pathname: 'f.jpg' }),
     };
     const businesses = { consumeScan: vi.fn().mockResolvedValue(undefined) };
     const service = new InvoiceScanService(
@@ -121,6 +121,6 @@ describe('InvoiceScanService.upload · con XML de la DIAN', () => {
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(businesses.consumeScan).not.toHaveBeenCalled();
-    expect(storage.upload).not.toHaveBeenCalled();
+    expect(storage.uploadPrivado).not.toHaveBeenCalled();
   });
 });

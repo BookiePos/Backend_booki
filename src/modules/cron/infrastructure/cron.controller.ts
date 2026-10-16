@@ -29,6 +29,9 @@ import type { ResultadoBarrido } from '../../../shared/barridos/resultado-barrid
  *
  * Es `@Public()` porque no hay usuario; lo protege el secreto `CRON_SECRET`.
  */
+/** Plazo para empezar empresas dentro de la función (tope de 300 s en Vercel). */
+const PLAZO_BARRIDOS_MS = 240_000;
+
 @Controller('cron')
 export class CronController {
   private readonly logger = new Logger(CronController.name);
@@ -54,11 +57,16 @@ export class CronController {
     }
 
     const inicio = Date.now();
-    // En serie: los dos tocan el control-plane y no hay prisa. El segundo corre
-    // aunque el primero falle (sweep() nunca lanza).
+    // En serie: los dos tocan el control-plane. El segundo corre aunque el
+    // primero falle (sweep() nunca lanza). Los gastos recurrentes recorren
+    // empresas con plazo: la función dura 300 s y se deja margen para
+    // responder (ítem 2.10); lo que no alcance sale como error y pendiente.
+    const cobros = await this.billing.sweep();
     const tareas: Record<string, ResultadoBarrido> = {
-      cobros: await this.billing.sweep(),
-      'gastos-recurrentes': await this.recurrentes.sweep(),
+      cobros,
+      'gastos-recurrentes': await this.recurrentes.sweep({
+        hasta: inicio + PLAZO_BARRIDOS_MS,
+      }),
     };
     const ms = Date.now() - inicio;
     const fallidas = Object.entries(tareas)

@@ -18,6 +18,7 @@ import {
 import { DirectoryService } from '../../control/application/directory.service';
 import { BusinessService } from '../../control/application/business.service';
 import { jwtRefreshSecret } from '../../../shared/config/jwt-secrets';
+import { IntentosLoginService } from './intentos-login.service';
 import type { BusinessType } from '../../control/domain/control.constants';
 import {
   effectiveEntitlements,
@@ -113,6 +114,7 @@ export class AuthService {
     private readonly businesses: BusinessService,
     @InjectModel(RefreshToken.name)
     private readonly refreshModel: Model<RefreshTokenDocument>,
+    private readonly intentos: IntentosLoginService,
   ) {}
 
   async login(
@@ -122,6 +124,8 @@ export class AuthService {
     // El login acepta correo o nombre de usuario. El directorio (control-plane)
     // dice a qué empresa/base pertenece, y ahí verificamos las credenciales.
     const id = identifier.trim().toLowerCase();
+    // Ítem 4.3: bloqueo temporal por cuenta, antes de tocar el directorio.
+    await this.intentos.assertNoBloqueada(id);
     const isEmail = id.includes('@');
     const entry = isEmail
       ? await this.directory.findByEmail(id)
@@ -130,6 +134,7 @@ export class AuthService {
     // dicen lo mismo. Si no, el tiempo de respuesta delata qué cuentas existen.
     if (!entry) {
       await compararContraFicticio(password);
+      await this.intentos.registrarFallo(id);
       throw new UnauthorizedException(CREDENCIALES_INVALIDAS);
     }
     return TenantContext.run(
@@ -140,14 +145,17 @@ export class AuthService {
           : await this.users.findByUsername(id);
         if (!user) {
           await compararContraFicticio(password);
+          await this.intentos.registrarFallo(id);
           throw new UnauthorizedException(CREDENCIALES_INVALIDAS);
         }
         // Se compara antes de mirar `active`: el inactivo tarda lo mismo que
         // el activo con la contraseña mal.
         const ok = await this.users.verifyPassword(user, password);
         if (!ok || !user.active) {
+          await this.intentos.registrarFallo(id);
           throw new UnauthorizedException(CREDENCIALES_INVALIDAS);
         }
+        await this.intentos.limpiar(id);
         const tokens = await this.issueTokens(user);
         return { tokens, user: await this.toView(user) };
       },

@@ -1,3 +1,4 @@
+import { Throttle } from '@nestjs/throttler';
 import {
   Body,
   Controller,
@@ -58,12 +59,16 @@ export class InvitationsController {
   // ---- Rutas públicas para aceptar la invitación ----
 
   @Public()
+  // Pública: límite propio para no probar enlaces a fuerza bruta (ítem 3.5).
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Get('accept/:token')
   getByToken(@Param('token') token: string) {
     return this.invitations.getByToken(token);
   }
 
   @Public()
+  // Pública: límite propio para no probar enlaces a fuerza bruta (ítem 3.5).
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('accept/:token')
   @HttpCode(200)
   async accept(

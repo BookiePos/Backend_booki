@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { LedgerService, PostLine } from './ledger.service';
 import { LedgerConciliacionService } from './ledger-conciliacion.service';
 import { ACC } from '../domain/ledger.constants';
-import { cop } from '../../finance/domain/money.util';
+import { cop, sumBy } from '../../finance/domain/money.util';
 
 /**
  * Posteo automático al ledger desde los eventos de negocio (venta, gasto,
@@ -113,20 +113,26 @@ export class LedgerPostingService {
     cogs: number;
     /**
      * Cobro del domicilio. Es ingreso del negocio pero NO lleva IVA, así que
-     * entra entero a Ingresos sin nada que separar. La propina no aparece aquí
-     * a propósito: esa es del personal, no del negocio.
+     * entra entero a Ingresos sin nada que separar.
      */
     deliveryFee?: number;
+    /**
+     * Propina (ítem 1.10). Entra a Caja o Bancos con el resto del cobro, pero
+     * es del personal (Ley 1935/2018): va al pasivo 2380, nunca a Ingresos.
+     * La propina no se fía, así que en una venta a crédito no entra.
+     */
+    tip?: number;
     paymentMethod?: string;
     onCredit?: boolean;
     userEmail?: string;
   }): Promise<void> {
-    const total = Math.round(input.total);
-    const tax = Math.round(input.tax);
+    const total = cop(input.total);
+    const tax = cop(input.tax);
     const inc = cop(input.consumptionTax ?? 0);
-    const delivery = Math.round(input.deliveryFee ?? 0);
+    const delivery = cop(input.deliveryFee ?? 0);
     const income = total - tax - inc + delivery;
-    const cogs = Math.round(input.cogs);
+    const cogs = cop(input.cogs);
+    const tip = input.onCredit ? 0 : cop(input.tip ?? 0);
     const debitAccount = input.onCredit
       ? ACC.CLIENTES
       : this.funding(input.paymentMethod);
@@ -134,11 +140,14 @@ export class LedgerPostingService {
     const lines: PostLine[] = [
       {
         accountCode: debitAccount,
-        debit: total + delivery,
+        debit: total + delivery + tip,
         sedeId: input.sedeId,
       },
       { accountCode: ACC.INGRESOS_VENTAS, credit: income, sedeId: input.sedeId },
     ];
+    if (tip > 0) {
+      lines.push({ accountCode: ACC.PROPINAS_POR_PAGAR, credit: tip, sedeId: input.sedeId });
+    }
     if (tax > 0) {
       lines.push({ accountCode: ACC.IVA_POR_PAGAR, credit: tax, sedeId: input.sedeId });
     }
@@ -194,12 +203,12 @@ export class LedgerPostingService {
     refundMethod: string;
     userEmail?: string;
   }): Promise<void> {
-    const total = Math.round(input.refundTotal);
+    const total = cop(input.refundTotal);
     if (total <= 0 && input.cogs <= 0) return;
-    const tax = Math.round(input.tax);
+    const tax = cop(input.tax);
     const inc = cop(input.consumptionTax ?? 0);
     const income = total - tax - inc;
-    const cogs = Math.round(input.cogs);
+    const cogs = cop(input.cogs);
 
     const contrapartida =
       input.refundMethod === 'credit_note' || input.refundMethod === 'none'
@@ -210,8 +219,9 @@ export class LedgerPostingService {
     if (total > 0) {
       lines.push({ accountCode: contrapartida, credit: total, sedeId: input.sedeId });
       if (income > 0) {
+        // 4175 y no 4135: la devolución resta del ingreso pero se ve aparte.
         lines.push({
-          accountCode: ACC.INGRESOS_VENTAS,
+          accountCode: ACC.DEVOLUCIONES_VENTAS,
           debit: income,
           sedeId: input.sedeId,
         });
@@ -271,11 +281,11 @@ export class LedgerPostingService {
     withholding?: number;
     userEmail?: string;
   }): Promise<void> {
-    const gross = Math.round(input.amount) + Math.round(input.tax);
+    const gross = cop(input.amount) + cop(input.tax);
     // Lo retenido no sale hacia el proveedor: se le debe a la DIAN. El gasto
     // sigue siendo el bruto; cambia a quién se le debe cada parte.
     const withholding = Math.min(
-      Math.max(Math.round(input.withholding ?? 0), 0),
+      Math.max(cop(input.withholding ?? 0), 0),
       gross,
     );
     const credit =
@@ -333,7 +343,7 @@ export class LedgerPostingService {
     docNumber?: string;
     userEmail?: string;
   }): Promise<void> {
-    const amount = Math.round(input.amount);
+    const amount = cop(input.amount);
     await this.safePost({
       date: input.date,
       sourceType: 'payable_payment',
@@ -357,7 +367,7 @@ export class LedgerPostingService {
     docNumber?: string;
     userEmail?: string;
   }): Promise<void> {
-    const amount = Math.round(input.amount);
+    const amount = cop(input.amount);
     await this.safePost({
       date: input.date,
       sourceType: 'receivable_payment',
@@ -426,27 +436,144 @@ export class LedgerPostingService {
 
   // ── Nómina ────────────────────────────────────────────────────────────────────
 
-  /** Nómina causada: débito Gastos de personal, crédito Salarios por pagar. */
+  /**
+   * Nómina causada (ítem 1.9). Débito a gastos de personal por el costo del
+   * empleador y el pasivo separado por concepto, para que cada cuenta se pueda
+   * pagar y conciliar sola (PILA, retención, fondos, empleados):
+   *   2505 neto a pagar · 2370 salud, pensión y FSP del empleado + aportes del
+   *   empleador · 2610 provisiones · 2365 retención en la fuente · 1305 el
+   *   consumo fiado del POS que se descontó, que cancela la CxC que abrió la
+   *   venta · 2370 (renglón aparte) las deducciones manuales: libranzas,
+   *   embargos y demás descuentos que se le giran a un tercero.
+   *
+   * Si una colilla queda con neto negativo (las deducciones superan lo
+   * devengado), ese saldo no se paga: el empleado lo debe y se debita a 1365
+   * (cuentas por cobrar a trabajadores). El gasto es lo que se acredita menos
+   * ese saldo, así que el asiento cuadra siempre por construcción.
+   */
   async postPayrollRun(input: {
     runId: string;
     date: string;
     sedeId?: string;
-    amount: number;
     period: string;
+    partes: PartesNomina;
     userEmail?: string;
   }): Promise<void> {
-    const amount = Math.round(input.amount);
-    if (amount <= 0) return;
+    const lines = lineasNominaCausada(input.partes, input.sedeId);
+    if (lines.length === 0) return;
     await this.safePost({
       date: input.date,
       sourceType: 'payroll_run',
       sourceId: input.runId,
       memo: `Nómina ${input.period}`,
-      lines: [
-        { accountCode: ACC.GASTOS_PERSONAL, debit: amount, sedeId: input.sedeId },
-        { accountCode: ACC.SALARIOS_POR_PAGAR, credit: amount, sedeId: input.sedeId },
-      ],
+      lines,
       userEmail: input.userEmail,
     });
   }
+
+  // ── Producción ────────────────────────────────────────────────────────────────
+
+  /**
+   * Cierre de una orden de producción (ítem 1.20). Los insumos pasan de
+   * materia prima a terminado dentro de la misma 1435, así que solo se asienta
+   * lo que el terminado vale de más: la mano de obra y el empaque del lote, que
+   * ya están en gastos y se trasladan al inventario acreditando costos
+   * absorbidos. Sin esto, al vender el terminado la 6135 sumaba otra vez la
+   * mano de obra que la nómina ya llevó al gasto, y la 1435 quedaba por debajo
+   * del kardex.
+   *
+   *   Débito 1435  valorTerminado − materiales
+   *   Crédito 7205 mano de obra
+   *   Crédito 7305 el resto (empaque y residuo del redondeo del lote)
+   */
+  async postProductionOrder(input: {
+    orderId: string;
+    number: string;
+    date: string;
+    sedeId: string;
+    valorTerminado: number;
+    materiales: number;
+    manoDeObra: number;
+    userEmail?: string;
+  }): Promise<void> {
+    const agregado = cop(input.valorTerminado) - cop(input.materiales);
+    const manoDeObra = cop(input.manoDeObra);
+    const indirectos = agregado - manoDeObra;
+    const lines: PostLine[] = [];
+    const lado = (accountCode: string, monto: number, natural: 'debit' | 'credit') => {
+      if (monto === 0) return;
+      const side = monto > 0 ? natural : natural === 'debit' ? 'credit' : 'debit';
+      lines.push({ accountCode, [side]: Math.abs(monto), sedeId: input.sedeId });
+    };
+    lado(ACC.INVENTARIO, agregado, 'debit');
+    lado(ACC.MANO_OBRA_ABSORBIDA, manoDeObra, 'credit');
+    lado(ACC.COSTOS_INDIRECTOS_ABSORBIDOS, indirectos, 'credit');
+    if (lines.length === 0) return;
+    await this.safePost({
+      date: input.date,
+      sourceType: 'production_order',
+      sourceId: input.orderId,
+      memo: `Producción ${input.number}`,
+      lines,
+      userEmail: input.userEmail,
+    });
+  }
+}
+
+/** Partes del asiento de nómina causada, sumadas sobre las colillas. */
+export interface PartesNomina {
+  /** Suma de los netos positivos (lo que se les paga). */
+  neto: number;
+  /** Suma de los netos negativos, en valor absoluto (lo que quedan debiendo). */
+  saldoACargoEmpleados?: number;
+  seguridadSocialEmpleado: number;
+  retencionFuente: number;
+  /** Consumos fiados del POS (`source: 'sale'`), que la venta ya debitó a 1305. */
+  fiado: number;
+  /** Deducciones manuales (libranzas, embargos, préstamos de terceros). */
+  otrasDeducciones?: number;
+  aportesEmpleador: number;
+  provisiones: number;
+}
+
+/**
+ * Renglones del asiento de nómina causada (ver `postPayrollRun`). Puro, para
+ * que el cierre de la corrida lo valide ANTES de cerrarla: si las partes no
+ * pueden dar un asiento cuadrado lanza, y la corrida sigue en borrador. Sin
+ * monto devuelve [] (no hay nada que asentar).
+ */
+export function lineasNominaCausada(p: PartesNomina, sedeId?: string): PostLine[] {
+  const creditos: [string, number][] = [
+    [ACC.SALARIOS_POR_PAGAR, cop(p.neto)],
+    [ACC.APORTES_NOMINA, cop(p.seguridadSocialEmpleado) + cop(p.aportesEmpleador)],
+    [ACC.PROVISIONES_LABORALES, cop(p.provisiones)],
+    [ACC.RETENCION_FUENTE, cop(p.retencionFuente)],
+    [ACC.CLIENTES, cop(p.fiado)],
+    [ACC.DEDUCCIONES_NOMINA_TERCEROS, cop(p.otrasDeducciones ?? 0)],
+  ];
+  const saldo = cop(p.saldoACargoEmpleados ?? 0);
+  if (saldo < 0 || creditos.some(([, monto]) => monto < 0)) {
+    throw new Error(
+      'El asiento de la nómina recibió un concepto negativo: el neto negativo de una colilla va como saldo a cargo del empleado.',
+    );
+  }
+  const totalCreditos = sumBy(creditos, ([, monto]) => monto);
+  const costo = totalCreditos - saldo;
+  if (costo < 0) {
+    throw new Error(
+      'Lo que quedan debiendo los empleados supera lo causado en la nómina: el asiento no cuadra.',
+    );
+  }
+  if (totalCreditos === 0) return [];
+  const lines: PostLine[] = [];
+  if (costo > 0) lines.push({ accountCode: ACC.GASTOS_PERSONAL, debit: costo, sedeId });
+  if (saldo > 0) lines.push({ accountCode: ACC.CXC_TRABAJADORES, debit: saldo, sedeId });
+  creditos.forEach(([accountCode, monto], i) => {
+    if (monto <= 0) return;
+    // Mismo código que los aportes: el memo separa el renglón para conciliarlo
+    // contra el tercero (banco de la libranza, juzgado del embargo).
+    const memo = i === creditos.length - 1 ? 'Deducciones de nómina a favor de terceros' : undefined;
+    lines.push({ accountCode, credit: monto, sedeId, ...(memo ? { memo } : {}) });
+  });
+  return lines;
 }

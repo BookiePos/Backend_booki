@@ -52,6 +52,8 @@ import {
   UpdateBomDto,
   UpdateProductionOrderDto,
 } from './dto/production.dto';
+import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
+import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 
 /** Renglón de insumo tal como se persiste en la orden. */
 interface BuiltLine {
@@ -169,6 +171,8 @@ export class ProductionService {
      */
     @InjectModel(Product.name)
     private readonly productModel: Model<unknown>,
+    /** Asiento del cierre de la orden (ítem 1.20). */
+    private readonly ledgerPosting: LedgerPostingService,
   ) {}
 
   // ─── Recetas de lote (BOM) ─────────────────────────────────────────────────
@@ -622,6 +626,20 @@ export class ProductionService {
       line.unitCost = line.qty > 0 ? cop(cost / line.qty) : 0;
     });
     await reserved.save();
+
+    // Libro: el terminado entra a la 1435 con mano de obra y empaque, que ya
+    // estaban en gastos; se trasladan acreditando costos absorbidos (ítem
+    // 1.20). Best-effort e idempotente por la orden, como el resto del libro.
+    await this.ledgerPosting.postProductionOrder({
+      orderId: reserved._id.toString(),
+      number: reserved.number,
+      date: fechaColombia(),
+      sedeId,
+      valorTerminado: totalCost,
+      materiales: materialsCost,
+      manoDeObra: extraCost,
+      userEmail: user.email,
+    });
     return reserved;
   }
 

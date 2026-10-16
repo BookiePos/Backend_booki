@@ -75,22 +75,19 @@ describe('InvoiceScanService · cuota al subir', () => {
   it('con almacenamiento configurado sí consume cuota y crea la factura', async () => {
     const storage = {
       assertAvailable: vi.fn(),
-      upload: vi.fn().mockResolvedValue({
-        url: 'https://blob/facturas/b1/f.jpg',
-        pathname: 'facturas/b1/f.jpg',
-      }),
+      uploadPrivado: vi.fn().mockResolvedValue({ pathname: 'facturas/b1/f.jpg' }),
     };
     const { service, scans, businesses } = makeService(storage);
 
     await TenantContext.run(ctx, () => service.upload(file, user));
 
     expect(businesses.consumeScan).toHaveBeenCalledOnce();
-    expect(storage.upload).toHaveBeenCalledOnce();
+    expect(storage.uploadPrivado).toHaveBeenCalledOnce();
     expect(scans.create).toHaveBeenCalledOnce();
   });
 
   it("rechaza por contenido un HTML con mimetype image/png, sin cobrar ni subir", async () => {
-    const storage = { assertAvailable: vi.fn(), upload: vi.fn() };
+    const storage = { assertAvailable: vi.fn(), uploadPrivado: vi.fn() };
     const { service, scans, businesses } = makeService(storage);
     const html = { ...file, buffer: Buffer.from("<html><script>x</script></html>"), mimetype: "image/png" };
 
@@ -99,21 +96,21 @@ describe('InvoiceScanService · cuota al subir', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
 
     expect(businesses.consumeScan).not.toHaveBeenCalled();
-    expect(storage.upload).not.toHaveBeenCalled();
+    expect(storage.uploadPrivado).not.toHaveBeenCalled();
     expect(scans.create).not.toHaveBeenCalled();
   });
 
   it("guarda con el Content-Type detectado, no con el declarado", async () => {
     const storage = {
       assertAvailable: vi.fn(),
-      upload: vi.fn().mockResolvedValue({ url: "u", pathname: "p" }),
+      uploadPrivado: vi.fn().mockResolvedValue({ pathname: "p" }),
     };
     const { service } = makeService(storage);
     const png = { ...file, buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), mimetype: "image/jpeg" };
 
     await TenantContext.run(ctx, () => service.upload(png, user));
 
-    expect(storage.upload.mock.calls[0]![0]).toMatch(/.png$/);
-    expect(storage.upload.mock.calls[0]![2]).toBe("image/png");
+    expect(storage.uploadPrivado.mock.calls[0]![0]).toMatch(/.png$/);
+    expect(storage.uploadPrivado.mock.calls[0]![2]).toBe("image/png");
   });
 });

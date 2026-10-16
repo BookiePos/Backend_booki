@@ -171,6 +171,18 @@ export interface PayrollSettingsData {
 
   /** La empresa está sujeta a exoneración de aportes (art. 114-1 ET). */
   empresaExoneradaAportes: boolean;
+  /**
+   * La empresa respondió explícitamente si está exonerada (ítem 1.15). La
+   * exoneración solo aplica con esto en `true`: no se presume, porque solo la
+   * tienen las sociedades declarantes de renta y las personas naturales con
+   * dos o más trabajadores.
+   */
+  exoneracionConfirmada?: boolean;
+  /**
+   * Días laborables de la semana del negocio (5 o 6). Decide cuándo se gana el
+   * domingo remunerado (CST art. 173, ítem 1.19). Por defecto, 6.
+   */
+  diasLaborablesSemana?: number;
 }
 
 export const DEFAULT_PAYROLL_SETTINGS: PayrollSettingsData = {
@@ -250,7 +262,8 @@ export const DEFAULT_PAYROLL_SETTINGS: PayrollSettingsData = {
 
   jornadaTramos: [],
 
-  empresaExoneradaAportes: true,
+  empresaExoneradaAportes: false,
+  exoneracionConfirmada: false,
 };
 
 export const DIAS_MES = 30;

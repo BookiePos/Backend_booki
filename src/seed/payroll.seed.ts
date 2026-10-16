@@ -108,7 +108,15 @@ export async function seedPayroll(
   );
 
   // 1) Settings del motor de cálculo (siembra los valores CO 2026 por defecto).
-  await payrollSvc.getSettings();
+  // La empresa demo responde la exoneración de aportes (ítem 1.15): sin esa
+  // respuesta la nómina no se liquida. Si ya la respondió, no se toca.
+  const ajustes = await payrollSvc.getSettings();
+  if (!ajustes.exoneracionConfirmada) {
+    await payrollSvc.updateSettings({
+      empresaExoneradaAportes: true,
+      confirmarExoneracion: true,
+    } as never);
+  }
 
   // 2) Cargos (idempotente por nombre).
   for (const name of CARGOS) {

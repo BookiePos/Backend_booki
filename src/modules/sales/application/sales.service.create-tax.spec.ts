@@ -194,6 +194,7 @@ describe('SalesService.create (IVA incluido + prorrateo de descuento)', () => {
       tax,
       businesses,
       {} as any, // saleReturnModel: solo lo usa la anulación
+      {} as any, // cajaMovementModel: solo lo usa la anulación
     );
   });
 
@@ -705,7 +706,10 @@ describe('SalesService.create (IVA incluido + prorrateo de descuento)', () => {
   });
 
   it('el fiado a un empleado se fecha con el día de Colombia', async () => {
-    const payroll = { createDeduction: vi.fn().mockResolvedValue(undefined) };
+    const payroll = {
+      createDeduction: vi.fn().mockResolvedValue(undefined),
+      assertEmpleadoParaConsumo: vi.fn().mockResolvedValue(undefined),
+    };
     const conFiado = new SalesService(
       saleModel,
       counterModel,
@@ -728,6 +732,7 @@ describe('SalesService.create (IVA incluido + prorrateo de descuento)', () => {
       tax,
       businesses,
       {} as any,
+      {} as any, // cajaMovementModel
     );
     const tzAntes = process.env.TZ;
     process.env.TZ = 'UTC';

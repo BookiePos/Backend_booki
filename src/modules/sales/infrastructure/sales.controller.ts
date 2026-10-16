@@ -76,8 +76,8 @@ export class SalesController {
 
   @RequirePermissions(PERMISSIONS.POS_SELL)
   @Get(':id')
-  get(@Param('id') id: string) {
-    return this.sales.getOrFail(id);
+  get(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.sales.getForUser(id, user);
   }
 
   @RequirePermissions(PERMISSIONS.POS_SELL)

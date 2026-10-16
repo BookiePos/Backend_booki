@@ -20,6 +20,8 @@ import {
   IVA_TYPES,
   IvaRate,
   IvaType,
+  TRATAMIENTOS_FISCALES,
+  TratamientoFiscal,
 } from '../../domain/catalog.constants';
 import { RecipeLineDto } from './recipe-line.dto';
 
@@ -53,6 +55,10 @@ export class CreateCatalogProductDto {
   @IsOptional()
   @IsIn(IVA_TYPES as readonly string[])
   ivaType?: IvaType;
+
+  @IsOptional()
+  @IsIn(TRATAMIENTOS_FISCALES as readonly string[])
+  tratamientoFiscal?: TratamientoFiscal;
 
   @IsIn(CATALOG_SOURCE_TYPES as readonly string[])
   sourceType!: CatalogSourceType;

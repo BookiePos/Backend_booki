@@ -4,6 +4,7 @@
  * devuelven el desprendible completo (devengados, deducciones, aportes del
  * empleador y provisiones prestacionales). Nada de acceso a BD aquí.
  */
+import { cop, redondearA } from '../../finance/domain/money.util';
 import {
   DIAS_MES,
   JORNADA_MAXIMA_ANTERIOR,
@@ -110,7 +111,7 @@ export interface PayrollBreakdown {
   baseRetencionUvt: number;
 }
 
-const round = (n: number) => Math.round(n);
+const round = cop;
 
 /** Tarifa del FSP según el IBC expresado en SMMLV. */
 function fspRate(ibcEnSmmlv: number, s: PayrollSettingsData): number {
@@ -138,7 +139,7 @@ function retencion383(baseGravablePesos: number, s: PayrollSettingsData): number
 /** Base gravable en UVT (solo para mostrar el tramo aplicado). */
 function baseUvtDe(baseGravablePesos: number, s: PayrollSettingsData): number {
   return baseGravablePesos > 0
-    ? Math.round((baseGravablePesos / s.uvt) * 100) / 100
+    ? redondearA(baseGravablePesos / s.uvt, 2)
     : 0;
 }
 
@@ -359,6 +360,7 @@ export function computeSlip(
   // Aportes del empleador.
   const exonera =
     s.empresaExoneradaAportes &&
+    s.exoneracionConfirmada === true &&
     !integral &&
     input.salarioBase < s.exoneracionSmmlv * s.smmlv;
   const arlRate = input.arlRiskLevel ? s.arlRates[input.arlRiskLevel] : 0;
@@ -388,7 +390,7 @@ export function computeSlip(
   return {
     diasTrabajados: dias,
     divisorHoras,
-    horaOrdinaria: Math.round(horaOrdinaria),
+    horaOrdinaria: cop(horaOrdinaria),
     devengados: {
       salario,
       auxilioTransporte,

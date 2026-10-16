@@ -13,3 +13,7 @@ export const RESPONSABILIDAD_FISCAL = [
   'gran_contribuyente',
 ] as const;
 export type ResponsabilidadFiscal = (typeof RESPONSABILIDAD_FISCAL)[number];
+
+/** Régimen de renta (ítem 1.17): ordinario o simple (arts. 903-916 ET). */
+export const REGIMEN_RENTA = ['ordinario', 'simple'] as const;
+export type RegimenRenta = (typeof REGIMEN_RENTA)[number];

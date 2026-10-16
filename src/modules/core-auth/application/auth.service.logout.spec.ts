@@ -59,6 +59,7 @@ describe('AuthService · cierre de sesión', () => {
       {} as never,
       {} as never,
       refreshModel as never,
+      {} as never, // intentos de login: estas pruebas no pasan por login
     );
   });
 

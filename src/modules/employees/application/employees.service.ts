@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -13,6 +14,11 @@ import {
   Position,
   PositionDocument,
 } from '../infrastructure/schemas/position.schema';
+import {
+  allowedSedeIds,
+  assertSedeAccess,
+  type SedeScopeUser,
+} from '../../core-auth/domain/sede-access';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
 import {
@@ -50,11 +56,24 @@ export class EmployeesService {
     private readonly positions: Model<PositionDocument>,
   ) {}
 
-  list(): Promise<EmployeeDocument[]> {
-    return this.model.find().sort({ lastName: 1, firstName: 1 }).exec();
+  /**
+   * Alcance por sede (ítem 3.9). Sin `user` (seeds, nómina) no se filtra.
+   * Quien no ve todas las sedes solo ve a los de las suyas: los empleados sin
+   * sede son de la empresa y quedan para quien la ve entera.
+   */
+  list(user?: SedeScopeUser): Promise<EmployeeDocument[]> {
+    const sedes = user ? allowedSedeIds(user) : null;
+    const filter = sedes
+      ? { sedeId: { $in: sedes.map((id) => new Types.ObjectId(id)) } }
+      : {};
+    return this.model.find(filter).sort({ lastName: 1, firstName: 1 }).exec();
   }
 
-  async create(dto: CreateEmployeeDto): Promise<EmployeeDocument> {
+  async create(
+    dto: CreateEmployeeDto,
+    user?: SedeScopeUser,
+  ): Promise<EmployeeDocument> {
+    if (user) this.assertSedeDestino(user, dto.sedeId);
     const emp = new this.model();
     await this.apply(emp, dto);
     try {
@@ -70,8 +89,13 @@ export class EmployeesService {
     return emp;
   }
 
-  async update(id: string, dto: UpdateEmployeeDto): Promise<EmployeeDocument> {
-    const emp = await this.getOrFail(id);
+  async update(
+    id: string,
+    dto: UpdateEmployeeDto,
+    user?: SedeScopeUser,
+  ): Promise<EmployeeDocument> {
+    const emp = await this.getOrFail(id, user);
+    if (user && dto.sedeId !== undefined) this.assertSedeDestino(user, dto.sedeId);
     await this.apply(emp, dto);
     try {
       await emp.save();
@@ -86,17 +110,38 @@ export class EmployeesService {
     return emp;
   }
 
-  async remove(id: string): Promise<void> {
-    const emp = await this.getOrFail(id);
+  async remove(id: string, user?: SedeScopeUser): Promise<void> {
+    const emp = await this.getOrFail(id, user);
     await emp.deleteOne();
   }
 
-  async getOrFail(id: string): Promise<EmployeeDocument> {
+  /** Con `user`, el de otra sede (o sin sede) da 404, igual que si no existiera. */
+  async getOrFail(id: string, user?: SedeScopeUser): Promise<EmployeeDocument> {
     const emp = Types.ObjectId.isValid(id)
       ? await this.model.findById(id).exec()
       : null;
-    if (!emp) throw new NotFoundException('Empleado no encontrado');
+    if (!emp || (user && !this.enAlcance(user, emp.sedeId))) {
+      throw new NotFoundException('Empleado no encontrado');
+    }
     return emp;
+  }
+
+  private enAlcance(user: SedeScopeUser, sedeId?: Types.ObjectId): boolean {
+    const sedes = allowedSedeIds(user);
+    return sedes === null || (!!sedeId && sedes.includes(sedeId.toString()));
+  }
+
+  /**
+   * Quien no ve todas las sedes solo asigna a las suyas, y no puede dejar a
+   * nadie sin sede: lo sacaría de su propio alcance y de cualquier otro
+   * limitado.
+   */
+  private assertSedeDestino(user: SedeScopeUser, sedeId?: string): void {
+    if (allowedSedeIds(user) === null) return;
+    if (!sedeId) {
+      throw new ForbiddenException('Asigna el empleado a una de tus sedes');
+    }
+    assertSedeAccess(user, sedeId);
   }
 
   /** Listado mínimo de empleados activos (para selectores del POS). */

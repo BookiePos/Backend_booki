@@ -2,3 +2,6 @@
 # el `exec` y el pre-commit deja de proteger sin avisar. Se fijan a LF en cualquier sistema.
 .githooks/* text eol=lf
 *.sh text eol=lf
+# Lo genera una prueba (matriz-permisos.spec) y lo compara byte a byte: con CRLF
+# en el checkout de Windows fallaría sin que nada haya cambiado.
+docs/MATRIZ-PERMISOS.md text eol=lf

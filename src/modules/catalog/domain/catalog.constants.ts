@@ -25,3 +25,10 @@ export type IvaRate = (typeof IVA_RATES)[number];
  */
 export const IVA_TYPES = ['gravado', 'exento', 'excluido'] as const;
 export type IvaType = (typeof IVA_TYPES)[number];
+
+/**
+ * En un restaurante, qué se sirve (expendio: INC) y qué se revende sin
+ * servicio (mercancía: IVA del bien). Ítem 1.17; sin dato es expendio.
+ */
+export const TRATAMIENTOS_FISCALES = ['expendio', 'mercancia'] as const;
+export type TratamientoFiscal = (typeof TRATAMIENTOS_FISCALES)[number];

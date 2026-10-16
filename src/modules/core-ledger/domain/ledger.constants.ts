@@ -40,6 +40,11 @@ export const ACC = {
   CAJA: '1105',
   BANCOS: '1110',
   CLIENTES: '1305',
+  /**
+   * Cuentas por cobrar a trabajadores (PUC 1365): lo que un empleado queda
+   * debiendo cuando sus deducciones superan lo devengado de la colilla.
+   */
+  CXC_TRABAJADORES: '1365',
   INVENTARIO: '1435',
   PROVEEDORES: '2205',
   RETENCION_FUENTE: '2365',
@@ -53,12 +58,35 @@ export const ACC = {
    * impuestos por pagar); no es la 2368, que es la ReteICA.
    */
   INC_POR_PAGAR: '2495',
+  /** Propinas recibidas para el personal (Ley 1935/2018: no son ingreso). */
+  PROPINAS_POR_PAGAR: '2380',
+  /** Salud, pensión y FSP retenidos al empleado + aportes del empleador (PUC 2370). */
+  APORTES_NOMINA: '2370',
+  /**
+   * Deducciones manuales de nómina (libranzas, embargos, cuotas a terceros):
+   * PUC 2370 (237050 embargos, 237055 libranzas, 237095 otros). El modelo de
+   * deducción no distingue el concepto, así que van todas aquí, en su propio
+   * renglón. No son la 1305: esa la cancela solo el fiado del POS.
+   */
+  DEDUCCIONES_NOMINA_TERCEROS: '2370',
   SALARIOS_POR_PAGAR: '2505',
+  /** Cesantías, intereses, prima y vacaciones causadas (PUC 2610). */
+  PROVISIONES_LABORALES: '2610',
   INGRESOS_VENTAS: '4135',
+  /** Devoluciones en ventas (PUC 4175): resta del ingreso, separada de él. */
+  DEVOLUCIONES_VENTAS: '4175',
   GASTOS_PERSONAL: '5105',
   GASTOS_SERVICIOS: '5135',
   GASTOS_DIVERSOS: '5195',
   COSTO_VENTA: '6135',
+  /**
+   * Costos absorbidos por la producción (ítem 1.20). La mano de obra y el
+   * empaque ya están en gastos (nómina, compras); al capitalizarlos en el
+   * terminado se acreditan aquí para no contarlos dos veces (NIIF Pymes 13.5 y
+   * 13.8; PUC clase 7).
+   */
+  MANO_OBRA_ABSORBIDA: '7205',
+  COSTOS_INDIRECTOS_ABSORBIDOS: '7305',
 } as const;
 
 export interface SeedAccount {
@@ -77,6 +105,7 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   { code: '1105', name: 'Caja', type: 'asset' },
   { code: '1110', name: 'Bancos', type: 'asset' },
   { code: '1305', name: 'Clientes (CxC)', type: 'asset' },
+  { code: '1365', name: 'Cuentas por cobrar a trabajadores', type: 'asset' },
   { code: '1435', name: 'Inventario de mercancías', type: 'asset' },
   // Pasivo
   { code: '2205', name: 'Proveedores (CxP)', type: 'liability' },
@@ -86,10 +115,12 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   // al cambio guardan ahí IVA/INC hasta correr la reclasificación (src/datos).
   { code: '2367', name: 'Impuesto a las ventas retenido (ReteIVA)', type: 'liability' },
   { code: '2368', name: 'Impuesto de industria y comercio retenido (ReteICA)', type: 'liability' },
+  { code: '2370', name: 'Retenciones y aportes de nómina', type: 'liability' },
   { code: '2380', name: 'Propinas por pagar', type: 'liability' },
   { code: '2408', name: 'Impuesto sobre las ventas por pagar (IVA)', type: 'liability' },
   { code: '2495', name: 'Impuesto nacional al consumo por pagar', type: 'liability' },
   { code: '2505', name: 'Salarios por pagar', type: 'liability' },
+  { code: '2610', name: 'Para obligaciones laborales', type: 'liability' },
   // Patrimonio
   { code: '3105', name: 'Capital', type: 'equity' },
   { code: '3605', name: 'Resultado del ejercicio', type: 'equity' },
@@ -101,6 +132,9 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   { code: '5135', name: 'Servicios (arriendo, públicos)', type: 'expense' },
   { code: '5195', name: 'Gastos diversos', type: 'expense' },
   { code: '6135', name: 'Costo de mercancía vendida', type: 'expense' },
+  // Costos de producción absorbidos (saldo crédito: restan del gasto).
+  { code: '7205', name: 'Mano de obra directa absorbida', type: 'expense' },
+  { code: '7305', name: 'Costos indirectos absorbidos', type: 'expense' },
 ];
 
 /**

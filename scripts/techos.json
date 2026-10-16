@@ -1,24 +1,25 @@
 {
   "tscCodigo": 0,
   "tscConTests": 0,
-  "lintErrores": 2,
+  "lintErrores": 1,
+  "coberturaLineasPiso": 53,
   "dineroPorModulo": {
     "attendance": 2,
     "billing": 1,
-    "caja": 2,
+    "caja": 0,
     "catalog": 5,
     "control": 1,
-    "core-ledger": 15,
+    "core-ledger": 0,
     "core-reports": 2,
     "core-tax": 2,
     "delivery": 3,
     "einvoicing": 4,
     "inventory": 2,
     "invoice-scan": 8,
-    "payroll": 8,
+    "payroll": 0,
     "production": 2,
     "purchasing": 2,
-    "restaurant": 3,
+    "restaurant": 0,
     "sales": 0
   }
 }

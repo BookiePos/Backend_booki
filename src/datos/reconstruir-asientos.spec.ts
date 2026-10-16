@@ -42,6 +42,7 @@ describe('reconstruir asientos faltantes', () => {
     status: 'completed',
     total: 119_000,
     deliveryFee: 5_000,
+    tip: 11_900,
     paymentMethod: 'cash',
     lines: [
       { taxKind: 'iva', taxAmount: 19_000 },
@@ -131,6 +132,7 @@ describe('reconstruir asientos faltantes', () => {
       consumptionTax: 0,
       cogs: 42_500,
       deliveryFee: 5_000,
+      tip: 11_900,
       onCredit: false,
     });
     expect(insumoVenta(venta({ paymentMethod: 'credit' }))!.onCredit).toBe(true);

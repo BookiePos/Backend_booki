@@ -100,6 +100,7 @@ describe('ProductionService.complete', () => {
   let counterModel: any;
   let products: any;
   let stock: any;
+  let ledgerPosting: any;
   let service: ProductionService;
   let order: ReturnType<typeof openOrderDoc>;
 
@@ -158,6 +159,7 @@ describe('ProductionService.complete', () => {
       ]),
       entry: vi.fn().mockResolvedValue({}),
     };
+    ledgerPosting = { postProductionOrder: vi.fn().mockResolvedValue(undefined) };
 
     service = new ProductionService(
       boms,
@@ -167,6 +169,22 @@ describe('ProductionService.complete', () => {
       stock,
       {} as any,
       {} as any, // productModel: solo lo recibe populate, que aquí está simulado
+      ledgerPosting,
+    );
+  });
+
+  it('asienta lo que el terminado vale de más que sus insumos (ítem 1.20)', async () => {
+    order.packagingCost = 24_000;
+
+    await service.complete(orderId.toString(), {}, user);
+
+    expect(ledgerPosting.postProductionOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderId: orderId.toString(),
+        valorTerminado: 141_960,
+        materiales: 88_000,
+        manoDeObra: 30_000,
+      }),
     );
   });
 
@@ -325,6 +343,7 @@ describe('ProductionService · empaque de la receta al planear la orden', () => 
       {} as any,
       {} as any,
       {} as any,
+      {} as any, // ledgerPosting: create() no asienta
     );
     vi.spyOn(service, 'bomForProduct').mockResolvedValue(bom as any);
     return service as any;

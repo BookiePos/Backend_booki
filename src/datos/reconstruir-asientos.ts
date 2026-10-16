@@ -35,7 +35,10 @@ import { cop, sumBy } from '../modules/finance/domain/money.util';
  *   Caja o Bancos dejaría el libro mal en vez de incompleto.
  * - Recepciones anteriores al `_id` de la recepción: su asiento usaba otro
  *   `sourceId` y no se puede saber si ya existe.
- * - Pendientes de otros orígenes (abonos, devoluciones, nómina).
+ * - Pendientes de otros orígenes (abonos, devoluciones, nómina, órdenes de
+ *   producción): el asiento de una orden depende del valor terminado y de la
+ *   mano de obra del momento en que se cerró, y no se puede rehacer sin
+ *   adivinarlos. Su origen sí está reservado (`production_order`).
  */
 
 export const AUTOR = 'datos:reconstruir-asientos';
@@ -52,6 +55,7 @@ export interface VentaGuardada {
   status: string;
   total: number;
   deliveryFee?: number;
+  tip?: number;
   paymentMethod: string;
   lines: { taxKind?: string; taxAmount?: number }[];
   components: { cost?: number }[];
@@ -132,6 +136,7 @@ export function insumoVenta(v: VentaGuardada): Parameters<Posting['postSale']>[0
     consumptionTax: taxOf('inc'),
     cogs: sumBy(v.components, (c) => c.cost ?? 0),
     deliveryFee,
+    tip: cop(v.tip ?? 0),
     paymentMethod: v.paymentMethod,
     onCredit: v.paymentMethod === 'credit',
     userEmail: AUTOR,

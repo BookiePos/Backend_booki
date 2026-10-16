@@ -114,6 +114,7 @@ describe('AuthService · refrescar la sesión', () => {
       {} as never,
       { findById: vi.fn(async () => null) } as never,
       refreshModel as never,
+      {} as never, // intentos de login: estas pruebas no pasan por login
     );
   });
 

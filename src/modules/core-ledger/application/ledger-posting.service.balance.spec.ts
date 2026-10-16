@@ -83,6 +83,46 @@ describe('LedgerPostingService · asientos automáticos', () => {
       expect(amountOn(ACC.IVA_POR_PAGAR, 'credit')).toBe(19_000);
     });
 
+    it('propina: entra a Caja y queda como pasivo con el personal en la 2380 (ítem 1.10)', async () => {
+      await service.postSale({ ...base, total: 119_000, tax: 19_000, cogs: 0, tip: 11_900 });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.CAJA, 'debit')).toBe(130_900);
+      expect(amountOn(ACC.PROPINAS_POR_PAGAR, 'credit')).toBe(11_900);
+      // No es ingreso del negocio.
+      expect(amountOn(ACC.INGRESOS_VENTAS, 'credit')).toBe(100_000);
+    });
+
+    it('propina con tarjeta: entra a Bancos', async () => {
+      await service.postSale({
+        ...base,
+        paymentMethod: 'card',
+        total: 50_000,
+        tax: 0,
+        cogs: 0,
+        tip: 5_000,
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.BANCOS, 'debit')).toBe(55_000);
+      expect(amountOn(ACC.PROPINAS_POR_PAGAR, 'credit')).toBe(5_000);
+    });
+
+    it('fiado: la propina no se fía y no entra al asiento', async () => {
+      await service.postSale({
+        ...base,
+        onCredit: true,
+        total: 50_000,
+        tax: 0,
+        cogs: 0,
+        tip: 5_000,
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.CLIENTES, 'debit')).toBe(50_000);
+      expect(amountOn(ACC.PROPINAS_POR_PAGAR, 'credit')).toBe(0);
+    });
+
     it('con costo de venta sigue cuadrando: sale de inventario y entra al costo', async () => {
       await service.postSale({
         ...base,
@@ -131,7 +171,10 @@ describe('LedgerPostingService · asientos automáticos', () => {
       expect(side('debit')).toBe(side('credit'));
       expect(amountOn(ACC.INC_POR_PAGAR, 'debit')).toBe(2_222);
       expect(amountOn(ACC.IVA_POR_PAGAR, 'debit')).toBe(0);
-      expect(amountOn(ACC.INGRESOS_VENTAS, 'debit')).toBe(27_778);
+      // Ítem 1.17: la devolución va a 4175, así ventas y devoluciones se ven
+      // por separado (renglones del formulario 300/310).
+      expect(amountOn(ACC.DEVOLUCIONES_VENTAS, 'debit')).toBe(27_778);
+      expect(amountOn(ACC.INGRESOS_VENTAS, 'debit')).toBe(0);
     });
 
     it('sin IVA no abre el renglón de impuesto y el ingreso es el total', async () => {
@@ -402,18 +445,140 @@ describe('LedgerPostingService · asientos automáticos', () => {
       expect(amountOn(ACC.CAJA, 'credit')).toBe(0);
     });
 
-    it('nómina causada: gasto de personal contra salarios por pagar', async () => {
+    it('nómina causada: el pasivo se separa por concepto (ítem 1.9)', async () => {
       await service.postPayrollRun({
         runId: 'n1',
         date: '2026-09-30',
         sedeId: SEDE,
-        amount: 4_800_000,
         period: '2026-09',
+        partes: {
+          neto: 2_900_000,
+          seguridadSocialEmpleado: 260_000,
+          retencionFuente: 40_000,
+          fiado: 50_000,
+          aportesEmpleador: 950_000,
+          provisiones: 600_000,
+        },
       });
 
       expect(side('debit')).toBe(side('credit'));
+      // Costo del empleador = todo lo que se causa.
       expect(amountOn(ACC.GASTOS_PERSONAL, 'debit')).toBe(4_800_000);
-      expect(amountOn(ACC.SALARIOS_POR_PAGAR, 'credit')).toBe(4_800_000);
+      expect(amountOn(ACC.SALARIOS_POR_PAGAR, 'credit')).toBe(2_900_000);
+      // Salud, pensión y FSP del empleado + aportes del empleador.
+      expect(amountOn(ACC.APORTES_NOMINA, 'credit')).toBe(1_210_000);
+      expect(amountOn(ACC.PROVISIONES_LABORALES, 'credit')).toBe(600_000);
+      expect(amountOn(ACC.RETENCION_FUENTE, 'credit')).toBe(40_000);
+      // El consumo fiado descontado cancela la CxC del empleado.
+      expect(amountOn(ACC.CLIENTES, 'credit')).toBe(50_000);
+    });
+
+    it('nómina sin retención ni fiado no abre esos renglones', async () => {
+      await service.postPayrollRun({
+        runId: 'n2',
+        date: '2026-09-30',
+        period: '2026-09',
+        partes: {
+          neto: 1_000_000,
+          seguridadSocialEmpleado: 80_000,
+          retencionFuente: 0,
+          fiado: 0,
+          aportesEmpleador: 300_000,
+          provisiones: 200_000,
+        },
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(lines().some((l) => l.accountCode === ACC.RETENCION_FUENTE)).toBe(false);
+      expect(lines().some((l) => l.accountCode === ACC.CLIENTES)).toBe(false);
+    });
+
+    it('nómina: las deducciones manuales van a la 2370 en su renglón, no a la 1305 (ítem 1.9)', async () => {
+      await service.postPayrollRun({
+        runId: 'n3',
+        date: '2026-09-30',
+        sedeId: SEDE,
+        period: '2026-09',
+        partes: {
+          neto: 1_000_000,
+          seguridadSocialEmpleado: 80_000,
+          retencionFuente: 0,
+          fiado: 16_900,
+          otrasDeducciones: 200_000,
+          aportesEmpleador: 300_000,
+          provisiones: 200_000,
+        },
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.CLIENTES, 'credit')).toBe(16_900);
+      const terceros = lines().filter(
+        (l) => l.accountCode === ACC.DEDUCCIONES_NOMINA_TERCEROS && l.memo,
+      );
+      expect(terceros).toHaveLength(1);
+      expect(terceros[0]!.credit).toBe(200_000);
+      expect(amountOn(ACC.APORTES_NOMINA, 'credit')).toBe(380_000 + 200_000);
+    });
+
+    it('nómina con neto negativo: el saldo se debita a la 1365 y el asiento cuadra', async () => {
+      await service.postPayrollRun({
+        runId: 'n4',
+        date: '2026-09-30',
+        period: '2026-09',
+        partes: {
+          neto: 1_000_000,
+          saldoACargoEmpleados: 50_000,
+          seguridadSocialEmpleado: 0,
+          retencionFuente: 0,
+          fiado: 0,
+          otrasDeducciones: 150_000,
+          aportesEmpleador: 0,
+          provisiones: 0,
+        },
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.CXC_TRABAJADORES, 'debit')).toBe(50_000);
+      expect(amountOn(ACC.GASTOS_PERSONAL, 'debit')).toBe(1_100_000);
+    });
+
+    it('nómina sin costo pero con deducciones: reclasifica la deuda, cuadrado y sin gasto', async () => {
+      await service.postPayrollRun({
+        runId: 'n5',
+        date: '2026-09-30',
+        period: '2026-09',
+        partes: {
+          neto: 0,
+          saldoACargoEmpleados: 30_000,
+          seguridadSocialEmpleado: 0,
+          retencionFuente: 0,
+          fiado: 30_000,
+          aportesEmpleador: 0,
+          provisiones: 0,
+        },
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(lines().some((l) => l.accountCode === ACC.GASTOS_PERSONAL)).toBe(false);
+      expect(amountOn(ACC.CXC_TRABAJADORES, 'debit')).toBe(30_000);
+    });
+
+    it('nómina con partes que no cuadran falla de forma explícita y no postea', async () => {
+      const base = { runId: 'n6', date: '2026-09-30', period: '2026-09' };
+      const cero = {
+        seguridadSocialEmpleado: 0,
+        retencionFuente: 0,
+        fiado: 0,
+        aportesEmpleador: 0,
+        provisiones: 0,
+      };
+      await expect(
+        service.postPayrollRun({ ...base, partes: { ...cero, neto: -10_000 } }),
+      ).rejects.toThrow();
+      await expect(
+        service.postPayrollRun({ ...base, partes: { ...cero, neto: 0, saldoACargoEmpleados: 10_000 } }),
+      ).rejects.toThrow();
+      expect(ledger.post).not.toHaveBeenCalled();
     });
 
     it('no postea asientos en cero (recepción o nómina sin monto)', async () => {
@@ -428,8 +593,73 @@ describe('LedgerPostingService · asientos automáticos', () => {
       await service.postPayrollRun({
         runId: 'n0',
         date: '2026-09-30',
-        amount: 0,
         period: '2026-09',
+        partes: {
+          neto: 0,
+          seguridadSocialEmpleado: 0,
+          retencionFuente: 0,
+          fiado: 0,
+          aportesEmpleador: 0,
+          provisiones: 0,
+        },
+      });
+
+      expect(ledger.post).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('orden de producción (ítem 1.20)', () => {
+    it('capitaliza mano de obra y empaque: débito 1435 contra costos absorbidos', async () => {
+      // Lote de 142.000: 88.000 de insumos, 40.000 de mano de obra y 14.000 de
+      // empaque; entra a bodega a 1.183 x 120 = 141.960 (residuo de -40).
+      await service.postProductionOrder({
+        orderId: 'op1',
+        number: 'OP-000001',
+        date: '2026-10-15',
+        sedeId: SEDE,
+        valorTerminado: 141_960,
+        materiales: 88_000,
+        manoDeObra: 40_000,
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      // Los insumos ya estaban en la 1435: solo entra lo que se agregó.
+      expect(amountOn(ACC.INVENTARIO, 'debit')).toBe(53_960);
+      expect(amountOn(ACC.MANO_OBRA_ABSORBIDA, 'credit')).toBe(40_000);
+      // Empaque (14.000) menos el residuo del redondeo (40).
+      expect(amountOn(ACC.COSTOS_INDIRECTOS_ABSORBIDOS, 'credit')).toBe(13_960);
+      expect(ledger.post.mock.calls.at(-1)?.[0]).toMatchObject({
+        sourceType: 'production_order',
+        sourceId: 'op1',
+      });
+    });
+
+    it('sin mano de obra ni empaque y residuo negativo: el residuo va al débito de 7305', async () => {
+      // 1.000 de insumos en 3 unidades: 333 x 3 = 999 entra a bodega.
+      await service.postProductionOrder({
+        orderId: 'op2',
+        number: 'OP-000002',
+        date: '2026-10-15',
+        sedeId: SEDE,
+        valorTerminado: 999,
+        materiales: 1_000,
+        manoDeObra: 0,
+      });
+
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.INVENTARIO, 'credit')).toBe(1);
+      expect(amountOn(ACC.COSTOS_INDIRECTOS_ABSORBIDOS, 'debit')).toBe(1);
+    });
+
+    it('si el terminado vale lo mismo que los insumos no postea nada', async () => {
+      await service.postProductionOrder({
+        orderId: 'op3',
+        number: 'OP-000003',
+        date: '2026-10-15',
+        sedeId: SEDE,
+        valorTerminado: 5_000,
+        materiales: 5_000,
+        manoDeObra: 0,
       });
 
       expect(ledger.post).not.toHaveBeenCalled();

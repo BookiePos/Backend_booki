@@ -54,6 +54,7 @@ export const ORIGENES_AUTOMATICOS: readonly string[] = [
   'purchase_receipt',
   'payroll_run',
   'reclasificacion_puc',
+  'production_order',
 ];
 
 export function esOrigenReservado(sourceType: string): boolean {

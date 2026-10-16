@@ -30,6 +30,8 @@ import {
 } from '../domain/restaurant.constants';
 import { ParamsService } from '../../core-params/application/params.service';
 import { TaxService } from '../../core-tax/application/tax.service';
+import { nombreDeMesa } from '../domain/nombre-mesa';
+import { totalesDeComanda } from '../domain/totales-comanda';
 import {
   AddItemsDto,
   CancelOrderDto,
@@ -372,12 +374,12 @@ export class RestaurantService {
 
     this.recomputeTotals(order);
     const note =
-      `Restaurante · Mesa ${order.tableName} · Comanda ${order.number}` +
+      `Restaurante · ${nombreDeMesa(order.tableName)} · Comanda ${order.number}` +
       (order.tipAmount > 0 ? ` · Propina sugerida $${order.tipAmount}` : '');
     const posOrder = await this.posOrders.open(
       {
         sedeId: order.sedeId.toString(),
-        label: `Mesa ${order.tableName}`,
+        label: nombreDeMesa(order.tableName),
         note,
         lines: order.items.map((i) => ({
           productId: i.productId!.toString(),
@@ -445,19 +447,13 @@ export class RestaurantService {
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
 
+  /** Precuenta: el INC va incluido en la carta, como lo cobra el POS. */
   private recomputeTotals(order: RestaurantOrderDocument): void {
-    const subtotal = order.items.reduce(
-      (a, i) => a + Math.round(i.unitPrice * i.qty),
-      0,
-    );
-    const incAmount = Math.round((subtotal * order.incRate) / 100);
-    const tipAmount = order.tipAccepted
-      ? Math.round((subtotal * order.tipRate) / 100)
-      : 0;
-    order.subtotal = subtotal;
-    order.incAmount = incAmount;
-    order.tipAmount = tipAmount;
-    order.total = subtotal + incAmount + tipAmount;
+    const t = totalesDeComanda(order.items, order.incRate, order.tipRate, order.tipAccepted);
+    order.subtotal = t.subtotal;
+    order.incAmount = t.incAmount;
+    order.tipAmount = t.tipAmount;
+    order.total = t.total;
   }
 
   private assertEditable(order: RestaurantOrderDocument): void {

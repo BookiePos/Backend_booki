@@ -23,3 +23,12 @@ export function sumBy<T>(items: readonly T[], pick: (item: T) => number): number
 export function clampNonNegative(amount: number): number {
   return amount < 0 ? 0 : cop(amount);
 }
+
+/**
+ * Redondea una cantidad que NO es dinero (horas, UVT, días) a `decimales`.
+ * Para pesos usa `cop()`: el dinero nunca lleva decimales.
+ */
+export function redondearA(cantidad: number, decimales: number): number {
+  const f = 10 ** decimales;
+  return Math.round((cantidad || 0) * f) / f;
+}

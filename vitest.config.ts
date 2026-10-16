@@ -12,6 +12,13 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.spec.ts'],
     setupFiles: ['reflect-metadata'],
+    // Ítem 5.1: `pnpm test:cobertura` y el gate de vitest la miden. Solo el
+    // código de producción: specs, semillas y scripts de datos no cuentan.
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.spec.ts', 'src/seed/**', 'src/datos/**', 'src/main.ts'],
+    },
   },
   plugins: [
     tsconfigPaths(),

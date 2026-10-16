@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -45,6 +46,7 @@ import {
 } from '../domain/turnos-classify';
 import {
   DEFAULT_PAYROLL_SETTINGS,
+  DIAS_MES,
   PayrollSettingsData,
 } from '../domain/payroll.constants';
 import {
@@ -67,9 +69,20 @@ import {
   MotivoRetiro,
 } from '../domain/liquidacion-calc';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
+import {
+  allowedSedeIds,
+  assertSedeAccess,
+  type SedeScopeUser,
+} from '../../core-auth/domain/sede-access';
 import { ParamsService } from '../../core-params/application/params.service';
-import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
-import { sumBy } from '../../finance/domain/money.util';
+import {
+  LedgerPostingService,
+  lineasNominaCausada,
+  type PartesNomina,
+} from '../../core-ledger/application/ledger-posting.service';
+import { cop, sumBy } from '../../finance/domain/money.util';
+import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
+import { diasALiquidar } from '../domain/descanso-remunerado';
 
 export interface PreviewResult {
   input: {
@@ -109,6 +122,7 @@ export class PayrollService {
   async sendSlip(
     runId: string,
     employeeId: string,
+    user?: SedeScopeUser,
   ): Promise<{
     sent: boolean;
     simulated?: boolean;
@@ -116,7 +130,7 @@ export class PayrollService {
     error?: string;
     id?: string;
   }> {
-    const run = await this.getRun(runId);
+    const run = await this.getRun(runId, user);
     const slip = run.slips.find((s) => s.employeeId === employeeId);
     if (!slip) {
       throw new NotFoundException('Desprendible no encontrado en esta corrida.');
@@ -192,7 +206,9 @@ export class PayrollService {
     employeeId: string,
     from: string,
     to: string,
+    user?: SedeScopeUser,
   ): Promise<NovedadesTurnos> {
+    if (user) await this.empleadoEnAlcance(employeeId, user);
     const s = await this.parametrosEn(to);
     // Desde el lunes de la semana de `from`: el tope semanal de la jornada se
     // llena también con los días previos de esa semana.
@@ -276,12 +292,28 @@ export class PayrollService {
     dto: UpdatePayrollSettingsDto,
   ): Promise<PayrollSettingsDocument> {
     const doc = await this.getSettings();
-    Object.assign(doc, dto);
+    const { confirmarExoneracion, ...cambios } = dto;
+    Object.assign(doc, cambios);
+    // Solo la respuesta explícita a la pregunta (`PreguntaExoneracion`) deja la
+    // exoneración confirmada. Que llegue `empresaExoneradaAportes` no basta: el
+    // formulario de Ajustes puede mandarlo sin que nadie haya respondido.
+    if (confirmarExoneracion === true) {
+      if (cambios.empresaExoneradaAportes === undefined) {
+        throw new BadRequestException(
+          'Para confirmar la exoneración de aportes indica si la empresa está exonerada.',
+        );
+      }
+      doc.exoneracionConfirmada = true;
+    }
     await doc.save();
     return doc;
   }
 
-  async preview(dto: PreviewPayrollDto): Promise<PreviewResult> {
+  async preview(
+    dto: PreviewPayrollDto,
+    user?: SedeScopeUser,
+  ): Promise<PreviewResult> {
+    if (user && dto.employeeId) await this.empleadoEnAlcance(dto.employeeId, user);
     const s = await this.parametrosEn(
       dto.period ? fechaCorteDePeriodo(dto.period) : undefined,
     );
@@ -335,7 +367,25 @@ export class PayrollService {
     dto: CreateRunDto,
     user: JwtUser,
   ): Promise<PayrollRunDocument> {
+    // Quien no ve todas las sedes liquida solo la nómina de una de las suyas:
+    // la consolidada lleva el salario de toda la empresa (ítem 3.9).
+    if (allowedSedeIds(user) !== null) {
+      if (dto.coverage !== 'sede' || !dto.sedeId) {
+        throw new ForbiddenException(
+          'Solo puedes liquidar la nómina de una de tus sedes.',
+        );
+      }
+      assertSedeAccess(user, dto.sedeId);
+    }
     const s = await this.parametrosEn(fechaCorteDePeriodo(dto.period));
+    // La exoneración de aportes no se presume (ítem 1.15): sin respuesta
+    // explícita no se liquida, porque de ella depende si se pagan salud, SENA
+    // e ICBF del empleador.
+    if (!s.exoneracionConfirmada) {
+      throw new BadRequestException(
+        'Antes de liquidar la nómina indica en Ajustes si la empresa está exonerada de aportes (art. 114-1 ET).',
+      );
+    }
     const coverage = dto.coverage ?? 'all';
     const filter: Record<string, unknown> = {
       status: 'activo',
@@ -435,7 +485,9 @@ export class PayrollService {
     const run = Types.ObjectId.isValid(id)
       ? await this.runs.findById(id).exec()
       : null;
-    if (!run) throw new NotFoundException('Corrida no encontrada');
+    if (!run || !this.corridaEnAlcance(run, user)) {
+      throw new NotFoundException('Corrida no encontrada');
+    }
     if (run.status !== 'borrador') {
       throw new BadRequestException(
         'Solo se puede recalcular una corrida en borrador.',
@@ -544,7 +596,8 @@ export class PayrollService {
     const slips: PayrollSlip[] = emps.map((e) => {
       const empDeductions = dedByEmp.get(e.id) ?? [];
       const otrasDeducciones = empDeductions.reduce((sum, d) => sum + d.amount, 0);
-      const turnos = classifyTurnos(recsByEmp.get(e.id) ?? [], {
+      const registros = recsByEmp.get(e.id) ?? [];
+      const turnos = classifyTurnos(registros, {
         desde: from,
         jornadaSemanal: (f) => jornadaSemanalVigente(f, s),
       });
@@ -560,7 +613,21 @@ export class PayrollService {
       const input: PayrollInput = {
         salarioBase: e.salary ?? 0,
         salaryType: (e.salaryType as SalaryType) ?? 'ordinario',
-        diasTrabajados: turnos.diasTrabajados,
+        // Días con turno + descansos remunerados que ganó (domingos y días no
+        // laborables de semanas completas, festivos), sobre el mes comercial
+        // de 30 días: el mes completo paga 30 aunque tenga 28 o 31 (ítem 1.19).
+        // Basta la entrada: olvidar la salida no quita el día ni el descanso de
+        // la semana; solo deja sin horas extra ni recargos (classifyTurnos), y
+        // la colilla lo avisa.
+        diasTrabajados: Math.min(
+          DIAS_MES,
+          diasALiquidar(
+            new Set(registros.filter((r) => r.checkIn).map((r) => r.workDate)),
+            from,
+            to,
+            s.diasLaborablesSemana ?? 6,
+          ),
+        ),
         arlRiskLevel: e.arlRiskLevel as ArlLevel | undefined,
         novedades: Object.keys(novedades).length > 0 ? novedades : undefined,
         fechaCorte: fechaCorteDePeriodo(period),
@@ -585,6 +652,7 @@ export class PayrollService {
         totalDeducciones: breakdown.deducciones.total,
         netoPagar: breakdown.netoPagar,
         costoEmpleador: breakdown.costoEmpleador,
+        alertas: [...alertasDeTope(turnos.topeExtras), ...alertasSinSalida(registros, from)],
       };
     });
 
@@ -655,20 +723,37 @@ export class PayrollService {
 
   // ── Deducciones de empleado (consumos, descuentos) ──────────────────────────
 
+  /**
+   * Verifica, sin crear nada, que el empleado existe y está activo. Ventas lo
+   * llama ANTES de vender para no dejar una venta fiada sin deducción.
+   */
+  async assertEmpleadoParaConsumo(employeeId: string): Promise<void> {
+    const emp = await this.employees.findById(employeeId).select('status').exec();
+    if (!emp || emp.status !== 'activo') {
+      throw new BadRequestException('El empleado seleccionado no existe o no está activo');
+    }
+  }
+
   /** Crea una deducción; nace 'pending' (requiere aprobación para descontarse). */
   async createDeduction(
     dto: CreateDeductionDto,
     user: JwtUser,
+    opts: { sinAlcanceDeSede?: boolean } = {},
   ): Promise<PayrollDeductionDocument> {
     const emp = await this.employees.findById(dto.employeeId).exec();
-    if (!emp) throw new NotFoundException('Empleado no encontrado');
+    // `sinAlcanceDeSede` es solo para el consumo POS (ventas): el empleado
+    // consumió en esta sede aunque sea de otra o no tenga sede. El endpoint
+    // HTTP sí aplica el alcance de sede del usuario.
+    if (!emp || (!opts.sinAlcanceDeSede && !this.sedeEnAlcance(user, emp.sedeId))) {
+      throw new NotFoundException('Empleado no encontrado');
+    }
     return this.deductions.create({
       employeeId: emp.id,
       employeeName: `${emp.firstName} ${emp.lastName}`.trim(),
       docNumber: emp.docNumber,
       sedeId: emp.sedeId,
       concept: dto.concept,
-      amount: Math.round(dto.amount),
+      amount: cop(dto.amount),
       date: dto.date ?? new Date().toLocaleDateString('en-CA'),
       status: 'pending',
       source: dto.source ?? 'manual',
@@ -734,11 +819,16 @@ export class PayrollService {
       .exec();
   }
 
-  async listDeductions(query: {
-    employeeId?: string;
-    status?: DeductionStatus;
-  }): Promise<PayrollDeductionDocument[]> {
+  async listDeductions(
+    query: {
+      employeeId?: string;
+      status?: DeductionStatus;
+    },
+    user?: SedeScopeUser,
+  ): Promise<PayrollDeductionDocument[]> {
     const filter: Record<string, unknown> = {};
+    const sedes = user ? allowedSedeIds(user) : null;
+    if (sedes) filter.sedeId = { $in: sedes.map((id) => new Types.ObjectId(id)) };
     if (query.employeeId) filter.employeeId = query.employeeId;
     if (query.status) filter.status = query.status;
     return this.deductions.find(filter).sort({ createdAt: -1 }).exec();
@@ -746,9 +836,12 @@ export class PayrollService {
 
   private async deductionOrFail(
     id: string,
+    user?: SedeScopeUser,
   ): Promise<PayrollDeductionDocument> {
     const d = await this.deductions.findById(id).exec();
-    if (!d) throw new NotFoundException('Deducción no encontrada');
+    if (!d || (user && !this.sedeEnAlcance(user, d.sedeId))) {
+      throw new NotFoundException('Deducción no encontrada');
+    }
     return d;
   }
 
@@ -757,7 +850,7 @@ export class PayrollService {
     id: string,
     user: JwtUser,
   ): Promise<PayrollDeductionDocument> {
-    const d = await this.deductionOrFail(id);
+    const d = await this.deductionOrFail(id, user);
     if (d.status !== 'pending') {
       throw new BadRequestException(
         `Solo se aprueban deducciones pendientes (estado actual: ${d.status}).`,
@@ -774,7 +867,7 @@ export class PayrollService {
     id: string,
     user: JwtUser,
   ): Promise<PayrollDeductionDocument> {
-    const d = await this.deductionOrFail(id);
+    const d = await this.deductionOrFail(id, user);
     if (d.status !== 'pending') {
       throw new BadRequestException(
         `Solo se rechazan deducciones pendientes (estado actual: ${d.status}).`,
@@ -787,7 +880,10 @@ export class PayrollService {
     return d;
   }
 
-  async liquidacion(dto: LiquidacionDto): Promise<{
+  async liquidacion(
+    dto: LiquidacionDto,
+    user?: SedeScopeUser,
+  ): Promise<{
     input: {
       employeeId?: string;
       employeeName?: string;
@@ -800,6 +896,7 @@ export class PayrollService {
     };
     breakdown: LiquidacionBreakdown;
   }> {
+    if (user && dto.employeeId) await this.empleadoEnAlcance(dto.employeeId, user);
     const s = await this.parametrosEn(dto.fechaFin);
     let salarioBase = dto.salarioBase ?? 0;
     let salaryType: SalaryType = (dto.salaryType as SalaryType) ?? 'ordinario';
@@ -861,26 +958,61 @@ export class PayrollService {
     };
   }
 
-  listRuns(): Promise<PayrollRunDocument[]> {
+  listRuns(user?: SedeScopeUser): Promise<PayrollRunDocument[]> {
+    const sedes = user ? allowedSedeIds(user) : null;
+    const filter = sedes
+      ? {
+          coverage: 'sede',
+          sedeId: { $in: sedes.map((id) => new Types.ObjectId(id)) },
+        }
+      : {};
     return this.runs
-      .find()
+      .find(filter)
       .select('-slips')
       .sort({ createdAt: -1 })
       .limit(60)
       .exec();
   }
 
-  async getRun(id: string): Promise<PayrollRunDocument> {
+  async getRun(id: string, user?: SedeScopeUser): Promise<PayrollRunDocument> {
     const run = Types.ObjectId.isValid(id)
       ? await this.runs.findById(id).exec()
       : null;
-    if (!run) throw new NotFoundException('Corrida de nómina no encontrada');
+    if (!run || (user && !this.corridaEnAlcance(run, user))) {
+      throw new NotFoundException('Corrida de nómina no encontrada');
+    }
     return run;
   }
 
+  // ─── Alcance por sede (ítem 3.9) ──────────────────────────────────────────
+  // Sin `user` (llamadas internas) no se filtra. Lo de otra sede da 404, igual
+  // que si no existiera. Lo que no tiene sede es de la empresa y solo lo ve
+  // quien la ve entera.
+
+  private sedeEnAlcance(user: SedeScopeUser, sedeId?: Types.ObjectId): boolean {
+    const sedes = allowedSedeIds(user);
+    return sedes === null || (!!sedeId && sedes.includes(sedeId.toString()));
+  }
+
+  /** La consolidada (`all`) solo la ve quien ve todas las sedes. */
+  private corridaEnAlcance(run: PayrollRunDocument, user: SedeScopeUser): boolean {
+    if (allowedSedeIds(user) === null) return true;
+    return run.coverage === 'sede' && this.sedeEnAlcance(user, run.sedeId);
+  }
+
+  private async empleadoEnAlcance(employeeId: string, user: SedeScopeUser): Promise<void> {
+    if (allowedSedeIds(user) === null) return;
+    const emp = Types.ObjectId.isValid(employeeId)
+      ? await this.employees.findById(employeeId).select('sedeId').exec()
+      : null;
+    if (!emp || !this.sedeEnAlcance(user, emp.sedeId)) {
+      throw new NotFoundException('Empleado no encontrado');
+    }
+  }
+
   /** Cierra una corrida (borrador → cerrada). Queda fija en el historial. */
-  async closeRun(id: string): Promise<PayrollRunDocument> {
-    const run = await this.getRun(id);
+  async closeRun(id: string, user?: SedeScopeUser): Promise<PayrollRunDocument> {
+    const run = await this.getRun(id, user);
     if (run.status === 'cerrada') {
       throw new BadRequestException('La nómina ya está cerrada.');
     }
@@ -891,7 +1023,7 @@ export class PayrollService {
     const esperadas = run.slips.flatMap((sl) => sl.otrasDeduccionesDetalle ?? []);
     const aplicadas = await this.deductions
       .find({ appliedRunId: run._id, status: 'applied' })
-      .select('amount')
+      .select('amount source')
       .exec();
     if (
       aplicadas.length !== esperadas.length ||
@@ -901,30 +1033,66 @@ export class PayrollService {
         'Los consumos que descuentan las colillas no están amarrados a esta nómina. Recalcúlala antes de cerrarla.',
       );
     }
+
+    // Asiento contable de la nómina causada, con el pasivo separado por
+    // concepto (ítem 1.9). Las partes salen de las colillas: su suma es el
+    // costo del empleador (devengados + aportes + provisiones). De las "otras
+    // deducciones", solo el fiado del POS (`source: 'sale'`) cancela la 1305
+    // que abrió la venta; las manuales (libranzas, embargos) son un pasivo con
+    // un tercero. El neto negativo de una colilla no se paga: queda a cargo del
+    // empleado (1365).
+    const ded = (sl: (typeof run.slips)[number]) => sl.breakdown?.deducciones;
+    const fiado = sumBy(
+      aplicadas.filter((d) => d.source === 'sale'),
+      (d) => d.amount,
+    );
+    const partes: PartesNomina = {
+      neto: sumBy(run.slips, (sl) => Math.max(0, sl.netoPagar ?? 0)),
+      saldoACargoEmpleados: sumBy(run.slips, (sl) => Math.max(0, -(sl.netoPagar ?? 0))),
+      seguridadSocialEmpleado: sumBy(
+        run.slips,
+        (sl) => (ded(sl)?.salud ?? 0) + (ded(sl)?.pension ?? 0) + (ded(sl)?.fsp ?? 0),
+      ),
+      retencionFuente: sumBy(run.slips, (sl) => ded(sl)?.retencionFuente ?? 0),
+      fiado,
+      otrasDeducciones: sumBy(run.slips, (sl) => ded(sl)?.otras ?? 0) - fiado,
+      aportesEmpleador: sumBy(
+        run.slips,
+        (sl) => sl.breakdown?.aportesEmpleador?.total ?? 0,
+      ),
+      provisiones: sumBy(run.slips, (sl) => sl.breakdown?.provisiones?.total ?? 0),
+    };
+    // Se valida ANTES de cerrar: si las partes no dan un asiento cuadrado, la
+    // corrida sigue en borrador en vez de cerrarse sin asiento.
+    try {
+      lineasNominaCausada(partes);
+    } catch (err) {
+      throw new BadRequestException(
+        `No se puede cerrar la nómina: ${(err as Error).message}`,
+      );
+    }
+
     run.status = 'cerrada';
     run.closedAt = new Date();
     await run.save();
 
-    // Asiento contable de la nómina causada (gasto de personal / salarios por
-    // pagar). Best-effort e idempotente por (payroll_run, runId): igual que el
-    // posteo de ventas, un fallo del ledger NO tumba el cierre de la corrida (la
-    // corrida es la fuente de verdad y el asiento puede reconstruirse). Se usa
-    // `totals.costo` (costo total empleador: devengados + aportes + provisiones)
-    // como monto del gasto de personal.
+    // Best-effort e idempotente por (payroll_run, runId): igual que el posteo
+    // de ventas, un fallo del ledger NO tumba el cierre de la corrida (la
+    // corrida es la fuente de verdad y el asiento puede reconstruirse).
     await this.ledgerPosting.postPayrollRun({
       runId: run._id.toString(),
-      date: (run.closedAt ?? new Date()).toLocaleDateString('en-CA'),
+      date: fechaColombia(run.closedAt ?? new Date()),
       sedeId: run.sedeId ? run.sedeId.toString() : undefined,
-      amount: Math.round(run.totals?.costo ?? 0),
       period: run.period,
+      partes,
       userEmail: run.createdByEmail,
     });
 
     return run;
   }
 
-  async removeRun(id: string): Promise<void> {
-    const run = await this.getRun(id);
+  async removeRun(id: string, user?: SedeScopeUser): Promise<void> {
+    const run = await this.getRun(id, user);
     if (run.status === 'cerrada') {
       throw new BadRequestException(
         'No se puede eliminar una nómina cerrada. Es el comprobante del período.',
@@ -942,4 +1110,37 @@ export class PayrollService {
       .exec();
     await run.deleteOne();
   }
+}
+
+/** Aviso de turnos del período con entrada y sin salida (ítem 1.19). */
+function alertasSinSalida(
+  registros: Array<{ workDate: string; checkIn?: unknown; checkOut?: unknown }>,
+  desde: string,
+): string[] {
+  // Solo los del período: los de la semana anterior al día 1 sirven para saber
+  // si la semana está completa, pero ese día no se liquida en esta colilla.
+  const n = registros.filter((r) => r.workDate >= desde && r.checkIn && !r.checkOut).length;
+  return n > 0
+    ? [`${n} turno(s) sin salida: el día se paga, pero sin horas extra ni recargos. Corrige la asistencia antes de cerrar.`]
+    : [];
+}
+
+/**
+ * Avisos del tope de horas extra (Ley 2466 de 2025, art. 13: máximo 2 h al día
+ * y 12 h a la semana). Las horas se pagan igual; el aviso es para corregir la
+ * programación de turnos (ítem 1.19).
+ */
+function alertasDeTope(t: { diasSobre2h: number; semanasSobre12h: number }): string[] {
+  const alertas: string[] = [];
+  if (t.diasSobre2h > 0) {
+    alertas.push(
+      `Más de 2 horas extra en ${t.diasSobre2h} ${t.diasSobre2h === 1 ? 'día' : 'días'} (tope legal, Ley 2466 de 2025, art. 13).`,
+    );
+  }
+  if (t.semanasSobre12h > 0) {
+    alertas.push(
+      `Más de 12 horas extra en ${t.semanasSobre12h} ${t.semanasSobre12h === 1 ? 'semana' : 'semanas'} (tope legal, Ley 2466 de 2025, art. 13).`,
+    );
+  }
+  return alertas;
 }

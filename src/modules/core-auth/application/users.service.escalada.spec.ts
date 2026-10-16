@@ -511,6 +511,8 @@ describe('InvitationsService · invitar como Dueño', () => {
       { sendInvitation: vi.fn().mockResolvedValue({ sent: true }) } as never,
       {} as never,
       { get: () => undefined } as never,
+      // Control-plane: la empresa del enlace existe (ítem 3.5).
+      { findById: async (id: string) => ({ _id: id, plan: 'negocio' }) } as never,
     );
   });
 

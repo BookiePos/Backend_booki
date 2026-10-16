@@ -42,12 +42,20 @@ const EMP = {
 function armar(opts: {
   turnos?: { employeeId: string; workDate: string; checkIn: string; checkOut: string }[];
   dominicalParam?: { value: number; createdByEmail?: string };
-  aplicadas?: { amount: number }[];
+  aplicadas?: { amount: number; source?: 'sale' | 'manual' }[];
   run?: Record<string, unknown>;
   empleado?: Record<string, unknown>;
+  /** Por defecto la empresa ya respondió la exoneración (ítem 1.15). */
+  exoneracionConfirmada?: boolean;
 }) {
   const settings = {
-    findOne: () => exec({ toObject: () => structuredClone(DEFAULT_PAYROLL_SETTINGS) }),
+    findOne: () =>
+      exec({
+        toObject: () => ({
+          ...structuredClone(DEFAULT_PAYROLL_SETTINGS),
+          exoneracionConfirmada: opts.exoneracionConfirmada ?? true,
+        }),
+      }),
   };
   const created: Record<string, unknown>[] = [];
   const runs = {
@@ -93,7 +101,7 @@ function armar(opts: {
   return { service, created, attendance, ledgerPosting };
 }
 
-const USER = { email: 'dueno@x.co' } as any;
+const USER = { email: 'dueno@x.co', role: 'owner', permissions: [], sedeIds: [] } as any;
 const DOMINGO = { employeeId: 'e1', workDate: '2026-09-13', checkIn: '08:00', checkOut: '16:00' };
 
 describe('PayrollService.createRun · recargos de Turnos', () => {
@@ -186,5 +194,195 @@ describe('PayrollService.closeRun · deducciones amarradas', () => {
     await service.closeRun(String(run._id));
 
     expect(run.status).toBe('cerrada');
+  });
+
+  it('el asiento recibe el pasivo separado por concepto, sumando las colillas (ítem 1.9)', async () => {
+    const colilla = (neto: number, otras: number) => ({
+      employeeId: 'e',
+      otrasDeduccionesDetalle: otras ? [{ concept: 'Consumo POS', amount: otras }] : [],
+      netoPagar: neto,
+      breakdown: {
+        deducciones: { salud: 40_000, pension: 40_000, fsp: 0, retencionFuente: 10_000, otras },
+        aportesEmpleador: { total: 150_000 },
+        provisiones: { total: 120_000 },
+      },
+    });
+    const run = {
+      ...corrida([]),
+      slips: [colilla(900_000, 16_900), colilla(1_000_000, 0)],
+    };
+    const { service, ledgerPosting } = armar({
+      run,
+      aplicadas: [{ amount: 16_900, source: 'sale' }],
+    });
+
+    await service.closeRun(String(run._id));
+
+    expect(ledgerPosting.postPayrollRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        partes: {
+          neto: 1_900_000,
+          saldoACargoEmpleados: 0,
+          seguridadSocialEmpleado: 160_000,
+          retencionFuente: 20_000,
+          fiado: 16_900,
+          otrasDeducciones: 0,
+          aportesEmpleador: 300_000,
+          provisiones: 240_000,
+        },
+      }),
+    );
+  });
+
+  it('solo el fiado del POS va como fiado; las deducciones manuales van aparte (ítem 1.9)', async () => {
+    const colilla = {
+      employeeId: 'e',
+      otrasDeduccionesDetalle: [
+        { concept: 'Consumo POS', amount: 16_900 },
+        { concept: 'Libranza Banco X', amount: 200_000 },
+      ],
+      netoPagar: 700_000,
+      breakdown: {
+        deducciones: { salud: 40_000, pension: 40_000, fsp: 0, retencionFuente: 0, otras: 216_900 },
+        aportesEmpleador: { total: 150_000 },
+        provisiones: { total: 120_000 },
+      },
+    };
+    const run = { ...corrida([]), slips: [colilla] };
+    const { service, ledgerPosting } = armar({
+      run,
+      aplicadas: [
+        { amount: 16_900, source: 'sale' },
+        { amount: 200_000, source: 'manual' },
+      ],
+    });
+
+    await service.closeRun(String(run._id));
+
+    const partes = (ledgerPosting.postPayrollRun.mock.calls[0] as any)[0].partes;
+    expect(partes.fiado).toBe(16_900);
+    expect(partes.otrasDeducciones).toBe(200_000);
+  });
+
+  it('una colilla con neto negativo queda a cargo del empleado y no resta del neto de los demás', async () => {
+    const colilla = (neto: number, otras: number) => ({
+      employeeId: 'e',
+      otrasDeduccionesDetalle: otras ? [{ concept: 'Embargo', amount: otras }] : [],
+      netoPagar: neto,
+      breakdown: {
+        deducciones: { salud: 0, pension: 0, fsp: 0, retencionFuente: 0, otras },
+        aportesEmpleador: { total: 0 },
+        provisiones: { total: 0 },
+      },
+    });
+    const run = { ...corrida([]), slips: [colilla(-50_000, 150_000), colilla(1_000_000, 0)] };
+    const { service, ledgerPosting } = armar({
+      run,
+      aplicadas: [{ amount: 150_000, source: 'manual' }],
+    });
+
+    await service.closeRun(String(run._id));
+
+    const partes = (ledgerPosting.postPayrollRun.mock.calls[0] as any)[0].partes;
+    expect(partes.neto).toBe(1_000_000);
+    expect(partes.saldoACargoEmpleados).toBe(50_000);
+    expect(run.status).toBe('cerrada');
+  });
+
+  it('si las partes no dan un asiento cuadrado la corrida no se cierra', async () => {
+    const run = {
+      ...corrida([]),
+      slips: [
+        {
+          employeeId: 'e',
+          otrasDeduccionesDetalle: [],
+          netoPagar: -10_000,
+          breakdown: {
+            deducciones: { salud: 0, pension: 0, fsp: 0, retencionFuente: 0, otras: 0 },
+            aportesEmpleador: { total: 0 },
+            provisiones: { total: 0 },
+          },
+        },
+      ],
+    };
+    const { service, ledgerPosting } = armar({ run, aplicadas: [] });
+
+    await expect(service.closeRun(String(run._id))).rejects.toBeInstanceOf(BadRequestException);
+    expect(run.status).toBe('borrador');
+    expect(run.save).not.toHaveBeenCalled();
+    expect(ledgerPosting.postPayrollRun).not.toHaveBeenCalled();
+  });
+});
+
+describe('PayrollService.createRun · exoneración de aportes (ítem 1.15)', () => {
+  it('no crea la nómina si la empresa no ha respondido si está exonerada', async () => {
+    const { service, created } = armar({ exoneracionConfirmada: false });
+
+    await expect(
+      service.createRun({ period: '2026-09' } as any, USER),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(created).toHaveLength(0);
+  });
+});
+
+describe('PayrollService.createRun · descanso remunerado (ítem 1.19)', () => {
+  it('lunes a sábado todo septiembre: paga los 30 días, no 26', async () => {
+    // El lunes 31 de agosto abre la semana del domingo 6 de septiembre.
+    const turnos: { employeeId: string; workDate: string; checkIn: string; checkOut: string }[] = [
+      { employeeId: 'e1', workDate: '2026-08-31', checkIn: '08:00', checkOut: '15:00' },
+    ];
+    for (let d = 1; d <= 30; d++) {
+      const fecha = `2026-09-${String(d).padStart(2, '0')}`;
+      if (new Date(`${fecha}T12:00:00Z`).getUTCDay() === 0) continue; // domingo
+      turnos.push({ employeeId: 'e1', workDate: fecha, checkIn: '08:00', checkOut: '15:00' });
+    }
+    const { service, created } = armar({ turnos });
+
+    await service.createRun({ period: '2026-09' } as any, USER);
+
+    const slip = (created[0]!.slips as any[])[0];
+    // 26 días de septiembre con turno + 4 domingos ganados.
+    expect(turnos).toHaveLength(27);
+    expect(slip.diasTrabajados).toBe(30);
+    expect(slip.alertas).toEqual([]);
+  });
+
+  it('avisa en la colilla cuando se pasa del tope de horas extra (Ley 2466, art. 13)', async () => {
+    const turnos = ['07', '08', '09'].map((d) => ({
+      employeeId: 'e1',
+      workDate: `2026-09-${d}`,
+      checkIn: '07:00',
+      checkOut: '18:00',
+    }));
+    const { service, created } = armar({ turnos });
+
+    await service.createRun({ period: '2026-09' } as any, USER);
+
+    const slip = (created[0]!.slips as any[])[0];
+    expect(slip.alertas).toHaveLength(1);
+    expect(slip.alertas[0]).toContain('3 días');
+  });
+
+  it('olvidar la salida no quita el día ni el domingo de esa semana, y la colilla lo avisa', async () => {
+    // El 31 de agosto también quedó sin salida: completa la semana, pero no es
+    // de este período y no entra en el aviso.
+    const turnos: { employeeId: string; workDate: string; checkIn: string; checkOut: string }[] = [
+      { employeeId: 'e1', workDate: '2026-08-31', checkIn: '08:00', checkOut: '' },
+    ];
+    for (let d = 1; d <= 30; d++) {
+      const fecha = `2026-09-${String(d).padStart(2, '0')}`;
+      if (new Date(`${fecha}T12:00:00Z`).getUTCDay() === 0) continue; // domingo
+      // El miércoles 9 el cajero marcó la entrada y olvidó la salida.
+      const checkOut = fecha === '2026-09-09' ? '' : '15:00';
+      turnos.push({ employeeId: 'e1', workDate: fecha, checkIn: '08:00', checkOut });
+    }
+    const { service, created } = armar({ turnos });
+
+    await service.createRun({ period: '2026-09' } as any, USER);
+
+    const slip = (created[0]!.slips as any[])[0];
+    expect(slip.diasTrabajados).toBe(30);
+    expect(slip.alertas).toHaveLength(1);
+    expect(slip.alertas[0]).toContain('1 turno(s) sin salida');
   });
 });

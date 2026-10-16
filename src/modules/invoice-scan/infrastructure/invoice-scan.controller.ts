@@ -24,6 +24,7 @@ import {
   SplitInvoiceScanDto,
   UpdateInvoiceScanDto,
 } from '../application/dto/invoice-scan.dto';
+import type { InvoiceScanDocument } from './schemas/invoice-scan.schema';
 import { ApplyAsExpenseDto } from '../application/dto/apply-as-expense.dto';
 import {
   INVOICE_IMAGE_MAX_BYTES,
@@ -51,6 +52,15 @@ import { PLAN_FEATURES } from '../../control/domain/plans';
 export class InvoiceScanController {
   constructor(private readonly scans: InvoiceScanService) {}
 
+  /**
+   * Toda factura sale con URL firmada en sus páginas privadas (ítem 3.8): el
+   * documento crudo no trae URL que mostrar.
+   */
+  private async firmada(scan: Promise<InvoiceScanDocument>) {
+    const [firmado] = await this.scans.conUrlsFirmadas([await scan]);
+    return firmado;
+  }
+
   /** Historial del módulo: todas las facturas escaneadas, la última primero. */
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
   @Get()
@@ -60,13 +70,15 @@ export class InvoiceScanController {
     const known = (INVOICE_SCAN_STATUSES as readonly string[]).includes(
       status ?? '',
     );
-    return this.scans.list(known ? (status as InvoiceScanStatus) : undefined);
+    return this.scans
+      .list(known ? (status as InvoiceScanStatus) : undefined)
+      .then((scans) => this.scans.conUrlsFirmadas(scans));
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
   @Get(':id')
   get(@Param('id') id: string) {
-    return this.scans.getOrFail(id);
+    return this.firmada(this.scans.getOrFail(id));
   }
 
   /**
@@ -121,7 +133,7 @@ export class InvoiceScanController {
         );
       }
     }
-    return this.scans.upload(file, user, text, xml);
+    return this.firmada(this.scans.upload(file, user, text, xml));
   }
 
   /** Lee la factura con el modelo. Se puede reintentar si falla. */
@@ -129,7 +141,7 @@ export class InvoiceScanController {
   @Throttle(AI_THROTTLE)
   @Post(':id/extract')
   extract(@Param('id') id: string, @CurrentUser() user: JwtUser) {
-    return this.scans.extract(id, user);
+    return this.firmada(this.scans.extract(id, user));
   }
 
   /** Guarda las correcciones de la revisión. */
@@ -140,7 +152,7 @@ export class InvoiceScanController {
     @Body() dto: UpdateInvoiceScanDto,
     @CurrentUser() user: JwtUser,
   ) {
-    return this.scans.update(id, dto, user);
+    return this.firmada(this.scans.update(id, dto, user));
   }
 
   @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
@@ -150,7 +162,7 @@ export class InvoiceScanController {
     @Body() dto: MergeInvoiceScanDto,
     @CurrentUser() user: JwtUser,
   ) {
-    return this.scans.merge(id, dto.sourceId, user);
+    return this.firmada(this.scans.merge(id, dto.sourceId, user));
   }
 
   @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)
@@ -160,7 +172,7 @@ export class InvoiceScanController {
     @Body() dto: SplitInvoiceScanDto,
     @CurrentUser() user: JwtUser,
   ) {
-    return this.scans.split(id, dto.pageIndex, user);
+    return this.firmada(this.scans.split(id, dto.pageIndex, user));
   }
 
   /** Aplica la factura aprobada: inventario, gastos, CxP y proveedor. */
@@ -171,7 +183,7 @@ export class InvoiceScanController {
     @Body() dto: ApplyInvoiceScanDto,
     @CurrentUser() user: JwtUser,
   ) {
-    return this.scans.apply(id, user, dto);
+    return this.firmada(this.scans.apply(id, user, dto));
   }
 
   /**
@@ -185,7 +197,7 @@ export class InvoiceScanController {
     @Body() dto: ApplyAsExpenseDto,
     @CurrentUser() user: JwtUser,
   ) {
-    return this.scans.applyAsExpense(id, dto, user);
+    return this.firmada(this.scans.applyAsExpense(id, dto, user));
   }
 
   @RequirePermissions(PERMISSIONS.PURCHASING_MANAGE)

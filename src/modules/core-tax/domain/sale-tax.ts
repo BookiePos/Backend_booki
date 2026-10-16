@@ -14,57 +14,83 @@ export type SaleTaxKind = (typeof SALE_TAX_KINDS)[number];
 /** Código del INC en el catálogo de impuestos (core-tax, sembrado al 8 %). */
 export const INC_RESTAURANTE_CODE = 'INC_8';
 
-/** Lo que importa del negocio para decidir el impuesto. */
+/**
+ * Lo que importa del negocio para decidir el impuesto. Las responsabilidades
+ * del RUT (ítem 1.17) son opcionales: si no se diligencian se infieren del
+ * giro y de `responsabilidadFiscal`, que es el comportamiento anterior.
+ */
 export interface SaleTaxProfile {
   tipoNegocio?: BusinessType;
   responsabilidadFiscal?: ResponsabilidadFiscal;
+  /** Responsable de IVA (RUT 48) o no (RUT 49, art. 437 par. 3 ET). */
+  responsableIva?: boolean;
+  /** Responsable de INC (RUT 33) o no (RUT 34, art. 512-13 ET). */
+  responsableInc?: boolean;
+  /** Expendio de comidas bajo franquicia: IVA, no INC (art. 426 par. ET). */
+  franquicia?: boolean;
 }
 
-/** Tratamiento de IVA que trae el producto del catálogo. */
+/**
+ * Tratamiento que trae el producto del catálogo. `tratamiento` distingue, en
+ * un restaurante, lo que se sirve (expendio, con INC) de la mercancía que se
+ * revende sin servicio (leche, huevos, gaseosa para llevar), que lleva el IVA
+ * del bien. Sin dato, en un restaurante se toma como expendio.
+ */
 export interface ProductTax {
   ivaType: string;
   ivaRate: number;
+  tratamiento?: 'expendio' | 'mercancia';
 }
 
-/** Si el negocio causa INC (restaurante): solo entonces hace falta su tarifa. */
+/** Expendio de comidas y bebidas que no es franquicia (arts. 426 y 512-1 ET). */
+function esExpendio(profile: SaleTaxProfile): boolean {
+  return profile.tipoNegocio === 'restaurante' && profile.franquicia !== true;
+}
+
+/** Si es responsable de IVA. Sin dato, todo salvo `no_responsable_iva`. */
+function responsableIva(profile: SaleTaxProfile): boolean {
+  return profile.responsableIva ?? profile.responsabilidadFiscal !== 'no_responsable_iva';
+}
+
+/** Si el negocio puede causar INC: solo entonces hace falta su tarifa. */
 export function causesInc(profile: SaleTaxProfile): boolean {
-  return profile.tipoNegocio === 'restaurante';
+  return esExpendio(profile) && profile.responsableInc !== false;
 }
 
 /**
  * Decide el impuesto de una línea.
  *
- * 1. Restaurante → INC a la tarifa vigente del catálogo, sobre TODO lo que se
- *    sirve: el expendio de comidas y bebidas es un servicio excluido de IVA y
- *    gravado con INC (arts. 426, 512-1 num. 3 y 512-9 ET). Por eso no importa
- *    que el producto diga "gravado 19 %" o "excluido".
+ * 1. Expendio de comidas y bebidas que no es franquicia (restaurante, bar,
+ *    cafetería) → lo que se sirve es excluido de IVA y gravado con INC (arts.
+ *    426, 512-1 num. 3 y 512-9 ET), aunque el producto diga "gravado 19 %".
+ *    - Si el negocio no es responsable de INC (art. 512-13: persona natural,
+ *      un solo establecimiento, ingresos < 3.500 UVT), no lleva impuesto.
+ *    - SIMPLE: el INC no se integra a la tarifa consolidada; se causa aparte y
+ *      se declara y paga a través del SIMPLE (art. 915 ET).
+ *    - Sin dato de responsabilidad de INC se causa (lectura conservadora).
  *
- *    Lecturas conservadoras (ante la duda, causar el impuesto y no omitirlo):
- *    - SIMPLE: el INC de restaurantes no se integra a la tarifa consolidada;
- *      se causa aparte y se declara y paga a través del SIMPLE (art. 915 ET).
- *    - `no_responsable_iva`: ese campo habla de IVA. La no responsabilidad del
- *      INC (art. 512-13: persona natural, un solo establecimiento, ingresos
- *      < 3.500 UVT) no se registra hoy en ningún sitio, así que no se presume.
- *      Si el negocio cumple el 512-13 hace falta un campo propio para eso.
+ * 2. Franquicia (art. 426 par. ET, Oficio DIAN 1283/2020), retail y mercancía
+ *    revendida sin servicio en un restaurante → régimen de IVA del bien: si el
+ *    negocio no es responsable de IVA (art. 437 par. 3 ET, incluidos los del
+ *    SIMPLE que cumplen sus requisitos) no discrimina impuesto; si lo es,
+ *    IVA a la tarifa del producto.
  *
- * 2. No responsable de IVA → no discrimina IVA (art. 437 par. 3 ET).
- *
- * 3. Resto (responsable, gran contribuyente, SIMPLE en retail o perfil
- *    desconocido) → IVA a la tarifa del producto, que es el comportamiento de
- *    siempre. El SIMPLE en retail es responsable de IVA (art. 915 ET), salvo
- *    las personas naturales del SIMPLE que cumplen los requisitos del art. 437
- *    par. 3 ET, que no son responsables de IVA. Ese caso no se distingue hoy
- *    (pendiente de modelar en el perfil fiscal): ante la duda se causa IVA.
+ * Pendiente: el negocio mixto prorratea el IVA descontable (art. 490 ET).
  */
 export function saleTaxFor(
   profile: SaleTaxProfile,
   product: ProductTax,
   incRate: number,
 ): { kind: SaleTaxKind; rate: number } {
-  if (causesInc(profile)) {
-    return { kind: 'inc', rate: incRate };
+  // Lo que se sirve en un restaurante (no franquicia) es excluido de IVA y
+  // gravado con INC; si el negocio no es responsable de INC, no lleva nada.
+  if (esExpendio(profile) && product.tratamiento !== 'mercancia') {
+    return causesInc(profile)
+      ? { kind: 'inc', rate: incRate }
+      : { kind: 'ninguno', rate: 0 };
   }
-  if (profile.responsabilidadFiscal === 'no_responsable_iva') {
+  // Retail, franquicias y mercancía revendida: régimen de IVA del bien.
+  if (!responsableIva(profile)) {
     return { kind: 'ninguno', rate: 0 };
   }
   return {
@@ -83,8 +109,8 @@ export function saleTaxFor(
  * cuya venta es excluida de IVA (art. 426 ET), o no responsable de IVA (art.
  * 437 par. 3)— no tiene contra qué descontarlo y el IVA pagado es costo.
  *
- * Pendiente (ítem 1.17): el negocio mixto (restaurante que además vende
- * mercancía gravada) prorratea el IVA descontable (art. 490 ET).
+ * Pendiente: el negocio mixto (restaurante que además vende mercancía
+ * gravada) prorratea el IVA descontable (art. 490 ET); hoy decide el giro.
  */
 export function admiteIvaDescontable(profile: SaleTaxProfile): boolean {
   return saleTaxFor(profile, { ivaType: 'gravado', ivaRate: 19 }, 0).kind === 'iva';

@@ -1,10 +1,15 @@
+import { attachDatabasePool } from '@vercel/functions';
+import { POOL_MONGO, uriSinCredenciales } from './shared/config/mongo';
 import { Module, Logger } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { MongooseModule } from '@nestjs/mongoose';
+import { MongooseModule, getConnectionToken } from '@nestjs/mongoose';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import type { Connection } from 'mongoose';
 import { TenancyModule } from './shared/tenancy/tenancy.module';
+import { MongoThrottlerStorage } from './shared/throttle/mongo-throttler.storage';
+import { sinLimitesParaE2e } from './shared/throttle/sin-limites-e2e';
+import type { ColeccionVentanas } from './shared/throttle/contador-ventana';
 import { SentryExceptionFilter } from './shared/monitoreo/sentry-exception.filter';
 import { CONTROL_CONNECTION } from './modules/control/domain/control.constants';
 import { ControlModule } from './modules/control/control.module';
@@ -49,12 +54,39 @@ function controlUri(): string {
   return uri.replace(/\/[^/?]*(\?|$)/, '/bookipos_control$1');
 }
 
+/**
+ * En Vercel (Fluid compute) la función se congela entre requests: sin esto, el
+ * pool deja conexiones abiertas que el cluster sigue contando (ítem 2.11).
+ */
+function adjuntarPoolAVercel(connection: Connection, logger: Logger): void {
+  if (!process.env.VERCEL) return;
+  try {
+    attachDatabasePool(connection.getClient());
+  } catch (err) {
+    logger.warn(`No se pudo adjuntar el pool de Mongo a Vercel: ${(err as Error).message}`);
+  }
+}
+
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     // Rate limiting global: 100 req/min por IP. Los endpoints sensibles de auth
-    // aprietan aún más el límite con @Throttle en su controller.
-    ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 100 }]),
+    // aprietan aún más el límite con @Throttle en su controller. Esos límites
+    // estrictos se cuentan en la base de control, uno solo para todas las
+    // instancias de Vercel (ítem 4.3; ver MongoThrottlerStorage).
+    ThrottlerModule.forRootAsync({
+      inject: [getConnectionToken(CONTROL_CONNECTION)],
+      useFactory: (control: Connection) => ({
+        throttlers: [{ name: 'default', ttl: 60_000, limit: 100 }],
+        errorMessage: 'Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.',
+        // Las pruebas e2e inician sesión muchas veces seguidas desde la misma
+        // IP. Nunca aplica en producción, aunque alguien deje la variable.
+        skipIf: () => sinLimitesParaE2e(),
+        storage: new MongoThrottlerStorage(
+          () => control.collection('throttle_ventanas') as unknown as ColeccionVentanas,
+        ),
+      }),
+    }),
     MongooseModule.forRootAsync({
       useFactory: () => {
         const uri =
@@ -63,6 +95,7 @@ function controlUri(): string {
         const logger = new Logger('MongooseModule');
         return {
           uri,
+          ...POOL_MONGO,
           // Falla rápido en la selección de servidor.
           serverSelectionTimeoutMS: 3000,
           // Conexión perezosa: el servidor arranca aunque Mongo no esté
@@ -70,8 +103,9 @@ function controlUri(): string {
           // reporta el estado real (db: disconnected/connected).
           lazyConnection: true,
           connectionFactory: (connection: Connection) => {
+            adjuntarPoolAVercel(connection, logger);
             connection.on('connected', () =>
-              logger.log(`Conectado a MongoDB (${uri})`),
+              logger.log(`Conectado a MongoDB (${uriSinCredenciales(uri)})`),
             );
             connection.on('error', (err: Error) =>
               logger.error(`Error de conexión a MongoDB: ${err.message}`),
@@ -91,8 +125,13 @@ function controlUri(): string {
       connectionName: CONTROL_CONNECTION,
       useFactory: () => ({
         uri: controlUri(),
+        ...POOL_MONGO,
         serverSelectionTimeoutMS: 3000,
         lazyConnection: true,
+        connectionFactory: (connection: Connection) => {
+          adjuntarPoolAVercel(connection, new Logger('MongooseControl'));
+          return connection;
+        },
       }),
     }),
     // Infraestructura multi-empresa (registry + middleware de contexto).

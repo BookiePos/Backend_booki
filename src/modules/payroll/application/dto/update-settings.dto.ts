@@ -80,4 +80,15 @@ export class UpdatePayrollSettingsDto {
   jornadaTramos?: JornadaTramoDto[];
 
   @IsOptional() @IsBoolean() empresaExoneradaAportes?: boolean;
+
+  /**
+   * Respuesta explícita a la pregunta de la exoneración de aportes (ítem
+   * 1.15). Solo `true` marca la exoneración como confirmada; mandar
+   * `empresaExoneradaAportes` sin esto (p. ej. el formulario de Ajustes) no
+   * la confirma.
+   */
+  @IsOptional() @IsBoolean() confirmarExoneracion?: boolean;
+
+  /** Semana de 5 o 6 días laborables (descanso dominical, ítem 1.19). */
+  @IsOptional() @IsInt() @Min(5) @Max(6) diasLaborablesSemana?: number;
 }
