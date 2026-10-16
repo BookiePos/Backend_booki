@@ -54,3 +54,36 @@ jobs:
       - name: Secretos en las líneas añadidas del PR
         if: github.event_name == 'pull_request'
         run: node scripts/check-no-secrets.mjs --desde origin/${{ github.base_ref }}
+
+  # Ítem 5.8: integración contra un Mongo real (mongodb-memory-server), aparte de
+  # los gates porque baja y arranca un mongod. Tenancy e idempotencia del ledger.
+  integracion:
+    name: Integración (Mongo real)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache del binario de mongod
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongod-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Pruebas de integración
+        run: pnpm test:integracion

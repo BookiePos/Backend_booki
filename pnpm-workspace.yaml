@@ -1,6 +1,7 @@
 allowBuilds:
   '@nestjs/core': false
   '@swc/core': true
+  mongodb-memory-server: false
 verifyDepsBeforeRun: false
 overrides:
   multer: '>=2.4.0'

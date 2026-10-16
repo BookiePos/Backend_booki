@@ -17,7 +17,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
-      exclude: ['src/**/*.spec.ts', 'src/seed/**', 'src/datos/**', 'src/main.ts'],
+      exclude: ['src/**/*.spec.ts', 'src/integracion/**', 'src/seed/**', 'src/datos/**', 'src/main.ts'],
     },
   },
   plugins: [
