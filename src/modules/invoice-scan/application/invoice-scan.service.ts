@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Inject,
   Injectable,
   Logger,
@@ -145,6 +146,9 @@ export class InvoiceScanService {
 
     const conTexto = Boolean(text && text.trim().length > 0);
     const scan = await this.scans.create({
+      // Nace con la sede de quien la sube si tiene una sola; si tiene varias se
+      // elige al revisarla, y mientras tanto solo la ve su gente (ítem 3.10).
+      ...this.sedeDeOrigen(user),
       pages: [
         {
           imagePathname: stored.pathname,
@@ -265,7 +269,7 @@ export class InvoiceScanService {
 
     // Agrupación: si esta imagen es otra página de una factura ya leída, se
     // fusiona y se devuelve aquella.
-    const sibling = await this.findSibling(scan);
+    const sibling = await this.findSibling(scan, user);
     if (sibling) return this.mergeInto(sibling, scan, user);
     return scan;
   }
@@ -326,15 +330,27 @@ export class InvoiceScanService {
    */
   private async findSibling(
     scan: InvoiceScanDocument,
+    user: SedeScopeUser,
   ): Promise<InvoiceScanDocument | null> {
     if (!scan.supplierDocNumber || !scan.invoiceNumber) return null;
+    const filtro: Record<string, unknown> = {
+      _id: { $ne: scan._id },
+      supplierDocNumber: scan.supplierDocNumber,
+      invoiceNumber: scan.invoiceNumber,
+      status: { $in: ['uploaded', 'extracted', 'failed'] },
+    };
+    // Solo hermanas de la misma sede, o sin sede y a la vista de quien lee:
+    // unirla con una de otra sede le devolvía a esta persona la factura ajena
+    // completa (borrador, imágenes, historial) y luego le daba 404 (ítem 3.10).
+    const sedes = allowedSedeIds(user);
+    if (sedes) {
+      filtro.$or = [
+        ...(scan.sedeId ? [{ sedeId: scan.sedeId }] : []),
+        this.sinSedeVisible(sedes),
+      ];
+    }
     return this.scans
-      .findOne({
-        _id: { $ne: scan._id },
-        supplierDocNumber: scan.supplierDocNumber,
-        invoiceNumber: scan.invoiceNumber,
-        status: { $in: ['uploaded', 'extracted', 'failed'] },
-      })
+      .findOne(filtro)
       .sort({ createdAt: 1 })
       .exec();
   }
@@ -352,6 +368,8 @@ export class InvoiceScanService {
     // lecturas con IA (no la suma, que castigaría unir dos facturas legítimas)
     // para que extract -> merge -> split no devuelva el contador a cero.
     target.extractions = Math.max(target.extractions ?? 0, source.extractions ?? 0);
+    // La unión no pierde la sede: si el destino no la tiene, toma la del origen.
+    if (!target.sedeId && source.sedeId) target.sedeId = source.sedeId;
     target.pages.push(...source.pages);
     // Las líneas se concatenan; la cabecera y los totales se quedan con los de
     // la primera página, que es donde vienen impresos.
@@ -402,6 +420,10 @@ export class InvoiceScanService {
     await scan.save();
 
     return this.scans.create({
+      // Hereda la sede y las sedes de quien la subió: separar no la hace visible
+      // a más gente que la original.
+      sedeId: scan.sedeId,
+      uploaderSedeIds: scan.uploaderSedeIds,
       pages: [page],
       status: 'uploaded',
       // Hereda el contador: separar una página no reinicia el tope de lecturas.
@@ -458,6 +480,11 @@ export class InvoiceScanService {
     if (dto.sedeId !== undefined) {
       // Solo hacia una sede propia: mandarla a otra la sacaría de su alcance.
       if (dto.sedeId) assertSedeAccess(user, dto.sedeId);
+      // Quitarle la sede la devolvería a la bandeja de la empresa: solo quien
+      // ve todas las sedes puede hacerlo.
+      if (!dto.sedeId && allowedSedeIds(user) !== null) {
+        throw new ForbiddenException('Elige una de tus sedes para esta factura.');
+      }
       scan.sedeId = dto.sedeId ? new Types.ObjectId(dto.sedeId) : undefined;
       this.addHistory(scan, user, 'edited', 'Se cambió la sede de destino');
     }
@@ -931,7 +958,7 @@ export class InvoiceScanService {
     if (sedes) {
       filtro.$or = [
         { sedeId: { $in: sedes.map((id) => new Types.ObjectId(id)) } },
-        { sedeId: null },
+        this.sinSedeVisible(sedes),
       ];
     }
     return this.scans
@@ -946,10 +973,45 @@ export class InvoiceScanService {
     const scan = Types.ObjectId.isValid(id)
       ? await this.scans.findById(id).exec()
       : null;
-    if (!scan || (user && scan.sedeId && !hasSedeAccess(user, scan.sedeId.toString()))) {
+    if (!scan || (user && !this.visiblePara(scan, user))) {
       throw new NotFoundException('Factura no encontrada');
     }
     return scan;
+  }
+
+  /**
+   * Con sede: quien la tenga. Sin sede: el Dueño o sede.view_all, y quien
+   * comparta sede con quien la subió. Las viejas, sin uploaderSedeIds, siguen
+   * visibles para todos como antes.
+   */
+  private visiblePara(scan: InvoiceScanDocument, user: SedeScopeUser): boolean {
+    if (scan.sedeId) return hasSedeAccess(user, scan.sedeId.toString());
+    const sedes = allowedSedeIds(user);
+    if (sedes === null || !scan.uploaderSedeIds) return true;
+    return scan.uploaderSedeIds.some((id) => sedes.includes(id.toString()));
+  }
+
+  /** Filtro Mongo de las facturas sin sede que ve quien está limitado a sedes. */
+  private sinSedeVisible(sedes: string[]): Record<string, unknown> {
+    return {
+      sedeId: null,
+      $or: [
+        { uploaderSedeIds: { $exists: false } },
+        { uploaderSedeIds: { $in: sedes.map((id) => new Types.ObjectId(id)) } },
+      ],
+    };
+  }
+
+  /** Sede inicial de una subida y las sedes de quien la sube. */
+  private sedeDeOrigen(user: SedeScopeUser): {
+    sedeId?: Types.ObjectId;
+    uploaderSedeIds: Types.ObjectId[];
+  } {
+    const propias = (user.sedeIds ?? []).filter((id) => Types.ObjectId.isValid(id));
+    return {
+      sedeId: propias.length === 1 ? new Types.ObjectId(propias[0]) : undefined,
+      uploaderSedeIds: propias.map((id) => new Types.ObjectId(id)),
+    };
   }
 
   /** Descarta la factura y borra sus imágenes del store. */

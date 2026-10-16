@@ -252,6 +252,16 @@ export class InvoiceScan {
   @Prop({ type: Types.ObjectId, ref: 'Sede' })
   sedeId?: Types.ObjectId;
 
+  /**
+   * Sedes de quien subió la factura (ítem 3.10). Mientras no tenga `sedeId`,
+   * solo la ven el Dueño, `sede.view_all` y quienes compartan sede con quien
+   * la subió. `default: undefined` a propósito: las facturas viejas no lo
+   * traen y siguen visibles como antes; un `[]` por defecto las escondería al
+   * primer guardado.
+   */
+  @Prop({ type: [Types.ObjectId], default: undefined })
+  uploaderSedeIds?: Types.ObjectId[];
+
   @Prop({ type: [LineDecisionSchema], default: [] })
   lineDecisions!: LineDecision[];
 
