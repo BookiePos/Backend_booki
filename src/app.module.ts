@@ -3,13 +3,14 @@ import { POOL_MONGO, uriSinCredenciales } from './shared/config/mongo';
 import { Module, Logger } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MongooseModule, getConnectionToken } from '@nestjs/mongoose';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import type { Connection } from 'mongoose';
 import { TenancyModule } from './shared/tenancy/tenancy.module';
 import { MongoThrottlerStorage } from './shared/throttle/mongo-throttler.storage';
 import { sinLimitesParaE2e } from './shared/throttle/sin-limites-e2e';
 import type { ColeccionVentanas } from './shared/throttle/contador-ventana';
+import { SentryExceptionFilter } from './shared/monitoreo/sentry-exception.filter';
 import { CONTROL_CONNECTION } from './modules/control/domain/control.constants';
 import { ControlModule } from './modules/control/control.module';
 import { HealthModule } from './modules/health/health.module';
@@ -169,6 +170,8 @@ function adjuntarPoolAVercel(connection: Connection, logger: Logger): void {
     // Rate limiting global. Se registra aquí para que corra en toda la API,
     // junto a los guards de auth/permisos que declara CoreAuthModule.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // Reporta a Sentry los 5xx (ítem 2.4); no-op sin SENTRY_DSN.
+    { provide: APP_FILTER, useClass: SentryExceptionFilter },
   ],
 })
 export class AppModule {}
