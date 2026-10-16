@@ -652,7 +652,7 @@ export class PayrollService {
         totalDeducciones: breakdown.deducciones.total,
         netoPagar: breakdown.netoPagar,
         costoEmpleador: breakdown.costoEmpleador,
-        alertas: [...alertasDeTope(turnos.topeExtras), ...alertasSinSalida(registros)],
+        alertas: [...alertasDeTope(turnos.topeExtras), ...alertasSinSalida(registros, from)],
       };
     });
 
@@ -1112,18 +1112,24 @@ export class PayrollService {
   }
 }
 
-/**
- * Avisos del tope de horas extra (Ley 2466 de 2025, art. 13: máximo 2 h al día
- * y 12 h a la semana). Las horas se pagan igual; el aviso es para corregir la
- * programación de turnos (ítem 1.19).
- */
-function alertasSinSalida(registros: Array<{ checkIn?: unknown; checkOut?: unknown }>): string[] {
-  const n = registros.filter((r) => r.checkIn && !r.checkOut).length;
+/** Aviso de turnos del período con entrada y sin salida (ítem 1.19). */
+function alertasSinSalida(
+  registros: Array<{ workDate: string; checkIn?: unknown; checkOut?: unknown }>,
+  desde: string,
+): string[] {
+  // Solo los del período: los de la semana anterior al día 1 sirven para saber
+  // si la semana está completa, pero ese día no se liquida en esta colilla.
+  const n = registros.filter((r) => r.workDate >= desde && r.checkIn && !r.checkOut).length;
   return n > 0
     ? [`${n} turno(s) sin salida: el día se paga, pero sin horas extra ni recargos. Corrige la asistencia antes de cerrar.`]
     : [];
 }
 
+/**
+ * Avisos del tope de horas extra (Ley 2466 de 2025, art. 13: máximo 2 h al día
+ * y 12 h a la semana). Las horas se pagan igual; el aviso es para corregir la
+ * programación de turnos (ítem 1.19).
+ */
 function alertasDeTope(t: { diasSobre2h: number; semanasSobre12h: number }): string[] {
   const alertas: string[] = [];
   if (t.diasSobre2h > 0) {

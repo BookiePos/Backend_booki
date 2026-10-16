@@ -364,8 +364,10 @@ describe('PayrollService.createRun · descanso remunerado (ítem 1.19)', () => {
   });
 
   it('olvidar la salida no quita el día ni el domingo de esa semana, y la colilla lo avisa', async () => {
+    // El 31 de agosto también quedó sin salida: completa la semana, pero no es
+    // de este período y no entra en el aviso.
     const turnos: { employeeId: string; workDate: string; checkIn: string; checkOut: string }[] = [
-      { employeeId: 'e1', workDate: '2026-08-31', checkIn: '08:00', checkOut: '15:00' },
+      { employeeId: 'e1', workDate: '2026-08-31', checkIn: '08:00', checkOut: '' },
     ];
     for (let d = 1; d <= 30; d++) {
       const fecha = `2026-09-${String(d).padStart(2, '0')}`;
