@@ -267,6 +267,7 @@ export class OrdersService {
           sedeId,
           lines: plan.lines,
           payment: dto.payment,
+          payments: dto.payments,
           discount: dto.discount,
           customer: dto.customer,
           tip: dto.tip,

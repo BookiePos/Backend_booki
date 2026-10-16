@@ -173,14 +173,65 @@ export class ReportsService {
               },
               { $sort: { _id: 1 } },
             ],
+            // Un cobro mixto (ítem 6.9) aparece en cada medio que usó: el
+            // ingreso se reparte en proporción a lo que cubrió cada medio (así
+            // la suma por medios sigue siendo el ingreso total) y `collected`
+            // es lo que de verdad entró por ese medio, con propina y domicilio.
+            // Un tiquete mixto cuenta en cada medio.
             byMethod: [
               {
+                $project: {
+                  total: 1,
+                  due: {
+                    $add: [
+                      '$total',
+                      { $ifNull: ['$tip', 0] },
+                      { $ifNull: ['$deliveryFee', 0] },
+                    ],
+                  },
+                  parts: {
+                    $cond: [
+                      { $gt: [{ $size: { $ifNull: ['$payments', []] } }, 0] },
+                      '$payments',
+                      [
+                        {
+                          method: '$payment.method',
+                          amount: {
+                            $add: [
+                              '$total',
+                              { $ifNull: ['$tip', 0] },
+                              { $ifNull: ['$deliveryFee', 0] },
+                            ],
+                          },
+                        },
+                      ],
+                    ],
+                  },
+                },
+              },
+              { $unwind: '$parts' },
+              {
                 $group: {
-                  _id: '$payment.method',
-                  revenue: { $sum: '$total' },
+                  _id: '$parts.method',
+                  revenue: {
+                    $sum: {
+                      $cond: [
+                        { $gt: ['$due', 0] },
+                        {
+                          $multiply: [
+                            '$total',
+                            { $divide: ['$parts.amount', '$due'] },
+                          ],
+                        },
+                        '$total',
+                      ],
+                    },
+                  },
+                  collected: { $sum: '$parts.amount' },
                   tickets: { $sum: 1 },
                 },
               },
+              { $set: { revenue: { $round: ['$revenue', 0] } } },
               { $sort: { revenue: -1 } },
             ],
             bySede: [
@@ -221,7 +272,12 @@ export class ReportsService {
       ])
       .exec()) as {
       days: { _id: string; revenue: number; tax: number; tickets: number }[];
-      byMethod: { _id: string; revenue: number; tickets: number }[];
+      byMethod: {
+        _id: string;
+        revenue: number;
+        collected: number;
+        tickets: number;
+      }[];
       bySede: { _id: Types.ObjectId; revenue: number; tickets: number }[];
       topProducts: {
         _id: Types.ObjectId;
@@ -242,6 +298,7 @@ export class ReportsService {
     const byMethod = (facet?.byMethod ?? []).map((r) => ({
       method: r._id ?? 'desconocido',
       revenue: r.revenue,
+      collected: r.collected,
       tickets: r.tickets,
     }));
     const bySede = (facet?.bySede ?? []).map((r) => ({

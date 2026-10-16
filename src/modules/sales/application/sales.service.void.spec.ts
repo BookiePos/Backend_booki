@@ -417,4 +417,79 @@ describe('SalesService.void (anulación atómica)', () => {
       expect(cajaMovementModel.create).not.toHaveBeenCalled();
     });
   });
+
+  // ── 6.9 Anular un cobro mixto ──────────────────────────────────────────────
+
+  describe('cobro mixto (ítem 6.9)', () => {
+    const turnoCerrado = new Types.ObjectId();
+    const turnoAbierto = new Types.ObjectId();
+
+    function mixta(payments: { method: string; amount: number }[]) {
+      const doc = () => ({
+        ...saleDoc(),
+        saleNumber: 'FV-000043',
+        payment: { method: 'card' },
+        payments,
+        cajaSessionId: turnoCerrado,
+        total: 50_000,
+        tip: 5_000,
+        deliveryFee: 4_000,
+      });
+      saleModel.findById.mockReturnValue({
+        populate: () => ({ exec: () => Promise.resolve(doc()) }),
+      });
+      saleModel.findOneAndUpdate.mockReturnValue({
+        exec: () => Promise.resolve(doc()),
+      });
+    }
+
+    it('turno cerrado: la salida de caja es solo la parte en efectivo', async () => {
+      mixta([
+        { method: 'card', amount: 39_000 },
+        { method: 'cash', amount: 20_000 },
+      ]);
+      cajaSessionModel.findById.mockReturnValue({
+        exec: () => Promise.resolve({ _id: turnoCerrado, status: 'closed' }),
+      });
+      cajaSessionModel.findOne.mockReturnValue({
+        exec: () => Promise.resolve({ _id: turnoAbierto, status: 'open' }),
+      });
+
+      await service.void(saleObjId.toString(), user);
+
+      expect(cajaMovementModel.create).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: turnoAbierto, type: 'out', amount: 20_000 }),
+      );
+      // Tesorería: se quitan los movimientos de cada medio bancario.
+      expect(treasury.reverse).toHaveBeenCalledWith('sale', [
+        saleObjId.toString(),
+        `${saleObjId.toString()}:card`,
+        `${saleObjId.toString()}:transfer`,
+      ]);
+      expect(ledgerPosting.reverseSale).toHaveBeenCalledTimes(1);
+    });
+
+    it('sin efectivo en el reparto no pide caja abierta ni registra salida', async () => {
+      mixta([
+        { method: 'card', amount: 39_000 },
+        { method: 'transfer', amount: 20_000 },
+      ]);
+      await service.void(saleObjId.toString(), user);
+      expect(cajaSessionModel.findById).not.toHaveBeenCalled();
+      expect(cajaMovementModel.create).not.toHaveBeenCalled();
+    });
+
+    it('con parte fiada: cancela la CxC antes de revertir', async () => {
+      mixta([
+        { method: 'credit', amount: 39_000 },
+        { method: 'card', amount: 20_000 },
+      ]);
+      receivableModel.findOneAndUpdate.mockReturnValue({
+        exec: () => Promise.resolve({ _id: new Types.ObjectId(), status: 'void' }),
+      });
+      await service.void(saleObjId.toString(), user);
+      expect(receivableModel.findOneAndUpdate).toHaveBeenCalledTimes(1);
+      expect(stock.reverseSale).toHaveBeenCalledTimes(1);
+    });
+  });
 });

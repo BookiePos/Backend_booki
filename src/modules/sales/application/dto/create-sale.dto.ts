@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   ArrayNotEmpty,
   IsArray,
   IsBoolean,
@@ -13,6 +14,7 @@ import {
   Matches,
   MaxLength,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import {
@@ -73,6 +75,39 @@ export class SalePaymentDto {
    * empleado (→ deducción de nómina, pendiente de aprobación). Obligatorio
    * cuando method='credit'.
    */
+  @IsOptional()
+  @IsIn(['customer', 'employee'])
+  debtorType?: 'customer' | 'employee';
+
+  @IsOptional()
+  @IsMongoId()
+  customerId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  employeeId?: string;
+}
+
+/**
+ * Una parte de un cobro mixto (ítem 6.9). En efectivo, `amount` es lo que el
+ * cliente entregó: si sobra, el vuelto sale de ahí. En los demás medios es lo
+ * que se cobró por ese medio, y no puede pasarse del total.
+ *
+ * La parte fiada lleva su deudor como el `payment` de siempre (`debtorType`,
+ * `customerId` o `employeeId`, `dueDate`).
+ */
+export class SalePaymentPartDto {
+  @IsIn(PAYMENT_METHODS as readonly string[])
+  method!: PaymentMethod;
+
+  @IsNumber()
+  @IsPositive()
+  amount!: number;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'dueDate debe ser YYYY-MM-DD' })
+  dueDate?: string;
+
   @IsOptional()
   @IsIn(['customer', 'employee'])
   debtorType?: 'customer' | 'employee';
@@ -185,9 +220,27 @@ export class CreateSaleDto {
   @Type(() => SaleLineDto)
   lines!: SaleLineDto[];
 
+  /**
+   * Pago con un solo medio: la API de siempre, que sigue funcionando igual.
+   * Obligatorio si no viene `payments`.
+   */
+  @ValidateIf((o: CreateSaleDto) => o.payments === undefined)
   @ValidateNested()
   @Type(() => SalePaymentDto)
-  payment!: SalePaymentDto;
+  payment?: SalePaymentDto;
+
+  /**
+   * Cobro mixto en un tiquete (ítem 6.9): efectivo + tarjeta, etc. Si viene,
+   * reemplaza a `payment` (mandar los dos es un error). Ver
+   * `domain/sale-payments.ts` para las reglas del reparto.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(8)
+  @ValidateNested({ each: true })
+  @Type(() => SalePaymentPartDto)
+  payments?: SalePaymentPartDto[];
 
   /** Descuento opcional sobre el total (requiere pos.discount.authorize). */
   @IsOptional()

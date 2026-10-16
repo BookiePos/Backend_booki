@@ -71,4 +71,24 @@ describe('CajaService.summarize con domicilios', () => {
     expect(totals!.cashSalesTotal).toBe(11_000);
     expect(totals!.expectedCash).toBe(111_000);
   });
+
+  it('cobro mixto (ítem 6.9): solo la parte en efectivo, neta del vuelto, entra al cajón', async () => {
+    const service = build([
+      {
+        total: 50_000,
+        tip: 5_000,
+        deliveryFee: 4_000,
+        payment: { method: 'card', received: 30_000, change: 1_000 },
+        payments: [
+          { method: 'card', amount: 30_000 },
+          { method: 'cash', amount: 29_000 },
+        ],
+      },
+      { total: 10_000, payment: { method: 'cash' } },
+    ]);
+    const { totals } = await service.current(sedeId.toString(), user);
+    expect(totals!.cashSalesTotal).toBe(39_000);
+    expect(totals!.expectedCash).toBe(139_000);
+    expect(totals!.salesTotal).toBe(60_000);
+  });
 });

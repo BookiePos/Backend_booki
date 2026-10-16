@@ -79,6 +79,15 @@ import {
   prorateCop,
   splitTaxIncluded,
 } from '../domain/sale-amounts';
+import {
+  SplitPaymentError,
+  SplitPaymentResult,
+  cashAmountOf,
+  hasCreditPart,
+  splitPayment,
+  treasurySourceId,
+  treasurySourceIds,
+} from '../domain/sale-payments';
 import { BusinessService } from '../../control/application/business.service';
 import type { BusinessType } from '../../control/domain/control.constants';
 
@@ -94,6 +103,14 @@ export interface CreateSaleOptions {
 
 /** Qué anuló cancelCredit, para poder devolverlo si la anulación se aborta. */
 type FiadoCancelado = 'none' | 'receivable' | 'deduction';
+
+/** Quién debe el fiado de una venta (o de la parte fiada de un cobro mixto). */
+interface CreditoDeVenta {
+  debtorType?: 'customer' | 'employee';
+  customerId?: string;
+  employeeId?: string;
+  dueDate?: string;
+}
 
 @Injectable()
 export class SalesService {
@@ -215,23 +232,27 @@ export class SalesService {
     // Venta a crédito (fiado): exige un DEUDOR registrado ANTES de tocar
     // inventario — un cliente de la base (→ CxC) o un empleado (→ deducción de
     // nómina). El nombre suelto de la factura ya no basta para el fiado.
-    const isCredit = dto.payment.method === 'credit';
-    if (isCredit) {
-      if (dto.payment.debtorType === 'customer') {
-        if (!dto.payment.customerId) {
+    //
+    // Con cobro mixto (ítem 6.9) el fiado es UNA de las partes y su deudor
+    // viaja en esa parte; las mismas reglas aplican a lo que se fía.
+    const credito = this.creditoDe(dto);
+    const isCredit = credito !== undefined;
+    if (credito) {
+      if (credito.debtorType === 'customer') {
+        if (!credito.customerId) {
           throw new BadRequestException(
             'El fiado requiere seleccionar un cliente registrado',
           );
         }
-      } else if (dto.payment.debtorType === 'employee') {
-        if (!dto.payment.employeeId) {
+      } else if (credito.debtorType === 'employee') {
+        if (!credito.employeeId) {
           throw new BadRequestException(
             'El consumo a crédito requiere seleccionar un empleado',
           );
         }
         // Antes de vender ni tocar inventario: un empleado inexistente o
         // inactivo dejaría una venta fiada sin deducción.
-        await this.payroll.assertEmpleadoParaConsumo(dto.payment.employeeId);
+        await this.payroll.assertEmpleadoParaConsumo(credito.employeeId);
       } else {
         throw new BadRequestException(
           'Una venta a crédito requiere elegir un cliente registrado o un empleado',
@@ -276,7 +297,7 @@ export class SalesService {
       // ventas, en `customerId`. La tienda que compra por cajas paga de
       // contado casi siempre, así que mirar solo el fiado dejaría la lista sin
       // aplicar justo en el caso que importa.
-      const customerId = dto.customerId ?? dto.payment.customerId;
+      const customerId = dto.customerId ?? credito?.customerId;
       if (customerId) {
         const cliente = await this.customers.getOrFail(customerId);
         priceListId = cliente.priceListId?.toString();
@@ -466,9 +487,26 @@ export class SalesService {
 
     let received: number | undefined;
     let change: number | undefined;
-    if (dto.payment.method === 'cash' && dto.payment.received !== undefined) {
+    // Cobro mixto: se valida el reparto ANTES de tocar inventario. Un reparto
+    // que al juntar medios repetidos queda en uno solo se guarda como el pago
+    // de siempre, sin `payments`.
+    let cobro: SplitPaymentResult | undefined;
+    if (dto.payments) {
+      try {
+        cobro = splitPayment(dto.payments, grandTotal, total + deliveryFee);
+      } catch (err) {
+        if (err instanceof SplitPaymentError) {
+          throw new BadRequestException(err.message);
+        }
+        throw err;
+      }
+      if (cobro.parts.some((p) => p.method === 'cash') || cobro.change > 0) {
+        received = cobro.cashReceived;
+        change = cobro.change;
+      }
+    } else if (dto.payment!.method === 'cash' && dto.payment!.received !== undefined) {
       // En pesos: el cambio que se entrega no puede llevar centavos (1.11).
-      received = cop(dto.payment.received);
+      received = cop(dto.payment!.received);
       if (received < grandTotal) {
         throw new BadRequestException(
           'El monto recibido es menor que el total a pagar (incluye la propina)',
@@ -655,6 +693,8 @@ export class SalesService {
         received,
         change,
         isCredit,
+        credito,
+        cobro,
       });
     } catch (err) {
       // Solo compensamos si la venta NO alcanzó a persistirse; si ya existe,
@@ -758,6 +798,10 @@ export class SalesService {
     received?: number;
     change?: number;
     isCredit: boolean;
+    /** Deudor del fiado (venta fiada o parte fiada de un cobro mixto). */
+    credito?: CreditoDeVenta;
+    /** Reparto del cobro mixto; sin él, `dto.payment` cubrió todo. */
+    cobro?: SplitPaymentResult;
   },
   ): Promise<SaleDocument> {
     const {
@@ -780,8 +824,14 @@ export class SalesService {
       received,
       change,
       isCredit,
+      credito,
+      cobro,
       packagingSnapshot,
     } = ctx;
+    // Mixto de verdad: más de un medio. Si al juntar quedó uno, es un pago de
+    // siempre y se guarda igual que antes (sin `payments`).
+    const mixto = cobro && cobro.parts.length > 1 ? cobro : undefined;
+    const metodo = cobro ? cobro.primaryMethod : dto.payment!.method;
 
     const saleNumber = await this.nextSaleNumber(dto.sedeId);
     const sale = await this.saleModel.create({
@@ -822,7 +872,8 @@ export class SalesService {
       orderType,
       deliveryFee,
       delivery,
-      payment: { method: dto.payment.method, received, change },
+      payment: { method: metodo, received, change },
+      payments: mixto?.parts,
       customer: this.cleanCustomer(dto.customer),
       orderId,
     });
@@ -833,16 +884,17 @@ export class SalesService {
     // Venta a crédito (fiado): no entra a caja. Se rutea según el deudor.
     // Se debe lo mismo que el asiento debita a Clientes: total + domicilio. La
     // propina no se fía (es del personal y no pasa por el libro).
-    if (isCredit) {
-      const fiado = cop(total + deliveryFee);
+    if (isCredit && credito) {
+      // En un cobro mixto se fía solo la parte a crédito.
+      const fiado = cobro ? cobro.creditAmount : cop(total + deliveryFee);
       const today = fechaColombia();
-      if (dto.payment.debtorType === 'employee') {
+      if (credito.debtorType === 'employee') {
         // Empleado → deducción de nómina (pendiente de aprobación). Aparecerá
         // en la colilla al aprobarse y correr la nómina.
         try {
           await this.payroll.createDeduction(
             {
-              employeeId: dto.payment.employeeId!,
+              employeeId: credito.employeeId!,
               concept: `Consumo POS ${saleNumber}`,
               amount: fiado,
               date: today,
@@ -869,7 +921,7 @@ export class SalesService {
       } else {
         // Cliente registrado → cuenta por cobrar (CxC) enlazada a la venta.
         const customer = await this.customers.getOrFail(
-          dto.payment.customerId!,
+          credito.customerId!,
         );
         // Vencimiento por defecto: hoy + días de gracia del fiado (parámetro).
         const diasGracia = await this.params.number(
@@ -886,12 +938,12 @@ export class SalesService {
           saleId: sale._id,
           docNumber: saleNumber,
           issueDate: today,
-          dueDate: dto.payment.dueDate || this.addDays(today, diasGracia),
+          dueDate: credito.dueDate || this.addDays(today, diasGracia),
           amount: fiado,
           paidAmount: 0,
           status: 'open',
           payments: [],
-          note: 'Venta a crédito (fiado)',
+          note: mixto ? 'Parte fiada de un cobro mixto' : 'Venta a crédito (fiado)',
           createdByEmail: user.email,
         });
       }
@@ -923,20 +975,40 @@ export class SalesService {
       deliveryFee,
       // La propina entra con el cobro pero va al pasivo 2380 (ítem 1.10).
       tip: cop(sale.tip ?? 0),
-      paymentMethod: dto.payment.method,
-      onCredit: isCredit,
+      paymentMethod: metodo,
+      // Cobro mixto: cada medio va a su cuenta (Caja, Bancos, Clientes).
+      payments: mixto?.parts,
+      onCredit: !mixto && isCredit,
       userEmail: user.email,
     });
 
     // Auto-posteo a tesorería: ventas con tarjeta/transferencia entran a la
     // cuenta bancaria mapeada de la sede. El efectivo NO (vive en la caja del
     // POS) y el fiado tampoco (crea CxC). Best-effort.
-    if (dto.payment.method === 'card' || dto.payment.method === 'transfer') {
+    //
+    // Cobro mixto: un movimiento por medio bancario, por lo que ese medio
+    // cubrió. El índice único de tesorería es por (sourceType, sourceId), así
+    // que cada medio lleva su propio `sourceId` (ver `treasurySourceIds`).
+    if (mixto) {
+      for (const p of mixto.parts) {
+        if (p.method !== 'card' && p.method !== 'transfer') continue;
+        await this.treasury.post({
+          sourceType: 'sale',
+          sourceId: treasurySourceId(sale._id.toString(), p.method, true),
+          sedeId: dto.sedeId,
+          method: p.method,
+          direction: 'in',
+          amount: p.amount,
+          date: fechaColombia(),
+          concept: `Venta #${saleNumber} (pago mixto)`,
+        });
+      }
+    } else if (metodo === 'card' || metodo === 'transfer') {
       await this.treasury.post({
         sourceType: 'sale',
         sourceId: sale._id.toString(),
         sedeId: dto.sedeId,
-        method: dto.payment.method,
+        method: metodo,
         direction: 'in',
         // Lo que de verdad entró a la cuenta: el cliente pagó todo junto.
         amount: total + cop(sale.tip ?? 0) + deliveryFee,
@@ -946,6 +1018,26 @@ export class SalesService {
     }
 
     return sale;
+  }
+
+  /**
+   * El deudor del fiado, si lo hay: el `payment` de siempre cuando es a
+   * crédito, o la parte fiada de un cobro mixto. Además exige que venga uno
+   * solo de `payment` y `payments`.
+   */
+  private creditoDe(dto: CreateSaleDto): CreditoDeVenta | undefined {
+    if (dto.payments && dto.payment) {
+      throw new BadRequestException(
+        'Manda un solo medio de pago (payment) o el reparto (payments), no los dos',
+      );
+    }
+    if (dto.payments) {
+      return dto.payments.find((p) => p.method === 'credit');
+    }
+    if (!dto.payment) {
+      throw new BadRequestException('La venta necesita un medio de pago');
+    }
+    return dto.payment.method === 'credit' ? dto.payment : undefined;
   }
 
   /** Descarta un customer vacío (sin ningún dato) para no guardar {} . */
@@ -1092,8 +1184,9 @@ export class SalesService {
 
     // Reversa contable de la venta (contra-asiento).
     await this.ledgerPosting.reverseSale(sale._id.toString(), user.email);
-    // Reversa del auto-posteo a tesorería (si la venta fue tarjeta/transferencia).
-    await this.treasury.reverse('sale', sale._id.toString());
+    // Reversa del auto-posteo a tesorería (si la venta fue tarjeta/transferencia,
+    // o tuvo partes así en un cobro mixto: una por medio).
+    await this.treasury.reverse('sale', treasurySourceIds(sale._id.toString()));
 
     if (cajaParaSalida) {
       try {
@@ -1101,8 +1194,10 @@ export class SalesService {
           sessionId: cajaParaSalida._id,
           sedeId: new Types.ObjectId(sedeId),
           type: 'out',
-          // Lo que el cliente pagó en efectivo: total + propina + domicilio.
-          amount: cop(sale.total + (sale.tip ?? 0) + (sale.deliveryFee ?? 0)),
+          // Lo que el cliente dejó en efectivo (neto del vuelto): en una venta
+          // de contado es total + propina + domicilio; en un cobro mixto, solo
+          // la parte en efectivo.
+          amount: cashAmountOf(sale),
           reason: 'Anulación de venta',
           note: `Venta ${sale.saleNumber} de un turno cerrado`,
           userId: user.userId,
@@ -1119,7 +1214,7 @@ export class SalesService {
 
   /** Venta pagada en efectivo cuyo turno de caja ya se cerró (o no existe). */
   private async esEfectivoDeTurnoCerrado(sale: SaleDocument): Promise<boolean> {
-    if (sale.payment?.method !== 'cash' || !sale.cajaSessionId) return false;
+    if (cashAmountOf(sale) <= 0 || !sale.cajaSessionId) return false;
     const turno = await this.cajaSessionModel.findById(sale.cajaSessionId).exec();
     return turno?.status !== 'open';
   }
@@ -1136,7 +1231,7 @@ export class SalesService {
    * completos. El consumo ya descontado en nómina se rechaza por lo mismo.
    */
   private async cancelCredit(sale: SaleDocument): Promise<FiadoCancelado> {
-    if (sale.payment?.method !== 'credit') return 'none';
+    if (!hasCreditPart(sale)) return 'none';
 
     // La venta no guarda el tipo de deudor: el fiado a cliente deja una CxC
     // enlazada a la venta y el de empleado no. Por eso se mira la CxC primero

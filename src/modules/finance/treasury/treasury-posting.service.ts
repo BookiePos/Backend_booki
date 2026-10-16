@@ -103,17 +103,28 @@ export class TreasuryPostingService {
     }
   }
 
-  /** Elimina el movimiento auto de una operación (al anular venta, etc.). */
-  async reverse(sourceType: MovementSource, sourceId: string): Promise<void> {
+  /**
+   * Elimina el movimiento auto de una operación (al anular venta, etc.). Acepta
+   * varios `sourceId`: un cobro mixto deja uno por medio bancario (ítem 6.9).
+   */
+  async reverse(
+    sourceType: MovementSource,
+    sourceId: string | readonly string[],
+  ): Promise<void> {
+    const ids = typeof sourceId === 'string' ? sourceId : [...sourceId];
     try {
       await this.movements
-        .deleteMany({ sourceType, sourceId, auto: true })
+        .deleteMany({
+          sourceType,
+          sourceId: typeof ids === 'string' ? ids : { $in: ids },
+          auto: true,
+        })
         .exec();
     } catch (err) {
       // Best-effort como el resto del servicio, pero el movimiento queda vivo
       // para una operación anulada: ERROR con el origen para conciliarlo.
       this.logger.error(
-        `CONCILIAR: no se pudo reversar tesorería (${sourceType}:${sourceId}): ${
+        `CONCILIAR: no se pudo reversar tesorería (${sourceType}:${String(ids)}): ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
