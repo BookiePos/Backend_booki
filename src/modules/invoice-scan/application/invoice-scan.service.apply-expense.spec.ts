@@ -37,7 +37,14 @@ describe('InvoiceScanService.applyAsExpense', () => {
   const categoryId = new Types.ObjectId().toString();
   const supplierId = new Types.ObjectId();
   const ctx = { businessId: 'b1', dbName: 'biz_b1' };
-  const user = { userId: 'u1', email: 'due@negocio.com' } as unknown as JwtUser;
+  // El Dueño: ve todas las sedes (las facturas se filtran por sede, ítem 3.10).
+  const user = {
+    userId: 'u1',
+    email: 'due@negocio.com',
+    role: 'owner',
+    permissions: [],
+    sedeIds: [],
+  } as unknown as JwtUser;
 
   function makeScan(overrides: Record<string, unknown> = {}) {
     return {

@@ -20,6 +20,12 @@ import { SuppliersService } from '../../suppliers/application/suppliers.service'
 import { PurchasingService } from '../../purchasing/application/purchasing.service';
 import { FinanceService } from '../../finance/application/finance.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
+import {
+  allowedSedeIds,
+  assertSedeAccess,
+  hasSedeAccess,
+  type SedeScopeUser,
+} from '../../core-auth/domain/sede-access';
 import { cop } from '../../finance/domain/money.util';
 import type { FinancePaymentMethod } from '../../finance/domain/finance.constants';
 import {
@@ -193,7 +199,7 @@ export class InvoiceScanService {
    * fotografiar, que es justo lo que pasa cuando el modelo se atraganta.
    */
   async extract(id: string, user: JwtUser): Promise<InvoiceScanDocument> {
-    const scan = await this.getOrFail(id);
+    const scan = await this.getOrFail(id, user);
     if (scan.status === 'applied') {
       throw new BadRequestException('Esta factura ya se aplicó');
     }
@@ -367,8 +373,8 @@ export class InvoiceScanService {
 
   /** Une a mano dos facturas que la agrupación automática no pudo relacionar. */
   async merge(id: string, sourceId: string, user: JwtUser): Promise<InvoiceScanDocument> {
-    const target = await this.getOrFail(id);
-    const source = await this.getOrFail(sourceId);
+    const target = await this.getOrFail(id, user);
+    const source = await this.getOrFail(sourceId, user);
     if (target.status === 'applied' || source.status === 'applied') {
       throw new BadRequestException('No se puede unir una factura ya aplicada');
     }
@@ -381,7 +387,7 @@ export class InvoiceScanService {
     pageIndex: number,
     user: JwtUser,
   ): Promise<InvoiceScanDocument> {
-    const scan = await this.getOrFail(id);
+    const scan = await this.getOrFail(id, user);
     if (scan.status === 'applied') {
       throw new BadRequestException('No se puede separar una factura ya aplicada');
     }
@@ -426,7 +432,7 @@ export class InvoiceScanService {
     dto: UpdateInvoiceScanDto,
     user: JwtUser,
   ): Promise<InvoiceScanDocument> {
-    const scan = await this.getOrFail(id);
+    const scan = await this.getOrFail(id, user);
     if (scan.status === 'applied') {
       throw new BadRequestException('Esta factura ya se aplicó');
     }
@@ -450,6 +456,8 @@ export class InvoiceScanService {
       }
     }
     if (dto.sedeId !== undefined) {
+      // Solo hacia una sede propia: mandarla a otra la sacaría de su alcance.
+      if (dto.sedeId) assertSedeAccess(user, dto.sedeId);
       scan.sedeId = dto.sedeId ? new Types.ObjectId(dto.sedeId) : undefined;
       this.addHistory(scan, user, 'edited', 'Se cambió la sede de destino');
     }
@@ -495,7 +503,7 @@ export class InvoiceScanService {
     user: JwtUser,
     opts: { paymentMethod?: FinancePaymentMethod } = {},
   ): Promise<InvoiceScanDocument> {
-    const scan = await this.getOrFail(id);
+    const scan = await this.getOrFail(id, user);
     if (scan.status === 'applied') return scan;
 
     const draft = normalizeDraft(scan.draft);
@@ -652,8 +660,10 @@ export class InvoiceScanService {
     dto: ApplyAsExpenseDto,
     user: JwtUser,
   ): Promise<InvoiceScanDocument> {
-    const scan = await this.getOrFail(id);
+    const scan = await this.getOrFail(id, user);
     if (scan.status === 'applied') return scan;
+    // Antes de crear el proveedor: la sede del gasto tiene que ser propia.
+    assertSedeAccess(user, dto.sedeId);
     const draft = normalizeDraft(scan.draft);
 
     const amount = cop(dto.amount);
@@ -910,25 +920,41 @@ export class InvoiceScanService {
 
   // ─── Consulta y descarte ──────────────────────────────────────────────────
 
-  list(status?: InvoiceScanStatus): Promise<InvoiceScanDocument[]> {
+  /**
+   * Con `user`, quien no ve todas las sedes solo ve las facturas de las suyas
+   * y las que aún no tienen sede (la bandeja de entrada es de la empresa).
+   * Ítem 3.10: antes se veían las facturas de proveedor de todas las sedes.
+   */
+  list(status?: InvoiceScanStatus, user?: SedeScopeUser): Promise<InvoiceScanDocument[]> {
+    const filtro: Record<string, unknown> = status ? { status } : {};
+    const sedes = user ? allowedSedeIds(user) : null;
+    if (sedes) {
+      filtro.$or = [
+        { sedeId: { $in: sedes.map((id) => new Types.ObjectId(id)) } },
+        { sedeId: null },
+      ];
+    }
     return this.scans
-      .find(status ? { status } : {})
+      .find(filtro)
       .sort({ createdAt: -1 })
       .limit(200)
       .exec();
   }
 
-  async getOrFail(id: string): Promise<InvoiceScanDocument> {
+  /** Con `user`, la de una sede ajena da 404, igual que si no existiera. */
+  async getOrFail(id: string, user?: SedeScopeUser): Promise<InvoiceScanDocument> {
     const scan = Types.ObjectId.isValid(id)
       ? await this.scans.findById(id).exec()
       : null;
-    if (!scan) throw new NotFoundException('Factura no encontrada');
+    if (!scan || (user && scan.sedeId && !hasSedeAccess(user, scan.sedeId.toString()))) {
+      throw new NotFoundException('Factura no encontrada');
+    }
     return scan;
   }
 
   /** Descarta la factura y borra sus imágenes del store. */
   async discard(id: string, user: JwtUser): Promise<void> {
-    const scan = await this.getOrFail(id);
+    const scan = await this.getOrFail(id, user);
     if (scan.status === 'applied') {
       throw new BadRequestException(
         'Esta factura ya se aplicó: no se puede descartar.',

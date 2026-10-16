@@ -64,21 +64,21 @@ export class InvoiceScanController {
   /** Historial del módulo: todas las facturas escaneadas, la última primero. */
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
   @Get()
-  list(@Query('status') status?: string) {
+  list(@CurrentUser() user: JwtUser, @Query('status') status?: string) {
     // Un estado desconocido en la query se ignora en vez de dar error: es un
     // filtro de listado, no una operación que deba fallar.
     const known = (INVOICE_SCAN_STATUSES as readonly string[]).includes(
       status ?? '',
     );
     return this.scans
-      .list(known ? (status as InvoiceScanStatus) : undefined)
+      .list(known ? (status as InvoiceScanStatus) : undefined, user)
       .then((scans) => this.scans.conUrlsFirmadas(scans));
   }
 
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
   @Get(':id')
-  get(@Param('id') id: string) {
-    return this.firmada(this.scans.getOrFail(id));
+  get(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.firmada(this.scans.getOrFail(id, user));
   }
 
   /**
