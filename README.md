@@ -177,7 +177,7 @@ Todos los módulos están registrados en `src/app.module.ts`.
 ## Requisitos previos
 
 - **Node.js >= 20** (declarado en `engines`).
-- **pnpm** — el repo trae `pnpm-lock.yaml` y `pnpm-workspace.yaml`. Existe además un `package-lock.json` residual; **no lo uses**.
+- **pnpm** — el repo trae `pnpm-lock.yaml` y `pnpm-workspace.yaml`.
 - **MongoDB 7 como replica set**. El `docker-compose.yml` incluido levanta uno de un solo nodo ya inicializado; también sirve MongoDB Atlas, que viene en replica set.
 
 > El replica set no es cosmético: `inventory` ejecuta sus operaciones de stock dentro de transacciones multi-documento. Contra un `mongod` suelto degrada a ejecución sin sesión (con un warning), así que el sistema arranca, pero pierde la atomicidad.
