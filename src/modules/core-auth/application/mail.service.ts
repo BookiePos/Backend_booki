@@ -73,7 +73,7 @@ export class MailService {
     const subject = 'Te invitaron a unirte al Sistema POS';
     if (!this.resend) {
       this.logger.log(
-        `[correo simulado] Invitación para ${msg.to} (rol: ${msg.roleName}). Enlace: ${msg.inviteUrl}`,
+        `[correo simulado] Invitación para ${msg.to} (rol: ${msg.roleName}). Enlace: ${this.enlaceParaLog(msg.inviteUrl)}`,
       );
       return { sent: false };
     }
@@ -102,7 +102,7 @@ export class MailService {
     const subject = 'Recupera tu contraseña de BookiPos';
     if (!this.resend) {
       this.logger.log(
-        `[correo simulado] Recuperación de contraseña para ${msg.to}. Enlace: ${msg.resetUrl}`,
+        `[correo simulado] Recuperación de contraseña para ${msg.to}. Enlace: ${this.enlaceParaLog(msg.resetUrl)}`,
       );
       return { sent: false, simulated: true };
     }
@@ -136,7 +136,7 @@ export class MailService {
       msg.to,
       'Confirma tu correo para crear tu cuenta de BookiPos',
       this.confirmacionRegistroHtml(msg),
-      `Confirmación de registro para ${msg.to}. Enlace: ${msg.confirmUrl}`,
+      `Confirmación de registro para ${msg.to}. Enlace: ${this.enlaceParaLog(msg.confirmUrl)}`,
     );
   }
 
@@ -152,6 +152,16 @@ export class MailService {
       this.cuentaExistenteHtml(msg),
       `Aviso de cuenta existente para ${msg.to}.`,
     );
+  }
+
+  /**
+   * El enlace del correo simulado lleva un token de un solo uso. En desarrollo
+   * se imprime para copiarlo a mano; en producción no (ítem 4.11): quien lea
+   * los logs podría restablecer la contraseña de cualquiera.
+   */
+  private enlaceParaLog(url: string): string {
+    const entorno = this.config.get<string>('NODE_ENV') ?? process.env.NODE_ENV;
+    return entorno === 'production' ? '[oculto en producción]' : url;
   }
 
   /** Envío común: sin proveedor se registra en el log; nunca lanza. */
