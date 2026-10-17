@@ -112,11 +112,15 @@ export class TraceabilityService {
    * misma numeración— así que puede devolver varios y quien pregunta elige.
    */
   async findLots(code: string, user: JwtUser) {
-    const texto = code.trim();
+    // Texto literal, no un patrón: sin escapar, `(a+)+$` era una regex con
+    // backtracking catastrófico ejecutada en el clúster de Mongo que comparten
+    // todas las empresas, y `(` daba un 500. Mismo criterio que clientes.
+    const texto = String(code ?? '').trim().slice(0, 64);
     if (!texto) return [];
+    const literal = texto.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const sedes = allowedSedeIds(user);
     const filtro: Record<string, unknown> = {
-      lotCode: { $regex: texto, $options: 'i' },
+      lotCode: { $regex: literal, $options: 'i' },
     };
     if (sedes) {
       filtro.sedeId = { $in: sedes.map((s) => new Types.ObjectId(s)) };

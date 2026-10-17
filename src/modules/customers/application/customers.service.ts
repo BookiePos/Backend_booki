@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -11,6 +12,27 @@ import {
   CustomerDocument,
 } from '../infrastructure/schemas/customer.schema';
 import { CreateCustomerDto, UpdateCustomerDto } from './dto/customer.dto';
+import { PERMISSIONS } from '../../core-auth/domain/permissions';
+
+/**
+ * Asignarle una lista de precios a un cliente es decidir el precio que se le
+ * cobra: pide el mismo permiso que elegirla a mano en la venta (ítem 4.11).
+ * Sin esto, un cajero con `customers.manage` y sin `pos.discount.authorize`
+ * le ponía la lista mayorista a un cliente y la venta la aplicaba sola.
+ * Quitarla (volver a precio de mostrador) no lo pide.
+ */
+function assertPuedeAsignarLista(
+  nueva: Types.ObjectId | undefined,
+  actual: Types.ObjectId | undefined,
+  permisos: string[],
+): void {
+  if (!nueva || (actual && nueva.equals(actual))) return;
+  if (!permisos.includes(PERMISSIONS.POS_DISCOUNT_AUTHORIZE)) {
+    throw new ForbiddenException(
+      'Asignar una lista de precios requiere permiso para autorizar descuentos',
+    );
+  }
+}
 
 /**
  * Traduce la lista de precios que llega del formulario.
@@ -69,7 +91,10 @@ export class CustomersService {
   async create(
     dto: CreateCustomerDto,
     userEmail?: string,
+    permisos: string[] = [],
   ): Promise<CustomerDocument> {
+    const priceListId = parsePriceListId(dto.priceListId);
+    assertPuedeAsignarLista(priceListId, undefined, permisos);
     try {
       return await this.customers.create({
         name: dto.name.trim(),
@@ -80,7 +105,7 @@ export class CustomersService {
         address: dto.address?.trim(),
         city: dto.city?.trim(),
         creditLimit: dto.creditLimit ?? 0,
-        priceListId: parsePriceListId(dto.priceListId),
+        priceListId,
         notes: dto.notes?.trim(),
         active: true,
         createdByEmail: userEmail,
@@ -98,6 +123,7 @@ export class CustomersService {
   async update(
     id: string,
     dto: UpdateCustomerDto,
+    permisos: string[] = [],
   ): Promise<CustomerDocument> {
     const c = await this.getOrFail(id);
     if (dto.name !== undefined) c.name = dto.name.trim();
@@ -108,7 +134,9 @@ export class CustomersService {
     if (dto.creditLimit !== undefined) c.creditLimit = dto.creditLimit;
     // Cadena vacía = quitarle la lista y volver a cobrarle de mostrador.
     if (dto.priceListId !== undefined) {
-      c.priceListId = parsePriceListId(dto.priceListId);
+      const nueva = parsePriceListId(dto.priceListId);
+      assertPuedeAsignarLista(nueva, c.priceListId ?? undefined, permisos);
+      c.priceListId = nueva;
     }
     if (dto.notes !== undefined) c.notes = dto.notes.trim() || undefined;
     if (dto.active !== undefined) c.active = dto.active;

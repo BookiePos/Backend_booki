@@ -221,11 +221,17 @@ describe('UsersService · nadie toma la cuenta del Dueño', () => {
   });
 
   it('conservar un permiso extra que ya tenía el usuario no cuenta como concederlo', async () => {
-    usuarios[CASHIER_ID]!.extraPermissions = [PERMISSIONS.SEDE_VIEW_ALL];
+    // Desde el 4.11, alguien con `sede.view_all` queda fuera del alcance de un
+    // Administrador limitado; el permiso «de más» del objetivo es otro.
+    const actor = {
+      ...admin,
+      permissions: adminPerms.filter((p) => p !== PERMISSIONS.FINANCE_MANAGE),
+    };
+    usuarios[CASHIER_ID]!.extraPermissions = [PERMISSIONS.FINANCE_MANAGE];
     const u = await service.update(
       CASHIER_ID,
-      { name: 'Nuevo nombre', extraPermissions: [PERMISSIONS.SEDE_VIEW_ALL] },
-      admin,
+      { name: 'Nuevo nombre', extraPermissions: [PERMISSIONS.FINANCE_MANAGE] },
+      actor,
     );
     expect(u.name).toBe('Nuevo nombre');
   });
@@ -313,6 +319,34 @@ describe('UsersService · nadie toma la cuenta del Dueño', () => {
   it('sí asigna sus propias sedes', async () => {
     const u = await service.update(CASHIER_ID, { sedeIds: [SEDE_A] }, admin);
     expect(u.sedeIds.map(String)).toEqual([SEDE_A]);
+  });
+
+  it('4.11: un Administrador de la sede A no toma la cuenta de un cajero de la B', async () => {
+    usuarios[CASHIER_ID]!.sedeIds = [SEDE_B] as never;
+    for (const dto of [
+      { password: 'Otra-Clave-123!' },
+      { active: false },
+      { name: 'Renombrado' },
+    ]) {
+      await expect(
+        service.update(CASHIER_ID, dto, admin),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    }
+    expect(usuarios[CASHIER_ID]!.save).not.toHaveBeenCalled();
+  });
+
+  it('4.11: sí gestiona a un cajero de su propia sede', async () => {
+    usuarios[CASHIER_ID]!.sedeIds = [SEDE_A] as never;
+    await expect(
+      service.update(CASHIER_ID, { password: 'Otra-Clave-123!' }, admin),
+    ).resolves.toBeDefined();
+  });
+
+  it('4.11: el Dueño sigue gestionando usuarios de cualquier sede', async () => {
+    usuarios[CASHIER_ID]!.sedeIds = [SEDE_B] as never;
+    await expect(
+      service.update(CASHIER_ID, { password: 'Otra-Clave-123!' }, dueno),
+    ).resolves.toBeDefined();
   });
 
   it('nadie se amplía sus propias sedes', async () => {
@@ -427,11 +461,17 @@ describe('UsersService · nadie toma la cuenta del Dueño', () => {
   });
 
   it('L1: reenviar el mismo formulario sobre alguien con más permisos no se bloquea', async () => {
-    usuarios[CASHIER_ID]!.extraPermissions = [PERMISSIONS.SEDE_VIEW_ALL];
+    // Desde el 4.11, alguien con `sede.view_all` queda fuera del alcance de un
+    // Administrador limitado; el permiso «de más» del objetivo es otro.
+    const actor = {
+      ...admin,
+      permissions: adminPerms.filter((p) => p !== PERMISSIONS.FINANCE_MANAGE),
+    };
+    usuarios[CASHIER_ID]!.extraPermissions = [PERMISSIONS.FINANCE_MANAGE];
     const u = await service.update(
       CASHIER_ID,
-      { name: 'Z', extraPermissions: [PERMISSIONS.SEDE_VIEW_ALL] },
-      admin,
+      { name: 'Z', extraPermissions: [PERMISSIONS.FINANCE_MANAGE] },
+      actor,
     );
     expect(u.name).toBe('Z');
   });
@@ -513,6 +553,7 @@ describe('InvitationsService · invitar como Dueño', () => {
       { get: () => undefined } as never,
       // Control-plane: la empresa del enlace existe (ítem 3.5).
       { findById: async (id: string) => ({ _id: id, plan: 'negocio' }) } as never,
+      { exists: async () => false } as never, // directorio global
     );
   });
 
@@ -555,7 +596,9 @@ describe('InvitationsService · invitar como Dueño', () => {
   it('el Dueño sí la reenvía', async () => {
     pendientes.push(invitacionDeDueno());
     const r = await enEmpresa(() => service.resend('inv-owner', dueno));
-    expect(r.inviteUrl).toContain(BUSINESS_ID);
+    expect(r.emailSent).toBe(true);
+    // Ítem 4.11: con el correo enviado, el enlace no vuelve a quien invita.
+    expect(r.inviteUrl).toBeUndefined();
   });
 
   it('un Administrador no revoca una invitación de Dueño', async () => {

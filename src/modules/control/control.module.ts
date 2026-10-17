@@ -13,6 +13,10 @@ import {
   PasswordReset,
   PasswordResetSchema,
 } from './infrastructure/schemas/password-reset.schema';
+import {
+  RegistroPendiente,
+  RegistroPendienteSchema,
+} from './infrastructure/schemas/registro-pendiente.schema';
 import { BusinessService } from './application/business.service';
 import { DirectoryService } from './application/directory.service';
 
@@ -29,6 +33,7 @@ import { DirectoryService } from './application/directory.service';
         { name: Business.name, schema: BusinessSchema },
         { name: BusinessDirectory.name, schema: BusinessDirectorySchema },
         { name: PasswordReset.name, schema: PasswordResetSchema },
+        { name: RegistroPendiente.name, schema: RegistroPendienteSchema },
       ],
       CONTROL_CONNECTION,
     ),
