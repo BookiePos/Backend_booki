@@ -53,7 +53,7 @@ describe('plantillas de arranque', () => {
 
 describe('impuesto de cada ítem según el giro', () => {
   const servido = itemsDe(plantillaDe('restaurante')!).find((i) => i.nombre === 'Bandeja paisa')!;
-  const gaseosa = itemsDe(plantillaDe('panaderia')!).find((i) => i.nombre === 'Gaseosa 400 ml')!;
+  const gaseosa = itemsDe(plantillaDe('tienda')!).find((i) => i.nombre === 'Gaseosa 1,5 L')!;
   const arroz = itemsDe(plantillaDe('tienda')!).find((i) => i.nombre === 'Arroz 1 kg')!;
   const cafe = itemsDe(plantillaDe('tienda')!).find((i) => i.nombre === 'Café molido 250 g')!;
   const detergente = itemsDe(plantillaDe('tienda')!).find((i) => i.nombre === 'Detergente 1 kg')!;
@@ -70,7 +70,7 @@ describe('impuesto de cada ítem según el giro', () => {
     expect(INC_RESTAURANTE_CODE).toBe('INC_8');
   });
 
-  it('restaurante: la gaseosa que se vende para llevar (panadería) es mercancía y lleva el IVA del bien, no INC', () => {
+  it('restaurante: la gaseosa que se vende para llevar (tienda) es mercancía y lleva el IVA del bien, no INC', () => {
     const f = fiscalDe(gaseosa, 'restaurante');
     expect(f).toMatchObject({ ivaRate: 19, ivaType: 'gravado', tratamientoFiscal: 'mercancia', efecto: 'iva' });
     expect(
@@ -148,9 +148,22 @@ describe('revisión 6.6: exentos, bebidas del INC, giro y SKU', () => {
     }
   });
 
-  it('mercancía para llevar (panadería, tienda) conserva el IVA del bien en un restaurante', () => {
-    expect(fiscalDe(buscar('panaderia', 'Gaseosa 400 ml'), 'restaurante')).toMatchObject({
+  it('mercancía para llevar (tienda) conserva el IVA del bien en un restaurante', () => {
+    expect(fiscalDe(buscar('tienda', 'Gaseosa 1,5 L'), 'restaurante')).toMatchObject({
       ivaRate: 19,
+      tratamientoFiscal: 'mercancia',
+    });
+  });
+
+  it('panadería en restaurante: comida preparada y bebidas llevan INC (art. 512-8); en retail, su IVA', () => {
+    for (const nombre of ['Torta (porción)', 'Pastel de pollo', 'Croissant', 'Gaseosa 400 ml']) {
+      const it = buscar('panaderia', nombre);
+      expect(fiscalDe(it, 'restaurante'), nombre).toMatchObject({ efecto: 'inc', tratamientoFiscal: 'expendio' });
+      expect(fiscalDe(it, 'retail'), nombre).toMatchObject({ ivaRate: 19, efecto: 'iva' });
+      expect(seSiembra(it, 'retail')).toBe(true);
+    }
+    expect(fiscalDe(buscar('panaderia', 'Pan francés (unidad)'), 'restaurante')).toMatchObject({
+      efecto: 'excluido',
       tratamientoFiscal: 'mercancia',
     });
   });

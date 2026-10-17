@@ -47,6 +47,7 @@ describe('OnboardingService.aplicar', () => {
   let stockEntry: ReturnType<typeof vi.fn>;
   let productosCreados: Record<string, unknown>[];
   let svc: OnboardingService;
+  const dueno = { ...user, role: 'owner' } as unknown as JwtUser;
 
   const coincide = (sku: string, filtro: any): boolean => {
     if (!filtro?.sku) return true;
@@ -205,12 +206,21 @@ describe('OnboardingService.aplicar', () => {
     expect(r.impuestos.conInc).toBe(r.productos.creados);
   });
 
-  it('restaurante con panadería: lo que se vende para llevar conserva su IVA (mercancía)', async () => {
-    await aplicar({ tipo: 'panaderia' });
-    expect(catalogo.find((c) => c.name === 'Gaseosa 400 ml')).toMatchObject({
-      ivaRate: 19,
+  it('restaurante con panadería: pastelería, pasteles y bebidas van con INC (art. 512-8); el pan, no', async () => {
+    const r = await aplicar({ tipo: 'panaderia' });
+    for (const nombre of ['Torta (porción)', 'Pastel de pollo', 'Croissant', 'Roscón', 'Gaseosa 400 ml', 'Jugo en caja', 'Tinto']) {
+      expect(catalogo.find((c) => c.name === nombre), nombre).toMatchObject({
+        ivaRate: 0,
+        ivaType: 'excluido',
+        tratamientoFiscal: 'expendio',
+      });
+    }
+    // El pan es un bien excluido que se lleva: sigue como mercancía.
+    expect(catalogo.find((c) => c.name === 'Pan francés (unidad)')).toMatchObject({
+      ivaType: 'excluido',
       tratamientoFiscal: 'mercancia',
     });
+    expect(r.impuestos.conInc).toBe(9);
     expect(catalogo.find((c) => c.name === 'Leche entera 1 L')).toMatchObject({ ivaRate: 0, ivaType: 'exento' });
   });
 
@@ -248,6 +258,8 @@ describe('OnboardingService.aplicar', () => {
     const r = await aplicar({ tipo: 'panaderia' }, 'retail');
     const total = itemsDe(plantillaDe('panaderia')!).length;
     expect(r.omitidosPorGiro).toBe(2);
+    // La pastelería sí se siembra en retail, con su IVA.
+    expect(catalogo.find((c) => c.name === 'Croissant')).toMatchObject({ ivaRate: 19, ivaType: 'gravado' });
     expect(r.productos.creados).toBe(total - 2);
     expect(catalogo.some((c) => c.name === 'Tinto')).toBe(false);
     expect(r.aviso).toMatch(/restaurante/);
@@ -282,6 +294,12 @@ describe('OnboardingService.aplicar', () => {
     await expect(aplicar({ tipo: 'tienda' }, 'retail')).rejects.toBeInstanceOf(ConflictException);
   });
 
+  it('quitar datos de ejemplo exige ver todas las sedes: un admin de una sola sede recibe 403', async () => {
+    await aplicar({ tipo: 'tienda' }, 'retail');
+    await expect(svc.quitar('tienda', user)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(catalogo.length).toBeGreaterThan(0);
+  });
+
   it('quitar datos de ejemplo: retira vendibles y desactiva el inventario', async () => {
     await aplicar({ tipo: 'tienda' }, 'retail');
     const total = catalogo.length;
@@ -291,7 +309,7 @@ describe('OnboardingService.aplicar', () => {
     });
     (svc as any).productModel.find = () => ({ exec: async () => inventario });
     const r = await TenantContext.run({ businessId: 'b1', dbName: 'biz_b1', tipoNegocio: 'retail' }, () =>
-      svc.quitar('tienda'),
+      svc.quitar('tienda', dueno),
     );
     expect(r).toEqual({ vendiblesQuitados: total, inventarioDesactivado: total, conservados: 0 });
     expect(inventario.every((p) => p.active === false)).toBe(true);

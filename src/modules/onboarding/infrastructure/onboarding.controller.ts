@@ -32,7 +32,7 @@ export class OnboardingController {
    */
   @RequirePermissions(PERMISSIONS.ONBOARDING_TEMPLATE)
   @Delete('plantilla/:tipo')
-  quitar(@Param('tipo') tipo: string) {
-    return this.onboarding.quitar(tipo);
+  quitar(@Param('tipo') tipo: string, @CurrentUser() user: JwtUser) {
+    return this.onboarding.quitar(tipo, user);
   }
 }

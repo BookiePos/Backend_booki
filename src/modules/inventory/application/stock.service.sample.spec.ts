@@ -91,4 +91,72 @@ describe('StockService.sembrarMuestra / quitarMuestras', () => {
     expect(await conCompra.svc.quitarMuestras([id])).toEqual([]);
     expect(conCompra.stockItemModel.deleteMany).not.toHaveBeenCalled();
   });
+
+  describe('baja de la muestra al llegar la primera entrada real (valorización coherente)', () => {
+    /** Fakes con estado: un stock, sus movimientos y el aggregate que los resume. */
+    function conEstado(opts: { qty: number; movs: { delta: number }[]; costo?: number }) {
+      const productId = new Types.ObjectId();
+      const fila = { qty: opts.qty };
+      const movs: any[] = opts.movs.map((m) => ({ type: 'sample', delta: m.delta, unitCost: 0 }));
+      const producto: any = { _id: productId, active: true, perishable: false, trackLots: false, cost: opts.costo ?? 0 };
+      const resumen = () => {
+        const s = movs.filter((m) => m.type === 'sample');
+        const sembrado = s.reduce((a, m) => a + (m.delta > 0 ? m.delta : 0), 0);
+        const bajas = s.filter((m) => m.delta < 0).length;
+        return s.length ? [{ sembrado, bajas }] : [];
+      };
+      const q = (v: unknown) => ({ session: () => ({ exec: async () => v }), exec: async () => v });
+      const stockItemModel: any = {
+        findOne: () => q(fila),
+        findOneAndUpdate: (_f: any, u: any) => {
+          fila.qty += u.$inc.qty;
+          return { exec: async () => fila };
+        },
+      };
+      const movementModel: any = {
+        aggregate: () => q(resumen()),
+        create: async (docs: any[]) => {
+          movs.push(...docs);
+          return docs;
+        },
+      };
+      const tenant = { connectionFor: () => ({ transaction: (fn: any) => fn(undefined) }) };
+      const svc = new StockService(
+        stockItemModel, {} as never, movementModel, tenant as never,
+        { getOrFail: async () => producto } as never, { findOrFail: async () => ({}) } as never,
+        {} as never, {} as never, {} as never,
+      );
+      return { svc, productId, fila, movs, producto };
+    }
+
+    it('20 de muestra + 10 comprados: queda stock 10 (no 30) y la muestra se da de baja a costo 0', async () => {
+      const { svc, productId, fila, movs, producto } = conEstado({ qty: 20, movs: [{ delta: 20 }], costo: 5000 });
+      await svc.entry({ productId: String(productId), sedeId, qty: 10, unitCost: 5000 } as never, user);
+      expect(fila.qty).toBe(10);
+      const baja = movs.find((m) => m.delta < 0)!;
+      expect(baja).toMatchObject({ type: 'sample', delta: -20, balanceAfter: 0, unitCost: 0 });
+      expect(producto.cost).toBe(5000);
+    });
+
+    it('si ya se vendió parte de la muestra, solo da de baja lo que queda', async () => {
+      const { svc, productId, fila, movs } = conEstado({ qty: 12, movs: [{ delta: 20 }] });
+      await svc.entry({ productId: String(productId), sedeId, qty: 10 } as never, user);
+      expect(movs.find((m) => m.delta < 0)).toMatchObject({ delta: -12 });
+      expect(fila.qty).toBe(10);
+    });
+
+    it('es de una sola vez: la segunda compra no se come stock real', async () => {
+      const { svc, productId, fila } = conEstado({ qty: 20, movs: [{ delta: 20 }] });
+      await svc.entry({ productId: String(productId), sedeId, qty: 10 } as never, user);
+      await svc.entry({ productId: String(productId), sedeId, qty: 5 } as never, user);
+      expect(fila.qty).toBe(15);
+    });
+
+    it('sin muestra no toca nada', async () => {
+      const { svc, productId, fila, movs } = conEstado({ qty: 7, movs: [] });
+      await svc.entry({ productId: String(productId), sedeId, qty: 3 } as never, user);
+      expect(fila.qty).toBe(10);
+      expect(movs.filter((m) => m.delta < 0)).toHaveLength(0);
+    });
+  });
 });

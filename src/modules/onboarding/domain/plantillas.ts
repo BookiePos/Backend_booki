@@ -38,6 +38,12 @@ export interface ItemPlantilla {
    * bien. Es la distinción de `saleTaxFor`.
    */
   servido?: boolean;
+  /**
+   * Comida preparada de panadería o pastelería (art. 512-8 ET): en un
+   * restaurante lleva INC como lo servido, pero NO se omite en retail, donde
+   * simplemente se vende con su IVA.
+   */
+  comidaPreparada?: boolean;
 }
 
 export interface CategoriaPlantilla {
@@ -71,6 +77,9 @@ const g = (
 /** Preparado y servido en el lugar. */
 const s = (nombre: string, precio: number): ItemPlantilla =>
   g(nombre, precio, { servido: true });
+/** Producto de panadería/pastelería preparado: INC en restaurante, IVA en retail. */
+const pr = (nombre: string, precio: number): ItemPlantilla =>
+  g(nombre, precio, { comidaPreparada: true });
 /** Excluido de IVA (canasta básica, pan). */
 const ex = (nombre: string, precio: number): ItemPlantilla =>
   g(nombre, precio, { iva: 0, ivaTipo: 'excluido' });
@@ -211,11 +220,11 @@ export const PLANTILLAS: Plantilla[] = [
       {
         nombre: 'Pastelería',
         items: [
-          g('Torta (porción)', 6500),
-          g('Pastel de pollo', 4500),
-          g('Croissant', 4000),
-          g('Galleta de mantequilla', 2500),
-          g('Roscón', 3500),
+          pr('Torta (porción)', 6500),
+          pr('Pastel de pollo', 4500),
+          pr('Croissant', 4000),
+          pr('Galleta de mantequilla', 2500),
+          pr('Roscón', 3500),
         ],
       },
       {
@@ -224,8 +233,8 @@ export const PLANTILLAS: Plantilla[] = [
           s('Tinto', 2000),
           s('Café con leche', 3500),
           ext('Leche entera 1 L', 4700),
-          g('Gaseosa 400 ml', 3500),
-          g('Jugo en caja', 3000),
+          pr('Gaseosa 400 ml', 3500),
+          pr('Jugo en caja', 3000),
         ],
       },
     ],
@@ -355,7 +364,7 @@ export interface FiscalDelItem {
  * - Retail: el IVA del bien.
  */
 export function fiscalDe(item: ItemPlantilla, giro: BusinessType): FiscalDelItem {
-  if (giro === 'restaurante' && item.servido) {
+  if (giro === 'restaurante' && (item.servido || item.comidaPreparada)) {
     return { ivaRate: 0, ivaType: 'excluido', tratamientoFiscal: 'expendio', efecto: 'inc' };
   }
   const ivaType: IvaType = item.ivaTipo ?? (item.iva === 0 ? 'exento' : 'gravado');

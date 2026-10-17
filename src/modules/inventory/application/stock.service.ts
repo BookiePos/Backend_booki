@@ -178,6 +178,11 @@ export class StockService {
     const unitCost = enteredCost ?? product.cost ?? 0;
 
     return this.withTransaction(async (session) => {
+      // La primera compra REAL retira el saldo de ejemplo: si no, la valorización
+      // (existencias × costo) contaría las unidades de muestra como compradas.
+      if ((opts.movementType ?? 'entry') === 'entry') {
+        await this.darDeBajaMuestra(product._id, sedeId, user, session);
+      }
       const item = await this.stockItemModel
         .findOneAndUpdate(
           { productId: product._id, sedeId },
@@ -284,6 +289,60 @@ export class StockService {
       );
       return true;
     });
+  }
+
+  /**
+   * Da de baja el saldo de ejemplo al llegar la primera entrada real: un
+   * movimiento `sample` NEGATIVO de costo 0 por lo que quede de la muestra
+   * (lo sembrado menos lo ya vendido; nunca más que el stock). Se hace una sola
+   * vez: si ya hay una baja de muestra, no vuelve a tocar nada, y así una
+   * compra posterior jamás se come stock real.
+   */
+  private async darDeBajaMuestra(
+    productId: Types.ObjectId,
+    sedeId: Types.ObjectId,
+    user: JwtUser,
+    session?: ClientSession,
+  ): Promise<void> {
+    const [resumen] = await this.movementModel
+      .aggregate<{ sembrado: number; bajas: number }>([
+        { $match: { productId, sedeId, type: 'sample' } },
+        {
+          $group: {
+            _id: null,
+            sembrado: { $sum: { $cond: [{ $gt: ['$delta', 0] }, '$delta', 0] } },
+            bajas: { $sum: { $cond: [{ $lt: ['$delta', 0] }, 1, 0] } },
+          },
+        },
+      ])
+      .session(session ?? null)
+      .exec();
+    if (!resumen || resumen.sembrado <= 0 || resumen.bajas > 0) return;
+    const actual = await this.stockItemModel
+      .findOne({ productId, sedeId })
+      .session(session ?? null)
+      .exec();
+    const baja = Math.min(resumen.sembrado, actual?.qty ?? 0);
+    if (baja <= 0) return;
+    const item = await this.stockItemModel
+      .findOneAndUpdate({ productId, sedeId }, { $inc: { qty: -baja } }, { new: true, session })
+      .exec();
+    await this.movementModel.create(
+      [
+        {
+          type: 'sample' satisfies MovementType,
+          productId,
+          sedeId,
+          delta: -baja,
+          balanceAfter: item?.qty ?? 0,
+          unitCost: 0,
+          note: 'Baja de las existencias de ejemplo al llegar la primera entrada real',
+          userId: user.userId,
+          userEmail: user.email,
+        },
+      ],
+      { session },
+    );
   }
 
   /**

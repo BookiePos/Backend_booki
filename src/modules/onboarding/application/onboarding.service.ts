@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -8,7 +9,7 @@ import { Model } from 'mongoose';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { CatalogService } from '../../catalog/application/catalog.service';
 import { CatalogProduct } from '../../catalog/infrastructure/schemas/catalog-product.schema';
-import { allowedSedeIds, assertSedeAccess } from '../../core-auth/domain/sede-access';
+import { allowedSedeIds, assertSedeAccess, canViewAllSedes } from '../../core-auth/domain/sede-access';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { ProductsService } from '../../inventory/application/products.service';
 import { StockService } from '../../inventory/application/stock.service';
@@ -285,7 +286,14 @@ export class OnboardingService {
    * compras o ajustes reales se conserva. Las mesas y categorías no se tocan
    * (pueden tener comandas); se borran desde su pantalla.
    */
-  async quitar(tipo: string): Promise<ResultadoQuitar> {
+  async quitar(tipo: string, user: JwtUser): Promise<ResultadoQuitar> {
+    // El vendible es de toda la empresa y las existencias se borran en TODAS las
+    // sedes: quien solo ve algunas sedes no puede decidirlo.
+    if (!canViewAllSedes(user)) {
+      throw new ForbiddenException(
+        'Quitar el catálogo de ejemplo afecta a todas las sedes: pídeselo al Dueño.',
+      );
+    }
     const plantilla = plantillaDe(tipo);
     if (!plantilla) throw new BadRequestException('Tipo de plantilla desconocido');
     const skus = itemsDe(plantilla).map((i) => i.sku);
