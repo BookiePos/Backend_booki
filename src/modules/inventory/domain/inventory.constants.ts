@@ -26,6 +26,9 @@ export const MOVEMENT_TYPES = [
   'production_in', // entrada del terminado que fabricó una orden de producción
   'merge_out', // salida del producto que se fusionó en otro
   'merge_in', // entrada al producto que absorbió a otro en una fusión
+  // Existencias de EJEMPLO de una plantilla de arranque (6.6): sin costo, sin
+  // asiento y fuera de la valorización. No es una compra.
+  'sample',
 ] as const;
 
 export type MovementType = (typeof MOVEMENT_TYPES)[number];

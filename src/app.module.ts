@@ -40,6 +40,7 @@ import { RestaurantModule } from './modules/restaurant/restaurant.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { CronModule } from './modules/cron/cron.module';
+import { OnboardingModule } from './modules/onboarding/onboarding.module';
 
 /**
  * URI de la base de control. Por defecto reusa el mismo servidor de
@@ -163,6 +164,7 @@ function adjuntarPoolAVercel(connection: Connection, logger: Logger): void {
     CustomersModule,
     BillingModule,
     CronModule,
+    OnboardingModule,
     // La auditoría va de último: su interceptor global envuelve al resto.
     CoreAuditModule,
   ],

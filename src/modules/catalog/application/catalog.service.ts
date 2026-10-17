@@ -134,6 +134,7 @@ export class CatalogService {
       salePrice: dto.salePrice,
       ivaRate: dto.ivaRate ?? 19,
       ivaType: dto.ivaType ?? 'gravado',
+      tratamientoFiscal: dto.tratamientoFiscal,
       active: dto.active ?? true,
       packaging: await this.resolvePackaging(dto.packaging),
       // Dinero en entero: el peso no tiene centavos y un costo con decimales
