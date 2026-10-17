@@ -205,6 +205,7 @@ export class BillingService {
       status: 'pending',
       plan,
       addOns,
+      billingCycle: cycle,
     });
 
     const tx = await this.wompi.createTransaction({
@@ -700,6 +701,7 @@ export class BillingService {
       status: 'pending',
       plan: sub.plan,
       addOns: sub.addOns,
+      billingCycle: sub.billingCycle,
     });
     const tx = await this.wompi.createTransaction({
       amountInCents: sub.amountInCents,
@@ -863,7 +865,13 @@ export class BillingService {
       sub.currentPeriodEnd && sub.currentPeriodEnd > new Date()
         ? sub.currentPeriodEnd
         : new Date();
-    const end = this.advance(from, sub.billingCycle as BillingCycle);
+    // El período sale del ciclo que se PAGÓ, no del de la suscripción: un
+    // `subscribe` posterior la sobrescribe antes de cobrar, y pagar un mes y
+    // pedir enseguida el anual (con un cobro que falla) daba 12 meses (4.11).
+    // Los pagos anteriores al campo caen al de la suscripción.
+    const cycle = (payment.billingCycle ?? sub.billingCycle) as BillingCycle;
+    const end = this.advance(from, cycle);
+    sub.billingCycle = cycle;
     sub.status = 'active';
     sub.currentPeriodEnd = end;
     sub.nextChargeAt = end;
