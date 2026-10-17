@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Post } from '@nestjs/common';
 import { OnboardingService } from '../application/onboarding.service';
 import { AplicarPlantillaDto } from '../application/dto/aplicar-plantilla.dto';
 import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
@@ -24,5 +24,15 @@ export class OnboardingController {
   @Post('plantilla')
   aplicar(@Body() dto: AplicarPlantillaDto, @CurrentUser() user: JwtUser) {
     return this.onboarding.aplicar(dto, user);
+  }
+
+  /**
+   * «Quitar datos de ejemplo»: retira lo que sembró la plantilla (vendibles,
+   * ítems y existencias de ejemplo). Lo que ya tuvo compras reales se conserva.
+   */
+  @RequirePermissions(PERMISSIONS.ONBOARDING_TEMPLATE)
+  @Delete('plantilla/:tipo')
+  quitar(@Param('tipo') tipo: string) {
+    return this.onboarding.quitar(tipo);
   }
 }

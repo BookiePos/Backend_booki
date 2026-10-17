@@ -40,10 +40,12 @@ describe('OnboardingService.aplicar', () => {
   } as unknown as JwtUser;
 
   let catalogo: { sku: string; name: string; salePrice: number; ivaRate: number; ivaType: string; tratamientoFiscal?: string }[];
-  let inventario: { _id: Types.ObjectId; sku: string }[];
+  let inventario: { _id: Types.ObjectId; sku: string; active?: boolean; save?: () => Promise<void> }[];
   let categorias: { _id: Types.ObjectId; name: string; active: boolean; save: () => Promise<void> }[];
   let mesas: { zone: string; name: string }[];
   let entradas: { productId: string; qty: number }[];
+  let stockEntry: ReturnType<typeof vi.fn>;
+  let productosCreados: Record<string, unknown>[];
   let svc: OnboardingService;
 
   const coincide = (sku: string, filtro: any): boolean => {
@@ -74,7 +76,8 @@ describe('OnboardingService.aplicar', () => {
     };
     const products: any = {
       create: vi.fn(async (d: { sku: string }) => {
-        const p = { _id: new Types.ObjectId(), sku: d.sku };
+        productosCreados.push(d);
+        const p = { _id: new Types.ObjectId(), sku: d.sku, active: true, save: async () => undefined };
         inventario.push(p);
         return p;
       }),
@@ -91,10 +94,17 @@ describe('OnboardingService.aplicar', () => {
         });
       }),
     };
+    stockEntry = vi.fn();
+    const sembradas = new Set<string>();
     const stock: any = {
-      entry: vi.fn(async (d: { productId: string; qty: number }) => {
+      entry: stockEntry,
+      sembrarMuestra: vi.fn(async (d: { productId: string; qty: number }) => {
+        if (sembradas.has(d.productId)) return false;
+        sembradas.add(d.productId);
         entradas.push({ productId: d.productId, qty: d.qty });
+        return true;
       }),
+      quitarMuestras: vi.fn(async (ids: string[]) => ids),
     };
     const restaurant: any = {
       listTables: vi.fn(async () => mesas),
@@ -129,6 +139,7 @@ describe('OnboardingService.aplicar', () => {
     categorias = [];
     mesas = [];
     entradas = [];
+    productosCreados = [];
     svc = armar();
   });
 
@@ -157,7 +168,7 @@ describe('OnboardingService.aplicar', () => {
 
   it('un reintento completa lo que quedó a medias sin duplicar el inventario', async () => {
     const [primero] = itemsDe(plantillaDe('tienda')!);
-    inventario.push({ _id: new Types.ObjectId(), sku: primero!.sku }); // sobrevivió sin su vendible
+    inventario.push({ _id: new Types.ObjectId(), sku: primero!.sku, active: false, save: async () => undefined }); // sobrevivió sin su vendible
     const r = await aplicar({ tipo: 'tienda' }, 'retail');
     expect(inventario.filter((p) => p.sku === primero!.sku)).toHaveLength(1);
     expect(catalogo.some((c) => c.sku === primero!.sku)).toBe(true);
@@ -184,14 +195,23 @@ describe('OnboardingService.aplicar', () => {
     await expect(aplicar({ tipo: 'panaderia' })).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('restaurante: lo servido nace sin IVA como expendio (INC en la venta) y lo empacado con IVA 19', async () => {
+  it('restaurante: lo servido (incluidas las bebidas) nace sin IVA como expendio (INC en la venta)', async () => {
     const r = await aplicar({ tipo: 'restaurante' });
     const bandeja = catalogo.find((c) => c.name === 'Bandeja paisa')!;
     expect(bandeja).toMatchObject({ salePrice: 28000, ivaRate: 0, ivaType: 'excluido', tratamientoFiscal: 'expendio' });
     const gaseosa = catalogo.find((c) => c.name === 'Gaseosa 400 ml')!;
-    expect(gaseosa).toMatchObject({ ivaRate: 19, ivaType: 'gravado', tratamientoFiscal: 'mercancia' });
+    expect(gaseosa).toMatchObject({ ivaRate: 0, ivaType: 'excluido', tratamientoFiscal: 'expendio' });
     expect(r.impuestos.conInc + r.impuestos.conIva + r.impuestos.excluidos).toBe(r.productos.creados);
-    expect(r.impuestos.conInc).toBeGreaterThan(0);
+    expect(r.impuestos.conInc).toBe(r.productos.creados);
+  });
+
+  it('restaurante con panadería: lo que se vende para llevar conserva su IVA (mercancía)', async () => {
+    await aplicar({ tipo: 'panaderia' });
+    expect(catalogo.find((c) => c.name === 'Gaseosa 400 ml')).toMatchObject({
+      ivaRate: 19,
+      tratamientoFiscal: 'mercancia',
+    });
+    expect(catalogo.find((c) => c.name === 'Leche entera 1 L')).toMatchObject({ ivaRate: 0, ivaType: 'exento' });
   });
 
   it('retail: el IVA del bien, sin INC ni mesas', async () => {
@@ -202,6 +222,79 @@ describe('OnboardingService.aplicar', () => {
     expect(catalogo.every((c) => c.tratamientoFiscal === undefined)).toBe(true);
     expect(r.impuestos.conInc).toBe(0);
     expect(r.mesas).toEqual({ creadas: 0, omitidas: 0 });
+  });
+
+  it('H1: aplicar la plantilla no deja NINGÚN movimiento con costo (ni una compra)', async () => {
+    await aplicar({ tipo: 'restaurante' });
+    await aplicar({ tipo: 'restaurante' });
+    // Nada entra por la vía de compra (`entry`, que lleva costo y valoriza)...
+    expect(stockEntry).not.toHaveBeenCalled();
+    // ... los ítems nacen sin costo, para que la valorización no invente valor...
+    expect(productosCreados.length).toBeGreaterThan(0);
+    expect(productosCreados.every((p) => !('cost' in p) || p.cost === 0 || p.cost === undefined)).toBe(true);
+    // ... y las existencias son de ejemplo (movimiento `sample`, sin costo).
+    expect(entradas.every((e) => e.qty === 30)).toBe(true);
+  });
+
+  it('M3: una empresa retail no puede cargar restaurante, cafetería ni comidas rápidas', async () => {
+    for (const tipo of ['restaurante', 'cafeteria', 'comidas_rapidas']) {
+      await expect(aplicar({ tipo }, 'retail')).rejects.toThrow(/retail/);
+    }
+    expect(catalogo).toHaveLength(0);
+    expect(mesas).toHaveLength(0);
+  });
+
+  it('M3: panadería en retail no siembra lo servido y lo avisa', async () => {
+    const r = await aplicar({ tipo: 'panaderia' }, 'retail');
+    const total = itemsDe(plantillaDe('panaderia')!).length;
+    expect(r.omitidosPorGiro).toBe(2);
+    expect(r.productos.creados).toBe(total - 2);
+    expect(catalogo.some((c) => c.name === 'Tinto')).toBe(false);
+    expect(r.aviso).toMatch(/restaurante/);
+  });
+
+  it('M4: estado cuenta como ajenos los productos de OTRAS plantillas (la UI pide confirmar)', async () => {
+    await aplicar({ tipo: 'cafeteria' });
+    const e = await TenantContext.run({ businessId: 'b1', dbName: 'biz_b1', tipoNegocio: 'restaurante' }, () =>
+      svc.estado(),
+    );
+    const cafe = e.plantillas.find((p) => p.tipo === 'cafeteria')!;
+    const pan = e.plantillas.find((p) => p.tipo === 'panaderia')!;
+    expect(cafe.ajenos).toBe(0);
+    expect(pan.ajenos).toBe(itemsDe(plantillaDe('cafeteria')!).length);
+    expect(e.productosPropios).toBe(0);
+  });
+
+  it('M4: estado marca qué plantillas no aplican a una empresa retail', async () => {
+    const e = await TenantContext.run({ businessId: 'b1', dbName: 'biz_b1', tipoNegocio: 'retail' }, () =>
+      svc.estado(),
+    );
+    expect(e.plantillas.filter((p) => !p.aplica).map((p) => p.tipo).sort()).toEqual([
+      'cafeteria',
+      'comidas_rapidas',
+      'restaurante',
+    ]);
+    expect(e.plantillas.find((p) => !p.aplica)!.motivo).toMatch(/retail/);
+  });
+
+  it('L2: un SKU «PL-XYZ-01» del usuario cuenta como producto propio', async () => {
+    catalogo.push({ sku: 'PL-XYZ-01', name: 'Mío', salePrice: 1000, ivaRate: 19, ivaType: 'gravado' });
+    await expect(aplicar({ tipo: 'tienda' }, 'retail')).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('quitar datos de ejemplo: retira vendibles y desactiva el inventario', async () => {
+    await aplicar({ tipo: 'tienda' }, 'retail');
+    const total = catalogo.length;
+    (svc as any).catalog.remove = vi.fn(async () => undefined);
+    (svc as any).catalogModel.findOne = (f: any) => ({
+      exec: async () => (catalogo.some((c) => c.sku === f.sku) ? { _id: new Types.ObjectId() } : null),
+    });
+    (svc as any).productModel.find = () => ({ exec: async () => inventario });
+    const r = await TenantContext.run({ businessId: 'b1', dbName: 'biz_b1', tipoNegocio: 'retail' }, () =>
+      svc.quitar('tienda'),
+    );
+    expect(r).toEqual({ vendiblesQuitados: total, inventarioDesactivado: total, conservados: 0 });
+    expect(inventario.every((p) => p.active === false)).toBe(true);
   });
 
   it('todo precio guardado es un peso entero', async () => {

@@ -11,7 +11,8 @@ import type {
  *
  * Todo es editable o borrable después; la plantilla solo ahorra la página en
  * blanco. Los precios son de referencia (COP, entero, con el impuesto
- * incluido) y los costos sirven para que los reportes de margen no salgan en 0.
+ * incluido). NO traen costo: el costo real lo da la primera compra o el
+ * inventario inicial de la persona; inventar uno ensuciaría la valorización.
  */
 
 export const TIPOS_PLANTILLA = [
@@ -27,8 +28,6 @@ export interface ItemPlantilla {
   nombre: string;
   /** Precio de venta al público, COP entero, impuesto incluido. */
   precio: number;
-  /** Costo de referencia por unidad, COP entero. */
-  costo: number;
   /** Tarifa de IVA del BIEN (0/5/19). */
   iva: IvaRate;
   /** Tratamiento de IVA del bien; sin dato, gravado (o exento si la tarifa es 0). */
@@ -57,24 +56,30 @@ export interface Plantilla {
   mesas?: { cantidad: number; zona: string; puestos: number };
 }
 
-/** Existencias iniciales de cada ítem, para que la primera venta no tope con stock 0. */
+/**
+ * Existencias de ejemplo de cada ítem. El POS no vende con stock 0, así que sin
+ * ellas la primera venta toparía. Entran SIN costo y con el tipo de movimiento
+ * `sample`: no son una compra, no tienen asiento y no valorizan el inventario.
+ */
 export const STOCK_INICIAL = 30;
 
 const g = (
   nombre: string,
   precio: number,
-  costo: number,
   extra: Partial<ItemPlantilla> = {},
-): ItemPlantilla => ({ nombre, precio, costo, iva: 19, ...extra });
+): ItemPlantilla => ({ nombre, precio, iva: 19, ...extra });
 /** Preparado y servido en el lugar. */
-const s = (nombre: string, precio: number, costo: number): ItemPlantilla =>
-  g(nombre, precio, costo, { servido: true });
+const s = (nombre: string, precio: number): ItemPlantilla =>
+  g(nombre, precio, { servido: true });
 /** Excluido de IVA (canasta básica, pan). */
-const ex = (nombre: string, precio: number, costo: number): ItemPlantilla =>
-  g(nombre, precio, costo, { iva: 0, ivaTipo: 'excluido' });
+const ex = (nombre: string, precio: number): ItemPlantilla =>
+  g(nombre, precio, { iva: 0, ivaTipo: 'excluido' });
+/** Exento (tarifa 0 %, con derecho a descuento): leche y huevos, art. 477 ET. */
+const ext = (nombre: string, precio: number): ItemPlantilla =>
+  g(nombre, precio, { iva: 0, ivaTipo: 'exento' });
 /** IVA reducido del 5 %. */
-const r5 = (nombre: string, precio: number, costo: number): ItemPlantilla =>
-  g(nombre, precio, costo, { iva: 5 });
+const r5 = (nombre: string, precio: number): ItemPlantilla =>
+  g(nombre, precio, { iva: 5 });
 
 export const PLANTILLAS: Plantilla[] = [
   {
@@ -87,33 +92,33 @@ export const PLANTILLAS: Plantilla[] = [
       {
         nombre: 'Entradas',
         items: [
-          s('Empanadas x3', 7500, 2600),
-          s('Patacones con hogao', 9500, 3000),
-          s('Sopa del día', 12000, 3800),
+          s('Empanadas x3', 7500),
+          s('Patacones con hogao', 9500),
+          s('Sopa del día', 12000),
         ],
       },
       {
         nombre: 'Platos fuertes',
         items: [
-          s('Almuerzo ejecutivo', 18000, 6500),
-          s('Bandeja paisa', 28000, 10500),
-          s('Pechuga a la plancha', 24000, 8500),
-          s('Lomo de res', 29000, 12000),
-          s('Mojarra frita', 27000, 11000),
+          s('Almuerzo ejecutivo', 18000),
+          s('Bandeja paisa', 28000),
+          s('Pechuga a la plancha', 24000),
+          s('Lomo de res', 29000),
+          s('Mojarra frita', 27000),
         ],
       },
       {
         nombre: 'Bebidas',
         items: [
-          s('Jugo natural', 6500, 1800),
-          s('Limonada', 5500, 1200),
-          g('Gaseosa 400 ml', 3500, 2000),
-          g('Agua en botella', 3000, 1300),
+          s('Jugo natural', 6500),
+          s('Limonada', 5500),
+          s('Gaseosa 400 ml', 3500),
+          s('Agua en botella', 3000),
         ],
       },
       {
         nombre: 'Postres',
-        items: [s('Postre del día', 8000, 2500), s('Helado de la casa', 6000, 1800)],
+        items: [s('Postre del día', 8000), s('Helado de la casa', 6000)],
       },
     ],
   },
@@ -126,27 +131,27 @@ export const PLANTILLAS: Plantilla[] = [
       {
         nombre: 'Hamburguesas',
         items: [
-          s('Hamburguesa clásica', 16000, 5500),
-          s('Hamburguesa doble carne', 22000, 8500),
-          s('Combo hamburguesa', 24000, 8800),
+          s('Hamburguesa clásica', 16000),
+          s('Hamburguesa doble carne', 22000),
+          s('Combo hamburguesa', 24000),
         ],
       },
       {
         nombre: 'Rápidas',
         items: [
-          s('Perro caliente', 12000, 4000),
-          s('Salchipapa', 14000, 4800),
-          s('Pizza personal', 15000, 5000),
-          s('Papas a la francesa', 7000, 1800),
+          s('Perro caliente', 12000),
+          s('Salchipapa', 14000),
+          s('Pizza personal', 15000),
+          s('Papas a la francesa', 7000),
         ],
       },
       {
         nombre: 'Bebidas',
         items: [
-          g('Gaseosa 400 ml', 3500, 2000),
-          g('Agua en botella', 3000, 1300),
-          s('Jugo en agua', 5500, 1500),
-          s('Malteada', 9000, 3000),
+          s('Gaseosa 400 ml', 3500),
+          s('Agua en botella', 3000),
+          s('Jugo en agua', 5500),
+          s('Malteada', 9000),
         ],
       },
     ],
@@ -161,29 +166,29 @@ export const PLANTILLAS: Plantilla[] = [
       {
         nombre: 'Café y bebidas calientes',
         items: [
-          s('Tinto', 2500, 500),
-          s('Café americano', 4000, 900),
-          s('Capuchino', 6500, 1700),
-          s('Latte', 7000, 1900),
-          s('Chocolate caliente', 6000, 1800),
-          s('Aromática', 3500, 600),
+          s('Tinto', 2500),
+          s('Café americano', 4000),
+          s('Capuchino', 6500),
+          s('Latte', 7000),
+          s('Chocolate caliente', 6000),
+          s('Aromática', 3500),
         ],
       },
       {
         nombre: 'Bebidas frías',
         items: [
-          s('Jugo natural', 6500, 1800),
-          g('Gaseosa 400 ml', 3500, 2000),
-          g('Agua en botella', 3000, 1300),
+          s('Jugo natural', 6500),
+          s('Gaseosa 400 ml', 3500),
+          s('Agua en botella', 3000),
         ],
       },
       {
         nombre: 'Para comer',
         items: [
-          s('Sándwich de jamón y queso', 11000, 4000),
-          s('Croissant de jamón y queso', 8500, 3200),
-          s('Torta (porción)', 7000, 2200),
-          s('Galleta', 3000, 900),
+          s('Sándwich de jamón y queso', 11000),
+          s('Croissant de jamón y queso', 8500),
+          s('Torta (porción)', 7000),
+          s('Galleta', 3000),
         ],
       },
     ],
@@ -197,30 +202,30 @@ export const PLANTILLAS: Plantilla[] = [
       {
         nombre: 'Pan',
         items: [
-          ex('Pan francés (unidad)', 500, 200),
-          ex('Pan tajado (bolsa)', 5800, 3900),
-          ex('Pan integral (bolsa)', 7200, 4800),
-          ex('Mogolla integral', 1800, 800),
+          ex('Pan francés (unidad)', 500),
+          ex('Pan tajado (bolsa)', 5800),
+          ex('Pan integral (bolsa)', 7200),
+          ex('Mogolla integral', 1800),
         ],
       },
       {
         nombre: 'Pastelería',
         items: [
-          g('Torta (porción)', 6500, 2200),
-          g('Pastel de pollo', 4500, 1800),
-          g('Croissant', 4000, 1500),
-          g('Galleta de mantequilla', 2500, 900),
-          g('Roscón', 3500, 1300),
+          g('Torta (porción)', 6500),
+          g('Pastel de pollo', 4500),
+          g('Croissant', 4000),
+          g('Galleta de mantequilla', 2500),
+          g('Roscón', 3500),
         ],
       },
       {
         nombre: 'Bebidas y lácteos',
         items: [
-          s('Tinto', 2000, 400),
-          s('Café con leche', 3500, 900),
-          ex('Leche entera 1 L', 4700, 3900),
-          g('Gaseosa 400 ml', 3500, 2000),
-          g('Jugo en caja', 3000, 1700),
+          s('Tinto', 2000),
+          s('Café con leche', 3500),
+          ext('Leche entera 1 L', 4700),
+          g('Gaseosa 400 ml', 3500),
+          g('Jugo en caja', 3000),
         ],
       },
     ],
@@ -234,54 +239,83 @@ export const PLANTILLAS: Plantilla[] = [
       {
         nombre: 'Despensa',
         items: [
-          ex('Arroz 1 kg', 4800, 3900),
-          ex('Lentejas 500 g', 3600, 2800),
-          ex('Panela 500 g', 3200, 2500),
-          r5('Azúcar 1 kg', 4900, 4000),
-          r5('Café molido 250 g', 7800, 6200),
-          r5('Chocolate de mesa 250 g', 6500, 5200),
+          ex('Arroz 1 kg', 4800),
+          ex('Lentejas 500 g', 3600),
+          ex('Panela 500 g', 3200),
+          r5('Azúcar 1 kg', 4900),
+          r5('Café molido 250 g', 7800),
+          r5('Chocolate de mesa 250 g', 6500),
         ],
       },
       {
         nombre: 'Lácteos y huevos',
-        items: [ex('Leche entera 1 L', 4700, 3900), ex('Huevos AA x12', 8400, 7000)],
+        items: [ext('Leche entera 1 L', 4700), ext('Huevos AA x12', 8400)],
       },
       {
         nombre: 'Frutas y verduras',
         items: [
-          ex('Papa (kg)', 3200, 2400),
-          ex('Tomate (kg)', 4500, 3400),
-          ex('Cebolla (kg)', 3800, 2900),
-          ex('Plátano verde (unidad)', 1200, 800),
+          ex('Papa (kg)', 3200),
+          ex('Tomate (kg)', 4500),
+          ex('Cebolla (kg)', 3800),
+          ex('Plátano verde (unidad)', 1200),
         ],
       },
       {
         nombre: 'Bebidas',
         items: [
-          g('Gaseosa 1,5 L', 5800, 4500),
-          g('Agua 600 ml', 2500, 1500),
-          g('Jugo en caja 1 L', 4800, 3600),
+          g('Gaseosa 1,5 L', 5800),
+          g('Agua 600 ml', 2500),
+          g('Jugo en caja 1 L', 4800),
         ],
       },
       {
         nombre: 'Snacks',
         items: [
-          g('Papas fritas de paquete', 3000, 2100),
-          g('Galletas de paquete', 2500, 1700),
-          g('Chocolatina', 2000, 1400),
+          g('Papas fritas de paquete', 3000),
+          g('Galletas de paquete', 2500),
+          g('Chocolatina', 2000),
         ],
       },
       {
         nombre: 'Aseo',
         items: [
-          g('Jabón de baño', 3500, 2400),
-          g('Detergente 1 kg', 11500, 8800),
-          g('Papel higiénico x4', 7500, 5600),
+          g('Jabón de baño', 3500),
+          g('Detergente 1 kg', 11500),
+          g('Papel higiénico x4', 7500),
         ],
       },
     ],
   },
 ];
+
+/**
+ * Plantillas de comida preparada: su gracia es lo servido, que solo tiene
+ * sentido como expendio con INC. En una empresa retail quedaría gravado con IVA
+ * 19, que es el tratamiento equivocado, así que se rechazan.
+ */
+export const SOLO_RESTAURANTE: readonly TipoPlantilla[] = [
+  'restaurante',
+  'comidas_rapidas',
+  'cafeteria',
+];
+
+/** Motivo por el que una plantilla no aplica al giro, o `null` si aplica. */
+export function motivoNoAplica(tipo: TipoPlantilla, giro: BusinessType): string | null {
+  if (giro === 'retail' && SOLO_RESTAURANTE.includes(tipo)) {
+    return 'Esta plantilla es de comida preparada y tu negocio está registrado como tienda (retail): lo servido llevaría IVA en vez de impuesto al consumo. Usa «Panadería» o «Tienda», o cambia el tipo de negocio a restaurante.';
+  }
+  return null;
+}
+
+/** En retail no se siembra lo servido (va con el giro restaurante). */
+export function seSiembra(item: ItemPlantilla, giro: BusinessType): boolean {
+  return !(giro === 'retail' && item.servido);
+}
+
+/** SKU de plantilla: solo los prefijos conocidos, no cualquier `PL-XXX-1` del usuario. */
+export const REGEX_SKU_PLANTILLA = new RegExp(
+  '^PL-(' + PLANTILLAS.map((p) => p.prefijo).join('|') + ')-\\d{2}$',
+);
 
 export function plantillaDe(tipo: string): Plantilla | undefined {
   return PLANTILLAS.find((p) => p.tipo === tipo);

@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { saleTaxFor, INC_RESTAURANTE_CODE } from '../../core-tax/domain/sale-tax';
 import { cop } from '../../finance/domain/money.util';
-import { PLANTILLAS, TIPOS_PLANTILLA, fiscalDe, itemsDe, plantillaDe } from './plantillas';
+import {
+  PLANTILLAS,
+  REGEX_SKU_PLANTILLA,
+  TIPOS_PLANTILLA,
+  fiscalDe,
+  itemsDe,
+  motivoNoAplica,
+  plantillaDe,
+  seSiembra,
+} from './plantillas';
 
 describe('plantillas de arranque', () => {
   it('hay una plantilla por cada tipo declarado, sin repetir prefijo', () => {
@@ -16,14 +25,13 @@ describe('plantillas de arranque', () => {
     expect(itemsDe(plantillaDe('restaurante')!)[0]!.sku).toBe('PL-REST-01');
   });
 
-  it('precios y costos son pesos enteros positivos y el costo no supera el precio', () => {
+  it('precios son pesos enteros positivos y las plantillas no inventan costo', () => {
     for (const p of PLANTILLAS) {
       for (const i of itemsDe(p)) {
         expect(Number.isInteger(i.precio), `${i.sku} precio`).toBe(true);
-        expect(Number.isInteger(i.costo), `${i.sku} costo`).toBe(true);
+        expect('costo' in i, `${i.sku} no trae costo`).toBe(false);
         expect(cop(i.precio)).toBe(i.precio);
-        expect(i.costo).toBeGreaterThan(0);
-        expect(i.costo).toBeLessThan(i.precio);
+        expect(i.precio).toBeGreaterThan(0);
       }
     }
   });
@@ -45,7 +53,7 @@ describe('plantillas de arranque', () => {
 
 describe('impuesto de cada ítem según el giro', () => {
   const servido = itemsDe(plantillaDe('restaurante')!).find((i) => i.nombre === 'Bandeja paisa')!;
-  const gaseosa = itemsDe(plantillaDe('restaurante')!).find((i) => i.nombre === 'Gaseosa 400 ml')!;
+  const gaseosa = itemsDe(plantillaDe('panaderia')!).find((i) => i.nombre === 'Gaseosa 400 ml')!;
   const arroz = itemsDe(plantillaDe('tienda')!).find((i) => i.nombre === 'Arroz 1 kg')!;
   const cafe = itemsDe(plantillaDe('tienda')!).find((i) => i.nombre === 'Café molido 250 g')!;
   const detergente = itemsDe(plantillaDe('tienda')!).find((i) => i.nombre === 'Detergente 1 kg')!;
@@ -62,7 +70,7 @@ describe('impuesto de cada ítem según el giro', () => {
     expect(INC_RESTAURANTE_CODE).toBe('INC_8');
   });
 
-  it('restaurante: la gaseosa empacada es mercancía y lleva el IVA del bien, no INC', () => {
+  it('restaurante: la gaseosa que se vende para llevar (panadería) es mercancía y lleva el IVA del bien, no INC', () => {
     const f = fiscalDe(gaseosa, 'restaurante');
     expect(f).toMatchObject({ ivaRate: 19, ivaType: 'gravado', tratamientoFiscal: 'mercancia', efecto: 'iva' });
     expect(
@@ -111,5 +119,63 @@ describe('impuesto de cada ítem según el giro', () => {
         }
       }
     }
+  });
+});
+
+describe('revisión 6.6: exentos, bebidas del INC, giro y SKU', () => {
+  const buscar = (tipo: string, nombre: string) =>
+    itemsDe(plantillaDe(tipo)!).find((i) => i.nombre === nombre)!;
+
+  it('leche y huevos son EXENTOS (art. 477 ET), no excluidos, en panadería y tienda', () => {
+    for (const [tipo, nombre] of [
+      ['tienda', 'Leche entera 1 L'],
+      ['tienda', 'Huevos AA x12'],
+      ['panaderia', 'Leche entera 1 L'],
+    ] as const) {
+      expect(fiscalDe(buscar(tipo, nombre), 'retail'), nombre).toMatchObject({
+        ivaRate: 0,
+        ivaType: 'exento',
+      });
+    }
+  });
+
+  it('gaseosa y agua de restaurante, cafetería y comidas rápidas van servidas: INC (art. 512-9)', () => {
+    for (const tipo of ['restaurante', 'cafeteria', 'comidas_rapidas']) {
+      for (const nombre of ['Gaseosa 400 ml', 'Agua en botella']) {
+        const f = fiscalDe(buscar(tipo, nombre), 'restaurante');
+        expect(f, `${tipo} ${nombre}`).toMatchObject({ efecto: 'inc', tratamientoFiscal: 'expendio' });
+      }
+    }
+  });
+
+  it('mercancía para llevar (panadería, tienda) conserva el IVA del bien en un restaurante', () => {
+    expect(fiscalDe(buscar('panaderia', 'Gaseosa 400 ml'), 'restaurante')).toMatchObject({
+      ivaRate: 19,
+      tratamientoFiscal: 'mercancia',
+    });
+  });
+
+  it('retail rechaza las plantillas de comida preparada con un mensaje claro', () => {
+    for (const tipo of ['restaurante', 'cafeteria', 'comidas_rapidas'] as const) {
+      expect(motivoNoAplica(tipo, 'retail')).toMatch(/retail/);
+      expect(motivoNoAplica(tipo, 'restaurante')).toBeNull();
+    }
+    expect(motivoNoAplica('panaderia', 'retail')).toBeNull();
+    expect(motivoNoAplica('tienda', 'retail')).toBeNull();
+  });
+
+  it('en retail no se siembra lo servido de la panadería (Tinto, Café con leche)', () => {
+    const items = itemsDe(plantillaDe('panaderia')!);
+    const servidos = items.filter((i) => !seSiembra(i, 'retail')).map((i) => i.nombre);
+    expect(servidos).toEqual(['Tinto', 'Café con leche']);
+    expect(items.every((i) => seSiembra(i, 'restaurante'))).toBe(true);
+  });
+
+  it('la regex de SKU solo reconoce los prefijos conocidos', () => {
+    expect(REGEX_SKU_PLANTILLA.test('PL-REST-01')).toBe(true);
+    expect(REGEX_SKU_PLANTILLA.test('PL-TND-21')).toBe(true);
+    expect(REGEX_SKU_PLANTILLA.test('PL-XYZ-01')).toBe(false);
+    expect(REGEX_SKU_PLANTILLA.test('PL-REST-1')).toBe(false);
+    expect(PLANTILLAS.every((p) => itemsDe(p).every((i) => REGEX_SKU_PLANTILLA.test(i.sku)))).toBe(true);
   });
 });
