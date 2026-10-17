@@ -58,7 +58,7 @@ export function limpiarEvento<T extends Sentry.ErrorEvent>(evento: T): T {
     delete req.data;
     delete req.cookies;
     delete req.query_string;
-    if (typeof req.url === 'string') req.url = sinTokensEnRuta(req.url.split(/[?#]/)[0]);
+    if (typeof req.url === 'string') req.url = sinTokensEnRuta(req.url.split(/[?#]/)[0] ?? '');
     if (req.headers) {
       for (const h of Object.keys(req.headers)) {
         if (!CABECERAS_PERMITIDAS.has(h.toLowerCase())) delete req.headers[h];
