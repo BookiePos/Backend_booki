@@ -35,6 +35,18 @@ function mensajeSeguro(texto: unknown): string | undefined {
 }
 
 /**
+ * Rutas que llevan un secreto de un solo uso en el PATH (no en la query):
+ * restablecer contraseña, aceptar invitación y confirmar el registro. El token
+ * se cambia por `:token` para que un 5xx no lo deje legible en Sentry (4.11).
+ */
+const RUTAS_CON_TOKEN =
+  /(\/(?:auth\/reset-password|invitations\/accept|auth\/register\/confirm)\/)[^/]+/g;
+
+export function sinTokensEnRuta(url: string): string {
+  return url.replace(RUTAS_CON_TOKEN, '$1:token');
+}
+
+/**
  * Quita del evento todo lo que pueda llevar datos personales o secretos: lista
  * blanca de cabeceras, URL sin query, sin cuerpo/cookies/usuario, breadcrumbs
  * reducidos a categoría + mensaje recortado + nivel, sin `extra`, y emails y
@@ -46,7 +58,7 @@ export function limpiarEvento<T extends Sentry.ErrorEvent>(evento: T): T {
     delete req.data;
     delete req.cookies;
     delete req.query_string;
-    if (typeof req.url === 'string') req.url = req.url.split(/[?#]/)[0];
+    if (typeof req.url === 'string') req.url = sinTokensEnRuta(req.url.split(/[?#]/)[0]);
     if (req.headers) {
       for (const h of Object.keys(req.headers)) {
         if (!CABECERAS_PERMITIDAS.has(h.toLowerCase())) delete req.headers[h];

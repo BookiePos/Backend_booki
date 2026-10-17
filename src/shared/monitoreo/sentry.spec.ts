@@ -52,6 +52,17 @@ describe('limpiarEvento', () => {
   };
   const limpiar = (e: unknown) => limpiarEvento(e as never) as unknown as Ev;
 
+  it('4.11: cambia por :token los secretos que van en la ruta', () => {
+    for (const [url, esperado] of [
+      ['https://api.x/auth/reset-password/abc123', 'https://api.x/auth/reset-password/:token'],
+      ['https://api.x/invitations/accept/64b0.def456?x=1', 'https://api.x/invitations/accept/:token'],
+      ['https://api.x/auth/register/confirm/fff', 'https://api.x/auth/register/confirm/:token'],
+      ['https://api.x/sales/64b0/returns', 'https://api.x/sales/64b0/returns'],
+    ]) {
+      expect(limpiar({ request: { url, headers: {} } }).request.url).toBe(esperado);
+    }
+  });
+
   it('quita cuerpo, cookies, query y usuario', () => {
     const e = limpiar({
       user: { id: '1' },
