@@ -13,7 +13,7 @@ vi.mock('./sentry', async (orig) => ({
 vi.mock('@vercel/functions', () => ({ waitUntil: esperar }));
 
 import { SentryExceptionFilter } from './sentry-exception.filter';
-import { iniciarSentry, limpiarEvento, rutaCritica } from './sentry';
+import { iniciarSentry, limpiarEvento, rutaCritica, tasaDeMuestreo } from './sentry';
 
 describe('rutaCritica', () => {
   it('reconoce el cron diario y el webhook de facturación', () => {
@@ -25,6 +25,21 @@ describe('rutaCritica', () => {
     expect(rutaCritica('/billing/plan')).toBeUndefined();
     expect(rutaCritica('/cron/diarioX')).toBeUndefined();
     expect(rutaCritica(undefined)).toBeUndefined();
+  });
+});
+
+describe('tasaDeMuestreo', () => {
+  const con = (v?: string) => tasaDeMuestreo({ SENTRY_TRACES_SAMPLE_RATE: v } as NodeJS.ProcessEnv);
+  it('lee un valor entre 0 y 1', () => {
+    expect(con('0.1')).toBe(0.1);
+    expect(con('1')).toBe(1);
+  });
+  it('sin valor o inválido mide 0', () => {
+    expect(con(undefined)).toBe(0);
+    expect(con('')).toBe(0);
+    expect(con('abc')).toBe(0);
+    expect(con('2')).toBe(0);
+    expect(con('-1')).toBe(0);
   });
 });
 

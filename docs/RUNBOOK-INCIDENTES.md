@@ -12,6 +12,8 @@ quién afectó, cuánto duró y qué se cambió).
 | **S2** | Falla un módulo (nómina, compras, reportes) o una empresa | En el día |
 | **S3** | Algo se ve mal o es lento, hay un camino alterno | En la semana |
 
+Qué se mide y cuándo suena cada alerta: `TABLERO-SALUD.md`.
+
 ## Primeros 10 minutos (S1)
 
 1. **Confirmar:** `/estado` del sitio, `curl https://api.bookipos.com/health` y un
@@ -20,7 +22,8 @@ quién afectó, cuánto duró y qué se cambió).
 3. **Avisar a los clientes** por el canal de soporte (ver `Frontend/src/lib/soporte.ts`)
    y, si dura, que usen la contingencia de caja (`CONTINGENCIA-SIN-INTERNET.md`).
 4. **Revisar Vercel:** proyecto `backend` → *Logs* (errores 5xx) y *Deployments*.
-5. **Revisar Atlas:** estado del cluster, conexiones abiertas y alertas.
+5. **Revisar el tablero de Sentry** (errores por ruta, p95 del POS, `ruta_critica`).
+6. **Revisar Atlas:** estado del cluster, conexiones abiertas y alertas.
 
 ## Síntomas frecuentes
 

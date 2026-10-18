@@ -72,6 +72,16 @@ export function limpiarEvento<T extends Sentry.ErrorEvent>(evento: T): T {
   return evento;
 }
 
+/**
+ * Fracción de peticiones que Sentry mide para la latencia (tablero de salud,
+ * ítem 2.13). Sale de `SENTRY_TRACES_SAMPLE_RATE` (0 a 1); sin valor o con uno
+ * inválido es 0, o sea, solo errores y ningún costo extra.
+ */
+export function tasaDeMuestreo(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.SENTRY_TRACES_SAMPLE_RATE);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : 0;
+}
+
 let iniciado = false;
 
 /** Inicia Sentry una sola vez. Devuelve `true` si quedó activo. */
@@ -83,7 +93,7 @@ export function iniciarSentry(env: NodeJS.ProcessEnv = process.env): boolean {
     dsn,
     environment: env.SENTRY_ENVIRONMENT ?? env.VERCEL_ENV ?? env.NODE_ENV ?? 'development',
     release: env.VERCEL_GIT_COMMIT_SHA,
-    tracesSampleRate: 0,
+    tracesSampleRate: tasaDeMuestreo(env),
     beforeSend: limpiarEvento,
   });
   iniciado = true;
