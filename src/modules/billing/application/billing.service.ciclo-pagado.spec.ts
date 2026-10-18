@@ -45,6 +45,21 @@ describe('BillingService · el período sale del ciclo pagado', () => {
     expect(sub.save).toHaveBeenCalled();
   });
 
+  it('copia también monto, plan y complementos del pago', async () => {
+    const sub = { billingCycle: 'annual', plan: 'basico', amountInCents: 1, addOns: {}, save: vi.fn() } as any;
+    const addOns = { nomina: true };
+    await service(sub).advancePeriod({
+      businessId: BIZ,
+      billingCycle: 'monthly',
+      amountInCents: 9_900_000,
+      plan: 'negocio',
+      addOns,
+    });
+    expect(sub.amountInCents).toBe(9_900_000);
+    expect(sub.plan).toBe('negocio');
+    expect(sub.addOns).toBe(addOns);
+  });
+
   it('un pago sin ciclo (anterior al campo) usa el de la suscripción', async () => {
     const sub = { billingCycle: 'annual', save: vi.fn() } as any;
     await service(sub).advancePeriod({ businessId: BIZ });

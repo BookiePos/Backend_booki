@@ -872,6 +872,12 @@ export class BillingService {
     const cycle = (payment.billingCycle ?? sub.billingCycle) as BillingCycle;
     const end = this.advance(from, cycle);
     sub.billingCycle = cycle;
+    // El monto, el plan y los complementos también salen del pago: si no, un
+    // `subscribe` posterior que falló dejaba la suscripción cobrando otra
+    // cosa que lo que se pagó (4.11).
+    sub.amountInCents = payment.amountInCents;
+    if (payment.plan) sub.plan = payment.plan;
+    if (payment.addOns) sub.addOns = payment.addOns;
     sub.status = 'active';
     sub.currentPeriodEnd = end;
     sub.nextChargeAt = end;
