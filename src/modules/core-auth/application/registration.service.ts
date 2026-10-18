@@ -1,24 +1,76 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import * as bcrypt from 'bcryptjs';
+import { createHash, randomBytes } from 'crypto';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { BusinessService } from '../../control/application/business.service';
 import { DirectoryService } from '../../control/application/directory.service';
+import { CONTROL_CONNECTION } from '../../control/domain/control.constants';
+import {
+  RegistroPendiente,
+  RegistroPendienteDocument,
+} from '../../control/infrastructure/schemas/registro-pendiente.schema';
 import { SedesService } from '../../sedes/application/sedes.service';
 import { ROLES } from '../domain/roles';
 import { RegisterDto } from './dto/register.dto';
 import { AuthService, AuthTokens, AuthUserView } from './auth.service';
+import { MailResult, MailService } from './mail.service';
 import { RolesService } from './roles.service';
-import { UsersService } from './users.service';
+import { BCRYPT_ROUNDS, UsersService } from './users.service';
+
+/** Horas de validez del enlace de confirmación. */
+const CONFIRMACION_HORAS = 24;
+
+/** Espera mínima entre dos correos de registro al mismo buzón. */
+const ENFRIAMIENTO_MS = 60_000;
+
+/** Correos de registro por buzón en una ventana de 24 h. */
+const ENVIOS_POR_DIA = 5;
+const DIA_MS = 86_400_000;
+
+/** Tiempo tras el cual una marca `consumiendoAt` colgada deja de bloquear. */
+/** Contraseñas erróneas al confirmar antes de invalidar el pendiente. */
+const MAX_INTENTOS_CONFIRMAR = 5;
+
+const CONSUMO_VENCE_MS = 5 * 60_000;
+
+/** Lo que responde `POST /auth/register`, exista o no el correo. */
+export const RESPUESTA_REGISTRO = {
+  ok: true,
+  message:
+    'Te enviamos un correo para confirmar tu dirección. Abre el enlace para ' +
+    'terminar de crear tu cuenta.',
+} as const;
+
+type DatosRegistro = Omit<RegisterDto, 'password'>;
 
 /**
  * Alta de una empresa nueva (tenant) desde la web pública.
  *
- * Crea el registro de la empresa en el control-plane y luego provisiona SU base
- * de datos (roles de sistema, primera sede con los datos fiscales, usuario
- * Dueño) dentro del contexto de esa empresa, reusando los servicios existentes.
- * El Dueño trae todos los permisos, así que "Operación" ya incluye el POS.
+ * Va en dos pasos desde el ítem 4.11. `solicitar()` responde lo mismo exista o
+ * no el correo —antes un 409 «El correo ya está registrado» servía para
+ * averiguar qué correos tienen cuenta— y la diferencia solo llega al buzón:
+ * un enlace de confirmación si el correo es nuevo, o un aviso de «ya tienes
+ * cuenta» si no. `confirmar()` crea la empresa cuando el dueño abre el enlace,
+ * con lo que de paso queda probado que el correo es suyo.
+ *
+ * La empresa se provisiona como antes: registro en el control-plane y luego,
+ * dentro de su contexto, roles de sistema, primera sede con los datos fiscales
+ * y usuario Dueño.
  */
 @Injectable()
 export class RegistrationService {
+  private readonly logger = new Logger('RegistrationService');
+
   constructor(
     private readonly businesses: BusinessService,
     private readonly directory: DirectoryService,
@@ -26,20 +78,288 @@ export class RegistrationService {
     private readonly sedes: SedesService,
     private readonly users: UsersService,
     private readonly auth: AuthService,
+    @InjectModel(RegistroPendiente.name, CONTROL_CONNECTION)
+    private readonly pendientes: Model<RegistroPendienteDocument>,
+    private readonly mail: MailService,
+    private readonly config: ConfigService,
   ) {}
 
-  async register(
-    dto: RegisterDto,
-  ): Promise<{ tokens: AuthTokens; user: AuthUserView; plan: string }> {
-    const email = dto.ownerEmail.toLowerCase();
+  /**
+   * Primer paso. Nunca revela si el correo existe: el controlador responde
+   * `RESPUESTA_REGISTRO` en todos los casos y los dos caminos hacen el mismo
+   * trabajo caro (un bcrypt y un correo). Si el correo no puede salir, los dos
+   * caminos fallan igual con un 503 (no hay oráculo) y el pendiente se queda.
+   */
+  async solicitar(dto: RegisterDto): Promise<void> {
+    const email = dto.ownerEmail.toLowerCase().trim();
+    // Se hashea siempre, también si el correo ya existe: así los dos caminos
+    // tardan lo mismo y el tiempo de respuesta no delata la cuenta.
+    const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
+
+    // Antiflood: un correo por buzón por minuto, pase lo que pase. Sin esto se
+    // podía llenar un buzón ajeno desde muchas IPs.
+    // Un solo contador por correo para los dos tipos (confirmación y aviso):
+    // así el 202/503 no depende de si la cuenta existe.
+    const previos = await this.pendientes.find({ email }).exec();
+    const ahoraMs = Date.now();
+    if (
+      previos.some(
+        (p) =>
+          p.ultimoEnvioAt && p.ultimoEnvioAt.getTime() > ahoraMs - ENFRIAMIENTO_MS,
+      )
+    ) {
+      return;
+    }
+    const ventana = ventanaDeEnvios(previos);
+    if (ventana.envios >= ENVIOS_POR_DIA) return;
 
     if (await this.directory.exists(email)) {
-      throw new ConflictException('El correo ya está registrado');
-    }
-    if (dto.nit && (await this.businesses.nitExists(dto.nit))) {
-      throw new ConflictException('Ya existe una empresa con ese NIT');
+      // El aviso vive 24 h (no 60 s) para conservar el contador diario.
+      await this.pendientes
+        .findOneAndUpdate(
+          { email, tipo: 'aviso' },
+          {
+            $set: {
+              ultimoEnvioAt: new Date(),
+              envios: ventana.envios + 1,
+              envioDiaInicio: ventana.inicio,
+              expiresAt: new Date(ventana.inicio.getTime() + DIA_MS),
+            },
+          },
+          { upsert: true },
+        )
+        .exec();
+      const result = await this.mail.sendAvisoCuentaExistente({
+        to: email,
+        loginUrl: `${this.appUrl()}/login`,
+        recoverUrl: `${this.appUrl()}/recuperar`,
+      });
+      this.exigirEnviado(result, email);
+      return;
     }
 
+    // Un solo enlace vivo por correo: pedir otro reemplaza el token anterior
+    // (el índice único parcial por correo lo garantiza aunque haya carreras).
+    const rawToken = randomBytes(32).toString('hex');
+    const { password: _omitida, ...datos } = dto;
+    void _omitida;
+    try {
+      await this.pendientes
+        .findOneAndUpdate(
+          { email, tipo: 'confirmacion' },
+          {
+            $set: {
+              tokenHash: hashToken(rawToken),
+              datos: { ...datos, ownerEmail: email },
+              passwordHash,
+              expiresAt: new Date(Date.now() + CONFIRMACION_HORAS * 3_600_000),
+              ultimoEnvioAt: new Date(),
+              envios: ventana.envios + 1,
+              envioDiaInicio: ventana.inicio,
+              intentosFallidos: 0,
+            },
+            $unset: { consumiendoAt: 1 },
+          },
+          { upsert: true },
+        )
+        .exec();
+    } catch (err) {
+      // Otra solicitud del mismo correo ganó la carrera: ya hay un enlace vivo.
+      if ((err as { code?: number }).code === 11000) return;
+      throw err;
+    }
+    const result = await this.mail.sendConfirmacionRegistro({
+      to: email,
+      confirmUrl: `${this.appUrl()}/registro/confirmar/${rawToken}`,
+      businessName: dto.businessName,
+      expiresHours: CONFIRMACION_HORAS,
+    });
+    this.exigirEnviado(result, email);
+  }
+
+  /**
+   * Reenvía el correo de confirmación con un token nuevo; el anterior deja de
+   * valer. No revela si hay un registro pendiente: sin pendiente, o dentro de
+   * los límites (1 por minuto y 5 por día por buzón), no hace nada.
+   */
+  async reenviar(rawEmail: string): Promise<void> {
+    const email = rawEmail.toLowerCase().trim();
+    const ahora = Date.now();
+    const pendiente = await this.pendientes
+      .findOne({
+        email,
+        tipo: 'confirmacion',
+        expiresAt: { $gt: new Date(ahora) },
+      })
+      .exec();
+    if (!pendiente?.datos || !pendiente.tokenHash) return;
+    if (
+      pendiente.consumiendoAt &&
+      pendiente.consumiendoAt.getTime() > ahora - CONSUMO_VENCE_MS
+    ) {
+      return;
+    }
+    if (
+      pendiente.ultimoEnvioAt &&
+      pendiente.ultimoEnvioAt.getTime() > ahora - ENFRIAMIENTO_MS
+    ) {
+      return;
+    }
+    const ventana = ventanaDeEnvios([pendiente]);
+    if (ventana.envios >= ENVIOS_POR_DIA) return;
+
+    const rawToken = randomBytes(32).toString('hex');
+    // Condicionado al token que leímos: dos reenvíos a la vez no dejan dos
+    // enlaces vivos, solo gana el primero.
+    const actualizado = await this.pendientes
+      .findOneAndUpdate(
+        { _id: pendiente._id, tokenHash: pendiente.tokenHash },
+        {
+          $set: {
+            tokenHash: hashToken(rawToken),
+            ultimoEnvioAt: new Date(ahora),
+            envios: ventana.envios + 1,
+            envioDiaInicio: ventana.inicio,
+          },
+        },
+      )
+      .exec();
+    if (!actualizado) return;
+
+    const horas = Math.max(
+      1,
+      Math.ceil((pendiente.expiresAt.getTime() - ahora) / 3_600_000),
+    );
+    const result = await this.mail.sendConfirmacionRegistro({
+      to: email,
+      confirmUrl: `${this.appUrl()}/registro/confirmar/${rawToken}`,
+      businessName: String(pendiente.datos.businessName ?? ''),
+      expiresHours: Math.min(horas, CONFIRMACION_HORAS),
+    });
+    this.exigirEnviado(result, email);
+  }
+
+  /**
+   * Segundo paso: el dueño abrió el enlace. Reclama el pendiente de forma
+   * atómica (un enlace crea una sola empresa aunque se abra dos veces a la
+   * vez) con una marca que vence, y solo lo borra cuando la empresa quedó
+   * creada. Si algo falla se deshace la empresa a medias y se suelta la marca,
+   * para que el dueño pueda reintentar con el mismo enlace.
+   */
+  async confirmar(
+    rawToken: string,
+    password: string,
+  ): Promise<{ tokens: AuthTokens; user: AuthUserView; plan: string }> {
+    const ahora = new Date();
+    const tokenHash = hashToken(rawToken);
+
+    // La contraseña se comprueba ANTES de reclamar: una solicitud nueva para el
+    // mismo correo reemplaza los datos y el hash del pendiente, así que sin
+    // esto un atacante metería su contraseña y la víctima confirmaría su cuenta.
+    // Solo quien escribió la contraseña del formulario puede confirmar.
+    const candidato = await this.pendientes
+      .findOne({ tokenHash, tipo: 'confirmacion', expiresAt: { $gt: ahora } })
+      .exec();
+    if (candidato?.passwordHash) {
+      const coincide = await bcrypt.compare(password, candidato.passwordHash);
+      if (!coincide) {
+        const actualizado = await this.pendientes
+          .findOneAndUpdate(
+            { _id: candidato._id, tokenHash },
+            { $inc: { intentosFallidos: 1 } },
+            { new: true },
+          )
+          .exec();
+        if ((actualizado?.intentosFallidos ?? 0) >= MAX_INTENTOS_CONFIRMAR) {
+          await this.pendientes
+            .deleteOne({ _id: candidato._id, tokenHash })
+            .exec();
+        }
+        throw new BadRequestException('Los datos de confirmación no son correctos.');
+      }
+    }
+
+    const pendiente = await this.pendientes
+      .findOneAndUpdate(
+        {
+          tokenHash,
+          tipo: 'confirmacion',
+          expiresAt: { $gt: ahora },
+          $or: [
+            { consumiendoAt: { $exists: false } },
+            { consumiendoAt: null },
+            {
+              consumiendoAt: {
+                $lt: new Date(ahora.getTime() - CONSUMO_VENCE_MS),
+              },
+            },
+          ],
+        },
+        { $set: { consumiendoAt: ahora } },
+        { new: true },
+      )
+      .exec();
+    if (!pendiente?.datos || !pendiente.passwordHash) {
+      throw new NotFoundException(
+        'El enlace de confirmación no es válido o ya venció. Vuelve a registrarte.',
+      );
+    }
+    const datos = pendiente.datos as unknown as DatosRegistro;
+    const email = pendiente.email;
+
+    try {
+      // Quien llega aquí ya probó que el buzón es suyo: a él sí se le puede
+      // decir que el correo o el NIT se ocuparon mientras confirmaba.
+      if (await this.directory.exists(email)) {
+        throw new ConflictException(
+          'Ya existe una cuenta con este correo. Inicia sesión o recupera tu contraseña.',
+        );
+      }
+      if (datos.nit && (await this.businesses.nitExists(datos.nit))) {
+        throw new ConflictException('Ya existe una empresa con ese NIT');
+      }
+      const out = await this.crearEmpresa(email, datos, pendiente.passwordHash);
+      try {
+        await this.pendientes
+          .deleteOne({ _id: pendiente._id, tokenHash })
+          .exec();
+      } catch (err) {
+        // La empresa ya existe: el enlace no puede crear otra (el correo ya
+        // está en el directorio) y el pendiente vence solo.
+        this.logger.error(
+          `No se pudo borrar el pendiente de ${email}: ${String(err)}`,
+        );
+      }
+      return out;
+    } catch (err) {
+      await this.pendientes
+        .updateOne({ _id: pendiente._id }, { $unset: { consumiendoAt: 1 } })
+        .exec()
+        .catch((e: unknown) =>
+          this.logger.error(
+            `No se pudo soltar el pendiente de ${email}: ${String(e)}`,
+          ),
+        );
+      throw err;
+    }
+  }
+
+  /**
+   * Un correo que no salió no puede quedar como éxito: el enlace no llegaría y
+   * nadie lo sabría (4.11). Fuera de producción el correo simulado cuenta como
+   * enviado. El mensaje es el mismo en los dos caminos y no lleva token.
+   */
+  private exigirEnviado(result: MailResult, email: string): void {
+    if (result.sent || result.simulated) return;
+    this.logger.error(`No salió el correo de registro a ${email}.`);
+    throw new ServiceUnavailableException('Registro no disponible temporalmente');
+  }
+
+  private async crearEmpresa(
+    email: string,
+    dto: DatosRegistro,
+    passwordHash: string,
+  ): Promise<{ tokens: AuthTokens; user: AuthUserView; plan: string }> {
     const business = await this.businesses.create({
       name: dto.businessName,
       nit: dto.nit,
@@ -48,43 +368,91 @@ export class RegistrationService {
       ownerEmail: email,
     });
 
-    // A partir de aquí todo apunta a la base de la empresa recién creada.
-    return TenantContext.run(
-      {
-        businessId: business.id,
-        dbName: business.dbName,
-        tipoNegocio: business.tipoNegocio,
-      },
-      async () => {
-        await this.roles.ensureSystemRoles();
+    try {
+      // A partir de aquí todo apunta a la base de la empresa recién creada.
+      return await TenantContext.run(
+        {
+          businessId: business.id,
+          dbName: business.dbName,
+          tipoNegocio: business.tipoNegocio,
+        },
+        async () => {
+          await this.roles.ensureSystemRoles();
 
-        const sede = await this.sedes.create({
-          code: 'principal',
-          name: 'Sede principal',
-          businessName: dto.businessName,
-          nit: dto.nit,
-          nitDv: dto.nitDv,
-          tipoPersona: dto.tipoPersona,
-          responsabilidadFiscal: dto.responsabilidadFiscal,
-          ciiu: dto.ciiu,
-          departamento: dto.departamento,
-          ciudad: dto.ciudad,
-          address: dto.address,
-          phone: dto.phone,
-          emailFacturacion: dto.emailFacturacion,
-        });
+          const sede = await this.sedes.create({
+            code: 'principal',
+            name: 'Sede principal',
+            businessName: dto.businessName,
+            nit: dto.nit,
+            nitDv: dto.nitDv,
+            tipoPersona: dto.tipoPersona,
+            responsabilidadFiscal: dto.responsabilidadFiscal,
+            ciiu: dto.ciiu,
+            departamento: dto.departamento,
+            ciudad: dto.ciudad,
+            address: dto.address,
+            phone: dto.phone,
+            emailFacturacion: dto.emailFacturacion,
+          });
 
-        const user = await this.users.create({
-          email,
-          password: dto.password,
-          name: dto.ownerName,
-          role: ROLES.OWNER,
-          sedeIds: [sede.id],
-        });
+          const user = await this.users.create(
+            {
+              email,
+              password: '',
+              name: dto.ownerName,
+              role: ROLES.OWNER,
+              sedeIds: [sede.id],
+            },
+            undefined,
+            { passwordHash },
+          );
 
-        const session = await this.auth.issueSession(user);
-        return { ...session, plan: business.plan };
-      },
+          const session = await this.auth.issueSession(user);
+          return { ...session, plan: business.plan };
+        },
+      );
+    } catch (err) {
+      // Compensación: sin esto el reintento chocaría con el NIT y el correo de
+      // una empresa a medias que nadie puede abrir.
+      await this.directory
+        .unlink(email, business.id)
+        .catch((e: unknown) =>
+          this.logger.error(`No se pudo desvincular ${email}: ${String(e)}`),
+        );
+      await this.businesses
+        .remove(business.id)
+        .catch((e: unknown) =>
+          this.logger.error(
+            `No se pudo deshacer la empresa ${business.id}: ${String(e)}`,
+          ),
+        );
+      throw err;
+    }
+  }
+
+  private appUrl(): string {
+    return (this.config.get<string>('APP_URL') ?? 'http://localhost:3000').replace(
+      /\/+$/,
+      '',
     );
   }
+}
+
+/** Envíos ya hechos en la ventana de 24 h en curso (o una nueva si venció). */
+function ventanaDeEnvios(
+  ps: Array<Pick<RegistroPendiente, 'envios' | 'envioDiaInicio'>>,
+): { envios: number; inicio: Date } {
+  const ahora = Date.now();
+  let mejor: { envios: number; inicio: Date } | null = null;
+  for (const p of ps) {
+    if (!p.envioDiaInicio || p.envioDiaInicio.getTime() <= ahora - DIA_MS) continue;
+    if (!mejor || (p.envios ?? 0) > mejor.envios) {
+      mejor = { envios: p.envios ?? 0, inicio: p.envioDiaInicio };
+    }
+  }
+  return mejor ?? { envios: 0, inicio: new Date(ahora) };
+}
+
+function hashToken(rawToken: string): string {
+  return createHash('sha256').update(rawToken).digest('hex');
 }

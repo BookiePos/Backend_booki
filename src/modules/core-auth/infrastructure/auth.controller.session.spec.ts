@@ -64,7 +64,9 @@ function makeAuthController() {
     logout: vi.fn().mockResolvedValue(undefined),
   };
   const registration = {
-    register: vi.fn().mockResolvedValue({ ...SESSION, plan: 'pro' }),
+    solicitar: vi.fn().mockResolvedValue(undefined),
+    reenviar: vi.fn().mockResolvedValue(undefined),
+    confirmar: vi.fn().mockResolvedValue({ ...SESSION, plan: 'pro' }),
   };
   const ctrl = new AuthController(
     auth as unknown as AuthService,
@@ -96,14 +98,30 @@ describe('AuthController — el refresh token nunca sale en el body', () => {
     );
   });
 
-  it('register: body sin refreshToken; conserva user y plan', async () => {
-    const { ctrl } = makeAuthController();
+  it('register: responde neutro, sin sesión ni cookie (ítem 4.11)', async () => {
+    const { ctrl, registration } = makeAuthController();
+    const body = await ctrl.register({ ownerEmail: 'x@y.co' } as never);
+    expect(registration.solicitar).toHaveBeenCalled();
+    expect(body).toEqual({ ok: true, message: expect.any(String) });
+  });
+
+  it('confirmRegisterBody: el token viaja en el body y la respuesta no filtra el refresh', async () => {
+    const { ctrl, registration } = makeAuthController();
     const res = spyRes();
-    const body = await ctrl.register({} as never, res);
-    expect(body.tokens).toEqual({ accessToken: 'acc' });
+    const body = await ctrl.confirmRegisterBody(
+      { token: 'tok-del-body-0123456789', password: 'Clave#2026' },
+      res,
+    );
+    expect(registration.confirmar).toHaveBeenCalledWith('tok-del-body-0123456789', 'Clave#2026');
     expect(bodyLeaks(body, 'ref-secreto')).toBe(false);
-    expect(body.plan).toBe('pro');
     expect(res.cookie.mock.calls[0]![1]).toBe('ref-secreto');
+  });
+
+  it('resendRegister: respuesta neutra, sin sesión ni cookie', async () => {
+    const { ctrl, registration } = makeAuthController();
+    const body = await ctrl.resendRegister({ email: 'x@y.co' });
+    expect(registration.reenviar).toHaveBeenCalledWith('x@y.co');
+    expect(body).toEqual({ ok: true, message: expect.any(String) });
   });
 
   it('refresh: rota con la cookie y responde solo el accessToken', async () => {

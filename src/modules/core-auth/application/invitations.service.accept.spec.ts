@@ -50,6 +50,7 @@ describe('InvitationsService.accept · empresa del enlace', () => {
       {} as never,
       { get: () => undefined } as never,
       businesses as never,
+      { exists: async () => false } as never, // directorio global
     );
   });
 

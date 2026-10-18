@@ -2,6 +2,7 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 import type { BusinessAddOns } from '../../../control/domain/plans';
 import {
+  BILLING_CYCLES,
   PAYMENT_KINDS,
   PAYMENT_STATUSES,
 } from '../../domain/billing.constants';
@@ -46,6 +47,13 @@ export class Payment {
 
   @Prop()
   docPackages?: number;
+
+  /**
+   * Ciclo que paga este cobro (suscripción o renovación). El período se abre
+   * con este valor y no con el de la suscripción, que cambia antes de cobrar.
+   */
+  @Prop({ enum: BILLING_CYCLES })
+  billingCycle?: string;
 
   /**
    * Ya se aplicaron TODOS los entitlements de este pago (idempotencia). Se

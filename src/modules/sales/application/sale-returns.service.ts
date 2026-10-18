@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
 } from '@nestjs/common';
@@ -273,6 +274,27 @@ export class SaleReturnsService {
       await this.model.deleteOne({ _id: registro._id }).exec();
       throw new BadRequestException(
         'La venta se anuló mientras se registraba la devolución: ya se devolvió completa',
+      );
+    }
+
+    // Dos devoluciones simultáneas de la misma venta leían el mismo «ya
+    // devuelto» y las dos pasaban el tope: cada una reponía el stock y sacaba
+    // efectivo de la caja (ítem 4.11). Con el registro ya creado se vuelve a
+    // sumar TODO lo devuelto, incluido el propio; si pasa de lo vendido, este
+    // se retira. En cualquier orden, a lo sumo lo vendido queda devuelto.
+    const vendido = new Map<string, number>();
+    for (const l of sale.lines) {
+      const key = l.productId.toString();
+      vendido.set(key, (vendido.get(key) ?? 0) + l.qty);
+    }
+    const despues = await this.alreadyReturned(sale._id);
+    const excede = [...despues.qty].some(
+      ([productId, qty]) => qty > (vendido.get(productId) ?? 0),
+    );
+    if (excede) {
+      await this.model.deleteOne({ _id: registro._id }).exec();
+      throw new ConflictException(
+        'Otra devolución de esta venta se registró al mismo tiempo. Revisa lo ya devuelto e inténtalo de nuevo.',
       );
     }
 

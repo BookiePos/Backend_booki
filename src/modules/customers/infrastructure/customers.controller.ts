@@ -42,12 +42,16 @@ export class CustomersController {
   @RequirePermissions(PERMISSIONS.CUSTOMERS_MANAGE)
   @Post()
   create(@Body() dto: CreateCustomerDto, @CurrentUser() user: JwtUser) {
-    return this.customers.create(dto, user.email);
+    return this.customers.create(dto, user.email, user.permissions);
   }
 
   @RequirePermissions(PERMISSIONS.CUSTOMERS_MANAGE)
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateCustomerDto) {
-    return this.customers.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateCustomerDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.customers.update(id, dto, user.permissions);
   }
 }

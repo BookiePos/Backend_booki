@@ -16,6 +16,19 @@ interface PasswordResetEmail {
   expiresMinutes: number;
 }
 
+interface ConfirmacionRegistroEmail {
+  to: string;
+  confirmUrl: string;
+  businessName: string;
+  expiresHours: number;
+}
+
+interface CuentaExistenteEmail {
+  to: string;
+  loginUrl: string;
+  recoverUrl: string;
+}
+
 interface PayslipEmail {
   to: string;
   employeeName: string;
@@ -60,7 +73,7 @@ export class MailService {
     const subject = 'Te invitaron a unirte al Sistema POS';
     if (!this.resend) {
       this.logger.log(
-        `[correo simulado] Invitación para ${msg.to} (rol: ${msg.roleName}). Enlace: ${msg.inviteUrl}`,
+        `[correo simulado] Invitación para ${msg.to} (rol: ${msg.roleName}). Enlace: ${this.enlaceParaLog(msg.inviteUrl)}`,
       );
       return { sent: false };
     }
@@ -89,7 +102,7 @@ export class MailService {
     const subject = 'Recupera tu contraseña de BookiPos';
     if (!this.resend) {
       this.logger.log(
-        `[correo simulado] Recuperación de contraseña para ${msg.to}. Enlace: ${msg.resetUrl}`,
+        `[correo simulado] Recuperación de contraseña para ${msg.to}. Enlace: ${this.enlaceParaLog(msg.resetUrl)}`,
       );
       return { sent: false, simulated: true };
     }
@@ -113,6 +126,142 @@ export class MailService {
       this.logger.error(`Fallo enviando recuperación a ${msg.to}: ${message}`);
       return { sent: false, error: message };
     }
+  }
+
+  /** Enlace para confirmar el correo y crear la empresa (ítem 4.11). */
+  async sendConfirmacionRegistro(
+    msg: ConfirmacionRegistroEmail,
+  ): Promise<MailResult> {
+    return this.enviar(
+      msg.to,
+      'Confirma tu correo para crear tu cuenta de BookiPos',
+      this.confirmacionRegistroHtml(msg),
+      `Confirmación de registro para ${msg.to}. Enlace: ${this.enlaceParaLog(msg.confirmUrl)}`,
+    );
+  }
+
+  /**
+   * Aviso a quien ya tiene cuenta y alguien intentó registrarse con su correo.
+   * El registro responde igual en los dos casos; la diferencia solo la ve el
+   * dueño del buzón.
+   */
+  async sendAvisoCuentaExistente(msg: CuentaExistenteEmail): Promise<MailResult> {
+    return this.enviar(
+      msg.to,
+      'Ya tienes una cuenta de BookiPos con este correo',
+      this.cuentaExistenteHtml(msg),
+      `Aviso de cuenta existente para ${msg.to}.`,
+    );
+  }
+
+  /**
+   * El enlace del correo simulado lleva un token de un solo uso. En desarrollo
+   * se imprime para copiarlo a mano; en producción no (ítem 4.11): quien lea
+   * los logs podría restablecer la contraseña de cualquiera.
+   */
+  private enlaceParaLog(url: string): string {
+    return this.esProduccion() ? '[oculto en producción]' : url;
+  }
+
+  private esProduccion(): boolean {
+    const entorno = this.config.get<string>('NODE_ENV') ?? process.env.NODE_ENV;
+    return entorno === 'production';
+  }
+
+  /** Envío común: sin proveedor se registra en el log; nunca lanza. */
+  private async enviar(
+    to: string,
+    subject: string,
+    html: string,
+    simulado: string,
+  ): Promise<MailResult> {
+    if (!this.resend) {
+      // En producción un correo que no sale no puede pasar por «simulado»:
+      // el registro dependería de un enlace que nadie recibe y nadie se
+      // enteraría (4.11). Se devuelve como fallo, sin el enlace en el log.
+      if (this.esProduccion()) {
+        this.logger.error(
+          `Sin RESEND_API_KEY en producción: no se envió «${subject}» a ${to}.`,
+        );
+        return { sent: false, error: 'Proveedor de correo no configurado' };
+      }
+      this.logger.log(`[correo simulado] ${simulado}`);
+      return { sent: false, simulated: true };
+    }
+    try {
+      const { data, error } = await this.resend.emails.send({
+        from: this.from,
+        to,
+        subject,
+        html,
+      });
+      if (error) {
+        this.logger.error(`Resend rechazó «${subject}» a ${to}: ${error.message}`);
+        return { sent: false, error: error.message };
+      }
+      this.logger.log(`«${subject}» enviado a ${to} (id: ${data?.id})`);
+      return { sent: true, id: data?.id };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Fallo enviando «${subject}» a ${to}: ${message}`);
+      return { sent: false, error: message };
+    }
+  }
+
+  private confirmacionRegistroHtml(msg: ConfirmacionRegistroEmail): string {
+    const url = escapeHtml(msg.confirmUrl);
+    return `<!doctype html>
+<html lang="es"><body style="margin:0;background:#faf9f7;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#201f1d;">
+  <div style="max-width:480px;margin:0 auto;padding:40px 24px;">
+    <div style="background:#ffffff;border:1px solid #e8e4de;border-radius:16px;padding:32px;">
+      <div style="width:40px;height:40px;border-radius:8px;background:#3f4a5a;color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:600;">B</div>
+      <h1 style="font-size:22px;margin:24px 0 8px;font-weight:600;">Confirma tu correo</h1>
+      <p style="font-size:15px;line-height:1.5;color:#4b4842;margin:0 0 24px;">
+        Recibimos la solicitud para crear <strong>${escapeHtml(msg.businessName)}</strong>
+        en BookiPos. Haz clic en el botón para confirmar tu correo y entrar.
+        El enlace vence en <strong>${msg.expiresHours} horas</strong>.
+      </p>
+      <a href="${url}" style="display:inline-block;background:#3f4a5a;color:#fff;text-decoration:none;font-size:15px;font-weight:500;padding:12px 24px;border-radius:10px;">
+        Confirmar y crear mi cuenta
+      </a>
+      <p style="font-size:13px;line-height:1.5;color:#8a857c;margin:24px 0 0;">
+        O copia este enlace en tu navegador:<br>
+        <a href="${url}" style="color:#5b7196;word-break:break-all;">${url}</a>
+      </p>
+      <p style="font-size:13px;color:#8a857c;margin:16px 0 0;">
+        Si no fuiste tú, ignora este correo: sin confirmar no se crea nada.
+      </p>
+    </div>
+  </div>
+</body></html>`;
+  }
+
+  private cuentaExistenteHtml(msg: CuentaExistenteEmail): string {
+    const login = escapeHtml(msg.loginUrl);
+    const recover = escapeHtml(msg.recoverUrl);
+    return `<!doctype html>
+<html lang="es"><body style="margin:0;background:#faf9f7;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#201f1d;">
+  <div style="max-width:480px;margin:0 auto;padding:40px 24px;">
+    <div style="background:#ffffff;border:1px solid #e8e4de;border-radius:16px;padding:32px;">
+      <div style="width:40px;height:40px;border-radius:8px;background:#3f4a5a;color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:600;">B</div>
+      <h1 style="font-size:22px;margin:24px 0 8px;font-weight:600;">Ya tienes una cuenta</h1>
+      <p style="font-size:15px;line-height:1.5;color:#4b4842;margin:0 0 24px;">
+        Alguien intentó crear una cuenta de BookiPos con este correo, que ya está
+        registrado. Si fuiste tú, inicia sesión; si no recuerdas la contraseña,
+        puedes cambiarla.
+      </p>
+      <a href="${login}" style="display:inline-block;background:#3f4a5a;color:#fff;text-decoration:none;font-size:15px;font-weight:500;padding:12px 24px;border-radius:10px;">
+        Iniciar sesión
+      </a>
+      <p style="font-size:13px;line-height:1.5;color:#8a857c;margin:24px 0 0;">
+        ¿Olvidaste la contraseña? <a href="${recover}" style="color:#5b7196;">Recupérala aquí</a>.
+      </p>
+      <p style="font-size:13px;color:#8a857c;margin:16px 0 0;">
+        Si no fuiste tú, ignora este correo: tu cuenta sigue igual y nadie entró en ella.
+      </p>
+    </div>
+  </div>
+</body></html>`;
   }
 
   /** Envía el comprobante de nómina (PDF adjunto) al correo del empleado. */

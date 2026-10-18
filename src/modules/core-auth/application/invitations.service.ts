@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { BusinessService } from '../../control/application/business.service';
+import { DirectoryService } from '../../control/application/directory.service';
 import { createHash, randomBytes } from 'crypto';
 import {
   Invitation,
@@ -64,9 +65,14 @@ export interface InvitationView {
   invitedByName?: string;
 }
 
-/** Vista de creación: incluye el enlace (útil en modo de pruebas de Resend). */
+/**
+ * Vista de creación. El enlace solo viaja cuando el correo NO salió, para
+ * compartirlo a mano (ítem 4.11): si quien invita lo recibiera siempre, podría
+ * abrirlo él mismo y la aceptación le diría si ese correo ya tiene cuenta en
+ * otra empresa. Con el correo enviado, el enlace solo lo tiene el buzón.
+ */
 export interface CreatedInvitationView extends InvitationView {
-  inviteUrl: string;
+  inviteUrl?: string;
   emailSent: boolean;
 }
 
@@ -91,6 +97,8 @@ export class InvitationsService {
     private readonly config: ConfigService,
     /** Control-plane: la empresa del enlace y su plan (ítems 3.5 y 3.6). */
     private readonly businesses: BusinessService,
+    /** Directorio global de correos: aceptar no debe dar un 409 distinto. */
+    private readonly directory: DirectoryService,
   ) {}
 
   /** Crea una invitación, la envía por correo y devuelve el enlace. */
@@ -157,7 +165,7 @@ export class InvitationsService {
 
     return {
       ...this.toView(invitation, role.name),
-      inviteUrl,
+      ...(result.sent ? {} : { inviteUrl }),
       emailSent: result.sent,
     };
   }
@@ -226,7 +234,7 @@ export class InvitationsService {
 
     return {
       ...this.toView(invitation, role.name),
-      inviteUrl,
+      ...(result.sent ? {} : { inviteUrl }),
       emailSent: result.sent,
     };
   }
@@ -295,6 +303,15 @@ export class InvitationsService {
     const role = await this.roles.findByKey(invitation.role);
     if (!role) {
       throw new BadRequestException('El rol de la invitación ya no existe');
+    }
+
+    // El correo puede tener cuenta en OTRA empresa (el directorio es global):
+    // mismo código que arriba, en vez del 409 genérico de `users.create`.
+    if (await this.directory.exists(invitation.email)) {
+      throw new ConflictException({
+        code: INVITATION_ERRORS.EMAIL_TAKEN,
+        message: 'Ya existe una cuenta con ese correo.',
+      });
     }
 
     const user = await this.users.create({
