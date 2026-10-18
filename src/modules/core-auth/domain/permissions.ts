@@ -17,6 +17,12 @@ export const PERMISSIONS = {
    */
   BILLING_MANAGE: 'billing.manage',
   TAX_MANAGE: 'tax.manage',
+  /**
+   * Cargar la plantilla de menú o catálogo de ejemplo (ítem 6.6). Crea
+   * categorías, productos con su impuesto, existencias y mesas de una vez: solo
+   * Dueño y Administrador.
+   */
+  ONBOARDING_TEMPLATE: 'onboarding.template',
   AUDIT_VIEW: 'audit.view',
   // POS / ventas
   POS_SELL: 'pos.sell',
@@ -81,6 +87,7 @@ export const PERMISSION_GROUPS: {
       { key: PERMISSIONS.AUDIT_VIEW, label: 'Ver auditoría' },
       { key: PERMISSIONS.PARAMS_MANAGE, label: 'Gestionar parámetros' },
       { key: PERMISSIONS.BILLING_MANAGE, label: 'Gestionar plan y pagos de BookiPos' },
+      { key: PERMISSIONS.ONBOARDING_TEMPLATE, label: 'Cargar un catálogo de ejemplo al empezar' },
     ],
   },
   {

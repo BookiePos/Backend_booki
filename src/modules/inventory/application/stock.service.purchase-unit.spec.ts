@@ -77,6 +77,8 @@ describe('StockService.entry · presentación de compra', () => {
       ),
     };
     movementModel = {
+      // Sin muestra sembrada: el resumen de la baja de ejemplo viene vacío.
+      aggregate: vi.fn(() => ({ session: () => ({ exec: () => Promise.resolve([]) }) })),
       create: vi.fn((docs: unknown[]) => Promise.resolve(docs)),
     };
     products = { getOrFail: vi.fn().mockResolvedValue(producto) };
