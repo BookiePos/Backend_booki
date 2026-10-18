@@ -72,6 +72,62 @@ export function limpiarEvento<T extends Sentry.ErrorEvent>(evento: T): T {
   return evento;
 }
 
+/**
+ * Fracción de peticiones que Sentry mide para la latencia (tablero de salud,
+ * ítem 2.13). Sale de `SENTRY_TRACES_SAMPLE_RATE` (0 a 1); sin valor o con uno
+ * inválido es 0, o sea, solo errores y ningún costo extra.
+ */
+export function tasaDeMuestreo(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.SENTRY_TRACES_SAMPLE_RATE);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : 0;
+}
+
+const RE_OBJECT_ID = /[0-9a-f]{24}/gi;
+
+/** Quita query/fragmento y reemplaza ids de Mongo y secuencias numéricas largas. */
+function rutaSegura(texto: string): string {
+  return censurar((texto.split(/[?#]/)[0] ?? '').replace(RE_OBJECT_ID, ':id'));
+}
+
+/**
+ * Equivalente de `limpiarEvento` para transacciones (`beforeSend` no las
+ * cubre): request limpia, sin usuario ni datos extra, nombre y URL sin ids ni
+ * query, y spans (p. ej. HTTP) reducidos a operación + descripción segura +
+ * tiempos, sin `data` ni etiquetas.
+ */
+export function limpiarTransaccion<T extends Sentry.ErrorEvent | object>(evento: T): T {
+  return limpiarTx(evento as unknown as EventoTx) as unknown as T;
+}
+
+interface EventoTx {
+  transaction?: string;
+  request?: { url?: string };
+  contexts?: { trace?: unknown };
+  spans?: Array<Record<string, unknown>>;
+}
+
+function limpiarTx(evento: EventoTx): EventoTx {
+  limpiarEvento(evento as unknown as Sentry.ErrorEvent);
+  const req = evento.request;
+  if (req && typeof req.url === 'string') req.url = rutaSegura(req.url);
+  if (typeof evento.transaction === 'string') evento.transaction = rutaSegura(evento.transaction);
+  if (evento.contexts?.trace) {
+    const t = evento.contexts.trace as { data?: unknown; description?: string };
+    delete t.data;
+    if (typeof t.description === 'string') t.description = rutaSegura(t.description);
+  }
+  if (evento.spans) {
+    evento.spans = evento.spans.map((sp) => {
+      const limpio = { ...sp };
+      delete limpio.data;
+      delete limpio.tags;
+      if (typeof limpio.description === 'string') limpio.description = rutaSegura(limpio.description);
+      return limpio;
+    });
+  }
+  return evento;
+}
+
 let iniciado = false;
 
 /** Inicia Sentry una sola vez. Devuelve `true` si quedó activo. */
@@ -83,8 +139,9 @@ export function iniciarSentry(env: NodeJS.ProcessEnv = process.env): boolean {
     dsn,
     environment: env.SENTRY_ENVIRONMENT ?? env.VERCEL_ENV ?? env.NODE_ENV ?? 'development',
     release: env.VERCEL_GIT_COMMIT_SHA,
-    tracesSampleRate: 0,
+    tracesSampleRate: tasaDeMuestreo(env),
     beforeSend: limpiarEvento,
+    beforeSendTransaction: limpiarTransaccion,
   });
   iniciado = true;
   return true;
