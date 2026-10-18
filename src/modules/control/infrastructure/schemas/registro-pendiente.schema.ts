@@ -17,7 +17,7 @@ export type RegistroPendienteDocument = HydratedDocument<RegistroPendiente>;
  */
 @Schema({ timestamps: true, collection: 'registros_pendientes' })
 export class RegistroPendiente {
-  @Prop({ required: true, lowercase: true, trim: true, index: true })
+  @Prop({ required: true, lowercase: true, trim: true })
   email!: string;
 
   @Prop({ required: true, enum: ['confirmacion', 'aviso'] })
@@ -35,10 +35,40 @@ export class RegistroPendiente {
 
   @Prop({ required: true })
   expiresAt!: Date;
+
+  /** Último correo enviado a este buzón: base del enfriamiento de 1 por minuto. */
+  @Prop()
+  ultimoEnvioAt?: Date;
+
+  /** Correos enviados dentro de la ventana de 24 h que abre `envioDiaInicio`. */
+  @Prop({ default: 0 })
+  envios?: number;
+
+  @Prop()
+  envioDiaInicio?: Date;
+
+  /**
+   * Marca de «alguien está creando la empresa con este enlace». Se borra el
+   * pendiente solo al terminar bien; si el proceso muere a medias, la marca
+   * vence y el enlace se puede volver a usar.
+   */
+  @Prop()
+  consumiendoAt?: Date;
 }
 
 export const RegistroPendienteSchema =
   SchemaFactory.createForClass(RegistroPendiente);
+
+// A lo sumo un enlace de confirmación vivo por correo (4.11). Parcial: los
+// avisos no llevan token y no compiten con él.
+RegistroPendienteSchema.index(
+  { email: 1 },
+  {
+    unique: true,
+    name: 'email_confirmacion_unico',
+    partialFilterExpression: { tipo: 'confirmacion' },
+  },
+);
 
 // Mongo borra el pendiente al vencer: no quedan datos de quien nunca confirmó.
 RegistroPendienteSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });

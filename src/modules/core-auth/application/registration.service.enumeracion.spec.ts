@@ -38,13 +38,19 @@ const exec = <T>(v: T) => ({ exec: vi.fn().mockResolvedValue(v) });
 function makeDeps() {
   const pendientes = {
     findOne: vi.fn().mockReturnValue(exec(null)),
-    findOneAndDelete: vi.fn().mockReturnValue(exec(null)),
+    findOneAndUpdate: vi.fn().mockReturnValue(exec(null)),
+    updateOne: vi.fn().mockReturnValue(exec(undefined)),
+    deleteOne: vi.fn().mockReturnValue(exec(undefined)),
     deleteMany: vi.fn().mockReturnValue(exec(undefined)),
     create: vi.fn().mockResolvedValue({}),
   };
-  const directory = { exists: vi.fn().mockResolvedValue(false) };
+  const directory = {
+    exists: vi.fn().mockResolvedValue(false),
+    unlink: vi.fn().mockResolvedValue(undefined),
+  };
   const businesses = {
     nitExists: vi.fn().mockResolvedValue(false),
+    remove: vi.fn().mockResolvedValue(undefined),
     create: vi.fn().mockResolvedValue({
       id: '64b000000000000000000001',
       dbName: 'biz_64b000000000000000000001',
@@ -96,9 +102,9 @@ describe('RegistrationService · sin oráculo de correos (ítem 4.11)', () => {
     await expect(service.solicitar(DTO)).resolves.toBeUndefined();
 
     expect(d.businesses.create).not.toHaveBeenCalled();
-    const doc = d.pendientes.create.mock.calls[0]![0];
-    expect(doc.email).toBe('duena@ejemplo.com');
-    expect(doc.tipo).toBe('confirmacion');
+    const [filtro, update] = d.pendientes.findOneAndUpdate.mock.calls[0]!;
+    expect(filtro).toEqual({ email: 'duena@ejemplo.com', tipo: 'confirmacion' });
+    const doc = update.$set;
     expect(JSON.stringify(doc)).not.toContain(DTO.password);
     expect(doc.passwordHash).toMatch(/^\$2[aby]\$/);
 
@@ -133,15 +139,18 @@ describe('RegistrationService · sin oráculo de correos (ítem 4.11)', () => {
   });
 
   it('antiflood: dentro del enfriamiento no manda otro correo', async () => {
-    d.pendientes.findOne.mockReturnValue(exec({ email: 'duena@ejemplo.com' }));
+    d.pendientes.findOne.mockReturnValue(
+      exec({ email: 'duena@ejemplo.com', ultimoEnvioAt: new Date() }),
+    );
     await expect(service.solicitar(DTO)).resolves.toBeUndefined();
     expect(d.mail.sendConfirmacionRegistro).not.toHaveBeenCalled();
     expect(d.mail.sendAvisoCuentaExistente).not.toHaveBeenCalled();
   });
 
   it('confirmar: consume el enlace una sola vez y crea la empresa con el hash guardado', async () => {
-    d.pendientes.findOneAndDelete.mockReturnValue(
+    d.pendientes.findOneAndUpdate.mockReturnValue(
       exec({
+        _id: 'p1',
         email: 'duena@ejemplo.com',
         passwordHash: '$2a$10$hashficticio',
         datos: { ...DTO, ownerEmail: 'duena@ejemplo.com', password: undefined },
@@ -149,7 +158,7 @@ describe('RegistrationService · sin oráculo de correos (ítem 4.11)', () => {
     );
     const out = await service.confirmar('tok');
 
-    const filtro = d.pendientes.findOneAndDelete.mock.calls[0]![0];
+    const filtro = d.pendientes.findOneAndUpdate.mock.calls[0]![0];
     expect(filtro.tokenHash).toBe(createHash('sha256').update('tok').digest('hex'));
     expect(filtro.tipo).toBe('confirmacion');
     expect(filtro.expiresAt.$gt).toBeInstanceOf(Date);
@@ -167,8 +176,8 @@ describe('RegistrationService · sin oráculo de correos (ítem 4.11)', () => {
   });
 
   it('confirmar: si el correo se ocupó mientras tanto, se le dice al dueño del buzón', async () => {
-    d.pendientes.findOneAndDelete.mockReturnValue(
-      exec({ email: 'duena@ejemplo.com', passwordHash: 'h', datos: { ...DTO } }),
+    d.pendientes.findOneAndUpdate.mockReturnValue(
+      exec({ _id: 'p1', email: 'duena@ejemplo.com', passwordHash: 'h', datos: { ...DTO } }),
     );
     d.directory.exists.mockResolvedValue(true);
     await expect(service.confirmar('tok')).rejects.toBeInstanceOf(ConflictException);

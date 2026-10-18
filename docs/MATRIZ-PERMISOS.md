@@ -48,7 +48,9 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `GET /audit/modules` | `audit.view` | ✓ | ✓ | ✓ | · |
 | `POST /auth/login` | público | ✓ | ✓ | ✓ | ✓ |
 | `POST /auth/register` | público | ✓ | ✓ | ✓ | ✓ |
+| `POST /auth/register/confirm` | público | ✓ | ✓ | ✓ | ✓ |
 | `POST /auth/register/confirm/:token` | público | ✓ | ✓ | ✓ | ✓ |
+| `POST /auth/register/resend` | público | ✓ | ✓ | ✓ | ✓ |
 | `POST /auth/refresh` | público | ✓ | ✓ | ✓ | ✓ |
 | `POST /auth/forgot-password` | público | ✓ | ✓ | ✓ | ✓ |
 | `GET /auth/reset-password/:token` | público | ✓ | ✓ | ✓ | ✓ |

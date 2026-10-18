@@ -160,8 +160,12 @@ export class MailService {
    * los logs podría restablecer la contraseña de cualquiera.
    */
   private enlaceParaLog(url: string): string {
+    return this.esProduccion() ? '[oculto en producción]' : url;
+  }
+
+  private esProduccion(): boolean {
     const entorno = this.config.get<string>('NODE_ENV') ?? process.env.NODE_ENV;
-    return entorno === 'production' ? '[oculto en producción]' : url;
+    return entorno === 'production';
   }
 
   /** Envío común: sin proveedor se registra en el log; nunca lanza. */
@@ -172,6 +176,15 @@ export class MailService {
     simulado: string,
   ): Promise<MailResult> {
     if (!this.resend) {
+      // En producción un correo que no sale no puede pasar por «simulado»:
+      // el registro dependería de un enlace que nadie recibe y nadie se
+      // enteraría (4.11). Se devuelve como fallo, sin el enlace en el log.
+      if (this.esProduccion()) {
+        this.logger.error(
+          `Sin RESEND_API_KEY en producción: no se envió «${subject}» a ${to}.`,
+        );
+        return { sent: false, error: 'Proveedor de correo no configurado' };
+      }
       this.logger.log(`[correo simulado] ${simulado}`);
       return { sent: false, simulated: true };
     }

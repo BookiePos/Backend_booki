@@ -50,3 +50,41 @@ describe('MailService · correo simulado', () => {
     expect(String(log.mock.calls[0]?.[0])).toContain('TOKENFICTICIO');
   });
 });
+
+describe('MailService · registro sin proveedor (4.11 rev. 2)', () => {
+  afterEach(() => vi.restoreAllMocks());
+  const confirm = {
+    to: 'x@y.co',
+    confirmUrl: 'https://h/registro/confirmar/TOKENFICTICIO',
+    businessName: 'N',
+    expiresHours: 24,
+  };
+
+  it('en producción sin RESEND_API_KEY falla (no simula), con log de error y sin el token', async () => {
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const log = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const mail = servicio('production');
+    const a = await mail.sendConfirmacionRegistro(confirm);
+    const b = await mail.sendAvisoCuentaExistente({
+      to: 'x@y.co',
+      loginUrl: 'https://h/login',
+      recoverUrl: 'https://h/recuperar',
+    });
+    for (const r of [a, b]) {
+      expect(r.sent).toBe(false);
+      expect(r.simulated).toBeUndefined();
+      expect(r.error).toBeTruthy();
+    }
+    expect(error).toHaveBeenCalledTimes(2);
+    const escrito = [...error.mock.calls, ...log.mock.calls]
+      .map((c) => String(c[0]))
+      .join('\n');
+    expect(escrito).not.toContain('TOKENFICTICIO');
+  });
+
+  it('fuera de producción sigue simulando', async () => {
+    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    const r = await servicio('development').sendConfirmacionRegistro(confirm);
+    expect(r).toEqual({ sent: false, simulated: true });
+  });
+});
