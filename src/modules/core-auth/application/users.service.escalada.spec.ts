@@ -113,6 +113,9 @@ describe('UsersService · nadie toma la cuenta del Dueño', () => {
       [ADMIN_ID]: usuario(ADMIN_ID, 'admin'),
       [CASHIER_ID]: usuario(CASHIER_ID, 'cashier'),
     };
+    // Desde la revisión 2 del 4.11 quien gestiona sedes ajenas solo toca a
+    // usuarios que estén en alguna sede suya: el cajero base está en la A.
+    usuarios[CASHIER_ID]!.sedeIds = [SEDE_A] as never;
     const userModel: any = {
       findById: vi.fn((id: string) => ({
         exec: () => Promise.resolve(usuarios[id] ?? null),
@@ -307,7 +310,7 @@ describe('UsersService · nadie toma la cuenta del Dueño', () => {
     await expect(
       service.update(CASHIER_ID, { sedeIds: [SEDE_B] }, admin),
     ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(usuarios[CASHIER_ID]!.sedeIds).toEqual([]);
+    expect(usuarios[CASHIER_ID]!.sedeIds).toEqual([SEDE_A]);
   });
 
   it('tampoco reparte sedes ajenas al crear un usuario', async () => {
@@ -333,6 +336,18 @@ describe('UsersService · nadie toma la cuenta del Dueño', () => {
       ).rejects.toBeInstanceOf(ForbiddenException);
     }
     expect(usuarios[CASHIER_ID]!.save).not.toHaveBeenCalled();
+  });
+
+  it('4.11 rev. 2: un cajero sin ninguna sede no es de quien gestiona sedes ajenas', async () => {
+    usuarios[CASHIER_ID]!.sedeIds = [] as never;
+    await expect(
+      service.update(CASHIER_ID, { name: 'Renombrado' }, admin),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(usuarios[CASHIER_ID]!.save).not.toHaveBeenCalled();
+    // El Dueño sí puede, porque ve todas las sedes.
+    await expect(
+      service.update(CASHIER_ID, { name: 'Renombrado' }, dueno),
+    ).resolves.toBeDefined();
   });
 
   it('4.11: sí gestiona a un cajero de su propia sede', async () => {
@@ -398,7 +413,7 @@ describe('UsersService · nadie toma la cuenta del Dueño', () => {
     ['cambiarle la contraseña', { password: 'otra123' }],
     ['cambiarle el rol', { role: 'manager' }],
     ['cambiarle los permisos extra', { extraPermissions: [PERMISSIONS.REPORTS_VIEW] }],
-    ['cambiarle las sedes', { sedeIds: [SEDE_A] }],
+    ['cambiarle las sedes', { sedeIds: [] }],
   ])('%s le revoca las sesiones', async (_, dto) => {
     await service.update(CASHIER_ID, dto as never, admin);
     expect(refreshModel.updateMany).toHaveBeenCalledTimes(1);

@@ -381,7 +381,13 @@ export class UsersService {
       permissions: await this.effectivePermissions(user),
       sedeIds: sedesDelObjetivo,
     });
-    if (objetivoVeTodas || sedesDelObjetivo.some((s) => !propias.has(s))) {
+    // Sin sedes asignadas `some()` da false y dejaba pasar: quien no está en
+    // ninguna sede propia no es de quien gestiona (4.11).
+    if (
+      objetivoVeTodas ||
+      sedesDelObjetivo.length === 0 ||
+      sedesDelObjetivo.some((s) => !propias.has(s))
+    ) {
       throw new ForbiddenException(
         'No puedes gestionar usuarios de sedes a las que no tienes acceso',
       );
