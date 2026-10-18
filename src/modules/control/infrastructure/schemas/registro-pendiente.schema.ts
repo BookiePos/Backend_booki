@@ -47,6 +47,10 @@ export class RegistroPendiente {
   @Prop()
   envioDiaInicio?: Date;
 
+  /** Contraseñas erróneas al confirmar; a las 5 el pendiente se invalida. */
+  @Prop({ default: 0 })
+  intentosFallidos?: number;
+
   /**
    * Marca de «alguien está creando la empresa con este enlace». Se borra el
    * pendiente solo al terminar bien; si el proceso muere a medias, la marca

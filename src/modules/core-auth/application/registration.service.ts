@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
@@ -37,6 +38,9 @@ const ENVIOS_POR_DIA = 5;
 const DIA_MS = 86_400_000;
 
 /** Tiempo tras el cual una marca `consumiendoAt` colgada deja de bloquear. */
+/** Contraseñas erróneas al confirmar antes de invalidar el pendiente. */
+const MAX_INTENTOS_CONFIRMAR = 5;
+
 const CONSUMO_VENCE_MS = 5 * 60_000;
 
 /** Lo que responde `POST /auth/register`, exista o no el correo. */
@@ -94,22 +98,37 @@ export class RegistrationService {
 
     // Antiflood: un correo por buzón por minuto, pase lo que pase. Sin esto se
     // podía llenar un buzón ajeno desde muchas IPs.
-    const reciente = await this.pendientes
-      .findOne({
-        email,
-        ultimoEnvioAt: { $gt: new Date(Date.now() - ENFRIAMIENTO_MS) },
-      })
-      .exec();
-    if (reciente) return;
+    // Un solo contador por correo para los dos tipos (confirmación y aviso):
+    // así el 202/503 no depende de si la cuenta existe.
+    const previos = await this.pendientes.find({ email }).exec();
+    const ahoraMs = Date.now();
+    if (
+      previos.some(
+        (p) =>
+          p.ultimoEnvioAt && p.ultimoEnvioAt.getTime() > ahoraMs - ENFRIAMIENTO_MS,
+      )
+    ) {
+      return;
+    }
+    const ventana = ventanaDeEnvios(previos);
+    if (ventana.envios >= ENVIOS_POR_DIA) return;
 
     if (await this.directory.exists(email)) {
-      await this.pendientes.deleteMany({ email, tipo: 'aviso' }).exec();
-      await this.pendientes.create({
-        email,
-        tipo: 'aviso',
-        ultimoEnvioAt: new Date(),
-        expiresAt: new Date(Date.now() + ENFRIAMIENTO_MS),
-      });
+      // El aviso vive 24 h (no 60 s) para conservar el contador diario.
+      await this.pendientes
+        .findOneAndUpdate(
+          { email, tipo: 'aviso' },
+          {
+            $set: {
+              ultimoEnvioAt: new Date(),
+              envios: ventana.envios + 1,
+              envioDiaInicio: ventana.inicio,
+              expiresAt: new Date(ventana.inicio.getTime() + DIA_MS),
+            },
+          },
+          { upsert: true },
+        )
+        .exec();
       const result = await this.mail.sendAvisoCuentaExistente({
         to: email,
         loginUrl: `${this.appUrl()}/login`,
@@ -118,12 +137,6 @@ export class RegistrationService {
       this.exigirEnviado(result, email);
       return;
     }
-
-    const previo = await this.pendientes
-      .findOne({ email, tipo: 'confirmacion' })
-      .exec();
-    const ventana = ventanaDeEnvios(previo);
-    if (ventana.envios >= ENVIOS_POR_DIA) return;
 
     // Un solo enlace vivo por correo: pedir otro reemplaza el token anterior
     // (el índice único parcial por correo lo garantiza aunque haya carreras).
@@ -143,6 +156,7 @@ export class RegistrationService {
               ultimoEnvioAt: new Date(),
               envios: ventana.envios + 1,
               envioDiaInicio: ventana.inicio,
+              intentosFallidos: 0,
             },
             $unset: { consumiendoAt: 1 },
           },
@@ -191,7 +205,7 @@ export class RegistrationService {
     ) {
       return;
     }
-    const ventana = ventanaDeEnvios(pendiente);
+    const ventana = ventanaDeEnvios([pendiente]);
     if (ventana.envios >= ENVIOS_POR_DIA) return;
 
     const rawToken = randomBytes(32).toString('hex');
@@ -234,9 +248,37 @@ export class RegistrationService {
    */
   async confirmar(
     rawToken: string,
+    password: string,
   ): Promise<{ tokens: AuthTokens; user: AuthUserView; plan: string }> {
     const ahora = new Date();
     const tokenHash = hashToken(rawToken);
+
+    // La contraseña se comprueba ANTES de reclamar: una solicitud nueva para el
+    // mismo correo reemplaza los datos y el hash del pendiente, así que sin
+    // esto un atacante metería su contraseña y la víctima confirmaría su cuenta.
+    // Solo quien escribió la contraseña del formulario puede confirmar.
+    const candidato = await this.pendientes
+      .findOne({ tokenHash, tipo: 'confirmacion', expiresAt: { $gt: ahora } })
+      .exec();
+    if (candidato?.passwordHash) {
+      const coincide = await bcrypt.compare(password, candidato.passwordHash);
+      if (!coincide) {
+        const actualizado = await this.pendientes
+          .findOneAndUpdate(
+            { _id: candidato._id, tokenHash },
+            { $inc: { intentosFallidos: 1 } },
+            { new: true },
+          )
+          .exec();
+        if ((actualizado?.intentosFallidos ?? 0) >= MAX_INTENTOS_CONFIRMAR) {
+          await this.pendientes
+            .deleteOne({ _id: candidato._id, tokenHash })
+            .exec();
+        }
+        throw new BadRequestException('Los datos de confirmación no son correctos.');
+      }
+    }
+
     const pendiente = await this.pendientes
       .findOneAndUpdate(
         {
@@ -398,13 +440,17 @@ export class RegistrationService {
 
 /** Envíos ya hechos en la ventana de 24 h en curso (o una nueva si venció). */
 function ventanaDeEnvios(
-  p: Pick<RegistroPendiente, 'envios' | 'envioDiaInicio'> | null,
+  ps: Array<Pick<RegistroPendiente, 'envios' | 'envioDiaInicio'>>,
 ): { envios: number; inicio: Date } {
   const ahora = Date.now();
-  if (p?.envioDiaInicio && p.envioDiaInicio.getTime() > ahora - DIA_MS) {
-    return { envios: p.envios ?? 0, inicio: p.envioDiaInicio };
+  let mejor: { envios: number; inicio: Date } | null = null;
+  for (const p of ps) {
+    if (!p.envioDiaInicio || p.envioDiaInicio.getTime() <= ahora - DIA_MS) continue;
+    if (!mejor || (p.envios ?? 0) > mejor.envios) {
+      mejor = { envios: p.envios ?? 0, inicio: p.envioDiaInicio };
+    }
   }
-  return { envios: 0, inicio: new Date(ahora) };
+  return mejor ?? { envios: 0, inicio: new Date(ahora) };
 }
 
 function hashToken(rawToken: string): string {

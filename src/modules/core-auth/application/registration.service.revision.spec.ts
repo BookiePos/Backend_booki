@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
+  BadRequestException,
   ConflictException,
   Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { createHash } from 'crypto';
+import * as bcrypt from 'bcryptjs';
+
+const CLAVE = 'ClaveFicticia#2026';
+const HASH = bcrypt.hashSync(CLAVE, 4);
 
 vi.mock('@nestjs/mongoose', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@nestjs/mongoose')>();
@@ -40,6 +45,7 @@ const exec = <T>(v: T) => ({
 
 function makeDeps() {
   const pendientes = {
+    find: vi.fn().mockReturnValue(exec([])),
     findOne: vi.fn().mockReturnValue(exec(null)),
     findOneAndUpdate: vi.fn().mockReturnValue(exec(null)),
     updateOne: vi.fn().mockReturnValue(exec(undefined)),
@@ -127,7 +133,7 @@ describe('RegistrationService · correo que no sale (4.11 rev. 2)', () => {
     const err = await service.solicitar(DTO).catch((e) => e);
     expect(err).toBeInstanceOf(ServiceUnavailableException);
     expect(err.message).toBe('Registro no disponible temporalmente');
-    expect(d.pendientes.create).toHaveBeenCalled();
+    expect(d.pendientes.findOneAndUpdate).toHaveBeenCalled();
     expect(d.pendientes.deleteOne).not.toHaveBeenCalled();
     expect(logError).toHaveBeenCalled();
   });
@@ -160,9 +166,9 @@ describe('RegistrationService · un solo enlace vivo (4.11 rev. 2)', () => {
 
   it('con 5 envíos en el día no manda otro', async () => {
     const d = makeDeps();
-    d.pendientes.findOne
-      .mockReturnValueOnce(exec(null)) // enfriamiento
-      .mockReturnValueOnce(exec({ envios: 5, envioDiaInicio: new Date() }));
+    d.pendientes.find.mockReturnValue(
+      exec([{ envios: 5, envioDiaInicio: new Date() }]),
+    );
     await makeService(d).solicitar(DTO);
     expect(d.mail.sendConfirmacionRegistro).not.toHaveBeenCalled();
     expect(d.pendientes.findOneAndUpdate).not.toHaveBeenCalled();
@@ -251,14 +257,15 @@ describe('RegistrationService · confirmar reclama, no borra primero (4.11 rev. 
   const reclamado = {
     _id: 'p1',
     email: 'duena@ejemplo.com',
-    passwordHash: '$2a$10$hashficticio',
+    passwordHash: HASH,
     datos: { ...DTO, ownerEmail: 'duena@ejemplo.com', password: undefined },
   };
 
   it('reclama con consumiendoAt que vence y borra el pendiente solo al terminar bien', async () => {
     const d = makeDeps();
+    d.pendientes.findOne.mockReturnValue(exec(reclamado));
     d.pendientes.findOneAndUpdate.mockReturnValue(exec(reclamado));
-    await makeService(d).confirmar('tok');
+    await makeService(d).confirmar('tok', CLAVE);
 
     const [filtro, update, opts] = d.pendientes.findOneAndUpdate.mock.calls[0]!;
     expect(filtro.tokenHash).toBe(hash('tok'));
@@ -272,9 +279,10 @@ describe('RegistrationService · confirmar reclama, no borra primero (4.11 rev. 
 
   it('si falla la creación: deshace la empresa, suelta la marca y no borra el pendiente', async () => {
     const d = makeDeps();
+    d.pendientes.findOne.mockReturnValue(exec(reclamado));
     d.pendientes.findOneAndUpdate.mockReturnValue(exec(reclamado));
     d.sedes.create.mockRejectedValue(new Error('mongo caído'));
-    await expect(makeService(d).confirmar('tok')).rejects.toThrow('mongo caído');
+    await expect(makeService(d).confirmar('tok', CLAVE)).rejects.toThrow('mongo caído');
 
     expect(d.directory.unlink).toHaveBeenCalledWith('duena@ejemplo.com', 'biz1');
     expect(d.businesses.remove).toHaveBeenCalledWith('biz1');
@@ -287,10 +295,84 @@ describe('RegistrationService · confirmar reclama, no borra primero (4.11 rev. 
 
   it('un conflicto (correo ocupado) también suelta la marca', async () => {
     const d = makeDeps();
+    d.pendientes.findOne.mockReturnValue(exec(reclamado));
     d.pendientes.findOneAndUpdate.mockReturnValue(exec(reclamado));
     d.directory.exists.mockResolvedValue(true);
-    await expect(makeService(d).confirmar('tok')).rejects.toBeInstanceOf(ConflictException);
+    await expect(makeService(d).confirmar('tok', CLAVE)).rejects.toBeInstanceOf(ConflictException);
     expect(d.pendientes.updateOne).toHaveBeenCalled();
     expect(d.businesses.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('RegistrationService · un solo contador diario para los dos caminos (4.11 rev. 3)', () => {
+  it('cuenta existente: con 5 envíos en el día no manda el aviso y responde sin error', async () => {
+    const d = makeDeps();
+    d.directory.exists.mockResolvedValue(true);
+    d.pendientes.find.mockReturnValue(
+      exec([{ tipo: 'confirmacion', envios: 5, envioDiaInicio: new Date() }]),
+    );
+    await expect(makeService(d).solicitar(DTO)).resolves.toBeUndefined();
+    expect(d.mail.sendAvisoCuentaExistente).not.toHaveBeenCalled();
+  });
+
+  it('correo nuevo con el mismo contador: misma respuesta que el camino de aviso', async () => {
+    const d = makeDeps();
+    d.pendientes.find.mockReturnValue(
+      exec([{ tipo: 'aviso', envios: 5, envioDiaInicio: new Date() }]),
+    );
+    await expect(makeService(d).solicitar(DTO)).resolves.toBeUndefined();
+    expect(d.mail.sendConfirmacionRegistro).not.toHaveBeenCalled();
+  });
+
+  it('el aviso suma al contador y lo conserva 24 h', async () => {
+    const d = makeDeps();
+    d.directory.exists.mockResolvedValue(true);
+    d.pendientes.find.mockReturnValue(
+      exec([{ tipo: 'aviso', envios: 2, envioDiaInicio: new Date(Date.now() - 3_600_000) }]),
+    );
+    await makeService(d).solicitar(DTO);
+    const [filtro, update] = d.pendientes.findOneAndUpdate.mock.calls[0]!;
+    expect(filtro).toEqual({ email: 'duena@ejemplo.com', tipo: 'aviso' });
+    expect(update.$set.envios).toBe(3);
+    expect(update.$set.expiresAt.getTime()).toBeGreaterThan(Date.now() + 20 * 3_600_000);
+  });
+});
+
+describe('RegistrationService · el atacante no puede fijar la contraseña (4.11 rev. 3)', () => {
+  const pendienteDelAtacante = () => ({
+    _id: 'p1',
+    email: 'victima@ejemplo.com',
+    passwordHash: bcrypt.hashSync('ClaveDelAtacante#1', 4),
+    datos: { ...DTO, ownerEmail: 'victima@ejemplo.com', password: undefined },
+  });
+
+  it('la víctima confirma con su contraseña: 400, no crea nada y no consume el pendiente', async () => {
+    const d = makeDeps();
+    d.pendientes.findOne.mockReturnValue(exec(pendienteDelAtacante()));
+    d.pendientes.findOneAndUpdate.mockReturnValue(exec({ intentosFallidos: 1 }));
+    await expect(makeService(d).confirmar('tok', 'ClaveDeLaVictima#2')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(d.businesses.create).not.toHaveBeenCalled();
+    expect(d.pendientes.deleteOne).not.toHaveBeenCalled();
+    // Solo cuenta el intento; no hay reclamo (consumiendoAt).
+    const [, upd] = d.pendientes.findOneAndUpdate.mock.calls[0]!;
+    expect(upd).toEqual({ $inc: { intentosFallidos: 1 } });
+  });
+
+  it('al quinto fallo el pendiente se invalida', async () => {
+    const d = makeDeps();
+    d.pendientes.findOne.mockReturnValue(exec(pendienteDelAtacante()));
+    d.pendientes.findOneAndUpdate.mockReturnValue(exec({ intentosFallidos: 5 }));
+    await expect(makeService(d).confirmar('tok', 'mala')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(d.pendientes.deleteOne).toHaveBeenCalledWith({ _id: 'p1', tokenHash: hash('tok') });
+  });
+
+  it('una solicitud nueva reinicia los intentos fallidos', async () => {
+    const d = makeDeps();
+    await makeService(d).solicitar(DTO);
+    expect(d.pendientes.findOneAndUpdate.mock.calls[0]![1].$set.intentosFallidos).toBe(0);
   });
 });

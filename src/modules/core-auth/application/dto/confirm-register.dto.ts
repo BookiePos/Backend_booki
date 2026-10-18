@@ -6,6 +6,12 @@ export class ConfirmRegisterDto {
   @MinLength(16)
   @MaxLength(256)
   token!: string;
+
+  /** La del formulario de registro: prueba que confirma quien se registró. */
+  @IsString()
+  @MinLength(1)
+  @MaxLength(128)
+  password!: string;
 }
 
 /** Cuerpo de `POST /auth/register/resend`. */

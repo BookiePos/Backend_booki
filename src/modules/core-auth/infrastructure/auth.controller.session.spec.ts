@@ -105,21 +105,14 @@ describe('AuthController — el refresh token nunca sale en el body', () => {
     expect(body).toEqual({ ok: true, message: expect.any(String) });
   });
 
-  it('confirmRegister: body sin refreshToken; conserva user y plan', async () => {
-    const { ctrl } = makeAuthController();
-    const res = spyRes();
-    const body = await ctrl.confirmRegister('tok', res);
-    expect(body.tokens).toEqual({ accessToken: 'acc' });
-    expect(bodyLeaks(body, 'ref-secreto')).toBe(false);
-    expect(body.plan).toBe('pro');
-    expect(res.cookie.mock.calls[0]![1]).toBe('ref-secreto');
-  });
-
   it('confirmRegisterBody: el token viaja en el body y la respuesta no filtra el refresh', async () => {
     const { ctrl, registration } = makeAuthController();
     const res = spyRes();
-    const body = await ctrl.confirmRegisterBody({ token: 'tok-del-body-0123456789' }, res);
-    expect(registration.confirmar).toHaveBeenCalledWith('tok-del-body-0123456789');
+    const body = await ctrl.confirmRegisterBody(
+      { token: 'tok-del-body-0123456789', password: 'Clave#2026' },
+      res,
+    );
+    expect(registration.confirmar).toHaveBeenCalledWith('tok-del-body-0123456789', 'Clave#2026');
     expect(bodyLeaks(body, 'ref-secreto')).toBe(false);
     expect(res.cookie.mock.calls[0]![1]).toBe('ref-secreto');
   });

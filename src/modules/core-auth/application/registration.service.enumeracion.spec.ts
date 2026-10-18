@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { createHash } from 'crypto';
+import * as bcrypt from 'bcryptjs';
+
+const CLAVE = 'ClaveFicticia#2026';
+const HASH = bcrypt.hashSync(CLAVE, 4);
 
 // Mismo patrón que `password-reset.service.spec.ts`: modelos mockeados y
 // decoradores de Mongoose neutralizados para poder importar el servicio.
@@ -37,7 +41,8 @@ const exec = <T>(v: T) => ({ exec: vi.fn().mockResolvedValue(v) });
 
 function makeDeps() {
   const pendientes = {
-    findOne: vi.fn().mockReturnValue(exec(null)),
+    find: vi.fn().mockReturnValue(exec([])),
+    findOne: vi.fn().mockReturnValue(exec({ _id: 'p1', passwordHash: HASH })),
     findOneAndUpdate: vi.fn().mockReturnValue(exec(null)),
     updateOne: vi.fn().mockReturnValue(exec(undefined)),
     deleteOne: vi.fn().mockReturnValue(exec(undefined)),
@@ -139,8 +144,8 @@ describe('RegistrationService · sin oráculo de correos (ítem 4.11)', () => {
   });
 
   it('antiflood: dentro del enfriamiento no manda otro correo', async () => {
-    d.pendientes.findOne.mockReturnValue(
-      exec({ email: 'duena@ejemplo.com', ultimoEnvioAt: new Date() }),
+    d.pendientes.find.mockReturnValue(
+      exec([{ email: 'duena@ejemplo.com', ultimoEnvioAt: new Date() }]),
     );
     await expect(service.solicitar(DTO)).resolves.toBeUndefined();
     expect(d.mail.sendConfirmacionRegistro).not.toHaveBeenCalled();
@@ -152,11 +157,11 @@ describe('RegistrationService · sin oráculo de correos (ítem 4.11)', () => {
       exec({
         _id: 'p1',
         email: 'duena@ejemplo.com',
-        passwordHash: '$2a$10$hashficticio',
+        passwordHash: HASH,
         datos: { ...DTO, ownerEmail: 'duena@ejemplo.com', password: undefined },
       }),
     );
-    const out = await service.confirmar('tok');
+    const out = await service.confirmar('tok', CLAVE);
 
     const filtro = d.pendientes.findOneAndUpdate.mock.calls[0]![0];
     expect(filtro.tokenHash).toBe(createHash('sha256').update('tok').digest('hex'));
@@ -165,13 +170,13 @@ describe('RegistrationService · sin oráculo de correos (ítem 4.11)', () => {
     expect(d.users.create).toHaveBeenCalledWith(
       expect.objectContaining({ email: 'duena@ejemplo.com', role: 'owner' }),
       undefined,
-      { passwordHash: '$2a$10$hashficticio' },
+      { passwordHash: HASH },
     );
     expect(out.plan).toBe('negocio');
   });
 
   it('confirmar: enlace inexistente, usado o vencido → 404 sin crear nada', async () => {
-    await expect(service.confirmar('otro')).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.confirmar('otro', CLAVE)).rejects.toBeInstanceOf(NotFoundException);
     expect(d.businesses.create).not.toHaveBeenCalled();
   });
 
@@ -180,7 +185,7 @@ describe('RegistrationService · sin oráculo de correos (ítem 4.11)', () => {
       exec({ _id: 'p1', email: 'duena@ejemplo.com', passwordHash: 'h', datos: { ...DTO } }),
     );
     d.directory.exists.mockResolvedValue(true);
-    await expect(service.confirmar('tok')).rejects.toBeInstanceOf(ConflictException);
+    await expect(service.confirmar('tok', CLAVE)).rejects.toBeInstanceOf(ConflictException);
     expect(d.businesses.create).not.toHaveBeenCalled();
   });
 });

@@ -87,24 +87,7 @@ export class AuthController {
     @Body() dto: ConfirmRegisterDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.registration.confirmar(dto.token);
-    setRefreshCookie(res, result.tokens.refreshToken, this.config);
-    return sessionBody(result);
-  }
-
-  /**
-   * Ruta anterior, con el token en la URL (queda en logs de proxy y de acceso).
-   * Se conserva solo para los enlaces ya enviados; el frontend usa el body.
-   */
-  @Throttle({ default: { limit: 10, ttl: 300_000 } })
-  @Public()
-  @Post('register/confirm/:token')
-  @HttpCode(201)
-  async confirmRegister(
-    @Param('token') token: string,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const result = await this.registration.confirmar(token);
+    const result = await this.registration.confirmar(dto.token, dto.password);
     setRefreshCookie(res, result.tokens.refreshToken, this.config);
     return sessionBody(result);
   }
