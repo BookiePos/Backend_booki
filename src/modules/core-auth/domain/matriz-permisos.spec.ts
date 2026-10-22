@@ -252,13 +252,14 @@ describe('matriz de permisos por rol (ítem 3.10)', () => {
     expect(prohibidos.map((e) => e.ruta)).toEqual([]);
   });
 
-  it('el Contador no recibe permisos de escritura, de sedes ni de administración', () => {
+  it('el Contador no recibe permisos de escritura ni de administración', () => {
     const rol = SYSTEM_ROLES.find((r) => r.key === ROLES.ACCOUNTANT)!;
     expect(rol.permissions).toEqual([
       PERMISSIONS.FINANCE_VIEW,
       PERMISSIONS.REPORTS_VIEW,
       PERMISSIONS.PAYROLL_VIEW,
+      // Solo lectura de toda la empresa (consolidado para el contador externo).
+      PERMISSIONS.SEDE_VIEW_ALL,
     ]);
-    expect(rol.permissions).not.toContain(PERMISSIONS.SEDE_VIEW_ALL);
   });
 });

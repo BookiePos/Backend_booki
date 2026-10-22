@@ -124,9 +124,11 @@ export class RolesService {
 
   async findByKey(key: string): Promise<RoleDocument | null> {
     const normalized = key.toLowerCase();
-    if (ROLES_DE_SISTEMA_TARDIOS.includes(normalized)) {
-      await this.asegurarRolTardio(normalized);
+    const existente = await this.roleModel.findOne({ key: normalized }).exec();
+    if (existente || !ROLES_DE_SISTEMA_TARDIOS.includes(normalized)) {
+      return existente;
     }
+    await this.asegurarRolTardio(normalized);
     return this.roleModel.findOne({ key: normalized }).exec();
   }
 
@@ -134,6 +136,15 @@ export class RolesService {
   private async asegurarRolTardio(key: string): Promise<void> {
     const def = SYSTEM_ROLE_BY_KEY.get(key);
     if (!def) return;
+    const previo = await this.roleModel.findOne({ key }).exec();
+    if (previo) {
+      if (!previo.isSystem) {
+        this.logger.warn(
+          `Rol a medida «${key}» ya existe: no se crea el rol de sistema homónimo.`,
+        );
+      }
+      return;
+    }
     try {
       await this.roleModel
         .updateOne(
@@ -270,6 +281,14 @@ export class RolesService {
   async ensureSystemRoles(): Promise<void> {
     for (const def of SYSTEM_ROLES) {
       const existente = await this.roleModel.findOne({ key: def.key }).exec();
+
+      // Rol a medida con la clave de un rol de sistema posterior: no es nuestro.
+      if (existente && !existente.isSystem && ROLES_DE_SISTEMA_TARDIOS.includes(def.key)) {
+        this.logger.warn(
+          `Rol a medida «${def.key}» ya existe: se omite el rol de sistema homónimo.`,
+        );
+        continue;
+      }
 
       // Rol editado a mano: no se toca nada suyo. Solo se reafirma que es de
       // sistema, que es lo que impide borrarlo.

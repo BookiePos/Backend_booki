@@ -75,9 +75,10 @@ describe('RolesService · permisos vigentes de cada rol', () => {
       updateOne: vi.fn(
         (
           { key }: { key: string },
-          update: { $setOnInsert: Record<string, unknown> },
+          update: { $setOnInsert?: Record<string, unknown>; $set?: Record<string, unknown> },
         ) => {
-          if (!stored[key]) {
+          if (stored[key] && update.$set) Object.assign(stored[key]!, update.$set);
+          if (!stored[key] && update.$setOnInsert) {
             stored[key] = {
               id: `id-${key}`,
               key,
@@ -138,7 +139,29 @@ describe('RolesService · permisos vigentes de cada rol', () => {
         PERMISSIONS.FINANCE_VIEW,
         PERMISSIONS.REPORTS_VIEW,
         PERMISSIONS.PAYROLL_VIEW,
+        PERMISSIONS.SEDE_VIEW_ALL,
       ]);
+    });
+
+    it('no hace escritura si la fila ya existe (findByKey en cada login)', async () => {
+      stored[ROLES.ACCOUNTANT] = storedRole(ROLES.ACCOUNTANT, [PERMISSIONS.REPORTS_VIEW]);
+
+      await service.findByKey(ROLES.ACCOUNTANT);
+
+      expect(roleModel.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('no toca un rol a medida previo llamado contador (isSystem: false)', async () => {
+      stored[ROLES.ACCOUNTANT] = {
+        ...storedRole(ROLES.ACCOUNTANT, [PERMISSIONS.POS_SELL]),
+        isSystem: false,
+      };
+
+      await service.list();
+      await service.ensureSystemRoles();
+
+      expect(stored[ROLES.ACCOUNTANT]!.permissions).toEqual([PERMISSIONS.POS_SELL]);
+      expect(stored[ROLES.ACCOUNTANT]!.isSystem).toBe(false);
     });
 
     it('aparece en la lista de roles para invitar', async () => {

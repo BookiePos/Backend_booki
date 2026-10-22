@@ -77,6 +77,9 @@ const ACCOUNTANT_PERMISSIONS: Permission[] = [
   PERMISSIONS.FINANCE_VIEW,
   PERMISSIONS.REPORTS_VIEW,
   PERMISSIONS.PAYROLL_VIEW,
+  // Solo lectura: el contador externo necesita balance, conciliación y nómina
+  // consolidados de toda la empresa. El Dueño puede editar el rol.
+  PERMISSIONS.SEDE_VIEW_ALL,
 ];
 
 /**
@@ -130,8 +133,8 @@ export const SYSTEM_ROLES: {
     // Ítem 7.8: el contador externo del cliente. Solo lectura sobre lo
     // contable (libro, conciliación, reportes y estados financieros,
     // compras/gastos y nómina). No vende, no abre caja, no escribe asientos ni
-    // gastos y no toca usuarios, planes ni cobros. No ve todas las sedes: el
-    // Dueño le asigna las que quiera abrirle.
+    // gastos y no toca usuarios, planes ni cobros. Ve todas las sedes (solo
+    // lectura); el Dueño puede recortarlo editando el rol.
     description:
       'Consulta la contabilidad de la empresa en solo lectura: libro, conciliación, reportes, compras, gastos y nómina.',
     permissions: ACCOUNTANT_PERMISSIONS,
