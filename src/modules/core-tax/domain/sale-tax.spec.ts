@@ -174,3 +174,31 @@ describe('saleTaxFor · perfil fiscal completo (ítem 1.17)', () => {
     expect(admiteIvaDescontable({ tipoNegocio: 'restaurante' })).toBe(false);
   });
 });
+
+/**
+ * Ítem 6.5: con el registro corto la sede nace sin responsabilidad fiscal. La
+ * venta no se rompe: se aplica el valor por defecto conservador (se causa el
+ * impuesto) hasta que el dueño complete el perfil.
+ */
+describe('saleTaxFor · sede sin datos fiscales (registro corto, ítem 6.5)', () => {
+  const GRAVADO_19 = { ivaType: 'gravado', ivaRate: 19 } as const;
+
+  it('restaurante sin perfil: causa INC', () => {
+    expect(saleTaxFor({ tipoNegocio: 'restaurante' }, GRAVADO_19, 8)).toEqual({
+      kind: 'inc',
+      rate: 8,
+    });
+  });
+
+  it('retail sin perfil: IVA a la tarifa del producto', () => {
+    expect(saleTaxFor({ tipoNegocio: 'retail' }, GRAVADO_19, 8)).toEqual({
+      kind: 'iva',
+      rate: 19,
+    });
+  });
+
+  it('el IVA pagado en compras es descontable por defecto en retail, no en restaurante', () => {
+    expect(admiteIvaDescontable({ tipoNegocio: 'retail' })).toBe(true);
+    expect(admiteIvaDescontable({ tipoNegocio: 'restaurante' })).toBe(false);
+  });
+});
