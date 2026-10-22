@@ -20,14 +20,14 @@ import {
 } from '../../../sedes/domain/sede.constants';
 import { POLITICA_CONTRASENA } from './password-policy';
 
-/**
- * Alta pública de una empresa (tenant) desde la web. Recoge la identidad del
- * negocio (que se guarda en su primera sede) y la cuenta del dueño.
- */
 /** Respuesta a «¿Cobras IVA?» del registro corto (ítem 6.5). */
 export const COBRA_IVA = ['si', 'no', 'no_se'] as const;
 export type CobraIva = (typeof COBRA_IVA)[number];
 
+/**
+ * Alta pública de una empresa (tenant) desde la web. Recoge la identidad del
+ * negocio (que se guarda en su primera sede) y la cuenta del dueño.
+ */
 export class RegisterDto {
   // ── Negocio ────────────────────────────────────────────────────────────────
   @IsString()
