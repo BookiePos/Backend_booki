@@ -181,6 +181,16 @@ export class SaleReturnsService {
       );
     }
 
+    if (sale.platform) {
+      // La plataforma es quien le devuelve la plata al cliente y ajusta lo que
+      // le paga al negocio: una devolución aquí descuadraría la cuenta por
+      // cobrar frente a su liquidación. Mientras no se liquide, se anula el
+      // pedido; si ya se liquidó, el ajuste se hace con la plataforma.
+      throw new BadRequestException(
+        'Es un pedido de plataforma: las devoluciones las maneja la plataforma. Si no está liquidado, anula el pedido.',
+      );
+    }
+
     const yaDevuelto = await this.alreadyReturned(sale._id);
     let plan: ReturnPlan;
     try {

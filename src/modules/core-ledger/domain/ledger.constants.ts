@@ -77,6 +77,11 @@ export const ACC = {
   DEVOLUCIONES_VENTAS: '4175',
   GASTOS_PERSONAL: '5105',
   GASTOS_SERVICIOS: '5135',
+  /**
+   * Comisión de las plataformas de domicilio (Rappi, DiDi Food, Uber Eats): gasto
+   * de ventas por servicios (PUC 5235). Se reconoce al liquidar, no al vender.
+   */
+  COMISIONES_PLATAFORMAS: '5235',
   GASTOS_DIVERSOS: '5195',
   COSTO_VENTA: '6135',
   /**
@@ -130,6 +135,7 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   // Gastos / costos
   { code: '5105', name: 'Gastos de personal', type: 'expense' },
   { code: '5135', name: 'Servicios (arriendo, públicos)', type: 'expense' },
+  { code: '5235', name: 'Comisiones de plataformas de domicilio', type: 'expense' },
   { code: '5195', name: 'Gastos diversos', type: 'expense' },
   { code: '6135', name: 'Costo de mercancía vendida', type: 'expense' },
   // Costos de producción absorbidos (saldo crédito: restan del gasto).

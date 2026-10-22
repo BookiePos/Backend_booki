@@ -75,6 +75,7 @@ export const MOVEMENT_SOURCES = [
   'payable_payment',
   'receivable_payment',
   'reconcile',
+  'platform_settlement',
 ] as const;
 export type MovementSource = (typeof MOVEMENT_SOURCES)[number];
 

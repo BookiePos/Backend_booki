@@ -28,6 +28,9 @@ export class LedgerPostingService {
 
   private funding(method?: string): string {
     // Efectivo → Caja; débito/crédito/transferencia/Nequi/Daviplata → Bancos.
+    // Pedido de plataforma de domicilio: la plataforma cobró al cliente y le
+    // debe al negocio → cuenta por cobrar (1305), no Caja ni Bancos (ítem 7.5).
+    if (method === 'platform') return ACC.CLIENTES;
     return method === 'cash' ? ACC.CAJA : ACC.BANCOS;
   }
 
@@ -397,6 +400,64 @@ export class LedgerPostingService {
       ],
       userEmail: input.userEmail,
     });
+  }
+
+  // ── Plataformas de domicilio (ítem 7.5) ─────────────────────────────────────
+
+  /**
+   * Liquidación de una plataforma (Rappi, DiDi Food, Uber Eats): cancela la
+   * cuenta por cobrar de los pedidos liquidados y reconoce la comisión.
+   *
+   *   Débito  Bancos (1110)                 lo consignado (neto)
+   *   Débito  Comisiones plataformas (5235) la comisión (y ajustes)
+   *   Débito  IVA (2408)                    IVA de la comisión, si es descontable
+   *   Crédito Clientes (1305)               lo que la plataforma debía (bruto)
+   *
+   * Cuadra por construcción: el bruto es la suma de los pedidos y el llamador
+   * valida `neto + comisión + IVA = bruto` antes de postear.
+   */
+  async postPlatformSettlement(input: {
+    settlementId: string;
+    platformLabel: string;
+    date: string;
+    sedeId: string;
+    gross: number;
+    received: number;
+    commission: number;
+    commissionIva?: number;
+    userEmail?: string;
+  }): Promise<void> {
+    const gross = cop(input.gross);
+    const received = cop(input.received);
+    const commission = cop(input.commission);
+    const iva = cop(input.commissionIva ?? 0);
+    const lines: PostLine[] = [];
+    if (received > 0) {
+      lines.push({ accountCode: ACC.BANCOS, debit: received, sedeId: input.sedeId });
+    }
+    if (commission > 0) {
+      lines.push({
+        accountCode: ACC.COMISIONES_PLATAFORMAS,
+        debit: commission,
+        sedeId: input.sedeId,
+      });
+    }
+    if (iva > 0) {
+      lines.push({ accountCode: ACC.IVA_POR_PAGAR, debit: iva, sedeId: input.sedeId });
+    }
+    lines.push({ accountCode: ACC.CLIENTES, credit: gross, sedeId: input.sedeId });
+    await this.safePost({
+      date: input.date,
+      sourceType: 'platform_settlement',
+      sourceId: input.settlementId,
+      memo: `Liquidación ${input.platformLabel}`,
+      lines,
+      userEmail: input.userEmail,
+    });
+  }
+
+  async reversePlatformSettlement(settlementId: string, userEmail?: string): Promise<void> {
+    await this.safeReverse('platform_settlement', settlementId, userEmail);
   }
 
   // ── Compras ───────────────────────────────────────────────────────────────────

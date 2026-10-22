@@ -257,6 +257,13 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `PATCH /orders/:id` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
 | `POST /orders/:id/checkout` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
 | `POST /orders/:id/void` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
+| `POST /platform-orders/import/preview` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
+| `POST /platform-orders/import` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
+| `GET /platform-orders/summary` | `finance.view` | ✓ | ✓ | ✓ | · |
+| `GET /platform-orders/settlements` | `finance.view` | ✓ | ✓ | ✓ | · |
+| `POST /platform-orders/settlements` | `finance.manage` | ✓ | ✓ | ✓ | · |
+| `POST /platform-orders/settlements/:id/void` | `finance.manage` | ✓ | ✓ | ✓ | · |
+| `GET /platform-orders` | `finance.view` | ✓ | ✓ | ✓ | · |
 | `GET /sales/pos-products` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
 | `POST /sales/packaging-suggestion` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
 | `GET /sales` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
