@@ -179,6 +179,12 @@ describe('saleTaxFor · perfil fiscal completo (ítem 1.17)', () => {
  * Ítem 6.5: con el registro corto la sede nace sin responsabilidad fiscal. La
  * venta no se rompe: se aplica el valor por defecto conservador (se causa el
  * impuesto) hasta que el dueño complete el perfil.
+ *
+ * El default es conservador a propósito: cobrar de más se corrige al declarar
+ * el perfil, mientras que omitir el impuesto subdeclararía. Para no cobrar de
+ * más a quien no es responsable, el registro ya pregunta «¿Cobras IVA?»
+ * (`cobraIva`); «No» guarda `no_responsable_iva` en la sede, y solo «No sé» o
+ * vacío cae en este default.
  */
 describe('saleTaxFor · sede sin datos fiscales (registro corto, ítem 6.5)', () => {
   const GRAVADO_19 = { ivaType: 'gravado', ivaRate: 19 } as const;
