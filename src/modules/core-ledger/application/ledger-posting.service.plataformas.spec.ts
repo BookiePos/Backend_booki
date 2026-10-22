@@ -92,6 +92,7 @@ describe('LedgerPostingService · plataformas de domicilio', () => {
         received: 70_000,
         commission: 25_210,
         commissionIva: 4_790,
+        ivaDescontable: true,
       });
 
       expect(side('debit')).toBe(side('credit'));
@@ -110,6 +111,67 @@ describe('LedgerPostingService · plataformas de domicilio', () => {
       ledger.findBySource.mockResolvedValue({ _id: 'x' });
       await service.postPlatformSettlement({ ...base, gross: 10_000, received: 8_000, commission: 2_000 });
       expect(ledger.post).not.toHaveBeenCalled();
+    });
+
+    it('IVA de la comisión NO descontable (no responsable / INC): va como mayor valor del gasto en la 5235', async () => {
+      await service.postPlatformSettlement({
+        ...base,
+        gross: 100_000,
+        received: 70_000,
+        commission: 25_210,
+        commissionIva: 4_790,
+        ivaDescontable: false,
+      });
+      expect(side('debit')).toBe(side('credit'));
+      expect(on(ACC.IVA_POR_PAGAR, 'debit')).toBe(0);
+      expect(on(ACC.COMISIONES_PLATAFORMAS, 'debit')).toBe(30_000);
+    });
+
+    it('retenciones que practica la plataforma: anticipos 135515/135517/135518 dentro del cuadre', async () => {
+      await service.postPlatformSettlement({
+        ...base,
+        gross: 100_000,
+        received: 66_000,
+        commission: 30_000,
+        retefuente: 2_000,
+        reteIca: 700,
+        reteIva: 1_300,
+      });
+      expect(side('debit')).toBe(side('credit'));
+      expect(on(ACC.RETEFUENTE_A_FAVOR, 'debit')).toBe(2_000);
+      expect(on(ACC.RETEICA_A_FAVOR, 'debit')).toBe(700);
+      expect(on(ACC.RETEIVA_A_FAVOR, 'debit')).toBe(1_300);
+    });
+
+    it('ajuste de precio positivo (la plataforma cobró más): crédito a la 4295', async () => {
+      await service.postPlatformSettlement({
+        ...base,
+        gross: 100_000,
+        received: 90_000,
+        commission: 15_000,
+        ajustePrecio: 5_000,
+      });
+      expect(side('debit')).toBe(side('credit'));
+      expect(on(ACC.MAYOR_VALOR_PLATAFORMAS, 'credit')).toBe(5_000);
+      expect(on(ACC.CLIENTES, 'credit')).toBe(100_000);
+    });
+
+    it('ajuste de precio negativo (la plataforma cobró menos): débito a la 5235', async () => {
+      await service.postPlatformSettlement({
+        ...base,
+        gross: 100_000,
+        received: 80_000,
+        commission: 15_000,
+        ajustePrecio: -5_000,
+      });
+      expect(side('debit')).toBe(side('credit'));
+      expect(on(ACC.COMISIONES_PLATAFORMAS, 'debit')).toBe(20_000);
+      expect(on(ACC.MAYOR_VALOR_PLATAFORMAS, 'credit')).toBe(0);
+    });
+
+    it('si la reversa falla, el error SUBE (no se traga como pendiente)', async () => {
+      ledger.reverseBySource.mockRejectedValue(new Error('libro caído'));
+      await expect(service.reversePlatformSettlement('l1')).rejects.toThrow(/libro caído/);
     });
 
     it('la reversa usa el mismo origen', async () => {

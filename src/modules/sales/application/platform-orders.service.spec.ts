@@ -117,7 +117,7 @@ describe('PlatformOrdersService · importación de pedidos (7.5)', () => {
     // R-2 sale con error de producto; R-1 falla por stock y R-3 pierde la carrera.
     create
       .mockRejectedValueOnce(new BadRequestException('Stock insuficiente de Hamburguesa'))
-      .mockRejectedValueOnce(new ConflictException('ya está registrado'));
+      .mockRejectedValueOnce(new ConflictException({ message: 'ya está registrado', code: 'PEDIDO_PLATAFORMA_DUPLICADO' }));
     const r = await service.import(dto(), user);
     expect(r.results.map((x) => x.status)).toEqual(['error', 'error', 'duplicado']);
     expect(r.results[0]!.message).toMatch(/Stock insuficiente/);
@@ -141,5 +141,27 @@ describe('PlatformOrdersService · importación de pedidos (7.5)', () => {
     expect(r.results).toEqual([]);
     expect(r.summary.error).toBe(1);
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it('otro 409 (no el del pedido repetido) es error, no duplicado', async () => {
+    create.mockRejectedValueOnce(new ConflictException('otro conflicto'));
+    const r = await service.import(dto(), user);
+    expect(r.results[0]!.status).toBe('error');
+  });
+
+  it('pedido con fecha futura sale con error en la vista previa', async () => {
+    const r = await service.preview(
+      dto({ csv: 'Pedido;Fecha;Producto;Cantidad\nF-1;2999-01-01;Gaseosa;1' }),
+      user,
+    );
+    expect(r.orders[0]!.status).toBe('error');
+    expect(r.orders[0]!.errors[0]).toMatch(/futura/);
+  });
+
+  it('los pendientes se piden sin el tope de 500', async () => {
+    const limit = vi.fn(() => ({ select: () => ({ exec: () => Promise.resolve([]) }) }));
+    saleModel.find = vi.fn(() => ({ sort: () => ({ limit }) }));
+    await service.list({ sedeId: sedeId.toString(), pending: true }, user);
+    expect(limit).toHaveBeenCalledWith(5000);
   });
 });

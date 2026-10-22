@@ -301,9 +301,13 @@ class SalePlatform {
   @Prop({ required: true, trim: true, maxlength: 80 })
   externalId!: string;
 
-  /** Fecha del pedido según el portal (YYYY-MM-DD). Informativa: el asiento lleva la fecha del registro. */
+  /** Fecha del pedido según el portal (YYYY-MM-DD). El asiento lleva esa fecha si es del mes en curso (ver accountingDate). */
   @Prop()
   orderedAt?: string;
+
+  /** Fecha contable del asiento de la venta (YYYY-MM-DD); base del orden de las liquidaciones. */
+  @Prop()
+  accountingDate?: string;
 
   /** Comisión que el portal informó; la real se reconoce al liquidar. */
   @Prop({ min: 0 })
@@ -470,4 +474,7 @@ SaleSchema.index(
   },
 );
 // Saldo por cobrar a cada plataforma: pedidos de la sede sin liquidar.
-SaleSchema.index({ sedeId: 1, 'platform.code': 1, 'platform.settlementId': 1, createdAt: -1 }, { sparse: true });
+SaleSchema.index(
+  { sedeId: 1, 'platform.code': 1, 'platform.settlementId': 1, createdAt: -1 },
+  { partialFilterExpression: { 'platform.code': { $exists: true } } },
+);

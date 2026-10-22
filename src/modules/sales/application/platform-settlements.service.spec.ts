@@ -39,11 +39,15 @@ describe('PlatformSettlementsService · liquidación de plataformas (7.5)', () =
   let ledger: any;
   let treasury: any;
   let service: PlatformSettlementsService;
+  let sedeModel: any;
+  let businesses: any;
+  /** Responsabilidad fiscal de la sede: por omisión responsable de IVA (descuenta). */
+  let sedeFiscal: Record<string, unknown>;
 
   function build(opts: { libres?: any[]; modified?: number } = {}) {
     const libres = opts.libres ?? [
-      { _id: s1, total: 100_000, deliveryFee: 5_000 },
-      { _id: s2, total: 95_000, deliveryFee: 0 },
+      { _id: s1, total: 100_000, deliveryFee: 5_000, platform: { accountingDate: '2026-10-01' } },
+      { _id: s2, total: 95_000, deliveryFee: 0, platform: { accountingDate: '2026-10-01' } },
     ];
     saleModel = {
       find: vi.fn(() => exec(libres)),
@@ -61,7 +65,10 @@ describe('PlatformSettlementsService · liquidación de plataformas (7.5)', () =
       post: vi.fn().mockResolvedValue(undefined),
       reverse: vi.fn().mockResolvedValue(undefined),
     };
-    service = new PlatformSettlementsService(saleModel, settlementModel, ledger, treasury);
+    sedeFiscal = { responsableIva: true };
+    sedeModel = { findById: vi.fn(() => ({ select: () => exec(sedeFiscal) })) };
+    businesses = { findById: vi.fn().mockResolvedValue({ tipoNegocio: 'retail' }) };
+    service = new PlatformSettlementsService(saleModel, settlementModel, ledger, treasury, sedeModel, businesses);
   }
 
   const dto = (extra: Record<string, unknown> = {}) =>
@@ -98,7 +105,7 @@ describe('PlatformSettlementsService · liquidación de plataformas (7.5)', () =
   });
 
   it('un pedido ya liquidado, anulado o de otra plataforma/sede es 400', async () => {
-    build({ libres: [{ _id: s1, total: 100_000, deliveryFee: 5_000 }] });
+    build({ libres: [{ _id: s1, total: 100_000, deliveryFee: 5_000, platform: {} }] });
     await expect(service.create(dto(), user)).rejects.toBeInstanceOf(BadRequestException);
     expect(ledger.postPlatformSettlement).not.toHaveBeenCalled();
   });
@@ -144,12 +151,81 @@ describe('PlatformSettlementsService · liquidación de plataformas (7.5)', () =
     await expect(service.create(dto({ date: '2999-01-01' }), user)).rejects.toThrow(/futura/);
   });
 
+  it('IVA de la comisión: descontable solo si la sede es responsable de IVA', async () => {
+    await service.create(dto(), user);
+    expect(ledger.postPlatformSettlement.mock.calls[0][0].ivaDescontable).toBe(true);
+
+    build();
+    sedeFiscal = { responsableIva: false };
+    await service.create(dto(), user);
+    expect(ledger.postPlatformSettlement.mock.calls[0][0].ivaDescontable).toBe(false);
+    expect(settlementModel.create.mock.calls[0][0].ivaDescontable).toBe(false);
+  });
+
+  it('retenciones y ajuste de precio entran en la ecuación y viajan al asiento', async () => {
+    // bruto 200.000 + ajuste 8.000 = 208.000 = 150.000 + 40.000 + 5.000 + (6.000 + 2.000 + 5.000)
+    const r = await service.create(
+      dto({
+        received: 150_000,
+        commission: 40_000,
+        commissionIva: 5_000,
+        retefuente: 6_000,
+        reteIca: 2_000,
+        reteIva: 5_000,
+        ajustePrecio: 8_000,
+      }),
+      user,
+    );
+    expect(r.ajustePrecio).toBe(8_000);
+    const a = ledger.postPlatformSettlement.mock.calls[0][0];
+    expect([a.retefuente, a.reteIca, a.reteIva, a.ajustePrecio]).toEqual([6_000, 2_000, 5_000, 8_000]);
+    // Sin el ajuste no cuadra.
+    await expect(
+      service.create(
+        dto({ received: 150_000, commission: 40_000, commissionIva: 5_000, retefuente: 6_000, reteIca: 2_000, reteIva: 5_000 }),
+        user,
+      ),
+    ).rejects.toThrow(/No cuadra/);
+  });
+
+  describe('fecha de la liquidación', () => {
+    it('no puede ser anterior al pedido más reciente que cobra', async () => {
+      build({
+        libres: [
+          { _id: s1, total: 100_000, deliveryFee: 5_000, platform: { accountingDate: '2026-10-12' } },
+          { _id: s2, total: 95_000, deliveryFee: 0, platform: { accountingDate: '2026-10-05' } },
+        ],
+      });
+      await expect(service.create(dto({ date: '2026-10-10' }), user)).rejects.toThrow(/anterior al pedido más reciente.*2026-10-12/);
+      await expect(service.create(dto({ date: '2026-10-12' }), user)).resolves.toBeTruthy();
+    });
+
+    it('de un mes anterior se lleva a hoy', async () => {
+      build({
+        libres: [
+          { _id: s1, total: 100_000, deliveryFee: 5_000, platform: { accountingDate: '2020-01-01' } },
+          { _id: s2, total: 95_000, deliveryFee: 0, platform: { accountingDate: '2020-01-02' } },
+        ],
+      });
+      const r = await service.create(dto({ date: '2020-01-15' }), user);
+      expect(r.date).toBe(new Date().toLocaleDateString('en-CA', { timeZone: 'America/Bogota' }));
+    });
+  });
+
   describe('anular', () => {
-    it('reversa el asiento, saca la tesorería y libera los pedidos', async () => {
-      const id = new Types.ObjectId();
+    const id = new Types.ObjectId();
+    const base = () => {
       settlementModel.findById = vi.fn(() => exec({ _id: id, sedeId, status: 'active' }));
-      settlementModel.findOneAndUpdate = vi.fn(() => exec({ _id: id, sedeId, status: 'void' }));
-      await service.void(id.toString(), user);
+      settlementModel.findOneAndUpdate = vi
+        .fn()
+        .mockReturnValueOnce(exec({ _id: id, sedeId, status: 'voiding' }))
+        .mockReturnValueOnce(exec({ _id: id, sedeId, status: 'void' }));
+    };
+
+    it('reversa el asiento, saca la tesorería, libera los pedidos y queda void', async () => {
+      base();
+      const r = await service.void(id.toString(), user);
+      expect(r.status).toBe('void');
       expect(ledger.reversePlatformSettlement).toHaveBeenCalledWith(id.toString(), 'dueno@x.co');
       expect(treasury.reverse).toHaveBeenCalledWith('platform_settlement', id.toString());
       expect(saleModel.updateMany).toHaveBeenCalledWith(
@@ -158,8 +234,22 @@ describe('PlatformSettlementsService · liquidación de plataformas (7.5)', () =
       );
     });
 
-    it('anular dos veces: la segunda es 400 y no reversa otra vez', async () => {
-      const id = new Types.ObjectId();
+    it('si la reversa del libro falla NO libera los pedidos ni pasa a void', async () => {
+      base();
+      ledger.reversePlatformSettlement.mockRejectedValue(new Error('libro caído'));
+      await expect(service.void(id.toString(), user)).rejects.toThrow(/Reintenta/);
+      expect(saleModel.updateMany).not.toHaveBeenCalled();
+      expect(settlementModel.findOneAndUpdate).toHaveBeenCalledTimes(1); // solo la toma (voiding)
+    });
+
+    it('si liberar lanza, no queda en void: queda reintentable', async () => {
+      base();
+      saleModel.updateMany = vi.fn(() => ({ exec: () => Promise.reject(new Error('base caída')) }));
+      await expect(service.void(id.toString(), user)).rejects.toThrow(/Reintenta/);
+      expect(settlementModel.findOneAndUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it('anular una ya anulada es 400 y no reversa otra vez', async () => {
       settlementModel.findById = vi.fn(() => exec({ _id: id, sedeId, status: 'void' }));
       settlementModel.findOneAndUpdate = vi.fn(() => exec(null));
       await expect(service.void(id.toString(), user)).rejects.toBeInstanceOf(BadRequestException);

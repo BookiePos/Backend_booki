@@ -6,6 +6,7 @@ import {
   parseCsv,
   parsePlatformCsv,
   validateSettlement,
+  fechaContablePedido,
 } from './platform-orders';
 
 describe('parseCsv', () => {
@@ -90,17 +91,44 @@ describe('matchProduct', () => {
 });
 
 describe('validateSettlement', () => {
-  it('cuadra cuando consignado + comisión + IVA = bruto', () => {
+  const z = { retefuente: 0, reteIca: 0, reteIva: 0, ajustePrecio: 0 };
+  it('cuadra cuando consignado + comisión + IVA + retenciones = bruto + ajuste', () => {
     expect(
-      validateSettlement({ gross: 100_000, received: 70_000, commission: 25_210, commissionIva: 4_790 }),
+      validateSettlement({ ...z, gross: 100_000, received: 70_000, commission: 25_210, commissionIva: 4_790 }),
+    ).toBeNull();
+    expect(
+      validateSettlement({
+        gross: 100_000, received: 61_000, commission: 25_000, commissionIva: 4_750,
+        retefuente: 2_000, reteIca: 250, reteIva: 1_000, ajustePrecio: -6_000,
+      }),
+    ).toBeNull();
+    // La plataforma cobró 5.000 de más: entra al bruto a repartir.
+    expect(
+      validateSettlement({ ...z, gross: 100_000, received: 80_000, commission: 25_000, commissionIva: 0, ajustePrecio: 5_000 }),
+    ).toBeNull();
+    expect(
+      validateSettlement({ ...z, gross: 100_000, received: 70_000, commission: 25_000, commissionIva: 0, ajustePrecio: -5_000 }),
     ).toBeNull();
   });
   it('rechaza la diferencia, falte o sobre', () => {
-    expect(validateSettlement({ gross: 100_000, received: 70_000, commission: 20_000, commissionIva: 0 })).toMatch(/faltan \$10000/);
-    expect(validateSettlement({ gross: 100_000, received: 90_000, commission: 20_000, commissionIva: 0 })).toMatch(/sobran \$10000/);
+    expect(validateSettlement({ ...z, gross: 100_000, received: 70_000, commission: 20_000, commissionIva: 0 })).toMatch(/faltan \$10000/);
+    expect(validateSettlement({ ...z, gross: 100_000, received: 90_000, commission: 20_000, commissionIva: 0 })).toMatch(/sobran \$10000/);
   });
-  it('rechaza fracciones y negativos', () => {
-    expect(validateSettlement({ gross: 100_000, received: 99_999.5, commission: 0.5, commissionIva: 0 })).not.toBeNull();
-    expect(validateSettlement({ gross: 100_000, received: 110_000, commission: -10_000, commissionIva: 0 })).not.toBeNull();
+  it('rechaza fracciones y negativos (el ajuste sí puede ser negativo, pero entero)', () => {
+    expect(validateSettlement({ ...z, gross: 100_000, received: 99_999.5, commission: 0.5, commissionIva: 0 })).not.toBeNull();
+    expect(validateSettlement({ ...z, gross: 100_000, received: 110_000, commission: -10_000, commissionIva: 0 })).not.toBeNull();
+    expect(validateSettlement({ ...z, retefuente: -1, gross: 100_000, received: 100_001, commission: 0, commissionIva: 0 })).not.toBeNull();
+    expect(validateSettlement({ ...z, gross: 100_000, received: 100_000, commission: 0, commissionIva: 0, ajustePrecio: 0.5 })).not.toBeNull();
+  });
+});
+
+describe('fechaContablePedido', () => {
+  it('usa la fecha del pedido si cae en el mes en curso; si es de un mes anterior, hoy', () => {
+    expect(fechaContablePedido('2026-10-03', '2026-10-22')).toEqual({ fecha: '2026-10-03' });
+    expect(fechaContablePedido('2026-09-30', '2026-10-22')).toEqual({ fecha: '2026-10-22' });
+    expect(fechaContablePedido(undefined, '2026-10-22')).toEqual({ fecha: '2026-10-22' });
+  });
+  it('rechaza una fecha futura', () => {
+    expect(fechaContablePedido('2026-10-23', '2026-10-22')).toHaveProperty('error');
   });
 });

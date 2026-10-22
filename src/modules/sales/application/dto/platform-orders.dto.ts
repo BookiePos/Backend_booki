@@ -66,6 +66,34 @@ export class CreatePlatformSettlementDto {
   @Min(0)
   commissionIva?: number;
 
+  /** Retención en la fuente que practicó la plataforma. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  retefuente?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  reteIca?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  reteIva?: number;
+
+  /**
+   * Diferencia entre lo que la plataforma cobró al cliente (su menú) y el precio
+   * del POS, con signo: positivo si cobró más, negativo si cobró menos.
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  ajustePrecio?: number;
+
   /** Fecha de la consignación; hoy por omisión. */
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'date debe ser YYYY-MM-DD' })

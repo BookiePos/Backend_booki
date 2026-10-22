@@ -81,6 +81,8 @@ describe('pedidos de plataforma', () => {
         received: 90_000,
         commission: 30_000,
         commissionIva: 5_000,
+        ivaDescontable: true,
+        retefuente: 0,
       });
       // Reintento: idempotente por origen.
       await env.posting.postPlatformSettlement({
@@ -92,6 +94,8 @@ describe('pedidos de plataforma', () => {
         received: 90_000,
         commission: 30_000,
         commissionIva: 5_000,
+        ivaDescontable: true,
+        retefuente: 0,
       });
     });
 

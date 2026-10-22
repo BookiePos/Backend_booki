@@ -15,14 +15,17 @@ import { SalesService } from './sales.service';
 import { ImportPlatformOrdersDto } from './dto/platform-orders.dto';
 import {
   MAX_IMPORT_ORDERS,
+  PEDIDO_DUPLICADO_CODE,
   PLATFORM_CODES,
   PLATFORM_LABELS,
   PlatformCode,
   indexProducts,
   matchProduct,
+  fechaContablePedido,
   parsePlatformCsv,
   type RowError,
 } from '../domain/platform-orders';
+import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { cop, sumBy } from '../../finance/domain/money.util';
@@ -139,6 +142,13 @@ export class PlatformOrdersService {
           `El total del portal ($${o.reportedTotal}) no coincide con el del POS ($${total}): se cobra con los precios del POS.`,
         );
       }
+      const fechaPedido = fechaContablePedido(o.orderedAt, fechaColombia());
+      if ('error' in fechaPedido) errors.push(fechaPedido.error);
+      else if (o.orderedAt && fechaPedido.fecha !== o.orderedAt) {
+        warnings.push(
+          `El pedido es de un mes anterior (${o.orderedAt}): se contabiliza con la fecha de hoy.`,
+        );
+      }
       const saleNumber = yaRegistrado.get(o.externalId);
       const status: PreviewStatus = saleNumber ? 'duplicado' : errors.length > 0 ? 'error' : 'ok';
       return {
@@ -215,8 +225,12 @@ export class PlatformOrdersService {
           err instanceof HttpException
             ? this.messageOf(err)
             : 'No se pudo registrar el pedido';
-        // Dos importaciones simultáneas: el que pierde la carrera ve el pedido como duplicado.
-        const dup = err instanceof HttpException && err.getStatus() === 409;
+        // Dos importaciones simultáneas: el que pierde la carrera ve el pedido como
+        // duplicado. Otro 409 cualquiera NO lo es: es un error de ese pedido.
+        const dup =
+          err instanceof HttpException &&
+          err.getStatus() === 409 &&
+          (err.getResponse() as { code?: string }).code === PEDIDO_DUPLICADO_CODE;
         results.push({
           externalId: o.externalId,
           status: dup ? 'duplicado' : 'error',
@@ -257,7 +271,9 @@ export class PlatformOrdersService {
     const rows = await this.saleModel
       .find(filter)
       .sort({ createdAt: -1 })
-      .limit(Math.min(Math.max(q.limit ?? 200, 1), 500))
+      // Los pendientes se devuelven completos (son los que se liquidan); el
+      // resto, acotado.
+      .limit(q.pending ? 5000 : Math.min(Math.max(q.limit ?? 200, 1), 500))
       .select('saleNumber total deliveryFee platform createdAt')
       .exec();
     return rows.map((s) => ({
@@ -316,6 +332,8 @@ export class PlatformOrdersService {
           received: number;
           commission: number;
           commissionIva: number;
+          retenciones: number;
+          ajustePrecio: number;
         }>([
           {
             $match: {
@@ -333,6 +351,8 @@ export class PlatformOrdersService {
               received: { $sum: '$received' },
               commission: { $sum: '$commission' },
               commissionIva: { $sum: '$commissionIva' },
+              retenciones: { $sum: { $add: ['$retefuente', '$reteIca', '$reteIva'] } },
+              ajustePrecio: { $sum: '$ajustePrecio' },
             },
           },
         ])
@@ -356,6 +376,8 @@ export class PlatformOrdersService {
         received: cop(l?.received ?? 0),
         commission: cop(l?.commission ?? 0),
         commissionIva: cop(l?.commissionIva ?? 0),
+        retenciones: cop(l?.retenciones ?? 0),
+        ajustePrecio: cop(l?.ajustePrecio ?? 0),
       };
     }).filter((r) => r.orders > 0 || r.pendingOrders > 0 || r.settlements > 0);
 

@@ -53,6 +53,7 @@ import { Sede } from '../../sedes/infrastructure/schemas/sede.schema';
 import { CustomersService } from '../../customers/application/customers.service';
 import { PayrollService } from '../../payroll/application/payroll.service';
 import { ParamsService } from '../../core-params/application/params.service';
+import { PEDIDO_DUPLICADO_CODE, esDuplicadoDePedido, fechaContablePedido } from '../domain/platform-orders';
 import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { TreasuryPostingService } from '../../finance/treasury/treasury-posting.service';
@@ -700,15 +701,12 @@ export class SalesService {
     } catch (err) {
       // Carrera entre dos registros del mismo pedido de plataforma: gana el
       // primero (índice único) y este queda sin venta ni stock (se compensa abajo).
-      if (
-        dto.platform &&
-        (err as { code?: number }).code === 11000 &&
-        !holder.sale
-      ) {
+      if (dto.platform && esDuplicadoDePedido(err) && !holder.sale) {
         await this.rollbackSoldStock(dto.sedeId, components, user);
-        throw new ConflictException(
-          `El pedido ${dto.platform.externalId} de ${dto.platform.code} ya está registrado`,
-        );
+        throw new ConflictException({
+          message: `El pedido ${dto.platform.externalId} de ${dto.platform.code} ya está registrado`,
+          code: PEDIDO_DUPLICADO_CODE,
+        });
       }
       // Solo compensamos si la venta NO alcanzó a persistirse; si ya existe,
       // el stock queda correctamente respaldado y el error es de un paso
@@ -895,6 +893,10 @@ export class SalesService {
             externalId: dto.platform.externalId.trim(),
             orderedAt: dto.platform.orderedAt,
             commissionEstimate: dto.platform.commissionEstimate,
+            // Fecha del asiento: la del pedido si es del mes en curso, si no hoy.
+            accountingDate: (
+              fechaContablePedido(dto.platform.orderedAt, fechaColombia()) as { fecha: string }
+            ).fecha,
           }
         : undefined,
     });
@@ -986,7 +988,7 @@ export class SalesService {
     await this.ledgerPosting.postSale({
       saleId: sale._id.toString(),
       number: saleNumber,
-      date: fechaColombia(),
+      date: sale.platform?.accountingDate ?? fechaColombia(),
       sedeId: dto.sedeId,
       total,
       tax: ivaTax,
@@ -1067,6 +1069,8 @@ export class SalesService {
         'Un pedido de plataforma no lleva propina en el POS: la plataforma la maneja',
       );
     }
+    const fechaPedido = fechaContablePedido(dto.platform.orderedAt, fechaColombia());
+    if ('error' in fechaPedido) throw new BadRequestException(fechaPedido.error);
     const externalId = dto.platform.externalId.trim();
     if (!externalId) {
       throw new BadRequestException('Falta el código del pedido de la plataforma');
@@ -1080,9 +1084,10 @@ export class SalesService {
       .select('saleNumber')
       .exec();
     if (repetida) {
-      throw new ConflictException(
-        `El pedido ${externalId} de ${dto.platform.code} ya está registrado (${repetida.saleNumber})`,
-      );
+      throw new ConflictException({
+        message: `El pedido ${externalId} de ${dto.platform.code} ya está registrado (${repetida.saleNumber})`,
+        code: PEDIDO_DUPLICADO_CODE,
+      });
     }
   }
 

@@ -425,27 +425,36 @@ export class LedgerPostingService {
     received: number;
     commission: number;
     commissionIva?: number;
+    /** Si el IVA de la comisión es descontable (2408); si no, es mayor valor del gasto. */
+    ivaDescontable?: boolean;
+    retefuente?: number;
+    reteIca?: number;
+    reteIva?: number;
+    /** Con signo: >0 la plataforma cobró más que el POS (4295); <0 menos (5235). */
+    ajustePrecio?: number;
     userEmail?: string;
   }): Promise<void> {
     const gross = cop(input.gross);
     const received = cop(input.received);
-    const commission = cop(input.commission);
     const iva = cop(input.commissionIva ?? 0);
+    const ajuste = cop(input.ajustePrecio ?? 0);
+    // El IVA que no se descuenta (no responsable o INC, arts. 437 y 488 ET) es
+    // parte del costo del servicio: va a la misma 5235 de la comisión.
+    const commission = cop(input.commission) + (input.ivaDescontable ? 0 : iva) + (ajuste < 0 ? -ajuste : 0);
     const lines: PostLine[] = [];
-    if (received > 0) {
-      lines.push({ accountCode: ACC.BANCOS, debit: received, sedeId: input.sedeId });
-    }
-    if (commission > 0) {
-      lines.push({
-        accountCode: ACC.COMISIONES_PLATAFORMAS,
-        debit: commission,
-        sedeId: input.sedeId,
-      });
-    }
-    if (iva > 0) {
-      lines.push({ accountCode: ACC.IVA_POR_PAGAR, debit: iva, sedeId: input.sedeId });
-    }
+    const debe = (accountCode: string, debit: number) => {
+      if (debit > 0) lines.push({ accountCode, debit, sedeId: input.sedeId });
+    };
+    debe(ACC.BANCOS, received);
+    debe(ACC.COMISIONES_PLATAFORMAS, commission);
+    if (input.ivaDescontable) debe(ACC.IVA_POR_PAGAR, iva);
+    debe(ACC.RETEFUENTE_A_FAVOR, cop(input.retefuente ?? 0));
+    debe(ACC.RETEICA_A_FAVOR, cop(input.reteIca ?? 0));
+    debe(ACC.RETEIVA_A_FAVOR, cop(input.reteIva ?? 0));
     lines.push({ accountCode: ACC.CLIENTES, credit: gross, sedeId: input.sedeId });
+    if (ajuste > 0) {
+      lines.push({ accountCode: ACC.MAYOR_VALOR_PLATAFORMAS, credit: ajuste, sedeId: input.sedeId });
+    }
     await this.safePost({
       date: input.date,
       sourceType: 'platform_settlement',
@@ -456,8 +465,13 @@ export class LedgerPostingService {
     });
   }
 
+  /**
+   * A diferencia del resto de reversas, ESTA no se traga el error: anular una
+   * liquidación libera los pedidos, y liberarlos con el asiento vivo dejaría la
+   * CxC cancelada en el libro y abierta en la operación.
+   */
   async reversePlatformSettlement(settlementId: string, userEmail?: string): Promise<void> {
-    await this.safeReverse('platform_settlement', settlementId, userEmail);
+    await this.ledger.reverseBySource('platform_settlement', settlementId, userEmail);
   }
 
   // ── Compras ───────────────────────────────────────────────────────────────────

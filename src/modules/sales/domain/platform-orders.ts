@@ -310,22 +310,58 @@ export interface SettlementAmounts {
   received: number;
   commission: number;
   commissionIva: number;
+  retefuente: number;
+  reteIca: number;
+  reteIva: number;
+  /** Con signo: >0 la plataforma cobró más que el POS; <0 cobró menos. */
+  ajustePrecio: number;
 }
 
 /**
- * La liquidación tiene que cuadrar: lo consignado + comisión + IVA de la
- * comisión = lo que la plataforma debía. Devuelve el motivo si no.
+ * La liquidación tiene que cuadrar:
+ *   consignado + comisión + IVA de la comisión + retenciones = bruto + ajuste.
+ * Devuelve el motivo si no. Todo en pesos enteros; solo el ajuste lleva signo.
  */
 export function validateSettlement(a: SettlementAmounts): string | null {
   for (const [k, v] of Object.entries(a)) {
-    if (!Number.isInteger(v) || v < 0) return `${k} debe ser un monto entero no negativo`;
+    if (!Number.isInteger(v)) return `${k} debe ser un monto entero`;
+    if (k !== 'ajustePrecio' && v < 0) return `${k} no puede ser negativo`;
   }
   if (a.gross <= 0) return 'La liquidación no tiene nada por cobrar';
-  const diff = a.gross - (a.received + a.commission + a.commissionIva);
+  const sale = a.received + a.commission + a.commissionIva + a.retefuente + a.reteIca + a.reteIva;
+  const objetivo = a.gross + a.ajustePrecio;
+  const diff = objetivo - sale;
   if (diff !== 0) {
     return diff > 0
-      ? `No cuadra: faltan $${diff} (consignado + comisión + IVA de la comisión deben sumar $${a.gross})`
-      : `No cuadra: sobran $${-diff} (consignado + comisión + IVA de la comisión suman más de $${a.gross})`;
+      ? `No cuadra: faltan $${diff} (consignado, comisión, IVA y retenciones deben sumar $${objetivo})`
+      : `No cuadra: sobran $${-diff} (consignado, comisión, IVA y retenciones suman más de $${objetivo})`;
   }
   return null;
+}
+
+/**
+ * Fecha contable de un pedido de plataforma: la del pedido si cae en el mes en
+ * curso (el libro se lleva en orden, C. Co. art. 57), si no la de hoy, igual
+ * que `fechaDeReversa`. Una fecha futura se rechaza.
+ */
+export function fechaContablePedido(
+  orderedAt: string | undefined,
+  hoy: string,
+): { fecha: string } | { error: string } {
+  if (!orderedAt) return { fecha: hoy };
+  if (orderedAt > hoy) return { error: 'La fecha del pedido no puede ser futura' };
+  return { fecha: orderedAt.slice(0, 7) === hoy.slice(0, 7) ? orderedAt : hoy };
+}
+
+/** `code` del 409 de un pedido ya registrado: el import lo distingue de cualquier otro conflicto. */
+export const PEDIDO_DUPLICADO_CODE = 'PEDIDO_PLATAFORMA_DUPLICADO';
+
+/** ¿El error de Mongo es el choque del índice único de pedidos de plataforma? */
+export function esDuplicadoDePedido(err: unknown): boolean {
+  const e = err as { code?: number; keyPattern?: Record<string, unknown>; message?: string };
+  if (e?.code !== 11000) return false;
+  return (
+    e.keyPattern?.['platform.externalId'] !== undefined ||
+    /pedido_plataforma_unico/.test(e.message ?? '')
+  );
 }

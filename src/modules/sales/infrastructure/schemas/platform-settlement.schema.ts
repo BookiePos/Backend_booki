@@ -9,6 +9,9 @@ export type PlatformSettlementDocument = HydratedDocument<PlatformSettlement>;
  * lo de una tanda de pedidos, menos su comisión. Cancela la cuenta por cobrar de
  * esos pedidos y reconoce la comisión como gasto (ver `postPlatformSettlement`).
  *
+ * `voiding`: la anulación empezó pero no terminó (falló la reversa o liberar los
+ * pedidos); reintentar la anulación la completa.
+ *
  * Es el documento operativo; el hecho contable vive en el asiento
  * `platform_settlement` ligado por su id. Anular la liquidación reversa el
  * asiento y libera los pedidos.
@@ -41,6 +44,24 @@ export class PlatformSettlement {
   @Prop({ default: 0, min: 0 })
   commissionIva!: number;
 
+  /** Retenciones que practicó la plataforma (anticipos a favor). */
+  @Prop({ default: 0, min: 0 })
+  retefuente!: number;
+
+  @Prop({ default: 0, min: 0 })
+  reteIca!: number;
+
+  @Prop({ default: 0, min: 0 })
+  reteIva!: number;
+
+  /** Precio de la plataforma menos precio del POS, con signo. */
+  @Prop({ default: 0 })
+  ajustePrecio!: number;
+
+  /** Si el IVA de la comisión se descontó (2408) o fue mayor valor del gasto. */
+  @Prop({ default: false })
+  ivaDescontable!: boolean;
+
   /** Fecha de la consignación (YYYY-MM-DD). */
   @Prop({ required: true })
   date!: string;
@@ -48,8 +69,8 @@ export class PlatformSettlement {
   @Prop({ trim: true, maxlength: 240 })
   note?: string;
 
-  @Prop({ required: true, enum: ['active', 'void'], default: 'active' })
-  status!: 'active' | 'void';
+  @Prop({ required: true, enum: ['active', 'voiding', 'void'], default: 'active' })
+  status!: 'active' | 'voiding' | 'void';
 
   @Prop()
   createdByEmail?: string;

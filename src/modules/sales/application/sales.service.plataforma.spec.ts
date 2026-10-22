@@ -167,11 +167,43 @@ describe('SalesService.create · pedido de plataforma', () => {
   });
 
   it('una carrera (E11000 al crear) compensa el stock y responde 409', async () => {
-    const dup = Object.assign(new Error('E11000'), { code: 11000 });
+    const dup = Object.assign(new Error('E11000'), {
+      code: 11000,
+      keyPattern: { 'platform.code': 1, 'platform.externalId': 1 },
+    });
     (service as any).saleModel.create = vi.fn().mockRejectedValue(dup);
     const reverse = (service as any).stock.reverseSale;
     await expect(service.create(pedido(), user)).rejects.toBeInstanceOf(ConflictException);
     expect(sell).toHaveBeenCalledTimes(1);
     expect(reverse).toHaveBeenCalledTimes(1);
+  });
+
+  it('un 11000 de OTRO índice no se disfraza de «pedido ya registrado»', async () => {
+    const otro = Object.assign(new Error('E11000'), { code: 11000, keyPattern: { saleNumber: 1 } });
+    (service as any).saleModel.create = vi.fn().mockRejectedValue(otro);
+    await expect(service.create(pedido(), user)).rejects.not.toBeInstanceOf(ConflictException);
+  });
+
+  it('un orderedAt futuro se rechaza antes de tocar inventario', async () => {
+    await expect(
+      service.create(pedido({ platform: { code: 'rappi', externalId: 'R-9', orderedAt: '2999-01-01' } }), user),
+    ).rejects.toThrow(/futura/);
+    expect(sell).not.toHaveBeenCalled();
+  });
+
+  it('la fecha del asiento es la del pedido si es de este mes, si no hoy', async () => {
+    const hoy = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
+    await service.create(
+      pedido({ platform: { code: 'rappi', externalId: 'R-2', orderedAt: hoy } }),
+      user,
+    );
+    expect(ledger.postSale.mock.calls[0][0].date).toBe(hoy);
+    ledger.postSale.mockClear();
+    await service.create(
+      pedido({ platform: { code: 'rappi', externalId: 'R-3', orderedAt: '2020-01-05' } }),
+      user,
+    );
+    expect(ledger.postSale.mock.calls[0][0].date).toBe(hoy);
+    expect(creada.platform.accountingDate).toBe(hoy);
   });
 });
