@@ -32,7 +32,7 @@ import { ProductsService } from '../../inventory/application/products.service';
 import { Product } from '../../inventory/infrastructure/schemas/product.schema';
 import { ProductCategory } from '../../inventory/infrastructure/schemas/product-category.schema';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
-import { cop } from '../../finance/domain/money.util';
+import { cop, redondearA } from '../../finance/domain/money.util';
 
 const PRODUCT_POPULATE = 'name sku unit';
 
@@ -270,7 +270,7 @@ export class CatalogService {
 
     if (file.size > PRODUCT_IMAGE_MAX_BYTES) {
       throw new BadRequestException(
-        `La imagen supera los ${Math.round(PRODUCT_IMAGE_MAX_BYTES / 1024 / 1024)} MB.`,
+        `La imagen supera los ${redondearA(PRODUCT_IMAGE_MAX_BYTES / 1024 / 1024, 0)} MB.`,
       );
     }
     // El tipo sale de los bytes, no del mimetype que declara el cliente.

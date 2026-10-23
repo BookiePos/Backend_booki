@@ -52,6 +52,7 @@ import {
   WOMPI_CURRENCY,
   mapWompiStatus,
 } from '../domain/billing.constants';
+import { redondearA } from '../../finance/domain/money.util';
 
 const DOCS_PACKAGE_PRICE = ADD_ONS.docPackage.price;
 
@@ -107,9 +108,10 @@ export class BillingService {
       plans: Object.fromEntries(
         BUSINESS_PLANS.map((plan) => [plan, planPrice(plan, cycle)]),
       ) as Record<BusinessPlan, number>,
-      discountPercent: Math.round(
-        (1 - CYCLE_BILLED_MONTHS[cycle] / CYCLE_MONTHS[cycle]) * 1000,
-      ) / 10,
+      discountPercent: redondearA(
+        (1 - CYCLE_BILLED_MONTHS[cycle] / CYCLE_MONTHS[cycle]) * 100,
+        1,
+      ),
     }));
   }
 
