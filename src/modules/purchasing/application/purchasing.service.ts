@@ -89,7 +89,7 @@ export class PurchasingService {
     let subtotal = 0;
     let taxAmount = 0;
     for (const l of dtoLines) {
-      const lineSub = Math.round(l.unitCost * l.qty);
+      const lineSub = cop(l.unitCost * l.qty);
       let lineTax = 0;
       if (l.taxCode) {
         const computed = await this.tax.compute(l.taxCode, lineSub);
@@ -349,7 +349,7 @@ export class PurchasingService {
       }
       // Mantén el documento en memoria sincronizado con el avance persistido.
       line.qtyReceived += rl.qty;
-      receivedValue += Math.round(line.unitCost * rl.qty);
+      receivedValue += cop(line.unitCost * rl.qty);
       receivedTax += lineTax;
     }
 
