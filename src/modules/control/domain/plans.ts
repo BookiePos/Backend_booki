@@ -1,3 +1,4 @@
+import { cop } from '../../finance/domain/money.util';
 /**
  * Catálogo comercial de planes BookiPos (control-plane). Fuente ÚNICA de la
  * verdad para precios, cuotas, features por plan y complementos. La web de
@@ -138,7 +139,7 @@ export const CYCLE_BILLED_MONTHS: Record<BillingCycle, number> = {
 
 /** Redondeo comercial: los precios de lista no llevan unidades sueltas. */
 export function roundPrice(amount: number): number {
-  return Math.round(amount / 100) * 100;
+  return cop(amount / 100) * 100;
 }
 
 /**

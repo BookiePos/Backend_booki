@@ -14,6 +14,7 @@ import {
   assertSedeAccess,
   type SedeScopeUser,
 } from '../../core-auth/domain/sede-access';
+import { cop } from '../../finance/domain/money.util';
 
 /**
  * Zonas de domicilio con tarifa fija, por sede.
@@ -51,7 +52,7 @@ export class DeliveryZonesService {
     return this.model.create({
       sedeId: new Types.ObjectId(dto.sedeId),
       name: dto.name.trim(),
-      fee: Math.round(dto.fee),
+      fee: cop(dto.fee),
       active: dto.active ?? true,
     });
   }
@@ -63,7 +64,7 @@ export class DeliveryZonesService {
   ): Promise<DeliveryZoneDocument> {
     const doc = await this.getOrFail(id, user);
     if (dto.name !== undefined) doc.name = dto.name.trim();
-    if (dto.fee !== undefined) doc.fee = Math.round(dto.fee);
+    if (dto.fee !== undefined) doc.fee = cop(dto.fee);
     if (dto.active !== undefined) doc.active = dto.active;
     await doc.save();
     return doc;

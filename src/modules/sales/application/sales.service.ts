@@ -53,6 +53,7 @@ import { Sede } from '../../sedes/infrastructure/schemas/sede.schema';
 import { CustomersService } from '../../customers/application/customers.service';
 import { PayrollService } from '../../payroll/application/payroll.service';
 import { ParamsService } from '../../core-params/application/params.service';
+import { PEDIDO_DUPLICADO_CODE, esDuplicadoDePedido, fechaContablePedido } from '../domain/platform-orders';
 import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { TreasuryPostingService } from '../../finance/treasury/treasury-posting.service';
@@ -235,6 +236,7 @@ export class SalesService {
     //
     // Con cobro mixto (ítem 6.9) el fiado es UNA de las partes y su deudor
     // viaja en esa parte; las mismas reglas aplican a lo que se fía.
+    await this.assertPedidoPlataforma(dto);
     const credito = this.creditoDe(dto);
     const isCredit = credito !== undefined;
     if (credito) {
@@ -459,7 +461,7 @@ export class SalesService {
      * viaja el id. El valor a mano existe para el pedido que no cae en ninguna
      * zona, que es la casilla que se acordó en vez de calcular por kilómetros.
      */
-    const orderType = dto.orderType ?? 'mostrador';
+    const orderType = dto.orderType ?? (dto.platform ? 'llevar' : 'mostrador');
     let delivery: ResolvedDelivery | undefined;
     if (orderType === 'domicilio') {
       const zone = await this.deliveryZones.refFor(
@@ -697,6 +699,15 @@ export class SalesService {
         cobro,
       });
     } catch (err) {
+      // Carrera entre dos registros del mismo pedido de plataforma: gana el
+      // primero (índice único) y este queda sin venta ni stock (se compensa abajo).
+      if (dto.platform && esDuplicadoDePedido(err) && !holder.sale) {
+        await this.rollbackSoldStock(dto.sedeId, components, user);
+        throw new ConflictException({
+          message: `El pedido ${dto.platform.externalId} de ${dto.platform.code} ya está registrado`,
+          code: PEDIDO_DUPLICADO_CODE,
+        });
+      }
       // Solo compensamos si la venta NO alcanzó a persistirse; si ya existe,
       // el stock queda correctamente respaldado y el error es de un paso
       // posterior (best-effort) que no debe deshacer el inventario.
@@ -876,6 +887,18 @@ export class SalesService {
       payments: mixto?.parts,
       customer: this.cleanCustomer(dto.customer),
       orderId,
+      platform: dto.platform
+        ? {
+            code: dto.platform.code,
+            externalId: dto.platform.externalId.trim(),
+            orderedAt: dto.platform.orderedAt,
+            commissionEstimate: dto.platform.commissionEstimate,
+            // Fecha del asiento: la del pedido si es del mes en curso, si no hoy.
+            accountingDate: (
+              fechaContablePedido(dto.platform.orderedAt, fechaColombia()) as { fecha: string }
+            ).fecha,
+          }
+        : undefined,
     });
     // A partir de aquí la venta EXISTE: cierra la ventana de compensación de
     // stock (los pasos siguientes son best-effort y no revierten inventario).
@@ -965,7 +988,7 @@ export class SalesService {
     await this.ledgerPosting.postSale({
       saleId: sale._id.toString(),
       number: saleNumber,
-      date: fechaColombia(),
+      date: sale.platform?.accountingDate ?? fechaColombia(),
       sedeId: dto.sedeId,
       total,
       tax: ivaTax,
@@ -1018,6 +1041,54 @@ export class SalesService {
     }
 
     return sale;
+  }
+
+  /**
+   * Un pedido de plataforma (ítem 7.5) es `payment.method = 'platform'` MÁS el
+   * dato `platform`; uno sin el otro no tiene sentido. Va ANTES de tocar el
+   * inventario: el duplicado (mismo código en la misma plataforma) se rechaza
+   * sin descontar stock. El índice único de la venta cubre la carrera.
+   */
+  private async assertPedidoPlataforma(dto: CreateSaleDto): Promise<void> {
+    const esPlataforma =
+      dto.payment?.method === 'platform' ||
+      (dto.payments ?? []).some((p) => p.method === 'platform');
+    if (!esPlataforma && !dto.platform) return;
+    if (dto.payments) {
+      throw new BadRequestException(
+        'Un pedido de plataforma se registra con un solo medio de pago (platform), sin cobro mixto',
+      );
+    }
+    if (dto.payment?.method !== 'platform' || !dto.platform) {
+      throw new BadRequestException(
+        'El medio de pago platform exige los datos del pedido de la plataforma (platform), y viceversa',
+      );
+    }
+    if ((dto.tip ?? 0) > 0) {
+      throw new BadRequestException(
+        'Un pedido de plataforma no lleva propina en el POS: la plataforma la maneja',
+      );
+    }
+    const fechaPedido = fechaContablePedido(dto.platform.orderedAt, fechaColombia());
+    if ('error' in fechaPedido) throw new BadRequestException(fechaPedido.error);
+    const externalId = dto.platform.externalId.trim();
+    if (!externalId) {
+      throw new BadRequestException('Falta el código del pedido de la plataforma');
+    }
+    const repetida = await this.saleModel
+      .findOne({
+        'platform.code': dto.platform.code,
+        'platform.externalId': externalId,
+        status: 'completed',
+      })
+      .select('saleNumber')
+      .exec();
+    if (repetida) {
+      throw new ConflictException({
+        message: `El pedido ${externalId} de ${dto.platform.code} ya está registrado (${repetida.saleNumber})`,
+        code: PEDIDO_DUPLICADO_CODE,
+      });
+    }
   }
 
   /**
@@ -1089,6 +1160,15 @@ export class SalesService {
       );
     }
 
+    // Un pedido de plataforma ya liquidado dejó plata en el banco y una
+    // comisión en el libro: se anula primero la liquidación, que devuelve el
+    // pedido a «por cobrar».
+    if (existing.platform?.settlementId) {
+      throw new BadRequestException(
+        'El pedido ya está liquidado con la plataforma: anula primero la liquidación.',
+      );
+    }
+
     // Venta en efectivo de un turno ya cerrado: su dinero se contó en ese
     // arqueo, así que devolverlo sale de la caja abierta hoy. Sin caja abierta
     // no hay dónde registrar la salida y el arqueo de mañana no cuadraría: se
@@ -1112,7 +1192,13 @@ export class SalesService {
     // patrón atómico usado en otros flujos (checkout/deducciones).
     const sale = await this.saleModel
       .findOneAndUpdate(
-        { _id: existing._id, status: { $ne: 'void' } },
+        {
+          _id: existing._id,
+          status: { $ne: 'void' },
+          // Una liquidación de plataforma que se coló entre la revisión de arriba
+          // y este flip gana: el pedido ya no se puede anular.
+          'platform.settlementId': { $exists: false },
+        },
         { $set: { status: 'void' } },
         { new: true },
       )

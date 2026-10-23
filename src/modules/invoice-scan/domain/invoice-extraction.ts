@@ -1,3 +1,4 @@
+import { cop } from '../../finance/domain/money.util';
 /**
  * Contrato de lo que un modelo de IA extrae de la foto de una factura, y el
  * parser defensivo que lo normaliza.
@@ -148,7 +149,7 @@ export function parseCop(value: unknown): number | undefined {
     typeof value === 'number' && !Number.isInteger(amount) && amount < 1000
       ? amount * 1000
       : amount;
-  return Math.max(0, Math.round(real));
+  return Math.max(0, cop(real));
 }
 
 /** Cantidad: admite decimales (2,5 kg) pero nunca negativa ni cero. */
@@ -327,8 +328,8 @@ function parseLines(raw: unknown): ExtractedLine[] {
       pick(line, 'ivarate', 'iva', 'tax', 'impuesto', 'tarifaiva'),
     );
     const ivaRate =
-      ivaRaw !== undefined && IVA_RATES.includes(Math.round(ivaRaw))
-        ? Math.round(ivaRaw)
+      ivaRaw !== undefined && IVA_RATES.includes(cop(ivaRaw))
+        ? cop(ivaRaw)
         : undefined;
 
     lines.push({
