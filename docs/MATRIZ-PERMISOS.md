@@ -149,6 +149,10 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `GET /finance/accounts/:id/movements` | `finance.view` | ✓ | ✓ | ✓ | · |
 | `POST /finance/accounts/:id/movements` | `purchasing.manage` | ✓ | ✓ | ✓ | · |
 | `POST /finance/accounts/:id/reconcile` | `finance.manage` | ✓ | ✓ | ✓ | · |
+| `GET /finance/payment-reconciliation` | `finance.view` | ✓ | ✓ | ✓ | · |
+| `POST /finance/payment-reconciliation/import` | `finance.manage` | ✓ | ✓ | ✓ | · |
+| `POST /finance/payment-reconciliation` | `finance.manage` | ✓ | ✓ | ✓ | · |
+| `DELETE /finance/payment-reconciliation/:id` | `finance.manage` | ✓ | ✓ | ✓ | · |
 | `GET /finance/budgets` | `finance.view` | ✓ | ✓ | ✓ | · |
 | `GET /finance/budgets/:id` | `finance.view` | ✓ | ✓ | ✓ | · |
 | `POST /finance/budgets` | `finance.manage` | ✓ | ✓ | ✓ | · |

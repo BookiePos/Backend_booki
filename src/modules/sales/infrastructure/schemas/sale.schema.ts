@@ -1,9 +1,15 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 import {
+  CARD_FRANCHISES,
+  CARD_TYPES,
+  CardFranchise,
+  CardType,
   DISCOUNT_TYPES,
   DiscountType,
+  PAYMENT_CHANNELS,
   PAYMENT_METHODS,
+  PaymentChannel,
   PaymentMethod,
   SALE_STATUSES,
   SaleStatus,
@@ -183,6 +189,20 @@ class SalePayment {
 
   @Prop({ min: 0 })
   change?: number;
+
+  /** Canal digital (ítem 6.4). */
+  @Prop({ enum: PAYMENT_CHANNELS })
+  channel?: PaymentChannel;
+
+  @Prop({ enum: CARD_TYPES })
+  cardType?: CardType;
+
+  @Prop({ enum: CARD_FRANCHISES })
+  franchise?: CardFranchise;
+
+  /** Aprobación del datáfono, últimos 4 o número de la billetera. */
+  @Prop({ trim: true, maxlength: 120 })
+  reference?: string;
 }
 const SalePaymentSchema = SchemaFactory.createForClass(SalePayment);
 
@@ -197,6 +217,20 @@ class SalePaymentPart {
 
   @Prop({ required: true, min: 0 })
   amount!: number;
+
+  /** Canal digital (ítem 6.4). */
+  @Prop({ enum: PAYMENT_CHANNELS })
+  channel?: PaymentChannel;
+
+  @Prop({ enum: CARD_TYPES })
+  cardType?: CardType;
+
+  @Prop({ enum: CARD_FRANCHISES })
+  franchise?: CardFranchise;
+
+  /** Aprobación del datáfono, últimos 4 o número de la billetera. */
+  @Prop({ trim: true, maxlength: 120 })
+  reference?: string;
 }
 const SalePaymentPartSchema = SchemaFactory.createForClass(SalePaymentPart);
 

@@ -19,9 +19,15 @@ import {
   ValidateNested,
 } from 'class-validator';
 import {
+  CARD_FRANCHISES,
+  CARD_TYPES,
+  CardFranchise,
+  CardType,
   DISCOUNT_TYPES,
   DiscountType,
+  PAYMENT_CHANNELS,
   PAYMENT_METHODS,
+  PaymentChannel,
   PaymentMethod,
 } from '../../domain/sales.constants';
 import {
@@ -59,6 +65,27 @@ export class SaleLineDto {
 export class SalePaymentDto {
   @IsIn(PAYMENT_METHODS as readonly string[])
   method!: PaymentMethod;
+
+  /** Canal digital (ítem 6.4): datáfono, Nequi, Daviplata o QR/Bre-B. */
+  @IsOptional()
+  @IsIn(PAYMENT_CHANNELS as readonly string[])
+  channel?: PaymentChannel;
+
+  /** Solo datáfono: débito o crédito. */
+  @IsOptional()
+  @IsIn(CARD_TYPES as readonly string[])
+  cardType?: CardType;
+
+  /** Solo datáfono: franquicia. */
+  @IsOptional()
+  @IsIn(CARD_FRANCHISES as readonly string[])
+  franchise?: CardFranchise;
+
+  /** Aprobación del datáfono, últimos 4 o número de la billetera. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  reference?: string;
 
   /** Monto recibido en efectivo (para calcular el cambio). */
   @IsOptional()
@@ -100,6 +127,27 @@ export class SalePaymentDto {
 export class SalePaymentPartDto {
   @IsIn(PAYMENT_METHODS as readonly string[])
   method!: PaymentMethod;
+
+  /** Canal digital (ítem 6.4): datáfono, Nequi, Daviplata o QR/Bre-B. */
+  @IsOptional()
+  @IsIn(PAYMENT_CHANNELS as readonly string[])
+  channel?: PaymentChannel;
+
+  /** Solo datáfono: débito o crédito. */
+  @IsOptional()
+  @IsIn(CARD_TYPES as readonly string[])
+  cardType?: CardType;
+
+  /** Solo datáfono: franquicia. */
+  @IsOptional()
+  @IsIn(CARD_FRANCHISES as readonly string[])
+  franchise?: CardFranchise;
+
+  /** Aprobación del datáfono, últimos 4 o número de la billetera. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  reference?: string;
 
   @IsNumber()
   @IsPositive()

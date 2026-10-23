@@ -72,11 +72,23 @@ export const ACC = {
   SALARIOS_POR_PAGAR: '2505',
   /** Cesantías, intereses, prima y vacaciones causadas (PUC 2610). */
   PROVISIONES_LABORALES: '2610',
+  /**
+   * Retenciones que el adquirente o la billetera practican al negocio al
+   * consignar (anticipos de impuestos a favor, PUC 1355).
+   */
+  RETEFUENTE_A_FAVOR: '135515',
+  RETEIVA_A_FAVOR: '135517',
+  RETEICA_A_FAVOR: '135518',
   INGRESOS_VENTAS: '4135',
   /** Devoluciones en ventas (PUC 4175): resta del ingreso, separada de él. */
   DEVOLUCIONES_VENTAS: '4175',
   GASTOS_PERSONAL: '5105',
   GASTOS_SERVICIOS: '5135',
+  /**
+   * Comisión del adquirente (datáfono) o de la billetera: gasto financiero,
+   * PUC 5305 (gastos financieros - comisiones). Se reconoce al conciliar.
+   */
+  COMISIONES_FINANCIERAS: '5305',
   GASTOS_DIVERSOS: '5195',
   COSTO_VENTA: '6135',
   /**
@@ -105,6 +117,9 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   { code: '1105', name: 'Caja', type: 'asset' },
   { code: '1110', name: 'Bancos', type: 'asset' },
   { code: '1305', name: 'Clientes (CxC)', type: 'asset' },
+  { code: '135515', name: 'Retención en la fuente a favor (anticipo)', type: 'asset' },
+  { code: '135517', name: 'ReteIVA a favor (anticipo)', type: 'asset' },
+  { code: '135518', name: 'ReteICA a favor (anticipo)', type: 'asset' },
   { code: '1365', name: 'Cuentas por cobrar a trabajadores', type: 'asset' },
   { code: '1435', name: 'Inventario de mercancías', type: 'asset' },
   // Pasivo
@@ -130,6 +145,7 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   // Gastos / costos
   { code: '5105', name: 'Gastos de personal', type: 'expense' },
   { code: '5135', name: 'Servicios (arriendo, públicos)', type: 'expense' },
+  { code: '5305', name: 'Comisiones financieras (datáfono y billeteras)', type: 'expense' },
   { code: '5195', name: 'Gastos diversos', type: 'expense' },
   { code: '6135', name: 'Costo de mercancía vendida', type: 'expense' },
   // Costos de producción absorbidos (saldo crédito: restan del gasto).

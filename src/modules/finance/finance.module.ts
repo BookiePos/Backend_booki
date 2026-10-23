@@ -50,6 +50,11 @@ import { ControlModule } from '../control/control.module';
 import { CoreParamsModule } from '../core-params/core-params.module';
 import { TreasuryModule } from './treasury/treasury.module';
 import { FinanceService } from './application/finance.service';
+import { PaymentReconciliationService } from './application/payment-reconciliation.service';
+import {
+  PaymentSettlement,
+  PaymentSettlementSchema,
+} from './infrastructure/schemas/payment-settlement.schema';
 import { RecurringExpenseScheduler } from './application/recurring-expense.scheduler';
 import { FinanceController } from './infrastructure/finance.controller';
 
@@ -74,6 +79,7 @@ import { FinanceController } from './infrastructure/finance.controller';
       { name: FinanceAccount.name, schema: FinanceAccountSchema },
       { name: FinanceMovement.name, schema: FinanceMovementSchema },
       { name: FinanceBudget.name, schema: FinanceBudgetSchema },
+      { name: PaymentSettlement.name, schema: PaymentSettlementSchema },
       { name: Sale.name, schema: SaleSchema },
       { name: Product.name, schema: ProductSchema },
       { name: PayrollRun.name, schema: PayrollRunSchema },
@@ -81,7 +87,7 @@ import { FinanceController } from './infrastructure/finance.controller';
     ]),
   ],
   controllers: [FinanceController],
-  providers: [FinanceService, RecurringExpenseScheduler],
+  providers: [FinanceService, PaymentReconciliationService, RecurringExpenseScheduler],
   // Lo usa el módulo de facturas por foto para registrar los renglones que no
   // son mercancía (fletes, servicios).
   // El scheduler se exporta para que CronModule lo dispare desde Vercel Cron.
