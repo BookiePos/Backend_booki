@@ -1,3 +1,4 @@
+import { cop } from '../../finance/domain/money.util';
 /**
  * Domicilios: cómo sale el pedido y cuánto se cobra por llevarlo.
  *
@@ -93,7 +94,7 @@ export function resolveDelivery(
     if (valor > MAX_DELIVERY_FEE) {
       throw new Error('El valor del domicilio es demasiado alto; revisa si sobra un cero');
     }
-    fee = Math.round(valor);
+    fee = cop(valor);
   } else {
     // Domicilio gratis: es una decisión comercial válida y bastante común.
     fee = 0;

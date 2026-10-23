@@ -30,6 +30,7 @@ import {
   assertSedeAccess,
   allowedSedeIds,
 } from '../../core-auth/domain/sede-access';
+import { redondearA } from '../../finance/domain/money.util';
 
 /** Empleado del expediente asignado a la sede (para el control de horas). */
 export interface WorkerView {
@@ -59,7 +60,7 @@ function computeHours(checkIn?: string, checkOut?: string): number {
   if (!checkIn || !checkOut) return 0;
   let mins = toMinutes(checkOut) - toMinutes(checkIn);
   if (mins < 0) mins += 24 * 60;
-  return Math.round((mins / 60) * 100) / 100;
+  return redondearA(mins / 60, 2);
 }
 
 interface SummaryAggRow {
@@ -175,7 +176,7 @@ export class AttendanceService {
       userName: r.employeeName,
       sedeId: String(r._id.sedeId),
       sedeName: nameById.get(String(r._id.sedeId)) ?? 'Sede',
-      hours: Math.round(r.hours * 100) / 100,
+      hours: redondearA(r.hours, 2),
       days: r.days,
     }));
   }

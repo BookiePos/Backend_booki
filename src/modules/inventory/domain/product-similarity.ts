@@ -1,3 +1,4 @@
+import { redondearA } from '../../finance/domain/money.util';
 /**
  * Parecido entre nombres de producto, para no llenar el inventario de
  * duplicados. Dominio puro.
@@ -115,7 +116,7 @@ export function productSimilarity(a: string, b: string): number {
     const sameSize = [...left.numbers].some((n) => right.numbers.has(n));
     if (!sameSize) score /= 2;
   }
-  return Math.round(score * 100) / 100;
+  return redondearA(score, 2);
 }
 
 /** Los más parecidos a `query`, de mayor a menor. */

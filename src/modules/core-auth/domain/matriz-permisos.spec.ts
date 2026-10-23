@@ -113,7 +113,13 @@ const puedeRuta =(rol: string, ruta: string): boolean => {
   return puede(rol, e);
 };
 
-const COLUMNAS = [ROLES.OWNER, ROLES.ADMIN, ROLES.MANAGER, ROLES.CASHIER] as const;
+const COLUMNAS = [
+  ROLES.OWNER,
+  ROLES.ADMIN,
+  ROLES.MANAGER,
+  ROLES.CASHIER,
+  ROLES.ACCOUNTANT,
+] as const;
 
 function matrizMarkdown(): string {
   const nombre = Object.fromEntries(SYSTEM_ROLES.map((r) => [r.key, r.name]));
@@ -200,5 +206,60 @@ describe('matriz de permisos por rol (ítem 3.10)', () => {
     for (const ruta of ['POST /payroll/runs', 'POST /employees', 'PUT /payroll/settings']) {
       expect(puedeRuta(ROLES.MANAGER, ruta), ruta).toBe(false);
     }
+  });
+
+  it('el Contador lee lo contable y no escribe nada ni toca la operación (ítem 7.8)', () => {
+    for (const ruta of [
+      'GET /ledger/entries',
+      'GET /ledger/trial-balance',
+      'GET /ledger/conciliacion',
+      'GET /reports/income-statement',
+      'GET /reports/balance-sheet',
+      'GET /finance/expenses',
+      'GET /finance/payables',
+      'GET /purchasing/orders',
+      'GET /invoice-scans',
+      'GET /payroll/runs',
+      'GET /payroll/runs/:id',
+    ]) {
+      expect(puedeRuta(ROLES.ACCOUNTANT, ruta), ruta).toBe(true);
+    }
+    // Todo lo que alcanza con permiso es lectura, salvo los dos cálculos de
+    // nómina que solo devuelven un resultado y no guardan nada.
+    const noLectura = ENDPOINTS.filter((e) => conPermiso(e) && puede(ROLES.ACCOUNTANT, e))
+      .filter((e) => !e.ruta.startsWith('GET '))
+      .map((e) => e.ruta);
+    expect(noLectura).toEqual(['POST /payroll/preview', 'POST /payroll/liquidacion']);
+    for (const ruta of [
+      'POST /sales',
+      'POST /sales/:id/void',
+      'POST /caja/open',
+      'POST /ledger/entries',
+      'POST /finance/expenses',
+      'POST /purchasing/orders',
+      'POST /payroll/runs',
+      'PUT /payroll/settings',
+      'POST /invoice-scans/:id/apply',
+      'POST /inventory/adjustments',
+    ]) {
+      expect(puedeRuta(ROLES.ACCOUNTANT, ruta), ruta).toBe(false);
+    }
+    const prohibidos = ENDPOINTS.filter((e) =>
+      /^\w+ \/(users|roles|invitations|billing|audit|params|sedes|taxes|einvoicing|onboarding|employees)\b/.test(
+        e.ruta,
+      ),
+    ).filter((e) => conPermiso(e) && puede(ROLES.ACCOUNTANT, e));
+    expect(prohibidos.map((e) => e.ruta)).toEqual([]);
+  });
+
+  it('el Contador no recibe permisos de escritura ni de administración', () => {
+    const rol = SYSTEM_ROLES.find((r) => r.key === ROLES.ACCOUNTANT)!;
+    expect(rol.permissions).toEqual([
+      PERMISSIONS.FINANCE_VIEW,
+      PERMISSIONS.REPORTS_VIEW,
+      PERMISSIONS.PAYROLL_VIEW,
+      // Solo lectura de toda la empresa (consolidado para el contador externo).
+      PERMISSIONS.SEDE_VIEW_ALL,
+    ]);
   });
 });

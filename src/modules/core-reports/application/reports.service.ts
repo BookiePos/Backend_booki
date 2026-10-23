@@ -10,6 +10,7 @@ import {
   alcanceDeSedes,
   resolveSedeScope,
 } from '../../core-auth/domain/sede-access';
+import { cop } from '../../finance/domain/money.util';
 
 /** Una línea (cuenta) de un estado financiero. */
 interface StatementLine {
@@ -235,7 +236,7 @@ export class ReportsService {
       revenue: r.revenue,
       tax: r.tax,
       tickets: r.tickets,
-      avgTicket: r.tickets ? Math.round(r.revenue / r.tickets) : 0,
+      avgTicket: r.tickets ? cop(r.revenue / r.tickets) : 0,
     }));
     const byMethod = (facet?.byMethod ?? []).map((r) => ({
       method: r._id ?? 'desconocido',
@@ -266,7 +267,7 @@ export class ReportsService {
       totalRevenue: t.revenue,
       totalTax: t.tax,
       totalTickets: t.tickets,
-      avgTicket: t.tickets ? Math.round(t.revenue / t.tickets) : 0,
+      avgTicket: t.tickets ? cop(t.revenue / t.tickets) : 0,
     };
   }
 
