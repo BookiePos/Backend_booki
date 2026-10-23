@@ -20,6 +20,10 @@ import {
 } from '../../../sedes/domain/sede.constants';
 import { POLITICA_CONTRASENA } from './password-policy';
 
+/** Respuesta a «¿Cobras IVA?» del registro corto (ítem 6.5). */
+export const COBRA_IVA = ['si', 'no', 'no_se'] as const;
+export type CobraIva = (typeof COBRA_IVA)[number];
+
 /**
  * Alta pública de una empresa (tenant) desde la web. Recoge la identidad del
  * negocio (que se guarda en su primera sede) y la cuenta del dueño.
@@ -51,6 +55,15 @@ export class RegisterDto {
   @IsOptional()
   @IsIn(RESPONSABILIDAD_FISCAL as readonly string[])
   responsabilidadFiscal?: ResponsabilidadFiscal;
+
+  /**
+   * «¿Cobras IVA?». `no` deja la sede como no responsable de IVA; `si` como
+   * responsable; `no_se` o vacío, sin dato (la venta usa el default
+   * conservador). Una `responsabilidadFiscal` explícita gana.
+   */
+  @IsOptional()
+  @IsIn(COBRA_IVA as readonly string[])
+  cobraIva?: CobraIva;
 
   @IsOptional()
   @IsString()

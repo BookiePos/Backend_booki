@@ -19,6 +19,8 @@ import {
   SaleTaxKind,
 } from '../../../core-tax/domain/sale-tax';
 
+import { PLATFORM_CODES, PlatformCode } from '../../domain/platform-orders';
+
 export type SaleDocument = HydratedDocument<Sale>;
 
 /** Porción de lote consumida por una línea (costo de venta / trazabilidad). */
@@ -285,6 +287,38 @@ export class SaleDelivery {
 }
 const SaleDeliverySchema = SchemaFactory.createForClass(SaleDelivery);
 
+/**
+ * Pedido de una plataforma de domicilio (ítem 7.5). El par (`code`,
+ * `externalId`) identifica el pedido en el portal: es la llave de idempotencia
+ * para que importar dos veces el mismo CSV no duplique ventas.
+ */
+@Schema({ _id: false })
+class SalePlatform {
+  @Prop({ required: true, enum: PLATFORM_CODES })
+  code!: PlatformCode;
+
+  /** Código del pedido en la plataforma. */
+  @Prop({ required: true, trim: true, maxlength: 80 })
+  externalId!: string;
+
+  /** Fecha del pedido según el portal (YYYY-MM-DD). El asiento lleva esa fecha si es del mes en curso (ver accountingDate). */
+  @Prop()
+  orderedAt?: string;
+
+  /** Fecha contable del asiento de la venta (YYYY-MM-DD); base del orden de las liquidaciones. */
+  @Prop()
+  accountingDate?: string;
+
+  /** Comisión que el portal informó; la real se reconoce al liquidar. */
+  @Prop({ min: 0 })
+  commissionEstimate?: number;
+
+  /** Liquidación que cobró este pedido. Sin ella, la plataforma todavía lo debe. */
+  @Prop({ type: Types.ObjectId })
+  settlementId?: Types.ObjectId;
+}
+const SalePlatformSchema = SchemaFactory.createForClass(SalePlatform);
+
 /** Venta del POS. Documento único y atómico (Mongo standalone). */
 @Schema({ timestamps: true, collection: 'sales' })
 export class Sale {
@@ -428,6 +462,13 @@ export class Sale {
    */
   @Prop()
   soldAt?: Date;
+
+  /**
+   * Si el pedido vino de una plataforma de domicilio. Con él, `payment.method`
+   * es `platform`: el cobro es una cuenta por cobrar a la plataforma.
+   */
+  @Prop({ type: SalePlatformSchema })
+  platform?: SalePlatform;
 }
 
 export const SaleSchema = SchemaFactory.createForClass(Sale);
@@ -437,4 +478,21 @@ SaleSchema.index({ sedeId: 1, createdAt: -1 });
 SaleSchema.index(
   { offlineId: 1 },
   { unique: true, partialFilterExpression: { offlineId: { $type: 'string' } } },
+);
+
+// Un pedido de plataforma vive una sola vez: (plataforma, código externo) único
+// entre las ventas completadas. Una venta anulada libera el código para
+// registrarlo de nuevo. Es el respaldo de la verificación previa del servicio.
+SaleSchema.index(
+  { 'platform.code': 1, 'platform.externalId': 1 },
+  {
+    unique: true,
+    name: 'pedido_plataforma_unico',
+    partialFilterExpression: { 'platform.externalId': { $type: 'string' }, status: 'completed' },
+  },
+);
+// Saldo por cobrar a cada plataforma: pedidos de la sede sin liquidar.
+SaleSchema.index(
+  { sedeId: 1, 'platform.code': 1, 'platform.settlementId': 1, createdAt: -1 },
+  { partialFilterExpression: { 'platform.code': { $exists: true } } },
 );
