@@ -32,6 +32,11 @@ export interface Entorno {
   conciliacion: LedgerConciliacionService;
   /** Corre `fn` dentro del contexto de la empresa `businessId`. */
   enEmpresa<T>(businessId: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * Proxy de modelo de empresa para un esquema más (como los de `@InjectModel`).
+   * Se registra para que `enEmpresa` espere sus índices.
+   */
+  modelo<T = never>(name: string, schema: unknown): T;
   /** Base física `biz_<id>` de la empresa, sin pasar por el proxy. */
   baseDe(businessId: string): Connection;
   cerrar(): Promise<void>;
@@ -54,6 +59,8 @@ export async function levantarEntorno(): Promise<Entorno> {
   const root = await mongoose.createConnection(mongod.getUri()).asPromise();
   const registry = new TenantModelRegistry(root);
 
+  const extra: Array<[string, never]> = [];
+  const todos = () => [...ESQUEMAS, ...extra];
   const proxy = (name: string) => {
     const schema = ESQUEMAS.find(([n]) => n === name)![1];
     return createModelProxy(() => registry.modelFor(name, schema)) as never;
@@ -71,7 +78,7 @@ export async function levantarEntorno(): Promise<Entorno> {
     TenantContext.run({ businessId, dbName: dbNameForBusiness(businessId) }, async () => {
       // Los índices únicos se crean al compilar el modelo; se esperan para que
       // la prueba no corra antes de que existan.
-      await Promise.all(ESQUEMAS.map(([n, s]) => registry.modelFor(n, s).init()));
+      await Promise.all(todos().map(([n, s]) => registry.modelFor(n, s).init()));
       return fn();
     });
 
@@ -81,6 +88,11 @@ export async function levantarEntorno(): Promise<Entorno> {
     posting,
     conciliacion,
     enEmpresa,
+    modelo: <T,>(name: string, schema: unknown): T => {
+      if (!todos().some(([n]) => n === name)) extra.push([name, schema as never]);
+      const sch = todos().find(([n]) => n === name)![1];
+      return createModelProxy(() => registry.modelFor(name, sch)) as T;
+    },
     baseDe: (businessId) => root.useDb(dbNameForBusiness(businessId), { useCache: true }),
     cerrar: async () => {
       await root.close();

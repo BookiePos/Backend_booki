@@ -89,6 +89,7 @@ import {
   treasurySourceIds,
 } from '../domain/sale-payments';
 import { BusinessService } from '../../control/application/business.service';
+import { offlineConflict } from './offline-conflict';
 import type { BusinessType } from '../../control/domain/control.constants';
 
 /** Opciones internas de `create` (no viajan en el DTO HTTP). */
@@ -99,6 +100,25 @@ export interface CreateSaleOptions {
    * suman exacto la cuenta.
    */
   paidBefore?: ReadonlyMap<string, number>;
+  /**
+   * Venta cobrada sin internet que llega al sincronizar (ítem 6.3). La arma
+   * `OfflineSalesService`, que ya validó el número reservado y el candado de
+   * idempotencia; aquí solo cambia de dónde salen el número, el turno y la
+   * fecha, y los rechazos se devuelven como conflicto con su motivo.
+   */
+  offline?: OfflineSaleOptions;
+}
+
+export interface OfflineSaleOptions {
+  offlineId: string;
+  /** Consecutivo de contingencia reservado (`FVC-000123`). */
+  saleNumber: string;
+  /** Cuándo se cobró en el terminal. */
+  soldAt: Date;
+  /** Turno al que entra (el de la reserva o, a pedido, el abierto). */
+  cajaSessionId: string;
+  /** Lo que se le cobró al cliente según el comprobante impreso. */
+  expectedGrandTotal: number;
 }
 
 /** Qué anuló cancelCredit, para poder devolverlo si la anulación se aborta. */
@@ -220,10 +240,22 @@ export class SalesService {
 
     // 0. Exigir caja abierta ANTES de tocar inventario: toda venta ocurre
     //    dentro de un turno de caja (integridad contable). Se enlaza al arqueo.
+    const offline = opts.offline;
     const openCaja = await this.cajaSessionModel
-      .findOne({ sedeId: new Types.ObjectId(dto.sedeId), status: 'open' })
+      .findOne({
+        sedeId: new Types.ObjectId(dto.sedeId),
+        status: 'open',
+        // La venta offline entra al turno de su reserva, no a cualquiera.
+        ...(offline ? { _id: new Types.ObjectId(offline.cajaSessionId) } : {}),
+      })
       .exec();
     if (!openCaja) {
+      if (offline) {
+        throw offlineConflict(
+          'TURNO_CERRADO',
+          'El turno de caja en el que se cobró esta venta ya se cerró',
+        );
+      }
       throw new BadRequestException(
         'Debes abrir la caja de la sede antes de registrar ventas',
       );
@@ -264,8 +296,24 @@ export class SalesService {
     const catalogById = new Map(
       await Promise.all(
         [...new Set(dto.lines.map((l) => l.productId))].map(
-          async (id) =>
-            [id, await this.catalog.loadSellableOrFail(id)] as const,
+          async (id) => {
+            try {
+              return [id, await this.catalog.loadSellableOrFail(id)] as const;
+            } catch (err) {
+              // Offline: el producto se vendió con el catálogo guardado y ya no
+              // se puede vender (inactivo o borrado). La venta va a la bandeja.
+              if (
+                !offline ||
+                !(err instanceof NotFoundException || err instanceof BadRequestException)
+              ) {
+                throw err;
+              }
+              throw offlineConflict(
+                'PRODUCTO_INACTIVO',
+                err instanceof Error ? err.message : 'Producto no disponible',
+              );
+            }
+          },
         ),
       ),
     );
@@ -485,6 +533,16 @@ export class SalesService {
 
     const grandTotal = total + tip + deliveryFee;
 
+    // Offline: el comprobante impreso dijo un total y ese es el efectivo que
+    // entró al cajón. Si el servidor calcula otro (cambió un precio mientras
+    // no había red), registrar la venta descuadraría la caja en silencio.
+    if (offline && cop(offline.expectedGrandTotal) !== grandTotal) {
+      throw offlineConflict(
+        'TOTAL_DISTINTO',
+        `El comprobante cobró ${cop(offline.expectedGrandTotal)} y hoy la venta vale ${grandTotal}`,
+      );
+    }
+
     let received: number | undefined;
     let change: number | undefined;
     // Cobro mixto: se valida el reparto ANTES de tocar inventario. Un reparto
@@ -544,9 +602,9 @@ export class SalesService {
       const have = stockByProduct.get(c.productId) ?? 0;
       if (have < c.qty) {
         const prod = await this.products.getOrFail(c.productId);
-        throw new BadRequestException(
-          `Stock insuficiente de ${prod.name}: hay ${have} y se requieren ${c.qty}`,
-        );
+        const msg = `Stock insuficiente de ${prod.name}: hay ${have} y se requieren ${c.qty}`;
+        if (offline) throw offlineConflict('SIN_STOCK', msg);
+        throw new BadRequestException(msg);
       }
     }
 
@@ -695,6 +753,7 @@ export class SalesService {
         isCredit,
         credito,
         cobro,
+        offline,
       });
     } catch (err) {
       // Solo compensamos si la venta NO alcanzó a persistirse; si ya existe,
@@ -802,6 +861,8 @@ export class SalesService {
     credito?: CreditoDeVenta;
     /** Reparto del cobro mixto; sin él, `dto.payment` cubrió todo. */
     cobro?: SplitPaymentResult;
+    /** Venta offline: número reservado, UUID y fecha original. */
+    offline?: OfflineSaleOptions;
   },
   ): Promise<SaleDocument> {
     const {
@@ -827,13 +888,19 @@ export class SalesService {
       credito,
       cobro,
       packagingSnapshot,
+      offline,
     } = ctx;
+    // La fecha contable es la del cobro: una venta offline sincronizada al
+    // día siguiente pertenece al día en que se vendió.
+    const fechaVenta = offline ? fechaColombia(offline.soldAt) : fechaColombia();
     // Mixto de verdad: más de un medio. Si al juntar quedó uno, es un pago de
     // siempre y se guarda igual que antes (sin `payments`).
     const mixto = cobro && cobro.parts.length > 1 ? cobro : undefined;
     const metodo = cobro ? cobro.primaryMethod : dto.payment!.method;
 
-    const saleNumber = await this.nextSaleNumber(dto.sedeId);
+    const saleNumber = offline
+      ? offline.saleNumber
+      : await this.nextSaleNumber(dto.sedeId);
     const sale = await this.saleModel.create({
       saleNumber,
       sedeId: new Types.ObjectId(dto.sedeId),
@@ -876,6 +943,8 @@ export class SalesService {
       payments: mixto?.parts,
       customer: this.cleanCustomer(dto.customer),
       orderId,
+      offlineId: offline?.offlineId,
+      soldAt: offline?.soldAt,
     });
     // A partir de aquí la venta EXISTE: cierra la ventana de compensación de
     // stock (los pasos siguientes son best-effort y no revierten inventario).
@@ -965,7 +1034,7 @@ export class SalesService {
     await this.ledgerPosting.postSale({
       saleId: sale._id.toString(),
       number: saleNumber,
-      date: fechaColombia(),
+      date: fechaVenta,
       sedeId: dto.sedeId,
       total,
       tax: ivaTax,

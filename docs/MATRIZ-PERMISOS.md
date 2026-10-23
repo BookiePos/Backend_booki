@@ -257,6 +257,9 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `PATCH /orders/:id` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
 | `POST /orders/:id/checkout` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
 | `POST /orders/:id/void` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
+| `POST /sales/offline/reservations` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
+| `GET /sales/offline/reservations` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
+| `POST /sales/offline/sync` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
 | `GET /sales/pos-products` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
 | `POST /sales/packaging-suggestion` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |
 | `GET /sales` | `pos.sell` | ✓ | ✓ | ✓ | ✓ |

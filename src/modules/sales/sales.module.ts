@@ -27,6 +27,15 @@ import {
   FinanceReceivableSchema,
 } from '../finance/infrastructure/schemas/finance-receivable.schema';
 import { SalesService } from './application/sales.service';
+import { OfflineSalesService } from './application/offline-sales.service';
+import {
+  OfflineReservation,
+  OfflineReservationSchema,
+} from './infrastructure/schemas/offline-reservation.schema';
+import {
+  OfflineSaleClaim,
+  OfflineSaleClaimSchema,
+} from './infrastructure/schemas/offline-sale-claim.schema';
 import { SaleReturnsService } from './application/sale-returns.service';
 import { OrdersService } from './application/orders.service';
 import { PackagingService } from './application/packaging.service';
@@ -81,10 +90,19 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
       { name: CajaMovement.name, schema: CajaMovementSchema },
       { name: FinanceReceivable.name, schema: FinanceReceivableSchema },
       { name: Sede.name, schema: SedeSchema },
+      // Modo sin conexión (ítem 6.3).
+      { name: OfflineReservation.name, schema: OfflineReservationSchema },
+      { name: OfflineSaleClaim.name, schema: OfflineSaleClaimSchema },
     ]),
   ],
   controllers: [SalesController, OrdersController],
-  providers: [SalesService, OrdersService, SaleReturnsService, PackagingService],
+  providers: [
+    SalesService,
+    OrdersService,
+    SaleReturnsService,
+    PackagingService,
+    OfflineSalesService,
+  ],
   exports: [SalesService, OrdersService, SaleReturnsService],
 })
 export class SalesModule {}

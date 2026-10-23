@@ -17,6 +17,11 @@ import { CreateSaleReturnDto } from '../application/dto/create-sale-return.dto';
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
+import { OfflineSalesService } from '../application/offline-sales.service';
+import {
+  ReserveOfflineNumbersDto,
+  SyncOfflineSaleDto,
+} from '../application/dto/offline-sale.dto';
 
 @Controller('sales')
 // Endpoints del POS: catálogo vendible, historial, venta y anulación.
@@ -25,7 +30,43 @@ export class SalesController {
     private readonly sales: SalesService,
     private readonly returns: SaleReturnsService,
     private readonly packaging: PackagingService,
+    private readonly offline: OfflineSalesService,
   ) {}
+
+  /**
+   * Modo sin conexión (ítem 6.3): bloque de consecutivos de contingencia para
+   * el turno abierto. Mismo permiso que vender: es para poder seguir vendiendo.
+   * Antes de `:id`.
+   */
+  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @Post('offline/reservations')
+  reserveOffline(
+    @Body() dto: ReserveOfflineNumbersDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.offline.reserve(dto, user);
+  }
+
+  /** Traza de la serie de contingencia de la sede (qué se reservó y usó). */
+  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @Get('offline/reservations')
+  listOfflineReservations(
+    @Query('sedeId') sedeId: string,
+    @CurrentUser() user: JwtUser,
+  ) {
+    if (!sedeId) throw new BadRequestException('sedeId es obligatorio');
+    return this.offline.listReservations(sedeId, user);
+  }
+
+  /**
+   * Registra una venta cobrada sin conexión. Idempotente por `offlineId`:
+   * reenviarla devuelve la misma venta (`status: 'duplicada'`).
+   */
+  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @Post('offline/sync')
+  syncOffline(@Body() dto: SyncOfflineSaleDto, @CurrentUser() user: JwtUser) {
+    return this.offline.sync(dto, user);
+  }
 
   /** Catálogo vendible con stock de la sede (antes de :id). */
   @RequirePermissions(PERMISSIONS.POS_SELL)

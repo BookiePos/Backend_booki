@@ -414,9 +414,27 @@ export class Sale {
   /** Cuenta abierta que originó la venta (si se liquidó una cuenta). */
   @Prop({ type: Types.ObjectId, ref: 'Order' })
   orderId?: Types.ObjectId;
+
+  /**
+   * Venta cobrada sin internet y registrada al sincronizar (ítem 6.3): el UUID
+   * que le puso el terminal. Único: reenviar la misma venta no la duplica.
+   */
+  @Prop({ type: String })
+  offlineId?: string;
+
+  /**
+   * Cuándo se cobró de verdad, si fue offline. `createdAt` es cuándo llegó al
+   * servidor; el asiento usa esta fecha.
+   */
+  @Prop()
+  soldAt?: Date;
 }
 
 export const SaleSchema = SchemaFactory.createForClass(Sale);
 
 SaleSchema.index({ sedeId: 1, saleNumber: 1 }, { unique: true });
 SaleSchema.index({ sedeId: 1, createdAt: -1 });
+SaleSchema.index(
+  { offlineId: 1 },
+  { unique: true, partialFilterExpression: { offlineId: { $type: 'string' } } },
+);
