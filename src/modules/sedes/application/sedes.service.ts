@@ -89,6 +89,16 @@ export class SedesService {
       sede.set('resolucionFe', dto.resolucionFe);
     }
 
+    if (dto.cobroDigital !== undefined) {
+      const c = dto.cobroDigital;
+      const next = {
+        qrLlave: c.qrLlave?.trim() || undefined,
+        qrImagen: c.qrImagen || undefined,
+        qrTitular: c.qrTitular?.trim() || undefined,
+      };
+      sede.set('cobroDigital', next.qrLlave || next.qrImagen || next.qrTitular ? next : undefined);
+    }
+
     if (dto.active !== undefined) sede.active = dto.active;
 
     try {

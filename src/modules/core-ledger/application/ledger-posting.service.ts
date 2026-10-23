@@ -190,6 +190,62 @@ export class LedgerPostingService {
     });
   }
 
+  /**
+   * Conciliación de un medio digital contra el extracto (ítem 6.4).
+   *
+   * La venta ya debitó Bancos por el BRUTO cobrado. El adquirente o la
+   * billetera consignan menos: la diferencia es la comisión (gasto financiero),
+   * su IVA y las retenciones que practican (anticipos de impuestos a favor).
+   * Este asiento lleva Bancos al valor realmente consignado:
+   *   Dr 5305 comisión (+ IVA si no es descontable) · Dr 2408 IVA descontable
+   *   Dr 1355xx retenciones a favor · Cr 1110 Bancos por la suma.
+   * Nunca toca Caja: no entra al arqueo.
+   */
+  async postPaymentSettlement(input: {
+    settlementId: string;
+    label: string;
+    date: string;
+    sedeId: string;
+    commission: number;
+    commissionIva?: number;
+    /** Si es true el IVA de la comisión se descuenta (2408); si no, es mayor valor del gasto. */
+    ivaDescontable?: boolean;
+    retefuente?: number;
+    reteIca?: number;
+    reteIva?: number;
+    userEmail?: string;
+  }): Promise<void> {
+    const commission = cop(input.commission);
+    const iva = cop(input.commissionIva ?? 0);
+    const rf = cop(input.retefuente ?? 0);
+    const ri = cop(input.reteIca ?? 0);
+    const rv = cop(input.reteIva ?? 0);
+    const gasto = commission + (input.ivaDescontable ? 0 : iva);
+    const ivaDesc = input.ivaDescontable ? iva : 0;
+    const total = gasto + ivaDesc + rf + ri + rv;
+    if (total <= 0) return;
+    const sedeId = input.sedeId;
+    const lines: PostLine[] = [];
+    if (gasto > 0) lines.push({ accountCode: ACC.COMISIONES_FINANCIERAS, debit: gasto, sedeId });
+    if (ivaDesc > 0) lines.push({ accountCode: ACC.IVA_POR_PAGAR, debit: ivaDesc, sedeId });
+    if (rf > 0) lines.push({ accountCode: ACC.RETEFUENTE_A_FAVOR, debit: rf, sedeId });
+    if (ri > 0) lines.push({ accountCode: ACC.RETEICA_A_FAVOR, debit: ri, sedeId });
+    if (rv > 0) lines.push({ accountCode: ACC.RETEIVA_A_FAVOR, debit: rv, sedeId });
+    lines.push({ accountCode: ACC.BANCOS, credit: total, sedeId });
+    await this.safePost({
+      date: input.date,
+      sourceType: 'payment_settlement',
+      sourceId: input.settlementId,
+      memo: `Conciliación ${input.label}`,
+      lines,
+      userEmail: input.userEmail,
+    });
+  }
+
+  async reversePaymentSettlement(settlementId: string, userEmail?: string): Promise<void> {
+    await this.safeReverse('payment_settlement', settlementId, userEmail);
+  }
+
   async reverseSale(saleId: string, userEmail?: string): Promise<void> {
     await this.safeReverse('sale', saleId, userEmail);
   }

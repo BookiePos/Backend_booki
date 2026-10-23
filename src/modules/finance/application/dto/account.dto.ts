@@ -17,8 +17,8 @@ import {
   AccountType,
   MOVEMENT_DIRECTIONS,
   MovementDirection,
-  PAYMENT_METHODS,
-  FinancePaymentMethod,
+  ACCOUNT_AUTO_KEYS,
+  AccountAutoKey,
 } from '../../domain/finance.constants';
 
 const YYYYMMDD = /^\d{4}-\d{2}-\d{2}$/;
@@ -43,8 +43,8 @@ export class CreateAccountDto {
   /** Métodos que alimentan la cuenta automáticamente (transfer/card). */
   @IsOptional()
   @IsArray()
-  @IsIn(PAYMENT_METHODS as readonly string[], { each: true })
-  autoMethods?: FinancePaymentMethod[];
+  @IsIn(ACCOUNT_AUTO_KEYS as readonly string[], { each: true })
+  autoMethods?: AccountAutoKey[];
 
   @IsOptional()
   @IsString()
@@ -61,8 +61,8 @@ export class UpdateAccountDto {
 
   @IsOptional()
   @IsArray()
-  @IsIn(PAYMENT_METHODS as readonly string[], { each: true })
-  autoMethods?: FinancePaymentMethod[];
+  @IsIn(ACCOUNT_AUTO_KEYS as readonly string[], { each: true })
+  autoMethods?: AccountAutoKey[];
 
   @IsOptional()
   @IsBoolean()

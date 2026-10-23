@@ -44,6 +44,26 @@ export class ResolucionFe {
 }
 const ResolucionFeSchema = SchemaFactory.createForClass(ResolucionFe);
 
+/**
+ * Cómo cobra el negocio por medios digitales (ítem 6.4). Sin integración de
+ * cobro: el POS solo MUESTRA el QR o la llave Bre-B que el negocio cargó.
+ */
+@Schema({ _id: false })
+export class CobroDigital {
+  /** Llave Bre-B (texto) o número de la billetera, tal como se muestra. */
+  @Prop({ trim: true, maxlength: 120 })
+  qrLlave?: string;
+
+  /** QR estático como imagen (data URL png/jpeg/webp, máx. ~150 KB). */
+  @Prop()
+  qrImagen?: string;
+
+  /** Texto bajo el QR: a nombre de quién sale. */
+  @Prop({ trim: true, maxlength: 120 })
+  qrTitular?: string;
+}
+const CobroDigitalSchema = SchemaFactory.createForClass(CobroDigital);
+
 @Schema({ timestamps: true, collection: 'sedes' })
 export class Sede {
   @Prop({ required: true, unique: true, trim: true })
@@ -119,6 +139,10 @@ export class Sede {
   /** Resolución de numeración DIAN vigente. */
   @Prop({ type: ResolucionFeSchema })
   resolucionFe?: ResolucionFe;
+
+  /** QR / llave Bre-B para cobrar por transferencia (ítem 6.4). */
+  @Prop({ type: CobroDigitalSchema })
+  cobroDigital?: CobroDigital;
 
   @Prop({ default: true })
   active!: boolean;

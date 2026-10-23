@@ -4,6 +4,8 @@ import {
   IsIn,
   IsOptional,
   IsString,
+  Matches,
+  MaxLength,
   MinLength,
   ValidateNested,
 } from 'class-validator';
@@ -16,6 +18,28 @@ import {
   TipoPersona,
 } from '../../domain/sede.constants';
 import { ResolucionFeDto } from './resolucion-fe.dto';
+
+/** QR estático o llave Bre-B del negocio (ítem 6.4). Vacío = quitarlo. */
+export class CobroDigitalDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  qrLlave?: string;
+
+  /** Solo imágenes rasterizadas: un SVG puede llevar scripts. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200_000)
+  @Matches(/^(data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+)?$/, {
+    message: 'qrImagen debe ser una imagen PNG, JPG o WEBP',
+  })
+  qrImagen?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  qrTitular?: string;
+}
 
 export class UpdateSedeDto {
   @IsOptional()
@@ -106,6 +130,11 @@ export class UpdateSedeDto {
   @ValidateNested()
   @Type(() => ResolucionFeDto)
   resolucionFe?: ResolucionFeDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CobroDigitalDto)
+  cobroDigital?: CobroDigitalDto;
 
   @IsOptional()
   @IsBoolean()
