@@ -300,7 +300,10 @@ export class OfflineSalesService {
         `El consecutivo ${dto.saleNumber} no pertenece a una reserva de esta sede`,
       );
     }
-    if (reserva.userId !== user.userId) {
+    // El número es de quien lo reservó. La excepción es quien autoriza
+    // anulaciones registrando con lo cobrado (permiso ya exigido en `sync`):
+    // resuelve desde la bandeja del servidor la venta de otro cajero.
+    if (reserva.userId !== user.userId && !dto.override) {
       throw offlineConflict(
         'NUMERO_INVALIDO',
         `El consecutivo ${dto.saleNumber} se reservó para otro usuario`,

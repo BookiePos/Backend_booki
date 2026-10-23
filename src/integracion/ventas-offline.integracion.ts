@@ -494,4 +494,37 @@ describe('ventas offline · reserva y sincronización', () => {
     expect(res.sale.saleNumber).toBe(a.saleNumber);
     expect(await base().collection('sales').countDocuments()).toBe(1);
   });
+
+  it('quien autoriza resuelve desde la bandeja del servidor un conflicto de otro cajero', async () => {
+    const r = await reservar();
+    const dto = venta(r, {
+      expectedGrandTotal: 23_000,
+      chargedLines: [{ productId: PROD.toString(), unitPrice: 10_500 }],
+    });
+    expect(await conflicto(env.enEmpresa(EMPRESA, () => offline.sync(dto, cajero)))).toBe('TOTAL_DISTINTO');
+    const supervisora = {
+      ...jefe,
+      userId: 'u-supervisora',
+      email: 'super@bookipos.local',
+    } as JwtUser;
+    const [c] = await env.enEmpresa(EMPRESA, () =>
+      offline.listConflicts(SEDE.toString(), supervisora),
+    );
+    // Sin `override` el número sigue siendo solo de quien lo reservó.
+    expect(
+      await conflicto(
+        env.enEmpresa(EMPRESA, () =>
+          offline.sync(c!.payload as unknown as SyncOfflineSaleDto, supervisora),
+        ),
+      ),
+    ).toBe('NUMERO_INVALIDO');
+    const { sale } = await env.enEmpresa(EMPRESA, () =>
+      offline.sync({ ...(c!.payload as unknown as SyncOfflineSaleDto), override: true }, supervisora),
+    );
+    expect(sale.saleNumber).toBe(dto.saleNumber);
+    expect(sale.total).toBe(21_000);
+    // El terminal del cajero, al reintentar, la recibe como ya registrada.
+    const again = await env.enEmpresa(EMPRESA, () => offline.sync(dto, cajero));
+    expect(again.status).toBe('duplicada');
+  });
 });
