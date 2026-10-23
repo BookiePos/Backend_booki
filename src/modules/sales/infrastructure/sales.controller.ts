@@ -73,6 +73,30 @@ export class SalesController {
   }
 
   /**
+   * Faltantes de stock de ventas offline autorizadas sin regularizar en la
+   * sede (costeados al último costo contra la puente 143595).
+   */
+  @RequirePermissions(PERMISSIONS.POS_VOID_AUTHORIZE)
+  @Get('offline/faltantes')
+  listOfflineFaltantes(
+    @Query('sedeId') sedeId: string,
+    @CurrentUser() user: JwtUser,
+  ) {
+    if (!sedeId) throw new BadRequestException('sedeId es obligatorio');
+    return this.offline.listFaltantes(sedeId, user);
+  }
+
+  /** Saca del stock lo que faltaba (ya entró) y cierra la cuenta puente. */
+  @RequirePermissions(PERMISSIONS.POS_VOID_AUTHORIZE)
+  @Post('offline/faltantes/:saleId/regularizar')
+  regularizarOfflineFaltantes(
+    @Param('saleId') saleId: string,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.offline.regularizarFaltantes(saleId, user);
+  }
+
+  /**
    * Registra una venta cobrada sin conexión. Idempotente por `offlineId`:
    * reenviarla devuelve la misma venta (`status: 'duplicada'`).
    */

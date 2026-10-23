@@ -83,6 +83,7 @@ describe('OfflineSalesService.sync', () => {
     conflictos = {
       updateOne: vi.fn(() => exec({})),
       find: vi.fn(() => ({ sort: () => ({ limit: () => exec([]) }) })),
+      findOne: vi.fn(() => exec(null)),
     };
     service = new OfflineSalesService(
       {} as never,
@@ -104,6 +105,8 @@ describe('OfflineSalesService.sync', () => {
       cajas as never,
       sales as never,
       conflictos as never,
+      {} as never, // stock: solo lo usa la regularización de faltantes
+      {} as never, // libro: idem
     );
   });
 
@@ -218,6 +221,8 @@ describe('OfflineSalesService.sync', () => {
       cajas as never,
       sales as never,
       conflictos as never,
+      {} as never, // stock: solo lo usa la regularización de faltantes
+      {} as never, // libro: idem
     );
     await expect(service.sync(dto(), user)).rejects.toMatchObject({
       response: { reason: 'FECHA_INVALIDA' },
@@ -274,15 +279,54 @@ describe('OfflineSalesService.sync', () => {
     expect(sales.create).not.toHaveBeenCalled();
   });
 
-  it('con permiso, registra con los precios del comprobante', async () => {
+  it('con permiso, registra con lo guardado en la bandeja del servidor, no con el cuerpo', async () => {
+    const guardado = dto();
+    guardado.chargedLines = [{ productId: guardado.sale.lines[0].productId, unitPrice: 11_900 }];
+    conflictos.findOne = vi.fn(() =>
+      exec({ _id: guardado.offlineId, sedeId, reason: 'TOTAL_DISTINTO', status: 'abierto', payload: guardado }),
+    );
+    // El cuerpo intenta cobrar a $1 y cambiar el total: se ignora.
     const d = dto();
     d.override = true;
-    d.chargedLines = [{ productId: d.sale.lines[0].productId, unitPrice: 11_900 }];
-    const jefe = { ...user, permissions: ['pos.sell', 'pos.void.authorize'] } as JwtUser;
+    d.expectedGrandTotal = 1;
+    d.chargedLines = [{ productId: d.sale.lines[0].productId, unitPrice: 1 }];
+    const jefe = {
+      ...user,
+      userId: 'u-jefe',
+      permissions: ['pos.sell', 'pos.void.authorize'],
+    } as JwtUser;
     await service.sync(d, jefe);
     const opts = sales.create.mock.calls[0][3].offline;
-    expect(opts.override).toMatchObject({ byUserId: 'u1' });
-    expect(opts.chargedPrices).toEqual({ [d.sale.lines[0].productId]: 11_900 });
+    expect(opts.override).toMatchObject({ byUserId: 'u-jefe' });
+    expect(opts.chargedPrices).toEqual({ [guardado.sale.lines[0].productId]: 11_900 });
+    expect(opts.expectedGrandTotal).toBe(11_900);
+    // La venta queda a nombre de quien la cobró (dueño de la reserva).
+    expect(opts.cajero).toMatchObject({ userId: 'u1' });
+  });
+
+  it('sin conflicto abierto de precio, stock o producto, no hay override', async () => {
+    const d = dto();
+    d.override = true;
+    const jefe = { ...user, permissions: ['pos.sell', 'pos.void.authorize'] } as JwtUser;
+    await expect(service.sync(d, jefe)).rejects.toBeInstanceOf(ForbiddenException);
+    conflictos.findOne = vi.fn(() =>
+      exec({ _id: d.offlineId, sedeId, reason: 'NUMERO_USADO', status: 'abierto', payload: d }),
+    );
+    await expect(service.sync(d, jefe)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(sales.create).not.toHaveBeenCalled();
+  });
+
+  it('lo cobrado + propina tiene que sumar el total del comprobante guardado', async () => {
+    const guardado = dto();
+    guardado.chargedLines = [{ productId: guardado.sale.lines[0].productId, unitPrice: 10_000 }];
+    conflictos.findOne = vi.fn(() =>
+      exec({ _id: guardado.offlineId, sedeId, reason: 'TOTAL_DISTINTO', status: 'abierto', payload: guardado }),
+    );
+    const jefe = { ...user, permissions: ['pos.sell', 'pos.void.authorize'] } as JwtUser;
+    await expect(service.sync({ ...guardado, override: true }, jefe)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(sales.create).not.toHaveBeenCalled();
   });
 
   it('un conflicto queda en la bandeja del servidor; al registrarse se marca resuelto', async () => {
@@ -317,5 +361,110 @@ describe('OfflineSalesService.sync', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
     await service.listConflicts(sedeId.toString(), user);
     expect(conflictos.find).toHaveBeenCalledWith({ sedeId, status: 'abierto' });
+  });
+
+  describe('faltantes de stock autorizados', () => {
+    const jefe = { ...user, permissions: ['pos.sell', 'pos.void.authorize'] } as JwtUser;
+    const ventaId = new Types.ObjectId();
+    const inv = new Types.ObjectId();
+    let ventas: any;
+    let stock: any;
+    let libro: any;
+
+    const venta = (over: Record<string, unknown> = {}) => ({
+      _id: ventaId,
+      sedeId,
+      saleNumber: 'FVC-000003',
+      offlineOverride: {
+        faltantes: [{ productId: inv, qty: 2, unitCost: 1_000, cost: 2_000, status: 'pendiente' }],
+      },
+      ...over,
+    });
+
+    beforeEach(() => {
+      ventas = {
+        findOne: vi.fn(() => exec(null)),
+        findById: vi.fn(() => exec(venta())),
+        findOneAndUpdate: vi.fn(() => exec(venta())),
+        updateOne: vi.fn(() => exec({})),
+        find: vi.fn(() => ({ sort: () => ({ limit: () => exec([venta()]) }) })),
+      };
+      stock = {
+        consumeLines: vi.fn().mockResolvedValue([
+          { portions: [{ qty: 2, lot: { unitCost: 1_200 } }] },
+        ]),
+      };
+      libro = { postRegularizacionFaltante: vi.fn().mockResolvedValue(true) };
+      service = new OfflineSalesService(
+        {} as never,
+        {} as never,
+        claims as never,
+        ventas as never,
+        cajas as never,
+        sales as never,
+        conflictos as never,
+        stock as never,
+        libro as never,
+      );
+    });
+
+    it('lista solo lo pendiente de la sede', async () => {
+      const r = await service.listFaltantes(sedeId.toString(), jefe);
+      expect(r).toEqual([
+        expect.objectContaining({
+          saleNumber: 'FVC-000003',
+          faltantes: [{ productId: inv.toString(), qty: 2, unitCost: 1_000, cost: 2_000 }],
+        }),
+      ]);
+      await expect(
+        service.listFaltantes(new Types.ObjectId().toString(), user),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('regulariza: saca el stock, cierra la puente con el costo real y suelta el candado', async () => {
+      const r = await service.regularizarFaltantes(ventaId.toString(), jefe);
+      expect(r).toEqual({ saleId: ventaId.toString(), estimado: 2_000, real: 2_400 });
+      expect(stock.consumeLines).toHaveBeenCalledWith(
+        'adjust_out',
+        sedeId.toString(),
+        [{ productId: inv.toString(), qty: 2 }],
+        jefe,
+        expect.objectContaining({ reason: 'regularizacion_offline' }),
+      );
+      expect(libro.postRegularizacionFaltante).toHaveBeenCalledWith(
+        expect.objectContaining({ estimado: 2_000, real: 2_400 }),
+      );
+      expect(ventas.updateOne).toHaveBeenLastCalledWith(
+        { _id: ventaId },
+        { $unset: { 'offlineOverride.regularizandoAt': 1 } },
+      );
+    });
+
+    it('sin stock: 400, sin asiento y el candado se suelta', async () => {
+      stock.consumeLines.mockRejectedValue(new Error('Stock insuficiente'));
+      await expect(service.regularizarFaltantes(ventaId.toString(), jefe)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(libro.postRegularizacionFaltante).not.toHaveBeenCalled();
+      expect(ventas.updateOne).toHaveBeenCalledWith(
+        { _id: ventaId },
+        { $unset: { 'offlineOverride.regularizandoAt': 1 } },
+      );
+    });
+
+    it('otra regularización en curso o nada pendiente: 400 sin tocar stock', async () => {
+      ventas.findOneAndUpdate = vi.fn(() => exec(null));
+      await expect(service.regularizarFaltantes(ventaId.toString(), jefe)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      ventas.findById = vi.fn(() => exec(venta({ offlineOverride: { faltantes: [] } })));
+      await expect(service.regularizarFaltantes(ventaId.toString(), jefe)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      await expect(service.regularizarFaltantes('x', jefe)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(stock.consumeLines).not.toHaveBeenCalled();
+    });
   });
 });

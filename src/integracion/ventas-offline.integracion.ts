@@ -120,7 +120,8 @@ describe('ventas offline · reserva y sincronización', () => {
       {} as never, // discountModel: offline no lleva descuentos
       {} as never, // receivableModel: offline no fía
       { sell, reverseSale: vi.fn() } as never,
-      { getOrFail: vi.fn().mockResolvedValue({ name: 'Masa' }) } as never,
+      // Último costo de compra de la masa: costea el faltante autorizado.
+      { getOrFail: vi.fn().mockResolvedValue({ name: 'Masa', cost: 4_000 }) } as never,
       { findOrFail: vi.fn().mockResolvedValue({ _id: SEDE }) } as never,
       {
         loadSellableOrFail: vi.fn(async (_id: string, o?: { allowInactive?: boolean }) => {
@@ -156,6 +157,31 @@ describe('ventas offline · reserva y sincronización', () => {
       sesiones as never,
       sales,
       m(OfflineConflictRecord.name, OfflineConflictSchema) as never,
+      // Regularizar un faltante saca del stock real con su costo de lote.
+      {
+        consumeLines: vi.fn(
+          async (_t: string, _sede: string, lines: { productId: string; qty: number }[]) => {
+            for (const l of lines) {
+              const it = (await stock
+                .findOne({ sedeId: SEDE, productId: new Types.ObjectId(l.productId) })
+                .lean()) as { qty: number } | null;
+              if (!it || it.qty < l.qty) {
+                const { BadRequestException } = await import('@nestjs/common');
+                throw new BadRequestException('Stock insuficiente');
+              }
+              await stock.updateOne(
+                { sedeId: SEDE, productId: new Types.ObjectId(l.productId) },
+                { $inc: { qty: -l.qty } },
+              );
+            }
+            return lines.map((l) => ({
+              product: { _id: INV },
+              portions: [{ lot: { _id: new Types.ObjectId(), unitCost: 4_500 }, qty: l.qty }],
+            }));
+          },
+        ),
+      } as never,
+      env.posting,
     );
     caja = new CajaService(
       sesiones as never,
@@ -435,17 +461,74 @@ describe('ventas offline · reserva y sincronización', () => {
   it('SIN_STOCK con autorización: registra, descuenta lo que había y deja el faltante', async () => {
     const r = await reservar();
     await env.enEmpresa(EMPRESA, () => stock.updateOne({ productId: INV }, { $set: { qty: 1 } }));
-    const dto = venta(r);
+    const dto = venta(r, { chargedLines: [{ productId: PROD.toString(), unitPrice: 11_900 }] });
     expect(await conflicto(env.enEmpresa(EMPRESA, () => offline.sync(dto, cajero)))).toBe('SIN_STOCK');
     const { sale } = await env.enEmpresa(EMPRESA, () =>
       offline.sync({ ...dto, override: true }, jefe),
     );
     expect(sale.total).toBe(23_800);
+    // El faltante se costea al último costo y queda pendiente de regularizar.
     expect(sale.offlineOverride?.faltantes).toEqual([
-      expect.objectContaining({ productId: INV, qty: 1 }),
+      expect.objectContaining({
+        productId: INV,
+        qty: 1,
+        unitCost: 4_000,
+        cost: 4_000,
+        status: 'pendiente',
+      }),
     ]);
     const stockDoc = await base().collection('stock_items').findOne({ productId: INV });
     expect(stockDoc?.qty).toBe(0);
+
+    // Costo de ventas: lo consumido (1 x 4.000) + el faltante (4.000) contra la
+    // cuenta puente 143595.
+    const asiento = await base().collection('ledger_journal_entries').findOne({ sourceType: 'sale' });
+    const lineas = asiento?.lines as { accountCode: string; debit: number; credit: number }[];
+    expect(asiento?.totalDebit).toBe(asiento?.totalCredit);
+    expect(lineas.filter((l) => l.accountCode === '6135').reduce((x, l) => x + l.debit, 0)).toBe(8_000);
+    expect(lineas.find((l) => l.accountCode === '143595')?.credit).toBe(4_000);
+    expect(lineas.find((l) => l.accountCode === '1435')?.credit).toBe(4_000);
+
+    // Bandeja de faltantes de la sede, para quien autoriza.
+    const pendientes = await env.enEmpresa(EMPRESA, () =>
+      offline.listFaltantes(SEDE.toString(), jefe),
+    );
+    expect(pendientes.map((p) => p.saleNumber)).toEqual([dto.saleNumber]);
+
+    // Sin stock registrado todavía no se puede regularizar.
+    await expect(
+      env.enEmpresa(EMPRESA, () => offline.regularizarFaltantes(sale._id.toString(), jefe)),
+    ).rejects.toMatchObject({ status: 400 });
+    // Llega la compra que faltaba: se saca del stock real y se cierra la puente.
+    await env.enEmpresa(EMPRESA, () => stock.updateOne({ productId: INV }, { $set: { qty: 3 } }));
+    await env.enEmpresa(EMPRESA, () => offline.regularizarFaltantes(sale._id.toString(), jefe));
+    expect((await base().collection('stock_items').findOne({ productId: INV }))?.qty).toBe(2);
+    const reg = await base()
+      .collection('ledger_journal_entries')
+      .findOne({ sourceType: 'offline_faltante' });
+    const rl = reg?.lines as { accountCode: string; debit: number; credit: number }[];
+    expect(reg?.totalDebit).toBe(reg?.totalCredit);
+    expect(rl.find((l) => l.accountCode === '143595')?.debit).toBe(4_000);
+    expect(rl.find((l) => l.accountCode === '1435')?.credit).toBe(4_500);
+    expect(rl.find((l) => l.accountCode === '6135')?.debit).toBe(500);
+    expect(
+      await env.enEmpresa(EMPRESA, () => offline.listFaltantes(SEDE.toString(), jefe)),
+    ).toHaveLength(0);
+    // Dos veces no: ya no hay faltante pendiente.
+    await expect(
+      env.enEmpresa(EMPRESA, () => offline.regularizarFaltantes(sale._id.toString(), jefe)),
+    ).rejects.toMatchObject({ status: 400 });
+    expect((await base().collection('stock_items').findOne({ productId: INV }))?.qty).toBe(2);
+  });
+
+  it('override sin conflicto abierto en el servidor no registra nada', async () => {
+    const r = await reservar();
+    const dto = venta(r, { chargedLines: [{ productId: PROD.toString(), unitPrice: 1 }] });
+    await expect(
+      env.enEmpresa(EMPRESA, () => offline.sync({ ...dto, override: true }, jefe)),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(sell).not.toHaveBeenCalled();
+    expect(await base().collection('sales').countDocuments()).toBe(0);
   });
 
   it('PRODUCTO_INACTIVO con autorización: registra con el precio cobrado', async () => {
@@ -472,12 +555,25 @@ describe('ventas offline · reserva y sincronización', () => {
       orderType: 'mostrador',
       idempotencyKey: key,
     } as never;
-    const [a, b] = await Promise.all([
+    // Doble clic: el candado de la llave deja numerar y vender a uno solo.
+    const contador = await base().collection('counters').findOne({ _id: `sale:${SEDE.toString()}` as never });
+    const antes = (contador?.seq as number | undefined) ?? 0;
+    const intentos = await Promise.allSettled([
       env.enEmpresa(EMPRESA, () => sales.create(dto, cajero)),
       env.enEmpresa(EMPRESA, () => sales.create(dto, cajero)),
     ]);
-    expect(a._id.toString()).toBe(b._id.toString());
+    const hechas = intentos.filter((x) => x.status === 'fulfilled');
+    expect(hechas.length).toBeGreaterThanOrEqual(1);
+    for (const x of intentos) {
+      if (x.status === 'rejected') expect((x.reason as { status: number }).status).toBe(409);
+    }
+    const a = (hechas[0] as PromiseFulfilledResult<Awaited<ReturnType<SalesService['create']>>>)
+      .value;
     expect(await base().collection('sales').countDocuments()).toBe(1);
+    expect(sell).toHaveBeenCalledTimes(1);
+    // Sin hueco en la serie FV-: se gastó un solo número.
+    const despues = await base().collection('counters').findOne({ _id: `sale:${SEDE.toString()}` as never });
+    expect((despues?.seq as number) - antes).toBe(1);
     // Reintento tras perder la respuesta: devuelve la misma, sin vender otra vez.
     sell.mockClear();
     const c = await env.enEmpresa(EMPRESA, () => sales.create(dto, cajero));
@@ -523,6 +619,10 @@ describe('ventas offline · reserva y sincronización', () => {
     );
     expect(sale.saleNumber).toBe(dto.saleNumber);
     expect(sale.total).toBe(21_000);
+    // La venta es de quien la cobró; la supervisora solo autorizó.
+    expect(sale.cashierId).toBe(cajero.userId);
+    expect(sale.cashierEmail).toBe(cajero.email);
+    expect(sale.offlineOverride?.byUserId).toBe(supervisora.userId);
     // El terminal del cajero, al reintentar, la recibe como ya registrada.
     const again = await env.enEmpresa(EMPRESA, () => offline.sync(dto, cajero));
     expect(again.status).toBe('duplicada');

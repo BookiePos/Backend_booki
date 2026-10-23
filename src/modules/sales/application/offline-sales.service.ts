@@ -33,6 +33,8 @@ import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import {
   OFFLINE_BLOCK_DEFAULT,
+  OFFLINE_OVERRIDABLE,
+  type OfflineConflictReason,
   OFFLINE_BLOCK_MAX,
   OFFLINE_PREFIX,
   formatOfflineNumber,
@@ -44,6 +46,10 @@ import {
   soldAtIsPlausible,
 } from '../domain/offline-sales';
 import { SalesService } from './sales.service';
+import { StockService } from '../../inventory/application/stock.service';
+import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
+import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
+import { cop, sumBy } from '../../finance/domain/money.util';
 import { isOfflineConflict, offlineConflict } from './offline-conflict';
 import {
   ReserveOfflineNumbersDto,
@@ -104,6 +110,8 @@ export class OfflineSalesService {
     private readonly sales: SalesService,
     @InjectModel(OfflineConflictRecord.name)
     private readonly conflictModel: Model<OfflineConflictDocument>,
+    private readonly stock: StockService,
+    private readonly ledgerPosting: LedgerPostingService,
   ) {}
 
   /**
@@ -208,11 +216,15 @@ export class OfflineSalesService {
         'Registrar una venta offline con lo cobrado requiere autorizar anulaciones',
       );
     }
+    // Con lo cobrado: manda lo que quedó en la bandeja del servidor, no el
+    // cuerpo de esta petición (quien autoriza no puede cambiar precios, total,
+    // líneas, fecha ni número de una venta que cobró otro).
+    const efectivo = dto.override ? await this.desdeBandeja(dto) : dto;
     let r: OfflineSyncResult;
     try {
-      r = await this.syncInterno(dto, user);
+      r = await this.syncInterno(efectivo, user);
     } catch (err) {
-      await this.guardarConflicto(dto, user, err);
+      await this.guardarConflicto(efectivo, user, err);
       throw err;
     }
     await this.conflictModel
@@ -234,6 +246,158 @@ export class OfflineSalesService {
     return r;
   }
 
+  /**
+   * La venta tal como quedó en la bandeja del servidor, para registrarla con
+   * lo cobrado. Exige un conflicto ABIERTO de la sede con motivo con salida
+   * (precio, stock o producto inactivo) y que lo cobrado por línea más la
+   * propina sume exacto el total del comprobante.
+   */
+  private async desdeBandeja(dto: SyncOfflineSaleDto): Promise<SyncOfflineSaleDto> {
+    const c = await this.conflictModel
+      .findOne({ _id: dto.offlineId, status: 'abierto' })
+      .exec();
+    if (
+      !c ||
+      c.sedeId.toString() !== dto.sale.sedeId ||
+      !OFFLINE_OVERRIDABLE.includes(c.reason as OfflineConflictReason)
+    ) {
+      throw new ForbiddenException(
+        'Solo se registra con lo cobrado una venta con un conflicto abierto de precio, stock o producto inactivo',
+      );
+    }
+    const guardado = c.payload as unknown as SyncOfflineSaleDto;
+    const precio = new Map((guardado.chargedLines ?? []).map((l) => [l.productId, l.unitPrice]));
+    const sinPrecio = guardado.sale.lines.filter((l) => !precio.has(l.productId));
+    if (sinPrecio.length > 0) {
+      throw new BadRequestException(
+        'El comprobante guardado no trae el precio cobrado de todas las líneas',
+      );
+    }
+    const cobrado =
+      sumBy(guardado.sale.lines, (l) => cop(precio.get(l.productId)! * l.qty)) +
+      cop(guardado.sale.tip ?? 0);
+    if (cobrado !== cop(guardado.expectedGrandTotal)) {
+      throw new BadRequestException(
+        `Lo cobrado por línea más la propina (${cobrado}) no suma el total del comprobante (${cop(guardado.expectedGrandTotal)})`,
+      );
+    }
+    return { ...guardado, offlineId: c._id, override: true };
+  }
+
+  /**
+   * Faltantes de stock de ventas offline autorizadas que siguen sin
+   * regularizar en la sede. Los ve quien autoriza anulaciones.
+   */
+  async listFaltantes(sedeId: string, user: JwtUser) {
+    assertSedeAccess(user, sedeId);
+    const ventas = await this.saleModel
+      .find({
+        sedeId: new Types.ObjectId(sedeId),
+        status: 'completed',
+        'offlineOverride.faltantes.status': 'pendiente',
+      })
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .exec();
+    return ventas.map((v) => ({
+      saleId: v._id.toString(),
+      saleNumber: v.saleNumber,
+      soldAt: v.soldAt,
+      cashierEmail: v.cashierEmail,
+      faltantes: (v.offlineOverride?.faltantes ?? [])
+        .filter((f) => f.status === 'pendiente')
+        .map((f) => ({
+          productId: f.productId.toString(),
+          qty: f.qty,
+          unitCost: f.unitCost ?? 0,
+          cost: f.cost ?? 0,
+        })),
+    }));
+  }
+
+  /**
+   * Regulariza los faltantes de una venta: el stock que faltaba ya entró
+   * (compra o ajuste) y ahora se saca con sus lotes reales; el asiento cierra
+   * la puente 143595 por lo estimado contra 1435 por lo real y la diferencia
+   * va a 6135. Una vez por venta (candado); sin stock suficiente, 400.
+   */
+  async regularizarFaltantes(saleId: string, user: JwtUser) {
+    if (!Types.ObjectId.isValid(saleId)) throw new BadRequestException('Venta inválida');
+    const venta = await this.saleModel.findById(saleId).exec();
+    if (!venta) throw new BadRequestException('Venta no encontrada');
+    assertSedeAccess(user, venta.sedeId.toString());
+    const pendientes = (venta.offlineOverride?.faltantes ?? []).filter(
+      (f) => f.status === 'pendiente',
+    );
+    if (pendientes.length === 0) {
+      throw new BadRequestException('La venta no tiene faltantes pendientes');
+    }
+    const tomada = await this.saleModel
+      .findOneAndUpdate(
+        {
+          _id: venta._id,
+          'offlineOverride.faltantes.status': 'pendiente',
+          'offlineOverride.regularizandoAt': { $exists: false },
+        },
+        { $set: { 'offlineOverride.regularizandoAt': new Date() } },
+      )
+      .exec();
+    if (!tomada) {
+      throw new BadRequestException('Esta venta ya se está regularizando');
+    }
+    try {
+      let consumidos: Awaited<ReturnType<StockService['consumeLines']>>;
+      try {
+        consumidos = await this.stock.consumeLines(
+          'adjust_out',
+          venta.sedeId.toString(),
+          pendientes.map((f) => ({ productId: f.productId.toString(), qty: f.qty })),
+          user,
+          {
+            reason: 'regularizacion_offline',
+            note: `Faltante de la venta ${venta.saleNumber} cobrada sin conexión`,
+          },
+        );
+      } catch (err) {
+        throw new BadRequestException(
+          `Primero registra la compra o el ajuste que trae ese stock: ${(err as Error).message}`,
+        );
+      }
+      const real = sumBy(consumidos, (c) =>
+        sumBy(c.portions, (p) => cop(p.qty * (p.lot?.unitCost ?? 0))),
+      );
+      const estimado = sumBy(pendientes, (f) => f.cost ?? 0);
+      await this.ledgerPosting.postRegularizacionFaltante({
+        saleId: venta._id.toString(),
+        number: venta.saleNumber,
+        date: fechaColombia(),
+        sedeId: venta.sedeId.toString(),
+        estimado,
+        real,
+        userEmail: user.email,
+      });
+      await this.saleModel
+        .updateOne(
+          { _id: venta._id },
+          {
+            $set: {
+              'offlineOverride.faltantes.$[f].status': 'regularizado',
+              'offlineOverride.faltantes.$[f].regularizadoAt': new Date(),
+              'offlineOverride.faltantes.$[f].regularizadoPor': user.email,
+              'offlineOverride.faltantes.$[f].realCost': real,
+            },
+          },
+          { arrayFilters: [{ 'f.status': 'pendiente' }] },
+        )
+        .exec();
+      return { saleId: venta._id.toString(), estimado, real };
+    } finally {
+      await this.saleModel
+        .updateOne({ _id: venta._id }, { $unset: { 'offlineOverride.regularizandoAt': 1 } })
+        .exec();
+    }
+  }
+
   /** Deja el conflicto en la bandeja del servidor (best-effort). */
   private async guardarConflicto(
     dto: SyncOfflineSaleDto,
@@ -244,6 +408,10 @@ export class OfflineSalesService {
     const body = err.getResponse() as { reason?: string; message?: string };
     if (!body.reason || body.reason === 'EN_PROCESO') return;
     try {
+      // La bandeja es de quien cobró: otro usuario (o quien autoriza, al
+      // reintentar con lo cobrado) no puede reescribir su venta ni su motivo.
+      const previo = await this.conflictModel.findOne({ _id: dto.offlineId }).exec();
+      if (previo && (dto.override || previo.userId !== user.userId)) return;
       await this.conflictModel
         .updateOne(
           { _id: dto.offlineId },
@@ -378,6 +546,8 @@ export class OfflineSalesService {
           expectedGrandTotal: dto.expectedGrandTotal,
           turnoOrigenId,
           chargedPrices,
+          // La venta es de quien la cobró (dueño de la reserva).
+          cajero: { userId: reserva.userId, email: reserva.userEmail },
           override: dto.override
             ? { byUserId: user.userId, byEmail: user.email, at: new Date() }
             : undefined,

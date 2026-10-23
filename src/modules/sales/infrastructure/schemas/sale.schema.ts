@@ -507,15 +507,29 @@ export class Sale {
   /**
    * Venta offline registrada «con lo cobrado» por quien autoriza anulaciones
    * (TOTAL_DISTINTO, SIN_STOCK, PRODUCTO_INACTIVO). `faltantes` es lo que se
-   * vendió sin estar en el inventario registrado: hay que regularizarlo con
-   * un ajuste (su costo no entró al asiento de la venta).
+   * vendió sin estar en el inventario registrado, costeado al último costo
+   * (6135 contra la puente 143595). Queda `pendiente` hasta que se regulariza
+   * sacando ese stock cuando entra (`regularizado`, con su costo real).
    */
   @Prop({
     type: {
       byUserId: { type: String, required: true },
       byEmail: { type: String },
       at: { type: Date, required: true },
-      faltantes: [{ productId: { type: Types.ObjectId }, qty: { type: Number } }],
+      faltantes: [
+        {
+          productId: { type: Types.ObjectId },
+          qty: { type: Number },
+          unitCost: { type: Number },
+          cost: { type: Number },
+          status: { type: String, enum: ['pendiente', 'regularizado'] },
+          realCost: { type: Number },
+          regularizadoAt: { type: Date },
+          regularizadoPor: { type: String },
+        },
+      ],
+      /** Candado de la regularización (una a la vez por venta). */
+      regularizandoAt: { type: Date },
     },
     _id: false,
   })
@@ -523,7 +537,17 @@ export class Sale {
     byUserId: string;
     byEmail?: string;
     at: Date;
-    faltantes: { productId: Types.ObjectId; qty: number }[];
+    faltantes: {
+      productId: Types.ObjectId;
+      qty: number;
+      unitCost?: number;
+      cost?: number;
+      status?: 'pendiente' | 'regularizado';
+      realCost?: number;
+      regularizadoAt?: Date;
+      regularizadoPor?: string;
+    }[];
+    regularizandoAt?: Date;
   };
 
   /**
@@ -558,4 +582,9 @@ SaleSchema.index(
 SaleSchema.index(
   { sedeId: 1, 'platform.code': 1, 'platform.settlementId': 1, createdAt: -1 },
   { partialFilterExpression: { 'platform.code': { $exists: true } } },
+);
+// Faltantes de ventas offline autorizadas sin regularizar, por sede.
+SaleSchema.index(
+  { sedeId: 1, 'offlineOverride.faltantes.status': 1 },
+  { partialFilterExpression: { 'offlineOverride.faltantes.status': 'pendiente' } },
 );

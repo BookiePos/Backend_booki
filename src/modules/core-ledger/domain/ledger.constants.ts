@@ -46,6 +46,14 @@ export const ACC = {
    */
   CXC_TRABAJADORES: '1365',
   INVENTARIO: '1435',
+  /**
+   * Cuenta puente del modo sin conexión (ítem 6.3): mercancía vendida offline
+   * que no estaba en el inventario registrado (venta autorizada con lo
+   * cobrado). Su costo va a 6135 contra esta subcuenta de 1435 (saldo crédito)
+   * hasta que se regulariza sacando ese stock cuando llega la compra o el
+   * ajuste. PENDIENTE de confirmar por el contador.
+   */
+  INVENTARIO_POR_REGULARIZAR: '143595',
   PROVEEDORES: '2205',
   RETENCION_FUENTE: '2365',
   /**
@@ -133,6 +141,7 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   { code: '135518', name: 'ReteICA a favor (anticipo)', type: 'asset' },
   { code: '1365', name: 'Cuentas por cobrar a trabajadores', type: 'asset' },
   { code: '1435', name: 'Inventario de mercancías', type: 'asset' },
+  { code: '143595', name: 'Inventario por regularizar (ventas sin conexión)', type: 'asset' },
   // Pasivo
   { code: '2205', name: 'Proveedores (CxP)', type: 'liability' },
   { code: '2365', name: 'Retención en la fuente', type: 'liability' },

@@ -140,8 +140,26 @@ export interface OfflineSaleOptions {
   override?: { byUserId: string; byEmail?: string; at: Date };
   chargedPrices?: Record<string, number>;
   /** Lo que no había en el inventario registrado (lo llena `create`). */
-  faltantes?: { productId: string; qty: number }[];
+  faltantes?: FaltanteOffline[];
+  /**
+   * Quién cobró la venta: el dueño de la reserva. Si la registra quien
+   * autoriza desde la bandeja, la venta sigue siendo del cajero; el
+   * autorizador queda solo en `override`.
+   */
+  cajero?: { userId: string; email: string };
 }
+
+/** Lo vendido offline que no estaba en el inventario registrado, con su costo estimado. */
+export interface FaltanteOffline {
+  productId: string;
+  qty: number;
+  /** Último costo de compra del ítem al registrar la venta (COP). */
+  unitCost: number;
+  cost: number;
+}
+
+/** Un candado de llave más viejo que esto es de una petición que murió. */
+const LLAVE_STALE_MS = 2 * 60_000;
 
 /** Qué anuló cancelCredit, para poder devolverlo si la anulación se aborta. */
 type FiadoCancelado = 'none' | 'receivable' | 'deduction';
@@ -254,6 +272,60 @@ export class SalesService {
     user: JwtUser,
     orderId?: Types.ObjectId,
     opts: CreateSaleOptions = {},
+  ): Promise<SaleDocument> {
+    const key = opts.offline ? undefined : dto.idempotencyKey;
+    if (!key) return this.crear(dto, user, orderId, opts);
+    assertSedeAccess(user, dto.sedeId);
+    const previa = await this.ventaPorLlave(key, dto.sedeId);
+    if (previa) return previa;
+    // Candado por la llave ANTES de numerar: dos envíos del mismo cobro a la
+    // vez no gastan dos consecutivos FV- (la serie normal no puede tener
+    // huecos) ni descuentan inventario dos veces.
+    const ganadora = await this.tomarLlave(key, dto.sedeId);
+    if (ganadora) return ganadora;
+    try {
+      return await this.crear(dto, user, orderId, opts);
+    } finally {
+      await this.counterModel
+        .deleteOne({ _id: `idem:${key}` })
+        .exec()
+        .catch(() => undefined);
+    }
+  }
+
+  /**
+   * Toma el candado de una llave de cobro. Si otra petición lo tiene y no ha
+   * terminado, 409 (el POS espera y reintenta); si ya terminó, su venta.
+   */
+  private async tomarLlave(key: string, sedeId: string): Promise<SaleDocument | null> {
+    const id = `idem:${key}`;
+    try {
+      await this.counterModel.create({ _id: id, seq: Date.now() });
+      return null;
+    } catch (err) {
+      if ((err as { code?: number })?.code !== 11000) throw err;
+    }
+    // Candado de una petición que murió: se toma.
+    const viejo = await this.counterModel
+      .findOneAndUpdate(
+        { _id: id, seq: { $lt: Date.now() - LLAVE_STALE_MS } },
+        { $set: { seq: Date.now() } },
+      )
+      .exec();
+    if (viejo) return null;
+    const venta = await this.ventaPorLlave(key, sedeId);
+    if (venta) return venta;
+    throw new ConflictException({
+      code: 'COBRO_EN_PROCESO',
+      message: 'Este cobro ya se está registrando. Espera un momento y revisa Ventas.',
+    });
+  }
+
+  private async crear(
+    dto: CreateSaleDto,
+    user: JwtUser,
+    orderId: Types.ObjectId | undefined,
+    opts: CreateSaleOptions,
   ): Promise<SaleDocument> {
     assertSedeAccess(user, dto.sedeId);
     // Valida que la sede exista (lanza 404 si no). Su responsabilidad fiscal,
@@ -654,7 +726,7 @@ export class SalesService {
     const stockByProduct = new Map(
       items.map((i) => [i.productId.toString(), i.qty]),
     );
-    const faltantes: { productId: string; qty: number }[] = [];
+    const faltantes: FaltanteOffline[] = [];
     for (const c of componentLines) {
       const have = stockByProduct.get(c.productId) ?? 0;
       if (have < c.qty) {
@@ -662,7 +734,16 @@ export class SalesService {
         // lo que falta es su registro. Se descuenta lo que hay y el resto queda
         // anotado en la venta para regularizar el inventario con un ajuste.
         if (offline?.override) {
-          faltantes.push({ productId: c.productId, qty: c.qty - Math.max(have, 0) });
+          // Se costea al último costo de compra: entra al costo de ventas
+          // contra la puente 143595 hasta que se regularice.
+          const qtyFaltante = c.qty - Math.max(have, 0);
+          const unitCost = cop((await this.products.getOrFail(c.productId)).cost ?? 0);
+          faltantes.push({
+            productId: c.productId,
+            qty: qtyFaltante,
+            unitCost,
+            cost: cop(qtyFaltante * unitCost),
+          });
           c.qty = Math.max(have, 0);
           continue;
         }
@@ -1018,9 +1099,11 @@ export class SalesService {
     const sale = await this.saleModel.create({
       saleNumber,
       sedeId: new Types.ObjectId(dto.sedeId),
-      cashierId: user.userId,
-      cashierEmail: user.email,
-      cashierName: user.name,
+      // Offline: quien cobró (dueño de la reserva), aunque la registre otro.
+      cashierId: offline?.cajero?.userId ?? user.userId,
+      cashierEmail: offline?.cajero?.email ?? user.email,
+      cashierName:
+        offline?.cajero && offline.cajero.userId !== user.userId ? undefined : user.name,
       seller: this.cleanSeller(dto.seller),
       cajaSessionId: openCaja?._id,
       status: 'completed',
@@ -1070,6 +1153,9 @@ export class SalesService {
             faltantes: (offline.faltantes ?? []).map((f) => ({
               productId: new Types.ObjectId(f.productId),
               qty: f.qty,
+              unitCost: f.unitCost,
+              cost: f.cost,
+              status: 'pendiente' as const,
             })),
           }
         : undefined,
@@ -1180,6 +1266,7 @@ export class SalesService {
       tax: ivaTax,
       consumptionTax: incTax,
       cogs: cop(cogs),
+      faltanteCost: sumBy(offline?.faltantes ?? [], (f) => f.cost),
       // El domicilio es ingreso del negocio, sin IVA que separar.
       deliveryFee,
       // La propina entra con el cobro pero va al pasivo 2380 (ítem 1.10).

@@ -271,6 +271,8 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `POST /sales/offline/reservations` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /sales/offline/reservations` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /sales/offline/conflicts` | `pos.void.authorize` | ✓ | ✓ | ✓ | · | · |
+| `GET /sales/offline/faltantes` | `pos.void.authorize` | ✓ | ✓ | ✓ | · | · |
+| `POST /sales/offline/faltantes/:saleId/regularizar` | `pos.void.authorize` | ✓ | ✓ | ✓ | · | · |
 | `POST /sales/offline/sync` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /sales/pos-products` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /sales/packaging-suggestion` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
