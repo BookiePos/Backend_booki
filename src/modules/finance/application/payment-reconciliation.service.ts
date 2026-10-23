@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Sale, SaleDocument } from '../../sales/infrastructure/schemas/sale.schema';
@@ -19,6 +19,7 @@ import {
   ParsedStatement,
   RECON_CHANNEL_LABEL,
   expectedByDay,
+  mergeSettlementItems,
   parseStatementCsv,
   reconKey,
   settlementDifference,
@@ -56,6 +57,8 @@ export interface ReconciliationRow extends ExpectedRow {
  */
 @Injectable()
 export class PaymentReconciliationService {
+  private readonly logger = new Logger(PaymentReconciliationService.name);
+
   constructor(
     @InjectModel(Sale.name) private readonly sales: Model<SaleDocument>,
     @InjectModel(PaymentSettlement.name)
@@ -171,6 +174,7 @@ export class PaymentReconciliationService {
   async previewImport(user: JwtUser, dto: ImportStatementDto) {
     assertSedeAccess(user, dto.sedeId);
     const parsed: ParsedStatement = parseStatementCsv(dto.csv, dto.channel);
+    parsed.rows = mergeSettlementItems(parsed.rows);
     if (parsed.rows.length === 0) return { rows: [], errors: parsed.errors };
     const dates = parsed.rows.map((r) => r.date).sort();
     const first = dates[0]!;
@@ -202,7 +206,8 @@ export class PaymentReconciliationService {
   /** Guarda las conciliaciones y asienta comisión, IVA y retenciones. */
   async create(user: JwtUser, dto: CreateSettlementsDto) {
     assertSedeAccess(user, dto.sedeId);
-    const dates = dto.items.map((i) => i.date).sort();
+    const items = mergeSettlementItems(dto.items);
+    const dates = items.map((i) => i.date).sort();
     const expected = await this.expected(dto.sedeId, dates[0]!, dates[dates.length - 1]!);
     const exp = new Map(expected.map((e) => [`${e.date}|${e.key}`, e]));
     const descuentaIva = (
@@ -211,7 +216,7 @@ export class PaymentReconciliationService {
 
     const created: SettlementView[] = [];
     const skipped: { date: string; key: string; reason: string }[] = [];
-    for (const item of dto.items) {
+    for (const item of items) {
       const franchise = item.channel === 'datafono' ? (item.franchise ?? '') : '';
       const key = reconKey(item.channel, franchise);
       const e = exp.get(`${item.date}|${key}`);
@@ -254,7 +259,7 @@ export class PaymentReconciliationService {
       }
       const label = `${RECON_CHANNEL_LABEL[item.channel]}${franchise ? ` ${franchise}` : ''} ${item.date}`;
       const id = doc._id.toString();
-      await this.ledgerPosting.postPaymentSettlement({
+      const asentado = await this.ledgerPosting.postPaymentSettlement({
         settlementId: id,
         label,
         date: fechaColombia(),
@@ -267,6 +272,20 @@ export class PaymentReconciliationService {
         reteIva: figures.reteIva,
         userEmail: user.email,
       });
+      if (asentado === false) {
+        // Sin asiento no se deja «conciliado»: se borra el registro y se
+        // avisa para que se reintente (el fallo ya quedó en el log de CONCILIAR).
+        this.logger.error(
+          `CONCILIAR: se revierte la conciliación ${id} (${label}): no se pudo postear el asiento`,
+        );
+        await this.settlements.deleteOne({ _id: doc._id }).exec();
+        skipped.push({
+          date: item.date,
+          key,
+          reason: 'No se pudo registrar el asiento contable; vuelve a intentarlo',
+        });
+        continue;
+      }
       // La cuenta de tesorería recibió el bruto con la venta: sale lo que el
       // extracto no consignó por comisión, IVA y retenciones.
       const out =

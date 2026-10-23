@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   expectedByDay,
+  mergeSettlementItems,
   parseCopAmount,
   parseStatementCsv,
   reconKey,
@@ -128,5 +129,26 @@ describe('parseStatementCsv', () => {
 
   it('pide las columnas mínimas', () => {
     expect(parseStatementCsv('a,b\n1,2\n').errors[0]!.message).toMatch(/Faltan columnas/);
+  });
+});
+
+describe('mergeSettlementItems (varias filas del mismo día y canal)', () => {
+  it('suma por fecha|clave y conserva el orden de aparición', () => {
+    const r = mergeSettlementItems([
+      { date: '2026-10-20', channel: 'datafono', franchise: 'visa', statementAmount: 1000, commission: 10 },
+      { date: '2026-10-20', channel: 'nequi', statementAmount: 500 },
+      { date: '2026-10-20', channel: 'datafono', franchise: 'visa', statementAmount: 2000, commission: 20, retefuente: 5 },
+    ]);
+    expect(r).toHaveLength(2);
+    expect(r[0]).toMatchObject({ channel: 'datafono', statementAmount: 3000, commission: 30, retefuente: 5 });
+    expect(r[1]).toMatchObject({ channel: 'nequi', statementAmount: 500 });
+  });
+
+  it('el datáfono sin franquicia no se mezcla con el de Visa', () => {
+    const r = mergeSettlementItems([
+      { date: '2026-10-20', channel: 'datafono', franchise: 'visa', statementAmount: 1 },
+      { date: '2026-10-20', channel: 'datafono', statementAmount: 2 },
+    ]);
+    expect(r).toHaveLength(2);
   });
 });

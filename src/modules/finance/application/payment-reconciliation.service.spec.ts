@@ -225,4 +225,33 @@ describe('PaymentReconciliationService', () => {
     expect(r.rows[0]).toMatchObject({ key: 'datafono:visa', expected: 53_000, difference: 3_000 });
     expect(r.rows[0]!.alreadyReconciled).toBe(false);
   });
+
+  it('si el asiento no se pudo postear, no deja la conciliación guardada y avisa', async () => {
+    ledger.postPaymentSettlement.mockResolvedValue(false);
+    const r = await service.create(user, {
+      sedeId,
+      source: 'manual',
+      items: [
+        { date: '2026-10-20', channel: 'nequi', statementAmount: 9_800, commission: 200 },
+      ],
+    });
+    expect(r.created).toHaveLength(0);
+    expect(r.skipped[0]!.reason).toMatch(/asiento/i);
+    expect(guardadas).toHaveLength(0);
+    expect(treasury.post).not.toHaveBeenCalled();
+  });
+
+  it('dos filas del mismo día y canal se suman antes de conciliar', async () => {
+    const r = await service.create(user, {
+      sedeId,
+      source: 'csv',
+      items: [
+        { date: '2026-10-20', channel: 'nequi', statementAmount: 4_900, commission: 100 },
+        { date: '2026-10-20', channel: 'nequi', statementAmount: 4_900, commission: 100 },
+      ],
+    });
+    expect(r.created).toHaveLength(1);
+    expect(r.created[0]).toMatchObject({ statementAmount: 9_800, commission: 200, difference: 0 });
+    expect(r.skipped).toHaveLength(0);
+  });
 });

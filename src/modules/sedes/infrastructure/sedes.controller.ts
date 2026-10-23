@@ -28,6 +28,15 @@ export class SedesController {
     return this.sedes.list(allowedSedeIds(user));
   }
 
+  // Imagen del QR para mostrarla al cobrar: el listado no la trae. Mismo
+  // criterio que el listado (sin permiso propio, solo sedes del usuario).
+  @NoPermissionRequired()
+  @Get(':id/cobro-digital')
+  cobroDigital(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    assertSedeAccess(user, id);
+    return this.sedes.cobroDigital(id);
+  }
+
   @RequirePermissions(PERMISSIONS.SEDE_MANAGE)
   @Post()
   create(@Body() dto: CreateSedeDto) {

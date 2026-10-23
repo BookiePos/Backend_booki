@@ -29,7 +29,8 @@ export class CobroDigitalDto {
   /** Solo imágenes rasterizadas: un SVG puede llevar scripts. */
   @IsOptional()
   @IsString()
-  @MaxLength(200_000)
+  // 70 KB de imagen ≈ 94 000 caracteres en base64: cabe en el cuerpo de 100 KB.
+  @MaxLength(95_000, { message: 'La imagen del QR pesa más de 70 KB: usa una más liviana' })
   @Matches(/^(data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+)?$/, {
     message: 'qrImagen debe ser una imagen PNG, JPG o WEBP',
   })

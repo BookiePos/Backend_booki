@@ -54,13 +54,17 @@ export class CobroDigital {
   @Prop({ trim: true, maxlength: 120 })
   qrLlave?: string;
 
-  /** QR estático como imagen (data URL png/jpeg/webp, máx. ~150 KB). */
+  /** QR estático como imagen (data URL png/jpeg/webp, máx. 70 KB). */
   @Prop()
   qrImagen?: string;
 
   /** Texto bajo el QR: a nombre de quién sale. */
   @Prop({ trim: true, maxlength: 120 })
   qrTitular?: string;
+
+  /** Hay imagen guardada; el listado de sedes no la trae (pesa ~95 KB). */
+  @Prop({ default: false })
+  conImagen?: boolean;
 }
 const CobroDigitalSchema = SchemaFactory.createForClass(CobroDigital);
 

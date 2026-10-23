@@ -76,7 +76,7 @@ export class CreateSettlementsDto {
 
   @IsArray()
   @ArrayNotEmpty()
-  @ArrayMaxSize(200)
+  @ArrayMaxSize(400)
   @ValidateNested({ each: true })
   @Type(() => SettlementItemDto)
   items!: SettlementItemDto[];
@@ -86,9 +86,12 @@ export class ImportStatementDto {
   @IsMongoId()
   sedeId!: string;
 
-  /** Contenido del CSV del extracto (texto). */
+  /**
+   * Contenido del CSV del extracto (texto). Tope de 90 000 caracteres: el
+   * cuerpo JSON de Express admite 100 KB, así que más no llegaría.
+   */
   @IsString()
-  @MaxLength(500_000)
+  @MaxLength(90_000, { message: 'El CSV pesa más de 90 KB: divídelo por semanas o por canal' })
   csv!: string;
 
   /** Canal por omisión cuando el CSV no trae la columna. */

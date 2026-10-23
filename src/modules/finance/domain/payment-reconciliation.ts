@@ -277,3 +277,45 @@ export function isReconChannel(v: string): v is ReconChannel {
 }
 
 export type { PaymentChannel };
+
+// ── Varias filas del mismo día y canal ───────────────────────────────────────
+
+export interface MergeableItem {
+  date: string;
+  channel: ReconChannel;
+  franchise?: string;
+  statementAmount: number;
+  commission?: number;
+  commissionIva?: number;
+  retefuente?: number;
+  reteIca?: number;
+  reteIva?: number;
+  note?: string;
+}
+
+/**
+ * Un extracto trae a veces varias líneas del mismo día y canal (lotes del
+ * datáfono). Se concilia el total por `fecha|clave`: así ni se choca contra el
+ * índice único ni se marca diferencia por una fila que sí cuadra con otra.
+ * Conserva el orden de aparición y la línea de la primera fila.
+ */
+export function mergeSettlementItems<T extends MergeableItem>(items: readonly T[]): T[] {
+  const out = new Map<string, T>();
+  for (const item of items) {
+    const franchise = item.channel === 'datafono' ? (item.franchise ?? '') : '';
+    const id = `${item.date}|${reconKey(item.channel, franchise)}`;
+    const prev = out.get(id);
+    if (!prev) {
+      out.set(id, { ...item });
+      continue;
+    }
+    prev.statementAmount = cop(prev.statementAmount + item.statementAmount);
+    for (const f of ['commission', 'commissionIva', 'retefuente', 'reteIca', 'reteIva'] as const) {
+      if (item[f] !== undefined || prev[f] !== undefined) {
+        prev[f] = cop((prev[f] ?? 0) + (item[f] ?? 0));
+      }
+    }
+    if (item.note) prev.note = prev.note ? `${prev.note}; ${item.note}` : item.note;
+  }
+  return [...out.values()];
+}

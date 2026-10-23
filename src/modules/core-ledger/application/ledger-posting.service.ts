@@ -42,13 +42,13 @@ export class LedgerPostingService {
     memo: string;
     lines: PostLine[];
     userEmail?: string;
-  }): Promise<void> {
+  }): Promise<boolean> {
     try {
       const existing = await this.ledger.findBySource(
         input.sourceType,
         input.sourceId,
       );
-      if (existing) return; // ya posteado (atajo; el índice cubre la carrera)
+      if (existing) return true; // ya posteado (atajo; el índice cubre la carrera)
       await this.ledger.post({
         date: input.date,
         sourceType: input.sourceType,
@@ -57,6 +57,7 @@ export class LedgerPostingService {
         lines: input.lines,
         createdByEmail: input.userEmail,
       });
+      return true;
     } catch (err) {
       const error = (err as Error).message;
       this.logger.error(
@@ -68,6 +69,7 @@ export class LedgerPostingService {
         operacion: 'post',
         error,
       });
+      return false;
     }
   }
 
@@ -214,7 +216,7 @@ export class LedgerPostingService {
     reteIca?: number;
     reteIva?: number;
     userEmail?: string;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const commission = cop(input.commission);
     const iva = cop(input.commissionIva ?? 0);
     const rf = cop(input.retefuente ?? 0);
@@ -223,7 +225,7 @@ export class LedgerPostingService {
     const gasto = commission + (input.ivaDescontable ? 0 : iva);
     const ivaDesc = input.ivaDescontable ? iva : 0;
     const total = gasto + ivaDesc + rf + ri + rv;
-    if (total <= 0) return;
+    if (total <= 0) return true; // nada que asentar
     const sedeId = input.sedeId;
     const lines: PostLine[] = [];
     if (gasto > 0) lines.push({ accountCode: ACC.COMISIONES_FINANCIERAS, debit: gasto, sedeId });
@@ -232,7 +234,7 @@ export class LedgerPostingService {
     if (ri > 0) lines.push({ accountCode: ACC.RETEICA_A_FAVOR, debit: ri, sedeId });
     if (rv > 0) lines.push({ accountCode: ACC.RETEIVA_A_FAVOR, debit: rv, sedeId });
     lines.push({ accountCode: ACC.BANCOS, credit: total, sedeId });
-    await this.safePost({
+    return this.safePost({
       date: input.date,
       sourceType: 'payment_settlement',
       sourceId: input.settlementId,

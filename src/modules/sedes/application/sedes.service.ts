@@ -1,11 +1,13 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { Sede, SedeDocument } from '../infrastructure/schemas/sede.schema';
+import { validateUploadedFile } from '../../../shared/storage/file-signature';
+import { CobroDigital, Sede, SedeDocument } from '../infrastructure/schemas/sede.schema';
 import { CreateSedeDto } from './dto/create-sede.dto';
 import { UpdateSedeDto } from './dto/update-sede.dto';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
@@ -23,6 +25,27 @@ function isDuplicateKeyError(err: unknown): boolean {
   );
 }
 
+/** Tope de la imagen del QR ya decodificada (cabe en el cuerpo JSON de 100 KB). */
+export const QR_MAX_BYTES = 70_000;
+
+/**
+ * Valida el QR por su CONTENIDO (bytes mágicos), no por el tipo que declara el
+ * cliente, y devuelve el data URL con el tipo real. SVG y HTML se rechazan.
+ */
+function validarImagenQr(dataUrl: string): string {
+  const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+  const bytes = Buffer.from(base64, 'base64');
+  if (bytes.length > QR_MAX_BYTES) {
+    throw new BadRequestException('La imagen del QR pesa más de 70 KB: usa una más liviana');
+  }
+  const tipo = validateUploadedFile(
+    bytes,
+    ['image/png', 'image/jpeg', 'image/webp'],
+    'una imagen PNG, JPG o WEBP',
+  );
+  return `data:${tipo.mime};base64,${base64}`;
+}
+
 @Injectable()
 export class SedesService {
   constructor(
@@ -35,7 +58,19 @@ export class SedesService {
    */
   list(scope?: string[] | null): Promise<SedeDocument[]> {
     const filter = scope ? { _id: { $in: scope } } : {};
-    return this.sedeModel.find(filter).sort({ code: 1 }).exec();
+    // La imagen del QR pesa ~95 KB por sede y casi todas las pantallas piden el
+    // listado: se pide aparte con `cobroDigital()` al cobrar.
+    return this.sedeModel
+      .find(filter)
+      .select('-cobroDigital.qrImagen')
+      .sort({ code: 1 })
+      .exec();
+  }
+
+  /** QR / llave Bre-B de la sede, con la imagen (solo al cobrar por QR). */
+  async cobroDigital(id: string): Promise<CobroDigital | null> {
+    const sede = await this.findOrFail(id);
+    return sede.cobroDigital ?? null;
   }
 
   async create(dto: CreateSedeDto): Promise<SedeDocument> {
@@ -93,8 +128,9 @@ export class SedesService {
       const c = dto.cobroDigital;
       const next = {
         qrLlave: c.qrLlave?.trim() || undefined,
-        qrImagen: c.qrImagen || undefined,
+        qrImagen: c.qrImagen ? validarImagenQr(c.qrImagen) : undefined,
         qrTitular: c.qrTitular?.trim() || undefined,
+        conImagen: !!c.qrImagen,
       };
       sede.set('cobroDigital', next.qrLlave || next.qrImagen || next.qrTitular ? next : undefined);
     }
@@ -109,6 +145,9 @@ export class SedesService {
       }
       throw err;
     }
+    // La respuesta no devuelve la imagen del QR (~95 KB; se lee con
+    // `cobroDigital()`). Ya se guardó: esto solo afecta al documento devuelto.
+    if (sede.cobroDigital?.qrImagen) sede.cobroDigital.qrImagen = undefined;
     return sede;
   }
 
