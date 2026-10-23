@@ -22,6 +22,7 @@
  */
 import { XMLParser } from 'fast-xml-parser';
 import type { ExtractedInvoice, ExtractedLine } from './invoice-extraction';
+import { redondearA } from '../../finance/domain/money.util';
 
 /** Error con un mensaje que se le puede mostrar a la persona tal cual. */
 export class UblInvoiceError extends Error {
@@ -110,7 +111,7 @@ function num(value: unknown): number | undefined {
 
 /** Pesos enteros, como el resto de la contabilidad. */
 function cop(value: number | undefined): number | undefined {
-  return value === undefined ? undefined : Math.round(value);
+  return value === undefined ? undefined : redondearA(value, 0);
 }
 
 interface TaxLine {
@@ -137,7 +138,7 @@ function taxLines(taxTotals: unknown): TaxLine[] {
 function ivaRateOf(taxes: TaxLine[]): number | undefined {
   const iva = taxes.find((t) => t.scheme === TAX_IVA);
   if (!iva || iva.percent === undefined) return undefined;
-  const rate = Math.round(iva.percent);
+  const rate = redondearA(iva.percent, 0);
   return [0, 5, 19].includes(rate) ? rate : undefined;
 }
 

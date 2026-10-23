@@ -1,3 +1,4 @@
+import { cop } from '../../finance/domain/money.util';
 /**
  * Listas de precios: vender lo mismo a distinto precio según a quién.
  *
@@ -89,16 +90,16 @@ export function resolveUnitPrice(opts: {
   list?: PriceListRules | null;
 }): number {
   const { basePrice, qty, catalogProductId, list } = opts;
-  if (!list) return Math.round(basePrice);
+  if (!list) return cop(basePrice);
 
   const tier = pickTier(list.items ?? [], catalogProductId, qty);
-  if (tier) return Math.max(0, Math.round(tier.price));
+  if (tier) return Math.max(0, cop(tier.price));
 
   const pct = list.discountPercent ?? 0;
   if (pct > 0) {
     const limitado = Math.min(pct, MAX_DISCOUNT_PERCENT);
-    return Math.max(0, Math.round(basePrice * (1 - limitado / 100)));
+    return Math.max(0, cop(basePrice * (1 - limitado / 100)));
   }
 
-  return Math.round(basePrice);
+  return cop(basePrice);
 }
