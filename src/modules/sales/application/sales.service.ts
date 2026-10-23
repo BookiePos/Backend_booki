@@ -85,6 +85,9 @@ import {
   SplitPaymentResult,
   cashAmountOf,
   hasCreditPart,
+  PaymentDetail,
+  detailOf,
+  normalizeDetail,
   splitPayment,
   treasurySourceId,
   treasurySourceIds,
@@ -615,6 +618,17 @@ export class SalesService {
       change = received - grandTotal;
     }
 
+    // El detalle del canal digital (ítem 6.4) también se valida ANTES de tocar
+    // inventario: un canal que no es del medio es un 400, no una venta a medias.
+    if (!dto.payments) {
+      try {
+        normalizeDetail(dto.payment!);
+      } catch (err) {
+        if (err instanceof SplitPaymentError) throw new BadRequestException(err.message);
+        throw err;
+      }
+    }
+
     // 2. Explotar cada línea a su consumo de inventario y agregar por ítem.
     const demand = new Map<string, number>();
     for (const line of dto.lines) {
@@ -986,6 +1000,17 @@ export class SalesService {
     // siempre y se guarda igual que antes (sin `payments`).
     const mixto = cobro && cobro.parts.length > 1 ? cobro : undefined;
     const metodo = cobro ? cobro.primaryMethod : dto.payment!.method;
+    // Detalle del canal digital (ítem 6.4) cuando el cobro fue de un solo medio.
+    let detalle: PaymentDetail | undefined;
+    if (cobro) detalle = cobro.primaryDetail;
+    else {
+      try {
+        detalle = detailOf(normalizeDetail(dto.payment!));
+      } catch (err) {
+        if (err instanceof SplitPaymentError) throw new BadRequestException(err.message);
+        throw err;
+      }
+    }
 
     const saleNumber = offline
       ? offline.saleNumber
@@ -1028,7 +1053,7 @@ export class SalesService {
       orderType,
       deliveryFee,
       delivery,
-      payment: { method: metodo, received, change },
+      payment: { method: metodo, received, change, ...detalle },
       payments: mixto?.parts,
       customer: this.cleanCustomer(dto.customer),
       orderId,
@@ -1178,9 +1203,10 @@ export class SalesService {
         if (p.method !== 'card' && p.method !== 'transfer') continue;
         await this.treasury.post({
           sourceType: 'sale',
-          sourceId: treasurySourceId(sale._id.toString(), p.method, true),
+          sourceId: treasurySourceId(sale._id.toString(), p.method, true, p),
           sedeId: dto.sedeId,
           method: p.method,
+          channel: p.channel,
           direction: 'in',
           amount: p.amount,
           date: fechaColombia(),
@@ -1193,6 +1219,7 @@ export class SalesService {
         sourceId: sale._id.toString(),
         sedeId: dto.sedeId,
         method: metodo,
+        channel: detalle?.channel,
         direction: 'in',
         // Lo que de verdad entró a la cuenta: el cliente pagó todo junto.
         amount: total + cop(sale.tip ?? 0) + deliveryFee,
