@@ -158,6 +158,12 @@ export interface FaltanteOffline {
   cost: number;
 }
 
+/**
+ * Estados de un faltante offline cuyo stock ya salió (o está saliendo) con la
+ * regularización: la venta ya no se puede anular ni devolver.
+ */
+export const FALTANTE_CERRANDO = ['consumiendo', 'asiento_pendiente', 'regularizado'];
+
 /** Un candado de llave más viejo que esto es de una petición que murió. */
 const LLAVE_STALE_MS = 2 * 60_000;
 
@@ -1435,6 +1441,21 @@ export class SalesService {
       );
     }
 
+    // Venta offline con faltante de stock ya regularizado (o a medio camino):
+    // ese stock ya salió con un ajuste y su asiento cerró la puente 143595.
+    // Anularla devolvería al inventario lo que nunca se registró como vendido
+    // por ella y dejaría la puente descuadrada. Si el faltante sigue
+    // pendiente, la reversa del asiento de la venta ya revierte la 143595.
+    if (
+      (existing.offlineOverride?.faltantes ?? []).some((f) =>
+        FALTANTE_CERRANDO.includes(f.status ?? ''),
+      )
+    ) {
+      throw new ConflictException(
+        'La venta tiene faltantes de stock ya regularizados: no se puede anular. Registra una devolución de mercancía y un ajuste de inventario.',
+      );
+    }
+
     // Un pedido de plataforma ya liquidado dejó plata en el banco y una
     // comisión en el libro: se anula primero la liquidación, que devuelve el
     // pedido a «por cobrar».
@@ -1473,6 +1494,8 @@ export class SalesService {
           // Una liquidación de plataforma que se coló entre la revisión de arriba
           // y este flip gana: el pedido ya no se puede anular.
           'platform.settlementId': { $exists: false },
+          // Lo mismo con una regularización de faltantes que empezó entre medias.
+          'offlineOverride.faltantes.status': { $nin: FALTANTE_CERRANDO },
         },
         { $set: { status: 'void' } },
         { new: true },
@@ -1569,6 +1592,22 @@ export class SalesService {
           `CONCILIAR: la venta ${sale._id.toString()} se anuló pero no se registró la salida de efectivo en la caja ${cajaParaSalida._id.toString()}: ${(err as Error).message}`,
         );
       }
+    }
+    // Faltantes offline sin regularizar: la reversa ya revirtió la 143595, así
+    // que dejan de estar pendientes (no quedan colgados en la bandeja).
+    if ((sale.offlineOverride?.faltantes ?? []).some((f) => f.status === 'pendiente')) {
+      await this.saleModel
+        .updateOne(
+          { _id: sale._id },
+          { $set: { 'offlineOverride.faltantes.$[f].status': 'anulado' } },
+          { arrayFilters: [{ 'f.status': 'pendiente' }] },
+        )
+        .exec()
+        .catch((err: Error) =>
+          this.logger.error(
+            `CONCILIAR: la venta ${sale._id.toString()} se anuló pero sus faltantes siguen pendientes: ${err.message}`,
+          ),
+        );
     }
     return this.getOrFail(sale.id);
   }
