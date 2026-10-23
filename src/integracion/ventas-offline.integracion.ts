@@ -521,6 +521,42 @@ describe('ventas offline · reserva y sincronización', () => {
     expect((await base().collection('stock_items').findOne({ productId: INV }))?.qty).toBe(2);
   });
 
+  it('regularizar: un candado viejo se retoma y un `consumiendo` huérfano no saca stock dos veces', async () => {
+    const r = await reservar();
+    await env.enEmpresa(EMPRESA, () => stock.updateOne({ productId: INV }, { $set: { qty: 1 } }));
+    const dto = venta(r, { chargedLines: [{ productId: PROD.toString(), unitPrice: 11_900 }] });
+    await conflicto(env.enEmpresa(EMPRESA, () => offline.sync(dto, cajero)));
+    const { sale } = await env.enEmpresa(EMPRESA, () =>
+      offline.sync({ ...dto, override: true }, jefe),
+    );
+    await env.enEmpresa(EMPRESA, () => stock.updateOne({ productId: INV }, { $set: { qty: 5 } }));
+
+    // Una petición que murió hace 3 min dejó el candado: se retoma.
+    await base()
+      .collection('sales')
+      .updateOne(
+        { _id: sale._id },
+        { $set: { 'offlineOverride.regularizandoAt': new Date(Date.now() - 180_000) } },
+      );
+    await env.enEmpresa(EMPRESA, () => offline.regularizarFaltantes(sale._id.toString(), jefe));
+    const tras = await base().collection('sales').findOne({ _id: sale._id });
+    expect(tras?.offlineOverride?.faltantes?.[0]?.status).toBe('regularizado');
+    expect(tras?.offlineOverride?.regularizandoAt).toBeUndefined();
+    expect((await base().collection('stock_items').findOne({ productId: INV }))?.qty).toBe(4);
+
+    // Simula una corrida que murió al sacar stock: queda `consumiendo`.
+    await base()
+      .collection('sales')
+      .updateOne(
+        { _id: sale._id },
+        { $set: { 'offlineOverride.faltantes.0.status': 'consumiendo' } },
+      );
+    await expect(
+      env.enEmpresa(EMPRESA, () => offline.regularizarFaltantes(sale._id.toString(), jefe)),
+    ).rejects.toMatchObject({ status: 409 });
+    expect((await base().collection('stock_items').findOne({ productId: INV }))?.qty).toBe(4);
+  });
+
   it('override sin conflicto abierto en el servidor no registra nada', async () => {
     const r = await reservar();
     const dto = venta(r, { chargedLines: [{ productId: PROD.toString(), unitPrice: 1 }] });

@@ -413,7 +413,9 @@ describe('OfflineSalesService.sync', () => {
       expect(r).toEqual([
         expect.objectContaining({
           saleNumber: 'FVC-000003',
-          faltantes: [{ productId: inv.toString(), qty: 2, unitCost: 1_000, cost: 2_000 }],
+          faltantes: [
+            { status: 'pendiente', productId: inv.toString(), qty: 2, unitCost: 1_000, cost: 2_000 },
+          ],
         }),
       ]);
       await expect(
@@ -465,6 +467,79 @@ describe('OfflineSalesService.sync', () => {
         BadRequestException,
       );
       expect(stock.consumeLines).not.toHaveBeenCalled();
+    });
+
+    /** Los $set de estado que se mandaron a los faltantes, en orden. */
+    const estados = () =>
+      ventas.updateOne.mock.calls
+        .map((c: any[]) => c[1]?.$set?.['offlineOverride.faltantes.$[f].status'])
+        .filter(Boolean);
+
+    it('marca `consumiendo` ANTES de sacar stock y `asiento_pendiente` antes del asiento', async () => {
+      await service.regularizarFaltantes(ventaId.toString(), jefe);
+      expect(estados()).toEqual(['consumiendo', 'asiento_pendiente', 'regularizado']);
+      const marca = ventas.updateOne.mock.invocationCallOrder[0];
+      expect(marca).toBeLessThan(stock.consumeLines.mock.invocationCallOrder[0]);
+    });
+
+    it('el candado tiene TTL de 2 min y solo toma ventas completadas', async () => {
+      await service.regularizarFaltantes(ventaId.toString(), jefe);
+      const filtro = ventas.findOneAndUpdate.mock.calls[0][0];
+      expect(filtro.status).toBe('completed');
+      expect(filtro.$or).toEqual([
+        { 'offlineOverride.regularizandoAt': { $exists: false } },
+        { 'offlineOverride.regularizandoAt': { $lt: expect.any(Date) } },
+      ]);
+      const limite = filtro.$or[1]['offlineOverride.regularizandoAt'].$lt as Date;
+      expect(Date.now() - limite.getTime()).toBeGreaterThanOrEqual(119_000);
+    });
+
+    it('si el asiento no se pudo postear, queda `asiento_pendiente` (no `regularizado`)', async () => {
+      libro.postRegularizacionFaltante.mockResolvedValue(false);
+      const r = await service.regularizarFaltantes(ventaId.toString(), jefe);
+      expect(r).toMatchObject({ asientoPendiente: true });
+      expect(estados()).toEqual(['consumiendo', 'asiento_pendiente']);
+    });
+
+    it('reintento con `asiento_pendiente`: no vuelve a sacar stock, postea con el costo guardado', async () => {
+      const doc = venta({
+        offlineOverride: {
+          faltantes: [
+            { productId: inv, qty: 2, cost: 2_000, realCost: 2_400, status: 'asiento_pendiente' },
+          ],
+        },
+      });
+      ventas.findById = vi.fn(() => exec(doc));
+      ventas.findOneAndUpdate = vi.fn(() => exec(doc));
+      const r = await service.regularizarFaltantes(ventaId.toString(), jefe);
+      expect(stock.consumeLines).not.toHaveBeenCalled();
+      expect(libro.postRegularizacionFaltante).toHaveBeenCalledWith(
+        expect.objectContaining({ estimado: 2_000, real: 2_400 }),
+      );
+      expect(r).toMatchObject({ real: 2_400 });
+      expect(estados()).toEqual(['regularizado']);
+    });
+
+    it('un `consumiendo` huérfano (la petición murió) no se vuelve a sacar: 409 a conciliar', async () => {
+      const doc = venta({
+        offlineOverride: {
+          faltantes: [{ productId: inv, qty: 2, cost: 2_000, status: 'consumiendo' }],
+        },
+      });
+      ventas.findById = vi.fn(() => exec(doc));
+      ventas.findOneAndUpdate = vi.fn(() => exec(doc));
+      await expect(service.regularizarFaltantes(ventaId.toString(), jefe)).rejects.toMatchObject({
+        status: 409,
+      });
+      expect(stock.consumeLines).not.toHaveBeenCalled();
+    });
+
+    it('sin stock: el faltante vuelve a `pendiente`', async () => {
+      stock.consumeLines.mockRejectedValue(new Error('Stock insuficiente'));
+      await expect(service.regularizarFaltantes(ventaId.toString(), jefe)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(estados()).toEqual(['consumiendo', 'pendiente']);
     });
   });
 });

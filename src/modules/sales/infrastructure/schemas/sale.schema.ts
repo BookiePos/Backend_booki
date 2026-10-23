@@ -522,7 +522,10 @@ export class Sale {
           qty: { type: Number },
           unitCost: { type: Number },
           cost: { type: Number },
-          status: { type: String, enum: ['pendiente', 'regularizado'] },
+          status: {
+            type: String,
+            enum: ['pendiente', 'consumiendo', 'asiento_pendiente', 'regularizado', 'anulado'],
+          },
           realCost: { type: Number },
           regularizadoAt: { type: Date },
           regularizadoPor: { type: String },
@@ -542,7 +545,12 @@ export class Sale {
       qty: number;
       unitCost?: number;
       cost?: number;
-      status?: 'pendiente' | 'regularizado';
+      /**
+       * `consumiendo`: se está sacando el stock (un reintento no lo vuelve a
+       * sacar); `asiento_pendiente`: salió el stock y falta el asiento;
+       * `anulado`: la venta se anuló antes de regularizar.
+       */
+      status?: 'pendiente' | 'consumiendo' | 'asiento_pendiente' | 'regularizado' | 'anulado';
       realCost?: number;
       regularizadoAt?: Date;
       regularizadoPor?: string;
@@ -586,5 +594,5 @@ SaleSchema.index(
 // Faltantes de ventas offline autorizadas sin regularizar, por sede.
 SaleSchema.index(
   { sedeId: 1, 'offlineOverride.faltantes.status': 1 },
-  { partialFilterExpression: { 'offlineOverride.faltantes.status': 'pendiente' } },
+  { partialFilterExpression: { 'offlineOverride.faltantes': { $exists: true } } },
 );

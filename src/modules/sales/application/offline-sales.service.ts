@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   HttpException,
   Injectable,
@@ -58,6 +59,10 @@ import {
 
 /** Un candado en `processing` más viejo que esto es de una petición que murió. */
 const CLAIM_STALE_MS = 2 * 60_000;
+/** Candado de regularización de una petición que murió (como la llave de cobro). */
+const REGULARIZANDO_STALE_MS = 2 * 60_000;
+/** Faltantes que todavía no cierran: siguen en la bandeja. */
+const FALTANTE_ABIERTO = ['pendiente', 'consumiendo', 'asiento_pendiente'];
 
 export interface OfflineReservationView {
   reservationId: string;
@@ -294,7 +299,7 @@ export class OfflineSalesService {
       .find({
         sedeId: new Types.ObjectId(sedeId),
         status: 'completed',
-        'offlineOverride.faltantes.status': 'pendiente',
+        'offlineOverride.faltantes.status': { $in: FALTANTE_ABIERTO },
       })
       .sort({ createdAt: -1 })
       .limit(200)
@@ -305,8 +310,9 @@ export class OfflineSalesService {
       soldAt: v.soldAt,
       cashierEmail: v.cashierEmail,
       faltantes: (v.offlineOverride?.faltantes ?? [])
-        .filter((f) => f.status === 'pendiente')
+        .filter((f) => FALTANTE_ABIERTO.includes(f.status ?? ''))
         .map((f) => ({
+          status: f.status,
           productId: f.productId.toString(),
           qty: f.qty,
           unitCost: f.unitCost ?? 0,
@@ -326,49 +332,111 @@ export class OfflineSalesService {
     const venta = await this.saleModel.findById(saleId).exec();
     if (!venta) throw new BadRequestException('Venta no encontrada');
     assertSedeAccess(user, venta.sedeId.toString());
-    const pendientes = (venta.offlineOverride?.faltantes ?? []).filter(
-      (f) => f.status === 'pendiente',
+    const abiertos = (venta.offlineOverride?.faltantes ?? []).filter((f) =>
+      FALTANTE_ABIERTO.includes(f.status ?? ''),
     );
-    if (pendientes.length === 0) {
+    if (abiertos.length === 0) {
       throw new BadRequestException('La venta no tiene faltantes pendientes');
     }
+    // Candado por venta con vida de 2 min (como la llave de cobro): si la
+    // petición que lo tomó murió, se puede volver a intentar.
     const tomada = await this.saleModel
       .findOneAndUpdate(
         {
           _id: venta._id,
-          'offlineOverride.faltantes.status': 'pendiente',
-          'offlineOverride.regularizandoAt': { $exists: false },
+          status: 'completed',
+          $or: [
+            { 'offlineOverride.regularizandoAt': { $exists: false } },
+            {
+              'offlineOverride.regularizandoAt': {
+                $lt: new Date(Date.now() - REGULARIZANDO_STALE_MS),
+              },
+            },
+          ],
         },
         { $set: { 'offlineOverride.regularizandoAt': new Date() } },
+        { returnDocument: 'after' },
       )
       .exec();
     if (!tomada) {
-      throw new BadRequestException('Esta venta ya se está regularizando');
+      throw new BadRequestException('Esta venta ya se está regularizando o está anulada');
     }
-    try {
-      let consumidos: Awaited<ReturnType<StockService['consumeLines']>>;
-      try {
-        consumidos = await this.stock.consumeLines(
-          'adjust_out',
-          venta.sedeId.toString(),
-          pendientes.map((f) => ({ productId: f.productId.toString(), qty: f.qty })),
-          user,
+    const id = venta._id;
+    const marcar = (desde: string, hacia: string, extra: Record<string, unknown> = {}, productId?: Types.ObjectId) =>
+      this.saleModel
+        .updateOne(
+          { _id: id },
           {
-            reason: 'regularizacion_offline',
-            note: `Faltante de la venta ${venta.saleNumber} cobrada sin conexión`,
+            $set: {
+              'offlineOverride.faltantes.$[f].status': hacia,
+              ...Object.fromEntries(
+                Object.entries(extra).map(([k, v]) => [`offlineOverride.faltantes.$[f].${k}`, v]),
+              ),
+            },
           },
+          {
+            arrayFilters: [
+              productId ? { 'f.status': desde, 'f.productId': productId } : { 'f.status': desde },
+            ],
+          },
+        )
+        .exec();
+    try {
+      const faltantes = tomada.offlineOverride?.faltantes ?? [];
+      // Una corrida anterior marcó `consumiendo` y murió: no se sabe si el
+      // stock alcanzó a salir. Sacarlo otra vez lo duplicaría; se concilia a
+      // mano mirando el kardex.
+      if (faltantes.some((f) => f.status === 'consumiendo')) {
+        this.logger.error(
+          `CONCILIAR: la regularización de ${venta.saleNumber} (${id.toString()}) quedó a medias al sacar stock; revisa el kardex antes de marcarla`,
         );
-      } catch (err) {
-        throw new BadRequestException(
-          `Primero registra la compra o el ajuste que trae ese stock: ${(err as Error).message}`,
+        throw new ConflictException(
+          'Una regularización anterior de esta venta quedó a medias al sacar el stock. Revisa el kardex (razón «regularizacion_offline») antes de reintentar.',
         );
       }
-      const real = sumBy(consumidos, (c) =>
-        sumBy(c.portions, (p) => cop(p.qty * (p.lot?.unitCost ?? 0))),
-      );
-      const estimado = sumBy(pendientes, (f) => f.cost ?? 0);
-      await this.ledgerPosting.postRegularizacionFaltante({
-        saleId: venta._id.toString(),
+
+      const pendientes = faltantes.filter((f) => f.status === 'pendiente');
+      const consumidos: { cost: number; realCost: number }[] = [];
+      if (pendientes.length > 0) {
+        // Marca intermedia ANTES de tocar el inventario: un reintento que la
+        // encuentre no vuelve a sacar stock.
+        await marcar('pendiente', 'consumiendo');
+        let salida: Awaited<ReturnType<StockService['consumeLines']>>;
+        try {
+          salida = await this.stock.consumeLines(
+            'adjust_out',
+            venta.sedeId.toString(),
+            pendientes.map((f) => ({ productId: f.productId.toString(), qty: f.qty })),
+            user,
+            {
+              reason: 'regularizacion_offline',
+              note: `Faltante de la venta ${venta.saleNumber} cobrada sin conexión`,
+            },
+          );
+        } catch (err) {
+          await marcar('consumiendo', 'pendiente');
+          throw new BadRequestException(
+            `Primero registra la compra o el ajuste que trae ese stock: ${(err as Error).message}`,
+          );
+        }
+        for (const [i, f] of pendientes.entries()) {
+          const realCost = sumBy(salida[i]?.portions ?? [], (p) =>
+            cop(p.qty * (p.lot?.unitCost ?? 0)),
+          );
+          await marcar('consumiendo', 'asiento_pendiente', { realCost }, f.productId);
+          consumidos.push({ cost: f.cost ?? 0, realCost });
+        }
+      }
+      const porAsentar = [
+        ...faltantes
+          .filter((f) => f.status === 'asiento_pendiente')
+          .map((f) => ({ cost: f.cost ?? 0, realCost: f.realCost ?? 0 })),
+        ...consumidos,
+      ];
+      const estimado = sumBy(porAsentar, (f) => f.cost);
+      const real = sumBy(porAsentar, (f) => f.realCost);
+      const ok = await this.ledgerPosting.postRegularizacionFaltante({
+        saleId: id.toString(),
         number: venta.saleNumber,
         date: fechaColombia(),
         sedeId: venta.sedeId.toString(),
@@ -376,24 +444,22 @@ export class OfflineSalesService {
         real,
         userEmail: user.email,
       });
-      await this.saleModel
-        .updateOne(
-          { _id: venta._id },
-          {
-            $set: {
-              'offlineOverride.faltantes.$[f].status': 'regularizado',
-              'offlineOverride.faltantes.$[f].regularizadoAt': new Date(),
-              'offlineOverride.faltantes.$[f].regularizadoPor': user.email,
-              'offlineOverride.faltantes.$[f].realCost': real,
-            },
-          },
-          { arrayFilters: [{ 'f.status': 'pendiente' }] },
-        )
-        .exec();
-      return { saleId: venta._id.toString(), estimado, real };
+      if (!ok) {
+        // El stock ya salió; falta el asiento. Queda `asiento_pendiente` y el
+        // siguiente intento solo postea (sin volver a sacar stock).
+        this.logger.error(
+          `CONCILIAR: la regularización de ${venta.saleNumber} (${id.toString()}) sacó el stock pero no posteó el asiento; queda asiento_pendiente`,
+        );
+        return { saleId: id.toString(), estimado, real, asientoPendiente: true };
+      }
+      await marcar('asiento_pendiente', 'regularizado', {
+        regularizadoAt: new Date(),
+        regularizadoPor: user.email,
+      });
+      return { saleId: id.toString(), estimado, real };
     } finally {
       await this.saleModel
-        .updateOne({ _id: venta._id }, { $unset: { 'offlineOverride.regularizandoAt': 1 } })
+        .updateOne({ _id: id }, { $unset: { 'offlineOverride.regularizandoAt': 1 } })
         .exec();
     }
   }
