@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
 } from '@nestjs/common';
@@ -178,6 +179,16 @@ export class SaleReturnsService {
     if (sale.status === 'void') {
       throw new BadRequestException(
         'La venta está anulada: ya se devolvió completa',
+      );
+    }
+
+    // Venta offline con faltante de stock (ítem 6.3): una devolución parcial
+    // no revierte la cuenta puente 143595 ni sabe si ese stock ya se
+    // regularizó. Pendiente, se anula la venta; regularizado, el ajuste de
+    // inventario es el camino.
+    if ((sale.offlineOverride?.faltantes ?? []).some((f) => f.status !== 'anulado')) {
+      throw new ConflictException(
+        'La venta se registró sin conexión con faltante de stock: no admite devoluciones. Si el faltante sigue pendiente, anula la venta; si ya se regularizó, registra un ajuste de inventario.',
       );
     }
 

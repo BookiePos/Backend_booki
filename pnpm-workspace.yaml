@@ -14,3 +14,5 @@ overrides:
   browserslist: '>=4.28.7 <5'
   source-map-js: '>=1.2.2 <2'
   baseline-browser-mapping: '>=2.11.0 <3'
+  # Transitiva de @vercel/functions (oidc → cli-config): GHSA-mrhx-c7xc-m3w5.
+  zod: '>=4.6.6 <5'

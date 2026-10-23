@@ -268,6 +268,12 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `POST /platform-orders/settlements` | `finance.manage` | ✓ | ✓ | ✓ | · | · |
 | `POST /platform-orders/settlements/:id/void` | `finance.manage` | ✓ | ✓ | ✓ | · | · |
 | `GET /platform-orders` | `finance.view` | ✓ | ✓ | ✓ | · | ✓ |
+| `POST /sales/offline/reservations` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
+| `GET /sales/offline/reservations` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
+| `GET /sales/offline/conflicts` | `pos.void.authorize` | ✓ | ✓ | ✓ | · | · |
+| `GET /sales/offline/faltantes` | `pos.void.authorize` | ✓ | ✓ | ✓ | · | · |
+| `POST /sales/offline/faltantes/:saleId/regularizar` | `pos.void.authorize` | ✓ | ✓ | ✓ | · | · |
+| `POST /sales/offline/sync` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /sales/pos-products` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /sales/packaging-suggestion` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /sales` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |

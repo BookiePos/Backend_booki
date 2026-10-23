@@ -13,6 +13,7 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  IsUUID,
   Matches,
   MaxLength,
   Min,
@@ -425,4 +426,14 @@ export class CreateSaleDto {
   @ValidateNested()
   @Type(() => SalePlatformDto)
   platform?: SalePlatformDto;
+
+  /**
+   * Llave de idempotencia del cobro (UUID v4 que genera el terminal). Un
+   * reintento con la misma llave devuelve la venta ya registrada en vez de
+   * cobrar dos veces; si el reintento sale sin red, la misma llave es el
+   * `offlineId` de la venta encolada y la sincronización la reconoce (6.3).
+   */
+  @IsOptional()
+  @IsUUID('4')
+  idempotencyKey?: string;
 }

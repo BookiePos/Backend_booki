@@ -484,6 +484,81 @@ export class Sale {
   orderId?: Types.ObjectId;
 
   /**
+   * Venta cobrada sin internet y registrada al sincronizar (ítem 6.3): el UUID
+   * que le puso el terminal. Único: reenviar la misma venta no la duplica.
+   */
+  @Prop({ type: String })
+  offlineId?: string;
+
+  /**
+   * Cuándo se cobró de verdad, si fue offline. `createdAt` es cuándo llegó al
+   * servidor; el asiento usa esta fecha.
+   */
+  @Prop()
+  soldAt?: Date;
+
+  /**
+   * Venta offline cuyo turno de reserva ya estaba cerrado y entró al abierto a
+   * pedido: el turno donde de verdad se contó el efectivo.
+   */
+  @Prop({ type: Types.ObjectId })
+  offlineTurnoOrigenId?: Types.ObjectId;
+
+  /**
+   * Venta offline registrada «con lo cobrado» por quien autoriza anulaciones
+   * (TOTAL_DISTINTO, SIN_STOCK, PRODUCTO_INACTIVO). `faltantes` es lo que se
+   * vendió sin estar en el inventario registrado, costeado al último costo
+   * (6135 contra la puente 143595). Queda `pendiente` hasta que se regulariza
+   * sacando ese stock cuando entra (`regularizado`, con su costo real).
+   */
+  @Prop({
+    type: {
+      byUserId: { type: String, required: true },
+      byEmail: { type: String },
+      at: { type: Date, required: true },
+      faltantes: [
+        {
+          productId: { type: Types.ObjectId },
+          qty: { type: Number },
+          unitCost: { type: Number },
+          cost: { type: Number },
+          status: {
+            type: String,
+            enum: ['pendiente', 'consumiendo', 'asiento_pendiente', 'regularizado', 'anulado'],
+          },
+          realCost: { type: Number },
+          regularizadoAt: { type: Date },
+          regularizadoPor: { type: String },
+        },
+      ],
+      /** Candado de la regularización (una a la vez por venta). */
+      regularizandoAt: { type: Date },
+    },
+    _id: false,
+  })
+  offlineOverride?: {
+    byUserId: string;
+    byEmail?: string;
+    at: Date;
+    faltantes: {
+      productId: Types.ObjectId;
+      qty: number;
+      unitCost?: number;
+      cost?: number;
+      /**
+       * `consumiendo`: se está sacando el stock (un reintento no lo vuelve a
+       * sacar); `asiento_pendiente`: salió el stock y falta el asiento;
+       * `anulado`: la venta se anuló antes de regularizar.
+       */
+      status?: 'pendiente' | 'consumiendo' | 'asiento_pendiente' | 'regularizado' | 'anulado';
+      realCost?: number;
+      regularizadoAt?: Date;
+      regularizadoPor?: string;
+    }[];
+    regularizandoAt?: Date;
+  };
+
+  /**
    * Si el pedido vino de una plataforma de domicilio. Con él, `payment.method`
    * es `platform`: el cobro es una cuenta por cobrar a la plataforma.
    */
@@ -495,6 +570,10 @@ export const SaleSchema = SchemaFactory.createForClass(Sale);
 
 SaleSchema.index({ sedeId: 1, saleNumber: 1 }, { unique: true });
 SaleSchema.index({ sedeId: 1, createdAt: -1 });
+SaleSchema.index(
+  { offlineId: 1 },
+  { unique: true, partialFilterExpression: { offlineId: { $type: 'string' } } },
+);
 
 // Un pedido de plataforma vive una sola vez: (plataforma, código externo) único
 // entre las ventas completadas. Una venta anulada libera el código para
@@ -511,4 +590,9 @@ SaleSchema.index(
 SaleSchema.index(
   { sedeId: 1, 'platform.code': 1, 'platform.settlementId': 1, createdAt: -1 },
   { partialFilterExpression: { 'platform.code': { $exists: true } } },
+);
+// Faltantes de ventas offline autorizadas sin regularizar, por sede.
+SaleSchema.index(
+  { sedeId: 1, 'offlineOverride.faltantes.status': 1 },
+  { partialFilterExpression: { 'offlineOverride.faltantes': { $exists: true } } },
 );

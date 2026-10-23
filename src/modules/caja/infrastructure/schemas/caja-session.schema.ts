@@ -40,6 +40,13 @@ export class CajaSession {
   @Prop()
   note?: string;
 
+  /**
+   * Constancias del modo sin conexión (ítem 6.3): ventas cobradas en un turno
+   * ya cerrado que entraron a este. Solo informativas, no mueven el arqueo.
+   */
+  @Prop({ type: [String], default: undefined })
+  offlineNotes?: string[];
+
   // ── Cierre ─────────────────────────────────────────────────────────────────
   @Prop()
   closedAt?: Date;

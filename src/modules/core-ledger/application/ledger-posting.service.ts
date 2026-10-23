@@ -117,6 +117,11 @@ export class LedgerPostingService {
     consumptionTax?: number;
     cogs: number;
     /**
+     * Costo estimado (último costo) de lo vendido sin conexión que no estaba
+     * en el inventario registrado: 6135 contra la puente 143595 (ítem 6.3).
+     */
+    faltanteCost?: number;
+    /**
      * Cobro del domicilio. Es ingreso del negocio pero NO lleva IVA, así que
      * entra entero a Ingresos sin nada que separar.
      */
@@ -181,12 +186,66 @@ export class LedgerPostingService {
       lines.push({ accountCode: ACC.COSTO_VENTA, debit: cogs, sedeId: input.sedeId });
       lines.push({ accountCode: ACC.INVENTARIO, credit: cogs, sedeId: input.sedeId });
     }
+    const faltante = cop(input.faltanteCost ?? 0);
+    if (faltante > 0) {
+      lines.push({ accountCode: ACC.COSTO_VENTA, debit: faltante, sedeId: input.sedeId });
+      lines.push({
+        accountCode: ACC.INVENTARIO_POR_REGULARIZAR,
+        credit: faltante,
+        sedeId: input.sedeId,
+      });
+    }
 
     await this.safePost({
       date: input.date,
       sourceType: 'sale',
       sourceId: input.saleId,
       memo: `Venta ${input.number}`,
+      lines,
+      userEmail: input.userEmail,
+    });
+  }
+
+  /**
+   * Regularización del faltante de una venta offline autorizada (ítem 6.3).
+   * El stock que faltaba ya entró (compra o ajuste) y se saca ahora: se cierra
+   * la puente 143595 por lo estimado, sale de 1435 lo real (costo de los
+   * lotes) y la diferencia va a costo de ventas (6135), a débito o a crédito.
+   */
+  async postRegularizacionFaltante(input: {
+    saleId: string;
+    number: string;
+    date: string;
+    sedeId: string;
+    estimado: number;
+    real: number;
+    userEmail?: string;
+  }): Promise<boolean> {
+    const estimado = cop(input.estimado);
+    const real = cop(input.real);
+    const dif = real - estimado;
+    const lines: PostLine[] = [];
+    if (estimado > 0) {
+      lines.push({
+        accountCode: ACC.INVENTARIO_POR_REGULARIZAR,
+        debit: estimado,
+        sedeId: input.sedeId,
+      });
+    }
+    if (real > 0) {
+      lines.push({ accountCode: ACC.INVENTARIO, credit: real, sedeId: input.sedeId });
+    }
+    if (dif > 0) {
+      lines.push({ accountCode: ACC.COSTO_VENTA, debit: dif, sedeId: input.sedeId });
+    } else if (dif < 0) {
+      lines.push({ accountCode: ACC.COSTO_VENTA, credit: -dif, sedeId: input.sedeId });
+    }
+    if (lines.length < 2) return true;
+    return this.safePost({
+      date: input.date,
+      sourceType: 'offline_faltante',
+      sourceId: input.saleId,
+      memo: `Regularización del faltante de ${input.number}`,
       lines,
       userEmail: input.userEmail,
     });
