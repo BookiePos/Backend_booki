@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   formatOfflineNumber,
   offlineCounterId,
+  fechaContableOffline,
   offlineSaleViolations,
   parseOfflineNumber,
+  reservationExpiresAt,
+  soldAtEnTurno,
   soldAtIsPlausible,
 } from './offline-sales';
 
@@ -55,5 +58,38 @@ describe('offline-sales · fecha creíble', () => {
     expect(soldAtIsPlausible(new Date('2026-10-22T09:00:00Z'), reservada, ahora)).toBe(false);
     expect(soldAtIsPlausible(new Date('2026-10-22T16:00:00Z'), reservada, ahora)).toBe(false);
     expect(soldAtIsPlausible(new Date('x'), reservada, ahora)).toBe(false);
+  });
+});
+
+describe('offline-sales · vencimiento de la reserva (48 h)', () => {
+  const reservada = new Date('2026-10-20T10:00:00Z');
+  it('una venta cobrada pasadas 48 h de la reserva no es creíble', () => {
+    const ahora = new Date('2026-10-25T10:00:00Z');
+    expect(soldAtIsPlausible(new Date('2026-10-22T09:00:00Z'), reservada, ahora)).toBe(true);
+    expect(soldAtIsPlausible(new Date('2026-10-22T11:00:00Z'), reservada, ahora)).toBe(false);
+    expect(reservationExpiresAt(reservada).toISOString()).toBe('2026-10-22T10:00:00.000Z');
+  });
+});
+
+describe('offline-sales · dentro del turno de la reserva', () => {
+  const abre = new Date('2026-10-22T08:00:00Z');
+  const cierra = new Date('2026-10-22T18:00:00Z');
+  it('acepta entre apertura y cierre (o turno aún abierto)', () => {
+    expect(soldAtEnTurno(new Date('2026-10-22T12:00:00Z'), abre, cierra)).toBe(true);
+    expect(soldAtEnTurno(new Date('2026-10-23T12:00:00Z'), abre, undefined)).toBe(true);
+  });
+  it('rechaza antes de abrir o después de cerrar', () => {
+    expect(soldAtEnTurno(new Date('2026-10-22T07:00:00Z'), abre, cierra)).toBe(false);
+    expect(soldAtEnTurno(new Date('2026-10-22T19:00:00Z'), abre, cierra)).toBe(false);
+  });
+});
+
+describe('offline-sales · fecha contable', () => {
+  it('del mes en curso conserva el día del cobro; de un mes cerrado va a hoy', () => {
+    expect(fechaContableOffline('2026-10-03', '2026-10-22')).toBe('2026-10-03');
+    expect(fechaContableOffline('2026-09-30', '2026-10-01')).toBe('2026-10-01');
+  });
+  it('una fecha futura (reloj adelantado) cae en hoy', () => {
+    expect(fechaContableOffline('2026-10-23', '2026-10-22')).toBe('2026-10-22');
   });
 });

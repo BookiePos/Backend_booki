@@ -350,11 +350,17 @@ export class CatalogService {
    * Carga un producto de catálogo asegurando que se puede vender (activo y con
    * precio). Lo usa el POS al registrar la venta (precio siempre del servidor).
    */
-  async loadSellableOrFail(id: string): Promise<CatalogProductDocument> {
+  async loadSellableOrFail(
+    id: string,
+    opts: { allowInactive?: boolean } = {},
+  ): Promise<CatalogProductDocument> {
     const doc = Types.ObjectId.isValid(id)
       ? await this.model.findById(id).exec()
       : null;
     if (!doc) throw new NotFoundException('Producto no encontrado');
+    // `allowInactive`: venta offline ya cobrada que se registra con lo que se
+    // cobró (autorizada); el precio lo pone el comprobante, no la ficha.
+    if (opts.allowInactive) return doc;
     if (!doc.active || !doc.salePrice || doc.salePrice <= 0) {
       throw new BadRequestException(
         `${doc.name} no está disponible para la venta`,

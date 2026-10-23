@@ -1,5 +1,7 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsDefined,
   IsISO8601,
@@ -35,6 +37,16 @@ export class ReserveOfflineNumbersDto {
   count?: number;
 }
 
+/** Lo que el comprobante offline cobró por unidad de un producto. */
+export class ChargedLineDto {
+  @IsMongoId()
+  productId!: string;
+
+  @IsInt()
+  @Min(0)
+  unitPrice!: number;
+}
+
 /** Una venta cobrada sin red que el terminal envía al volver la conexión. */
 export class SyncOfflineSaleDto {
   /** UUID que el terminal le puso al cobrar: la llave de idempotencia. */
@@ -64,6 +76,23 @@ export class SyncOfflineSaleDto {
   @IsOptional()
   @IsBoolean()
   useOpenShift?: boolean;
+
+  /**
+   * Registrar con lo cobrado (TOTAL_DISTINTO, SIN_STOCK, PRODUCTO_INACTIVO):
+   * se usan los precios de `chargedLines` y se deja la venta aunque el producto
+   * esté inactivo o falte stock registrado. Exige `pos.void.authorize`.
+   */
+  @IsOptional()
+  @IsBoolean()
+  override?: boolean;
+
+  /** Precio unitario de cada producto según el comprobante impreso (COP). */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(200)
+  @ValidateNested({ each: true })
+  @Type(() => ChargedLineDto)
+  chargedLines?: ChargedLineDto[];
 
   @IsDefined()
   @ValidateNested()

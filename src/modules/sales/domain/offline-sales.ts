@@ -1,3 +1,5 @@
+import { fechaContablePedido } from './platform-orders';
+
 /**
  * Modo offline del POS (ítem 6.3).
  *
@@ -102,14 +104,62 @@ export function offlineSaleViolations(dto: OfflineSaleShape): string[] {
 export const OFFLINE_CLOCK_SKEW_MS = 5 * 60_000;
 
 /**
+ * Vida de un bloque reservado. Pasado este tiempo sus números ya no sirven para
+ * cobrar: un bloque viejo guardado en un terminal no puede numerar ventas de
+ * cualquier día (el terminal pide otro al volver la red).
+ */
+export const OFFLINE_RESERVATION_TTL_MS = 48 * 3_600_000;
+
+export function reservationExpiresAt(reservedAt: Date): Date {
+  return new Date(reservedAt.getTime() + OFFLINE_RESERVATION_TTL_MS);
+}
+
+/**
  * La fecha original es creíble: no antes de que se reservara el bloque (el
- * número no existía) ni en el futuro, con la holgura del reloj.
+ * número no existía), no después de que venciera (48 h) ni en el futuro, con la
+ * holgura del reloj.
  */
 export function soldAtIsPlausible(soldAt: Date, reservedAt: Date, now: Date): boolean {
   const t = soldAt.getTime();
   if (Number.isNaN(t)) return false;
   return (
     t >= reservedAt.getTime() - OFFLINE_CLOCK_SKEW_MS &&
+    t <= reservationExpiresAt(reservedAt).getTime() + OFFLINE_CLOCK_SKEW_MS &&
     t <= now.getTime() + OFFLINE_CLOCK_SKEW_MS
   );
 }
+
+/**
+ * El cobro cae dentro del turno de caja de la reserva: entre su apertura y su
+ * cierre (si ya cerró), con la holgura del reloj. Una venta «cobrada» después
+ * de cerrar el arqueo no puede entrar a ese efectivo.
+ */
+export function soldAtEnTurno(soldAt: Date, openedAt: Date, closedAt?: Date): boolean {
+  const t = soldAt.getTime();
+  if (Number.isNaN(t)) return false;
+  if (t < openedAt.getTime() - OFFLINE_CLOCK_SKEW_MS) return false;
+  return !closedAt || t <= closedAt.getTime() + OFFLINE_CLOCK_SKEW_MS;
+}
+
+/**
+ * Fecha del asiento de una venta offline, con el mismo criterio que los pedidos
+ * de plataforma (`fechaContablePedido`): el día del cobro si es del mes en
+ * curso; si el mes ya pasó (pudo cerrarse), hoy. Una fecha futura (reloj del
+ * terminal adelantado sobre la medianoche) también cae en hoy. `soldAt` queda
+ * en la venta como dato informativo.
+ */
+export function fechaContableOffline(diaDelCobro: string, hoy: string): string {
+  const r = fechaContablePedido(diaDelCobro, hoy);
+  return 'fecha' in r ? r.fecha : hoy;
+}
+
+/**
+ * Conflictos con salida: quien tenga permiso de autorizar anulaciones puede
+ * registrar la venta con lo que se cobró (precio del comprobante, producto
+ * inactivo o sin stock registrado). El efectivo ya está en el cajón.
+ */
+export const OFFLINE_OVERRIDABLE: readonly OfflineConflictReason[] = [
+  'TOTAL_DISTINTO',
+  'SIN_STOCK',
+  'PRODUCTO_INACTIVO',
+];

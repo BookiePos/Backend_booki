@@ -91,7 +91,14 @@ import {
 } from '../domain/sale-payments';
 import { BusinessService } from '../../control/application/business.service';
 import { offlineConflict } from './offline-conflict';
+import { fechaContableOffline } from '../domain/offline-sales';
 import type { BusinessType } from '../../control/domain/control.constants';
+
+/** ¿El error de Mongo es el choque del índice único de `offlineId`? */
+function esDuplicadoDeLlave(err: unknown): boolean {
+  const e = err as { code?: number; keyPattern?: Record<string, unknown> };
+  return e?.code === 11000 && e.keyPattern?.offlineId !== undefined;
+}
 
 /** Opciones internas de `create` (no viajan en el DTO HTTP). */
 export interface CreateSaleOptions {
@@ -120,6 +127,17 @@ export interface OfflineSaleOptions {
   cajaSessionId: string;
   /** Lo que se le cobró al cliente según el comprobante impreso. */
   expectedGrandTotal: number;
+  /** Turno (cerrado) de la reserva, si la venta entra al abierto a pedido. */
+  turnoOrigenId?: string;
+  /**
+   * Registrar con lo cobrado (autorizado con `pos.void.authorize`): precio
+   * unitario del comprobante por producto, producto inactivo y faltante de
+   * stock registrado no la detienen.
+   */
+  override?: { byUserId: string; byEmail?: string; at: Date };
+  chargedPrices?: Record<string, number>;
+  /** Lo que no había en el inventario registrado (lo llena `create`). */
+  faltantes?: { productId: string; qty: number }[];
 }
 
 /** Qué anuló cancelCredit, para poder devolverlo si la anulación se aborta. */
@@ -239,9 +257,17 @@ export class SalesService {
     // junto con el giro del negocio, decide qué impuesto lleva la venta.
     const sede = await this.sedes.findOrFail(dto.sedeId);
 
+    const offline = opts.offline;
+    // Cobro en línea reintentado (se perdió la respuesta): la llave ya tiene
+    // venta y se devuelve esa, sin volver a descontar inventario ni cobrar.
+    const idempotencyKey = offline ? undefined : dto.idempotencyKey;
+    if (idempotencyKey) {
+      const previa = await this.ventaPorLlave(idempotencyKey, dto.sedeId);
+      if (previa) return previa;
+    }
+
     // 0. Exigir caja abierta ANTES de tocar inventario: toda venta ocurre
     //    dentro de un turno de caja (integridad contable). Se enlaza al arqueo.
-    const offline = opts.offline;
     const openCaja = await this.cajaSessionModel
       .findOne({
         sedeId: new Types.ObjectId(dto.sedeId),
@@ -300,7 +326,15 @@ export class SalesService {
         [...new Set(dto.lines.map((l) => l.productId))].map(
           async (id) => {
             try {
-              return [id, await this.catalog.loadSellableOrFail(id)] as const;
+              return [
+                id,
+                await this.catalog.loadSellableOrFail(
+                  id,
+                  // Autorizada con lo cobrado: un producto que se desactivó
+                  // mientras no había red no impide registrar lo ya vendido.
+                  offline?.override ? { allowInactive: true } : undefined,
+                ),
+              ] as const;
             } catch (err) {
               // Offline: el producto se vendió con el catálogo guardado y ya no
               // se puede vender (inactivo o borrado). La venta va a la bandeja.
@@ -395,12 +429,18 @@ export class SalesService {
     const cobradoAntes = new Map(opts.paidBefore ?? []);
     const lineTotals = dto.lines.map((line) => {
       const product = catalogById.get(line.productId)!;
-      const unitPrice = resolveUnitPrice({
-        basePrice: product.salePrice,
-        qty: line.qty,
-        catalogProductId: line.productId,
-        list: priceRules,
-      });
+      // Offline autorizada con lo cobrado: manda el precio del comprobante
+      // impreso (es el efectivo que entró al cajón), no el de hoy.
+      const cobrado = offline?.override ? offline.chargedPrices?.[line.productId] : undefined;
+      const unitPrice =
+        cobrado !== undefined
+          ? cop(cobrado)
+          : resolveUnitPrice({
+              basePrice: product.salePrice,
+              qty: line.qty,
+              catalogProductId: line.productId,
+              list: priceRules,
+            });
       const previo = cobradoAntes.get(line.productId) ?? 0;
       const gross = chargeForQty(unitPrice, previo, line.qty);
       cobradoAntes.set(line.productId, previo + line.qty);
@@ -600,13 +640,27 @@ export class SalesService {
     const stockByProduct = new Map(
       items.map((i) => [i.productId.toString(), i.qty]),
     );
+    const faltantes: { productId: string; qty: number }[] = [];
     for (const c of componentLines) {
       const have = stockByProduct.get(c.productId) ?? 0;
       if (have < c.qty) {
+        // Offline autorizada: la mercancía SÍ salió (se cobró y se entregó);
+        // lo que falta es su registro. Se descuenta lo que hay y el resto queda
+        // anotado en la venta para regularizar el inventario con un ajuste.
+        if (offline?.override) {
+          faltantes.push({ productId: c.productId, qty: c.qty - Math.max(have, 0) });
+          c.qty = Math.max(have, 0);
+          continue;
+        }
         const prod = await this.products.getOrFail(c.productId);
         const msg = `Stock insuficiente de ${prod.name}: hay ${have} y se requieren ${c.qty}`;
         if (offline) throw offlineConflict('SIN_STOCK', msg);
         throw new BadRequestException(msg);
+      }
+    }
+    if (faltantes.length > 0) {
+      for (let i = componentLines.length - 1; i >= 0; i--) {
+        if (componentLines[i]!.qty <= 0) componentLines.splice(i, 1);
       }
     }
 
@@ -755,7 +809,7 @@ export class SalesService {
         isCredit,
         credito,
         cobro,
-        offline,
+        offline: offline ? { ...offline, faltantes } : undefined,
       });
     } catch (err) {
       // Carrera entre dos registros del mismo pedido de plataforma: gana el
@@ -767,6 +821,13 @@ export class SalesService {
           code: PEDIDO_DUPLICADO_CODE,
         });
       }
+      // Dos envíos del mismo cobro a la vez: gana el primero (índice único de
+      // `offlineId`); este devuelve su inventario y responde con esa venta.
+      if (idempotencyKey && esDuplicadoDeLlave(err) && !holder.sale) {
+        await this.rollbackSoldStock(dto.sedeId, components, user);
+        const ganadora = await this.ventaPorLlave(idempotencyKey, dto.sedeId);
+        if (ganadora) return ganadora;
+      }
       // Solo compensamos si la venta NO alcanzó a persistirse; si ya existe,
       // el stock queda correctamente respaldado y el error es de un paso
       // posterior (best-effort) que no debe deshacer el inventario.
@@ -775,6 +836,18 @@ export class SalesService {
       }
       throw err;
     }
+  }
+
+  /** La venta ya registrada con esta llave de idempotencia (u `offlineId`). */
+  private async ventaPorLlave(
+    key: string,
+    sedeId: string,
+  ): Promise<SaleDocument | null> {
+    const venta = await this.saleModel.findOne({ offlineId: key }).exec();
+    if (venta && venta.sedeId.toString() !== sedeId) {
+      throw new ForbiddenException('Esa llave de cobro es de otra sede');
+    }
+    return venta;
   }
 
   /**
@@ -903,7 +976,12 @@ export class SalesService {
     } = ctx;
     // La fecha contable es la del cobro: una venta offline sincronizada al
     // día siguiente pertenece al día en que se vendió.
-    const fechaVenta = offline ? fechaColombia(offline.soldAt) : fechaColombia();
+    // Mismo criterio que los pedidos de plataforma: el día del cobro si es del
+    // mes en curso; si el mes ya pasó (pudo cerrarse), hoy. `soldAt` se guarda
+    // aparte como dato informativo.
+    const fechaVenta = offline
+      ? fechaContableOffline(fechaColombia(offline.soldAt), fechaColombia())
+      : fechaColombia();
     // Mixto de verdad: más de un medio. Si al juntar quedó uno, es un pago de
     // siempre y se guarda igual que antes (sin `payments`).
     const mixto = cobro && cobro.parts.length > 1 ? cobro : undefined;
@@ -954,8 +1032,22 @@ export class SalesService {
       payments: mixto?.parts,
       customer: this.cleanCustomer(dto.customer),
       orderId,
-      offlineId: offline?.offlineId,
+      // Offline: el UUID de la venta. En línea: la llave de idempotencia del
+      // cobro, la misma que usaría la cola si el reintento sale sin red.
+      offlineId: offline?.offlineId ?? dto.idempotencyKey,
       soldAt: offline?.soldAt,
+      offlineTurnoOrigenId: offline?.turnoOrigenId
+        ? new Types.ObjectId(offline.turnoOrigenId)
+        : undefined,
+      offlineOverride: offline?.override
+        ? {
+            ...offline.override,
+            faltantes: (offline.faltantes ?? []).map((f) => ({
+              productId: new Types.ObjectId(f.productId),
+              qty: f.qty,
+            })),
+          }
+        : undefined,
       platform: dto.platform
         ? {
             code: dto.platform.code,

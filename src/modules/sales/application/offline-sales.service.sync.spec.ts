@@ -45,6 +45,8 @@ describe('OfflineSalesService.sync', () => {
   let claims: any;
   let sales: any;
   let saleModel: any;
+  let cajas: any;
+  let conflictos: any;
   let service: OfflineSalesService;
 
   const dto = () =>
@@ -72,6 +74,16 @@ describe('OfflineSalesService.sync', () => {
     sales = {
       create: vi.fn().mockResolvedValue({ _id: new Types.ObjectId(), saleNumber: 'FVC-000003' }),
     };
+    cajas = {
+      findOne: vi.fn(() =>
+        exec({ _id: turno, status: 'open', openedAt: new Date(Date.now() - 7_200_000) }),
+      ),
+      updateOne: vi.fn(() => exec({})),
+    };
+    conflictos = {
+      updateOne: vi.fn(() => exec({})),
+      find: vi.fn(() => ({ sort: () => ({ limit: () => exec([]) }) })),
+    };
     service = new OfflineSalesService(
       {} as never,
       {
@@ -89,8 +101,9 @@ describe('OfflineSalesService.sync', () => {
       } as never,
       claims as never,
       saleModel as never,
-      { findOne: vi.fn(() => exec({ _id: turno, status: 'open' })) } as never,
+      cajas as never,
       sales as never,
+      conflictos as never,
     );
   });
 
@@ -182,5 +195,127 @@ describe('OfflineSalesService.sync', () => {
     const d = dto();
     d.sale.sedeId = new Types.ObjectId().toString();
     await expect(service.sync(d, user)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('reserva de más de 48 h: FECHA_INVALIDA aunque el reloj diga ahora', async () => {
+    service = new OfflineSalesService(
+      {} as never,
+      {
+        findOne: vi.fn(() =>
+          exec({
+            _id: resId,
+            sedeId,
+            cajaSessionId: turno,
+            userId: 'u1',
+            from: 1,
+            to: 10,
+            createdAt: new Date(Date.now() - 50 * 3_600_000),
+          }),
+        ),
+      } as never,
+      claims as never,
+      saleModel as never,
+      cajas as never,
+      sales as never,
+      conflictos as never,
+    );
+    await expect(service.sync(dto(), user)).rejects.toMatchObject({
+      response: { reason: 'FECHA_INVALIDA' },
+    });
+    expect(sales.create).not.toHaveBeenCalled();
+  });
+
+  it('cobro después del cierre del turno de la reserva: FECHA_INVALIDA', async () => {
+    cajas.findOne = vi.fn(() =>
+      exec({
+        _id: turno,
+        status: 'closed',
+        openedAt: new Date(Date.now() - 7_200_000),
+        closedAt: new Date(Date.now() - 1_800_000),
+      }),
+    );
+    const d = dto();
+    d.useOpenShift = true;
+    await expect(service.sync(d, user)).rejects.toMatchObject({
+      response: { reason: 'FECHA_INVALIDA' },
+    });
+  });
+
+  it('turno de la reserva cerrado + useOpenShift: entra al abierto y deja nota en ese turno', async () => {
+    const abierto = new Types.ObjectId();
+    cajas.findOne = vi
+      .fn()
+      .mockReturnValueOnce(
+        exec({
+          _id: turno,
+          status: 'closed',
+          openedAt: new Date(Date.now() - 7_200_000),
+          closedAt: new Date(Date.now() + 60_000),
+        }),
+      )
+      .mockReturnValueOnce(exec({ _id: abierto, status: 'open' }));
+    const d = dto();
+    d.useOpenShift = true;
+    await service.sync(d, user);
+    const opts = sales.create.mock.calls[0][3].offline;
+    expect(opts.cajaSessionId).toBe(abierto.toString());
+    expect(opts.turnoOrigenId).toBe(turno.toString());
+    expect(cajas.updateOne).toHaveBeenCalledWith(
+      { _id: abierto },
+      { $push: { offlineNotes: expect.stringContaining('FVC-000003') } },
+    );
+  });
+
+  it('registrar con lo cobrado exige autorizar anulaciones', async () => {
+    const d = dto();
+    d.override = true;
+    d.chargedLines = [{ productId: d.sale.lines[0].productId, unitPrice: 11_900 }];
+    await expect(service.sync(d, user)).rejects.toBeInstanceOf(ForbiddenException);
+    expect(sales.create).not.toHaveBeenCalled();
+  });
+
+  it('con permiso, registra con los precios del comprobante', async () => {
+    const d = dto();
+    d.override = true;
+    d.chargedLines = [{ productId: d.sale.lines[0].productId, unitPrice: 11_900 }];
+    const jefe = { ...user, permissions: ['pos.sell', 'pos.void.authorize'] } as JwtUser;
+    await service.sync(d, jefe);
+    const opts = sales.create.mock.calls[0][3].offline;
+    expect(opts.override).toMatchObject({ byUserId: 'u1' });
+    expect(opts.chargedPrices).toEqual({ [d.sale.lines[0].productId]: 11_900 });
+  });
+
+  it('un conflicto queda en la bandeja del servidor; al registrarse se marca resuelto', async () => {
+    sales.create.mockRejectedValueOnce(offlineConflict('TOTAL_DISTINTO', 'cambió el precio'));
+    await expect(service.sync(dto(), user)).rejects.toMatchObject({
+      response: { reason: 'TOTAL_DISTINTO' },
+    });
+    expect(conflictos.updateOne).toHaveBeenCalledWith(
+      { _id: dto().offlineId },
+      expect.objectContaining({
+        $set: expect.objectContaining({ reason: 'TOTAL_DISTINTO', status: 'abierto' }),
+      }),
+      { upsert: true },
+    );
+    conflictos.updateOne.mockClear();
+    await service.sync(dto(), user);
+    expect(conflictos.updateOne).toHaveBeenCalledWith(
+      { _id: dto().offlineId },
+      { $set: expect.objectContaining({ status: 'resuelto' }) },
+    );
+  });
+
+  it('EN_PROCESO no ensucia la bandeja (es transitorio)', async () => {
+    claims.findById = vi.fn(() => exec({ status: 'processing', createdAt: new Date() }));
+    await expect(service.sync(dto(), user)).rejects.toBeTruthy();
+    expect(conflictos.updateOne).not.toHaveBeenCalled();
+  });
+
+  it('la bandeja se lista solo de una sede a la que se tiene acceso', async () => {
+    await expect(
+      service.listConflicts(new Types.ObjectId().toString(), user),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await service.listConflicts(sedeId.toString(), user);
+    expect(conflictos.find).toHaveBeenCalledWith({ sedeId, status: 'abierto' });
   });
 });

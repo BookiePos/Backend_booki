@@ -21,11 +21,16 @@ import {
 } from '../infrastructure/schemas/offline-sale-claim.schema';
 import { Sale, SaleDocument } from '../infrastructure/schemas/sale.schema';
 import {
+  OfflineConflictDocument,
+  OfflineConflictRecord,
+} from '../infrastructure/schemas/offline-conflict.schema';
+import {
   CajaSession,
   CajaSessionDocument,
 } from '../../caja/infrastructure/schemas/caja-session.schema';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
+import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import {
   OFFLINE_BLOCK_DEFAULT,
   OFFLINE_BLOCK_MAX,
@@ -34,6 +39,8 @@ import {
   offlineCounterId,
   offlineSaleViolations,
   parseOfflineNumber,
+  reservationExpiresAt,
+  soldAtEnTurno,
   soldAtIsPlausible,
 } from '../domain/offline-sales';
 import { SalesService } from './sales.service';
@@ -54,6 +61,8 @@ export interface OfflineReservationView {
   from: number;
   to: number;
   createdAt?: Date;
+  /** Pasada esta hora los números del bloque ya no sirven para cobrar (48 h). */
+  expiresAt?: Date;
 }
 
 export interface OfflineSyncResult {
@@ -93,6 +102,8 @@ export class OfflineSalesService {
     @InjectModel(CajaSession.name)
     private readonly cajaSessionModel: Model<CajaSessionDocument>,
     private readonly sales: SalesService,
+    @InjectModel(OfflineConflictRecord.name)
+    private readonly conflictModel: Model<OfflineConflictDocument>,
   ) {}
 
   /**
@@ -172,10 +183,100 @@ export class OfflineSalesService {
     });
   }
 
-  /** Registra una venta offline. Idempotente por `offlineId`. */
-  async sync(dto: SyncOfflineSaleDto, user: JwtUser): Promise<OfflineSyncResult> {
-    const sedeId = dto.sale.sedeId;
+  /**
+   * Bandeja de conflictos de la sede guardada en el servidor: ventas cobradas
+   * sin red que no se pudieron registrar. La ve quien autoriza anulaciones
+   * (permiso en el controlador) y solo de sus sedes.
+   */
+  async listConflicts(sedeId: string, user: JwtUser) {
     assertSedeAccess(user, sedeId);
+    return this.conflictModel
+      .find({ sedeId: new Types.ObjectId(sedeId), status: 'abierto' })
+      .sort({ updatedAt: -1 })
+      .limit(200)
+      .exec();
+  }
+
+  /**
+   * Registra una venta offline. Idempotente por `offlineId`. Si choca, el
+   * conflicto queda también en la bandeja del servidor.
+   */
+  async sync(dto: SyncOfflineSaleDto, user: JwtUser): Promise<OfflineSyncResult> {
+    assertSedeAccess(user, dto.sale.sedeId);
+    if (dto.override && !user.permissions.includes(PERMISSIONS.POS_VOID_AUTHORIZE)) {
+      throw new ForbiddenException(
+        'Registrar una venta offline con lo cobrado requiere autorizar anulaciones',
+      );
+    }
+    let r: OfflineSyncResult;
+    try {
+      r = await this.syncInterno(dto, user);
+    } catch (err) {
+      await this.guardarConflicto(dto, user, err);
+      throw err;
+    }
+    await this.conflictModel
+      .updateOne(
+        { _id: dto.offlineId },
+        {
+          $set: {
+            status: 'resuelto',
+            saleId: r.sale._id,
+            resolvedById: user.userId,
+            resolvedAt: new Date(),
+          },
+        },
+      )
+      .exec()
+      .catch((e: Error) =>
+        this.logger.warn(`No se pudo cerrar el conflicto offline ${dto.offlineId}: ${e.message}`),
+      );
+    return r;
+  }
+
+  /** Deja el conflicto en la bandeja del servidor (best-effort). */
+  private async guardarConflicto(
+    dto: SyncOfflineSaleDto,
+    user: JwtUser,
+    err: unknown,
+  ): Promise<void> {
+    if (!isOfflineConflict(err)) return;
+    const body = err.getResponse() as { reason?: string; message?: string };
+    if (!body.reason || body.reason === 'EN_PROCESO') return;
+    try {
+      await this.conflictModel
+        .updateOne(
+          { _id: dto.offlineId },
+          {
+            $set: {
+              sedeId: new Types.ObjectId(dto.sale.sedeId),
+              saleNumber: dto.saleNumber,
+              reason: body.reason,
+              message: body.message ?? body.reason,
+              userId: user.userId,
+              userEmail: user.email,
+              soldAt: new Date(dto.soldAt),
+              expectedGrandTotal: dto.expectedGrandTotal,
+              payload: JSON.parse(JSON.stringify(dto)) as Record<string, unknown>,
+              status: 'abierto',
+            },
+          },
+          { upsert: true },
+        )
+        .exec();
+    } catch (e) {
+      // La copia del terminal sigue: perder la del servidor no pierde la venta.
+      this.logger.warn(
+        `No se pudo guardar el conflicto offline ${dto.offlineId}: ${(e as Error).message}`,
+      );
+    }
+  }
+
+  private async syncInterno(
+    dto: SyncOfflineSaleDto,
+    user: JwtUser,
+  ): Promise<OfflineSyncResult> {
+    const sedeId = dto.sale.sedeId;
 
     const prohibido = offlineSaleViolations(dto.sale);
     if (prohibido.length > 0) {
@@ -213,13 +314,28 @@ export class OfflineSalesService {
       );
     }
 
-    // Turno: el de la reserva. Si ya se cerró, solo entra al abierto si quien
-    // sincroniza lo pide desde la bandeja (el efectivo está en el cajón actual).
+    // Turno: el de la reserva, y el cobro tiene que caer entre su apertura y
+    // su cierre. Si ya se cerró, solo entra al abierto si quien sincroniza lo
+    // pide desde la bandeja (el efectivo está en el cajón actual).
     let cajaSessionId = reserva.cajaSessionId.toString();
+    let turnoOrigenId: string | undefined;
     const turnoReserva = await this.cajaSessionModel
-      .findOne({ _id: reserva.cajaSessionId, status: 'open' })
+      .findOne({ _id: reserva.cajaSessionId })
       .exec();
-    if (!turnoReserva) {
+    if (
+      turnoReserva?.openedAt &&
+      !soldAtEnTurno(
+        soldAt,
+        turnoReserva.openedAt,
+        turnoReserva.status === 'open' ? undefined : turnoReserva.closedAt,
+      )
+    ) {
+      throw offlineConflict(
+        'FECHA_INVALIDA',
+        'La fecha de la venta queda fuera del turno de caja de su reserva',
+      );
+    }
+    if (!turnoReserva || turnoReserva.status !== 'open') {
       if (!dto.useOpenShift) {
         throw offlineConflict(
           'TURNO_CERRADO',
@@ -236,7 +352,15 @@ export class OfflineSalesService {
         );
       }
       cajaSessionId = abierto._id.toString();
+      turnoOrigenId = reserva.cajaSessionId.toString();
     }
+
+    // Con lo cobrado: el precio por producto que salió en el comprobante.
+    const chargedPrices = dto.override
+      ? Object.fromEntries(
+          (dto.chargedLines ?? []).map((l) => [l.productId, l.unitPrice]),
+        )
+      : undefined;
 
     await this.tomarCandado(dto, reserva._id, user);
 
@@ -249,6 +373,11 @@ export class OfflineSalesService {
           soldAt,
           cajaSessionId,
           expectedGrandTotal: dto.expectedGrandTotal,
+          turnoOrigenId,
+          chargedPrices,
+          override: dto.override
+            ? { byUserId: user.userId, byEmail: user.email, at: new Date() }
+            : undefined,
         },
       });
     } catch (err) {
@@ -264,6 +393,27 @@ export class OfflineSalesService {
         { $set: { status: 'done', saleId: sale._id } },
       )
       .exec();
+    if (turnoOrigenId) {
+      // El efectivo de esta venta se contó en el cajón de un turno que ya se
+      // cerró (su arqueo pudo dar sobrante) y la venta entra a este. Solo se
+      // deja constancia en el turno: no se inventan asientos ni movimientos;
+      // el traslado entre arqueos lo concilia quien cierra.
+      await this.cajaSessionModel
+        .updateOne(
+          { _id: new Types.ObjectId(cajaSessionId) },
+          {
+            $push: {
+              offlineNotes:
+                `${formatOfflineNumber(n)} se cobró sin conexión en el turno ${turnoOrigenId}, ` +
+                `ya cerrado: su efectivo (${dto.expectedGrandTotal} COP) pudo quedar contado en ese arqueo.`,
+            },
+          },
+        )
+        .exec()
+        .catch((e: Error) =>
+          this.logger.warn(`No se pudo anotar el turno de ${dto.offlineId}: ${e.message}`),
+        );
+    }
     return { status: 'creada', sale };
   }
 
@@ -345,6 +495,7 @@ export class OfflineSalesService {
       from: r.from,
       to: r.to,
       createdAt: r.createdAt,
+      expiresAt: r.createdAt ? reservationExpiresAt(r.createdAt) : undefined,
     };
   }
 }

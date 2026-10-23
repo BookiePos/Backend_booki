@@ -464,6 +464,35 @@ export class Sale {
   soldAt?: Date;
 
   /**
+   * Venta offline cuyo turno de reserva ya estaba cerrado y entró al abierto a
+   * pedido: el turno donde de verdad se contó el efectivo.
+   */
+  @Prop({ type: Types.ObjectId })
+  offlineTurnoOrigenId?: Types.ObjectId;
+
+  /**
+   * Venta offline registrada «con lo cobrado» por quien autoriza anulaciones
+   * (TOTAL_DISTINTO, SIN_STOCK, PRODUCTO_INACTIVO). `faltantes` es lo que se
+   * vendió sin estar en el inventario registrado: hay que regularizarlo con
+   * un ajuste (su costo no entró al asiento de la venta).
+   */
+  @Prop({
+    type: {
+      byUserId: { type: String, required: true },
+      byEmail: { type: String },
+      at: { type: Date, required: true },
+      faltantes: [{ productId: { type: Types.ObjectId }, qty: { type: Number } }],
+    },
+    _id: false,
+  })
+  offlineOverride?: {
+    byUserId: string;
+    byEmail?: string;
+    at: Date;
+    faltantes: { productId: Types.ObjectId; qty: number }[];
+  };
+
+  /**
    * Si el pedido vino de una plataforma de domicilio. Con él, `payment.method`
    * es `platform`: el cobro es una cuenta por cobrar a la plataforma.
    */

@@ -59,6 +59,20 @@ export class SalesController {
   }
 
   /**
+   * Bandeja de conflictos offline de la sede guardada en el servidor. La ve
+   * quien autoriza anulaciones: es quien puede registrarlas con lo cobrado.
+   */
+  @RequirePermissions(PERMISSIONS.POS_VOID_AUTHORIZE)
+  @Get('offline/conflicts')
+  listOfflineConflicts(
+    @Query('sedeId') sedeId: string,
+    @CurrentUser() user: JwtUser,
+  ) {
+    if (!sedeId) throw new BadRequestException('sedeId es obligatorio');
+    return this.offline.listConflicts(sedeId, user);
+  }
+
+  /**
    * Registra una venta cobrada sin conexión. Idempotente por `offlineId`:
    * reenviarla devuelve la misma venta (`status: 'duplicada'`).
    */

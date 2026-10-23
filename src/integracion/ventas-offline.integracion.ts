@@ -16,6 +16,10 @@ import {
   OfflineSaleClaimSchema,
 } from '../modules/sales/infrastructure/schemas/offline-sale-claim.schema';
 import {
+  OfflineConflictRecord,
+  OfflineConflictSchema,
+} from '../modules/sales/infrastructure/schemas/offline-conflict.schema';
+import {
   StockItem,
   StockItemSchema,
 } from '../modules/inventory/infrastructure/schemas/stock-item.schema';
@@ -55,11 +59,17 @@ describe('ventas offline · reserva y sincronización', () => {
     permissions: ['pos.sell'],
   } as unknown as JwtUser;
   const otroCajero = { ...cajero, userId: 'u-otro', email: 'otro@bookipos.local' } as JwtUser;
+  /** Quien autoriza anulaciones: puede registrar un conflicto con lo cobrado. */
+  const jefe = {
+    ...cajero,
+    permissions: ['pos.sell', 'pos.void.authorize'],
+  } as unknown as JwtUser;
 
   let env: Entorno;
   let offline: OfflineSalesService;
   let caja: CajaService;
   let sell: ReturnType<typeof vi.fn>;
+  let sales: SalesService;
   let sesiones: Model<unknown>;
   let stock: Model<unknown>;
 
@@ -102,7 +112,7 @@ describe('ventas offline · reserva y sincronización', () => {
       }));
     });
 
-    const sales = new SalesService(
+    sales = new SalesService(
       saleModel as never,
       counterModel as never,
       stock as never,
@@ -113,8 +123,8 @@ describe('ventas offline · reserva y sincronización', () => {
       { getOrFail: vi.fn().mockResolvedValue({ name: 'Masa' }) } as never,
       { findOrFail: vi.fn().mockResolvedValue({ _id: SEDE }) } as never,
       {
-        loadSellableOrFail: vi.fn(async () => {
-          if (!catalogoActivo) {
+        loadSellableOrFail: vi.fn(async (_id: string, o?: { allowInactive?: boolean }) => {
+          if (!catalogoActivo && !o?.allowInactive) {
             const { BadRequestException } = await import('@nestjs/common');
             throw new BadRequestException('El producto Arepa está inactivo');
           }
@@ -145,6 +155,7 @@ describe('ventas offline · reserva y sincronización', () => {
       saleModel as never,
       sesiones as never,
       sales,
+      m(OfflineConflictRecord.name, OfflineConflictSchema) as never,
     );
     caja = new CajaService(
       sesiones as never,
@@ -166,7 +177,14 @@ describe('ventas offline · reserva y sincronización', () => {
     catalogoActivo = true;
     sell.mockClear();
     await env.enEmpresa(EMPRESA, async () => {
-      for (const c of ['sales', 'offline_sale_claims', 'caja_sessions', 'stock_items', 'ledger_journal_entries']) {
+      for (const c of [
+        'sales',
+        'offline_sale_claims',
+        'offline_conflicts',
+        'caja_sessions',
+        'stock_items',
+        'ledger_journal_entries',
+      ]) {
         await base().collection(c).deleteMany({});
       }
       const s = (await sesiones.create({
@@ -355,5 +373,125 @@ describe('ventas offline · reserva y sincronización', () => {
     const reason = await conflicto(env.enEmpresa(OTRA, () => offline.sync(venta(r), cajero)));
     expect(reason).toBe('NUMERO_INVALIDO');
     expect(await env.baseDe(OTRA).collection('sales').countDocuments()).toBe(0);
+  });
+
+  it('turno cerrado + turno abierto: la venta entra al abierto y ese turno queda anotado', async () => {
+    const r = await reservar();
+    await env.enEmpresa(EMPRESA, () =>
+      sesiones.updateOne(
+        { _id: turnoId },
+        { $set: { status: 'closed', closedAt: new Date(Date.now() + 60_000) } },
+      ),
+    );
+    const nuevo = (await env.enEmpresa(EMPRESA, () =>
+      sesiones.create({
+        sedeId: SEDE,
+        status: 'open',
+        openingAmount: 0,
+        openedById: cajero.userId,
+        openedByEmail: cajero.email,
+        openedAt: new Date(),
+      }),
+    )) as unknown as { _id: Types.ObjectId };
+    const dto = venta(r, { useOpenShift: true });
+    await env.enEmpresa(EMPRESA, () => offline.sync(dto, cajero));
+    const turno = await base().collection('caja_sessions').findOne({ _id: nuevo._id });
+    expect(turno?.offlineNotes).toEqual([expect.stringContaining(dto.saleNumber)]);
+    const v = await base().collection('sales').findOne({ offlineId: dto.offlineId });
+    expect(v?.offlineTurnoOrigenId?.toString()).toBe(turnoId.toString());
+  });
+
+  it('TOTAL_DISTINTO queda en la bandeja del servidor y quien autoriza la registra con el precio cobrado', async () => {
+    const r = await reservar();
+    // El comprobante cobró la arepa a $10.500: 2 × 10.500 + 2.000 de propina.
+    const dto = venta(r, {
+      expectedGrandTotal: 23_000,
+      chargedLines: [{ productId: PROD.toString(), unitPrice: 10_500 }],
+    });
+    expect(await conflicto(env.enEmpresa(EMPRESA, () => offline.sync(dto, cajero)))).toBe('TOTAL_DISTINTO');
+    const bandeja = await env.enEmpresa(EMPRESA, () =>
+      offline.listConflicts(SEDE.toString(), jefe),
+    );
+    expect(bandeja.map((c) => c._id)).toEqual([dto.offlineId]);
+    expect(bandeja[0]?.reason).toBe('TOTAL_DISTINTO');
+
+    // El cajero no puede forzarla; quien autoriza anulaciones sí.
+    await expect(
+      env.enEmpresa(EMPRESA, () => offline.sync({ ...dto, override: true }, cajero)),
+    ).rejects.toMatchObject({ status: 403 });
+    const { sale } = await env.enEmpresa(EMPRESA, () =>
+      offline.sync({ ...dto, override: true }, jefe),
+    );
+    expect(sale.total).toBe(21_000);
+    expect(sale.lines[0]?.unitPrice).toBe(10_500);
+    expect(sale.offlineOverride?.byUserId).toBe(jefe.userId);
+    const asiento = await base().collection('ledger_journal_entries').findOne({ sourceType: 'sale' });
+    expect(asiento?.totalDebit).toBe(asiento?.totalCredit);
+    expect(
+      await env.enEmpresa(EMPRESA, () => offline.listConflicts(SEDE.toString(), jefe)),
+    ).toHaveLength(0);
+  });
+
+  it('SIN_STOCK con autorización: registra, descuenta lo que había y deja el faltante', async () => {
+    const r = await reservar();
+    await env.enEmpresa(EMPRESA, () => stock.updateOne({ productId: INV }, { $set: { qty: 1 } }));
+    const dto = venta(r);
+    expect(await conflicto(env.enEmpresa(EMPRESA, () => offline.sync(dto, cajero)))).toBe('SIN_STOCK');
+    const { sale } = await env.enEmpresa(EMPRESA, () =>
+      offline.sync({ ...dto, override: true }, jefe),
+    );
+    expect(sale.total).toBe(23_800);
+    expect(sale.offlineOverride?.faltantes).toEqual([
+      expect.objectContaining({ productId: INV, qty: 1 }),
+    ]);
+    const stockDoc = await base().collection('stock_items').findOne({ productId: INV });
+    expect(stockDoc?.qty).toBe(0);
+  });
+
+  it('PRODUCTO_INACTIVO con autorización: registra con el precio cobrado', async () => {
+    const r = await reservar();
+    catalogoActivo = false;
+    const dto = venta(r, {
+      chargedLines: [{ productId: PROD.toString(), unitPrice: 11_900 }],
+    });
+    expect(await conflicto(env.enEmpresa(EMPRESA, () => offline.sync(dto, cajero)))).toBe(
+      'PRODUCTO_INACTIVO',
+    );
+    const { sale } = await env.enEmpresa(EMPRESA, () =>
+      offline.sync({ ...dto, override: true }, jefe),
+    );
+    expect(sale.total).toBe(23_800);
+  });
+
+  it('cobro en línea con llave: el reintento no duplica y la misma llave offline se reconoce', async () => {
+    const key = randomUUID();
+    const dto = {
+      sedeId: SEDE.toString(),
+      lines: [{ productId: PROD.toString(), qty: 1 }],
+      payment: { method: 'cash', received: 20_000 },
+      orderType: 'mostrador',
+      idempotencyKey: key,
+    } as never;
+    const [a, b] = await Promise.all([
+      env.enEmpresa(EMPRESA, () => sales.create(dto, cajero)),
+      env.enEmpresa(EMPRESA, () => sales.create(dto, cajero)),
+    ]);
+    expect(a._id.toString()).toBe(b._id.toString());
+    expect(await base().collection('sales').countDocuments()).toBe(1);
+    // Reintento tras perder la respuesta: devuelve la misma, sin vender otra vez.
+    sell.mockClear();
+    const c = await env.enEmpresa(EMPRESA, () => sales.create(dto, cajero));
+    expect(c._id.toString()).toBe(a._id.toString());
+    expect(sell).not.toHaveBeenCalled();
+
+    // El cajero creyó que se cayó y la cobró sin red con la misma llave.
+    const r = await reservar();
+    const offlineDto = venta(r, { offlineId: key, expectedGrandTotal: 11_900 });
+    offlineDto.sale.lines = [{ productId: PROD.toString(), qty: 1 }];
+    offlineDto.sale.tip = undefined;
+    const res = await env.enEmpresa(EMPRESA, () => offline.sync(offlineDto, cajero));
+    expect(res.status).toBe('duplicada');
+    expect(res.sale.saleNumber).toBe(a.saleNumber);
+    expect(await base().collection('sales').countDocuments()).toBe(1);
   });
 });

@@ -33,6 +33,10 @@ import {
   OfflineReservationSchema,
 } from './infrastructure/schemas/offline-reservation.schema';
 import {
+  OfflineConflictRecord,
+  OfflineConflictSchema,
+} from './infrastructure/schemas/offline-conflict.schema';
+import {
   OfflineSaleClaim,
   OfflineSaleClaimSchema,
 } from './infrastructure/schemas/offline-sale-claim.schema';
@@ -101,6 +105,7 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
       // Modo sin conexión (ítem 6.3).
       { name: OfflineReservation.name, schema: OfflineReservationSchema },
       { name: OfflineSaleClaim.name, schema: OfflineSaleClaimSchema },
+      { name: OfflineConflictRecord.name, schema: OfflineConflictSchema },
     ]),
   ],
   controllers: [SalesController, OrdersController, PlatformOrdersController],
