@@ -44,6 +44,14 @@ export interface RoleView {
  */
 const CODE_DRIVEN_ROLES: string[] = [ROLES.OWNER, ROLES.ADMIN];
 
+/**
+ * Roles de sistema añadidos DESPUÉS de que existieran empresas. Los roles se
+ * siembran al registrar, así que a una empresa anterior le falta la fila y el
+ * Dueño no podría invitar a nadie con ese rol. Se crean al primer uso, sin
+ * tocar los permisos de uno que ya exista (`$setOnInsert`).
+ */
+const ROLES_DE_SISTEMA_TARDIOS: string[] = [ROLES.ACCOUNTANT];
+
 /** Definición en código de cada rol de sistema, por clave. */
 const SYSTEM_ROLE_BY_KEY = new Map(
   SYSTEM_ROLES.map((def) => [def.key, def]),
@@ -102,6 +110,7 @@ export class RolesService {
 
   /** Lista todos los roles con el número de usuarios que los tienen. */
   async list(): Promise<RoleView[]> {
+    for (const key of ROLES_DE_SISTEMA_TARDIOS) await this.asegurarRolTardio(key);
     const roles = await this.roleModel.find().sort({ isSystem: -1, name: 1 }).exec();
     const views: RoleView[] = [];
     for (const role of roles) {
@@ -113,8 +122,48 @@ export class RolesService {
     return views;
   }
 
-  findByKey(key: string): Promise<RoleDocument | null> {
-    return this.roleModel.findOne({ key: key.toLowerCase() }).exec();
+  async findByKey(key: string): Promise<RoleDocument | null> {
+    const normalized = key.toLowerCase();
+    const existente = await this.roleModel.findOne({ key: normalized }).exec();
+    if (existente || !ROLES_DE_SISTEMA_TARDIOS.includes(normalized)) {
+      return existente;
+    }
+    await this.asegurarRolTardio(normalized);
+    return this.roleModel.findOne({ key: normalized }).exec();
+  }
+
+  /** Crea la fila de un rol de sistema tardío si falta; nunca pisa una existente. */
+  private async asegurarRolTardio(key: string): Promise<void> {
+    const def = SYSTEM_ROLE_BY_KEY.get(key);
+    if (!def) return;
+    const previo = await this.roleModel.findOne({ key }).exec();
+    if (previo) {
+      if (!previo.isSystem) {
+        this.logger.warn(
+          `Rol a medida «${key}» ya existe: no se crea el rol de sistema homónimo.`,
+        );
+      }
+      return;
+    }
+    try {
+      await this.roleModel
+        .updateOne(
+          { key },
+          {
+            $setOnInsert: {
+              name: def.name,
+              description: def.description,
+              permissions: def.permissions,
+              isSystem: true,
+            },
+          },
+          { upsert: true },
+        )
+        .exec();
+    } catch (err) {
+      // Dos pedidos a la vez: el segundo choca con la clave única y la fila ya está.
+      if ((err as { code?: number }).code !== 11000) throw err;
+    }
   }
 
   /**
@@ -232,6 +281,14 @@ export class RolesService {
   async ensureSystemRoles(): Promise<void> {
     for (const def of SYSTEM_ROLES) {
       const existente = await this.roleModel.findOne({ key: def.key }).exec();
+
+      // Rol a medida con la clave de un rol de sistema posterior: no es nuestro.
+      if (existente && !existente.isSystem && ROLES_DE_SISTEMA_TARDIOS.includes(def.key)) {
+        this.logger.warn(
+          `Rol a medida «${def.key}» ya existe: se omite el rol de sistema homónimo.`,
+        );
+        continue;
+      }
 
       // Rol editado a mano: no se toca nada suyo. Solo se reafirma que es de
       // sistema, que es lo que impide borrarlo.

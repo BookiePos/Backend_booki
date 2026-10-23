@@ -1,4 +1,5 @@
 import { Type } from 'class-transformer';
+import { PLATFORM_CODES, PlatformCode } from '../../domain/platform-orders';
 import {
   ArrayMaxSize,
   ArrayNotEmpty,
@@ -210,6 +211,30 @@ export class SaleDeliveryDto {
   fee?: number;
 }
 
+/**
+ * Pedido de una plataforma de domicilio (ítem 7.5). Con él, el único medio de
+ * pago admitido es `platform` y no hay propina (va por la app de la plataforma).
+ */
+export class SalePlatformDto {
+  @IsIn(PLATFORM_CODES as readonly string[])
+  code!: PlatformCode;
+
+  /** Código del pedido en la plataforma; junto con `code` no se puede repetir. */
+  @IsString()
+  @MaxLength(80)
+  externalId!: string;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'orderedAt debe ser YYYY-MM-DD' })
+  orderedAt?: string;
+
+  /** Comisión estimada del portal, en pesos. La real se anota al liquidar. */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  commissionEstimate?: number;
+}
+
 /** El precio NUNCA viene del cliente: se toma el salePrice del servidor. */
 export class CreateSaleDto {
   @IsMongoId()
@@ -343,4 +368,13 @@ export class CreateSaleDto {
   @ValidateNested()
   @Type(() => SaleSellerDto)
   seller?: SaleSellerDto;
+
+  /**
+   * Pedido de una plataforma de domicilio (ítem 7.5). Exige
+   * `payment: { method: 'platform' }` y, al revés, ese medio exige este dato.
+   */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SalePlatformDto)
+  platform?: SalePlatformDto;
 }

@@ -27,7 +27,7 @@ import {
   hasSedeAccess,
   type SedeScopeUser,
 } from '../../core-auth/domain/sede-access';
-import { cop } from '../../finance/domain/money.util';
+import { cop, redondearA } from '../../finance/domain/money.util';
 import type { FinancePaymentMethod } from '../../finance/domain/finance.constants';
 import {
   InvoiceScan,
@@ -107,7 +107,7 @@ export class InvoiceScanService {
   ): Promise<InvoiceScanDocument> {
     if (file.size > INVOICE_IMAGE_MAX_BYTES) {
       throw new BadRequestException(
-        `La imagen supera los ${Math.round(INVOICE_IMAGE_MAX_BYTES / 1024 / 1024)} MB.`,
+        `La imagen supera los ${redondearA(INVOICE_IMAGE_MAX_BYTES / 1024 / 1024, 0)} MB.`,
       );
     }
     // El tipo sale de los bytes, no del mimetype que declara el cliente.
@@ -840,7 +840,7 @@ export class InvoiceScanService {
         // meter millones al inventario y a la caja.
         if (!unitCostMatchesTotal(line, unitCost)) {
           throw new BadRequestException(
-            `El valor unitario de ${label} ($${Math.round(unitCost).toLocaleString('es-CO')}) no cuadra con el total del renglón ($${Math.round(line.lineTotal ?? 0).toLocaleString('es-CO')}). Revisa los dos antes de aplicar.`,
+            `El valor unitario de ${label} ($${cop(unitCost).toLocaleString('es-CO')}) no cuadra con el total del renglón ($${cop(line.lineTotal ?? 0).toLocaleString('es-CO')}). Revisa los dos antes de aplicar.`,
           );
         }
         const newProduct = decision?.newProduct;

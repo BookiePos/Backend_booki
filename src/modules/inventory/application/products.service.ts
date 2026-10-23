@@ -45,6 +45,7 @@ import {
   ImportProductRow,
   ImportProductsResult,
 } from './dto/import-products.dto';
+import { redondearA } from '../../finance/domain/money.util';
 
 /** Producto cartesiano de varias listas: [[S,M],[Rojo,Azul]] → [[S,Rojo],…]. */
 function cartesian(lists: string[][]): string[][] {
@@ -187,7 +188,7 @@ export class ProductsService {
 
     if (file.size > PRODUCT_IMAGE_MAX_BYTES) {
       throw new BadRequestException(
-        `La imagen supera los ${Math.round(PRODUCT_IMAGE_MAX_BYTES / 1024 / 1024)} MB.`,
+        `La imagen supera los ${redondearA(PRODUCT_IMAGE_MAX_BYTES / 1024 / 1024, 0)} MB.`,
       );
     }
     // El tipo sale de los bytes, no del mimetype que declara el cliente.
