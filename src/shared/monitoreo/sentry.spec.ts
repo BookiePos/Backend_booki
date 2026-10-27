@@ -2,6 +2,12 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { HttpException, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import type { ArgumentsHost } from '@nestjs/common';
 
+const init = vi.hoisted(() => vi.fn((..._a: unknown[]) => undefined));
+vi.mock('@sentry/node', async (orig) => ({
+  ...(await orig<typeof import('@sentry/node')>()),
+  init,
+}));
+
 const reportar = vi.hoisted(() => vi.fn((..._a: unknown[]) => undefined));
 const vaciar = vi.hoisted(() => vi.fn(async () => undefined));
 const esperar = vi.hoisted(() => vi.fn((..._a: unknown[]) => undefined));
@@ -13,7 +19,7 @@ vi.mock('./sentry', async (orig) => ({
 vi.mock('@vercel/functions', () => ({ waitUntil: esperar }));
 
 import { SentryExceptionFilter } from './sentry-exception.filter';
-import { iniciarSentry, limpiarEvento, rutaCritica } from './sentry';
+import { iniciarSentry, limpiarEvento, limpiarTransaccion, rutaCritica, tasaDeMuestreo } from './sentry';
 
 describe('rutaCritica', () => {
   it('reconoce el cron diario y el webhook de facturación', () => {
@@ -25,6 +31,21 @@ describe('rutaCritica', () => {
     expect(rutaCritica('/billing/plan')).toBeUndefined();
     expect(rutaCritica('/cron/diarioX')).toBeUndefined();
     expect(rutaCritica(undefined)).toBeUndefined();
+  });
+});
+
+describe('tasaDeMuestreo', () => {
+  const con = (v?: string) => tasaDeMuestreo({ SENTRY_TRACES_SAMPLE_RATE: v } as NodeJS.ProcessEnv);
+  it('lee un valor entre 0 y 1', () => {
+    expect(con('0.1')).toBe(0.1);
+    expect(con('1')).toBe(1);
+  });
+  it('sin valor o inválido mide 0', () => {
+    expect(con(undefined)).toBe(0);
+    expect(con('')).toBe(0);
+    expect(con('abc')).toBe(0);
+    expect(con('2')).toBe(0);
+    expect(con('-1')).toBe(0);
   });
 });
 
@@ -223,5 +244,50 @@ describe('SentryExceptionFilter', () => {
     expect(reportar).not.toHaveBeenCalled();
     expect(esperar).not.toHaveBeenCalled();
     expect(adaptador.reply).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('iniciarSentry con DSN', () => {
+  it('pasa la tasa y los dos hooks de limpieza a Sentry.init', () => {
+    vi.resetModules();
+    return import('./sentry').then((m) => {
+      expect(
+        m.iniciarSentry({
+          SENTRY_DSN: 'https://k@o0.ingest.sentry.io/1',
+          SENTRY_TRACES_SAMPLE_RATE: '0.25',
+        } as NodeJS.ProcessEnv),
+      ).toBe(true);
+      const opciones = init.mock.calls[init.mock.calls.length - 1]?.[0] as Record<string, unknown>;
+      expect(opciones.tracesSampleRate).toBe(0.25);
+      expect(opciones.beforeSend).toBe(m.limpiarEvento);
+      expect(opciones.beforeSendTransaction).toBe(m.limpiarTransaccion);
+    });
+  });
+});
+
+describe('limpiarTransaccion', () => {
+  it('limpia request, ids, query y datos de los spans', () => {
+    const id = 'a'.repeat(24);
+    const e = limpiarTransaccion({
+      type: 'transaction',
+      transaction: `/sales/${id}`,
+      user: { id: '1' },
+      request: { url: `https://x.com/sales/${id}?doc=123456789`, headers: { cookie: 'c', accept: 'a' } },
+      contexts: { trace: { data: { a: 1 }, description: `GET /sales/${id}?x=1` } },
+      spans: [{ description: `GET https://x.com/c/${id}?t=9`, data: { 'http.query': 'q' }, tags: { a: 'b' } }],
+    } as never) as unknown as {
+      transaction: string;
+      user?: unknown;
+      request: { url: string; headers: Record<string, string> };
+      contexts: { trace: { data?: unknown; description: string } };
+      spans: Array<{ description: string; data?: unknown; tags?: unknown }>;
+    };
+    expect(e.transaction).toBe('/sales/:id');
+    expect(e.user).toBeUndefined();
+    expect(e.request.url).toBe('https://x.com/sales/:id');
+    expect(e.request.headers).toEqual({ accept: 'a' });
+    expect(e.contexts.trace.data).toBeUndefined();
+    expect(e.contexts.trace.description).toBe('GET /sales/:id');
+    expect(e.spans[0]).toEqual({ description: 'GET https://x.com/c/:id' });
   });
 });

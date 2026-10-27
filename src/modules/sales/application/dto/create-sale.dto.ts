@@ -1,4 +1,5 @@
 import { Type } from 'class-transformer';
+import { PLATFORM_CODES, PlatformCode } from '../../domain/platform-orders';
 import {
   ArrayMaxSize,
   ArrayNotEmpty,
@@ -12,6 +13,7 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  IsUUID,
   Matches,
   MaxLength,
   Min,
@@ -19,9 +21,15 @@ import {
   ValidateNested,
 } from 'class-validator';
 import {
+  CARD_FRANCHISES,
+  CARD_TYPES,
+  CardFranchise,
+  CardType,
   DISCOUNT_TYPES,
   DiscountType,
+  PAYMENT_CHANNELS,
   PAYMENT_METHODS,
+  PaymentChannel,
   PaymentMethod,
 } from '../../domain/sales.constants';
 import {
@@ -59,6 +67,27 @@ export class SaleLineDto {
 export class SalePaymentDto {
   @IsIn(PAYMENT_METHODS as readonly string[])
   method!: PaymentMethod;
+
+  /** Canal digital (ítem 6.4): datáfono, Nequi, Daviplata o QR/Bre-B. */
+  @IsOptional()
+  @IsIn(PAYMENT_CHANNELS as readonly string[])
+  channel?: PaymentChannel;
+
+  /** Solo datáfono: débito o crédito. */
+  @IsOptional()
+  @IsIn(CARD_TYPES as readonly string[])
+  cardType?: CardType;
+
+  /** Solo datáfono: franquicia. */
+  @IsOptional()
+  @IsIn(CARD_FRANCHISES as readonly string[])
+  franchise?: CardFranchise;
+
+  /** Aprobación del datáfono, últimos 4 o número de la billetera. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  reference?: string;
 
   /** Monto recibido en efectivo (para calcular el cambio). */
   @IsOptional()
@@ -100,6 +129,27 @@ export class SalePaymentDto {
 export class SalePaymentPartDto {
   @IsIn(PAYMENT_METHODS as readonly string[])
   method!: PaymentMethod;
+
+  /** Canal digital (ítem 6.4): datáfono, Nequi, Daviplata o QR/Bre-B. */
+  @IsOptional()
+  @IsIn(PAYMENT_CHANNELS as readonly string[])
+  channel?: PaymentChannel;
+
+  /** Solo datáfono: débito o crédito. */
+  @IsOptional()
+  @IsIn(CARD_TYPES as readonly string[])
+  cardType?: CardType;
+
+  /** Solo datáfono: franquicia. */
+  @IsOptional()
+  @IsIn(CARD_FRANCHISES as readonly string[])
+  franchise?: CardFranchise;
+
+  /** Aprobación del datáfono, últimos 4 o número de la billetera. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  reference?: string;
 
   @IsNumber()
   @IsPositive()
@@ -208,6 +258,30 @@ export class SaleDeliveryDto {
   @IsNumber()
   @Min(0)
   fee?: number;
+}
+
+/**
+ * Pedido de una plataforma de domicilio (ítem 7.5). Con él, el único medio de
+ * pago admitido es `platform` y no hay propina (va por la app de la plataforma).
+ */
+export class SalePlatformDto {
+  @IsIn(PLATFORM_CODES as readonly string[])
+  code!: PlatformCode;
+
+  /** Código del pedido en la plataforma; junto con `code` no se puede repetir. */
+  @IsString()
+  @MaxLength(80)
+  externalId!: string;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'orderedAt debe ser YYYY-MM-DD' })
+  orderedAt?: string;
+
+  /** Comisión estimada del portal, en pesos. La real se anota al liquidar. */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  commissionEstimate?: number;
 }
 
 /** El precio NUNCA viene del cliente: se toma el salePrice del servidor. */
@@ -343,4 +417,23 @@ export class CreateSaleDto {
   @ValidateNested()
   @Type(() => SaleSellerDto)
   seller?: SaleSellerDto;
+
+  /**
+   * Pedido de una plataforma de domicilio (ítem 7.5). Exige
+   * `payment: { method: 'platform' }` y, al revés, ese medio exige este dato.
+   */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SalePlatformDto)
+  platform?: SalePlatformDto;
+
+  /**
+   * Llave de idempotencia del cobro (UUID v4 que genera el terminal). Un
+   * reintento con la misma llave devuelve la venta ya registrada en vez de
+   * cobrar dos veces; si el reintento sale sin red, la misma llave es el
+   * `offlineId` de la venta encolada y la sincronización la reconoce (6.3).
+   */
+  @IsOptional()
+  @IsUUID('4')
+  idempotencyKey?: string;
 }

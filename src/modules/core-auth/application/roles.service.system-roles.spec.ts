@@ -71,6 +71,23 @@ describe('RolesService · permisos vigentes de cada rol', () => {
       find: vi.fn(() => ({
         sort: () => ({ exec: () => Promise.resolve(Object.values(stored)) }),
       })),
+      // Solo para el upsert `$setOnInsert` del rol de sistema que falta.
+      updateOne: vi.fn(
+        (
+          { key }: { key: string },
+          update: { $setOnInsert?: Record<string, unknown>; $set?: Record<string, unknown> },
+        ) => {
+          if (stored[key] && update.$set) Object.assign(stored[key]!, update.$set);
+          if (!stored[key] && update.$setOnInsert) {
+            stored[key] = {
+              id: `id-${key}`,
+              key,
+              ...update.$setOnInsert,
+            } as ReturnType<typeof storedRole>;
+          }
+          return { exec: () => Promise.resolve({}) };
+        },
+      ),
     };
     userModel = { countDocuments: vi.fn(() => ({ exec: () => Promise.resolve(0) })) };
     service = new RolesService(roleModel as never, userModel as never);
@@ -103,6 +120,65 @@ describe('RolesService · permisos vigentes de cada rol', () => {
 
     expect(perms).toEqual([PERMISSIONS.POS_SELL]);
     expect(perms).not.toContain(PERMISSIONS.PRODUCTION_MANAGE);
+  });
+
+  /**
+   * Ítem 7.8: el Contador se añadió después de que existieran empresas, y los
+   * roles de sistema solo se siembran al registrar. Sin esto el Dueño de una
+   * empresa vieja no tendría a quién invitar como Contador.
+   */
+  describe('rol Contador en empresas anteriores a su existencia', () => {
+    it('se crea al buscarlo, con solo lectura contable', async () => {
+      expect(stored[ROLES.ACCOUNTANT]).toBeUndefined();
+
+      const role = await service.findByKey(ROLES.ACCOUNTANT);
+
+      expect(role?.key).toBe(ROLES.ACCOUNTANT);
+      expect(role?.isSystem).toBe(true);
+      expect(await service.permissionsForRole(ROLES.ACCOUNTANT)).toEqual([
+        PERMISSIONS.FINANCE_VIEW,
+        PERMISSIONS.REPORTS_VIEW,
+        PERMISSIONS.PAYROLL_VIEW,
+        PERMISSIONS.SEDE_VIEW_ALL,
+      ]);
+    });
+
+    it('no hace escritura si la fila ya existe (findByKey en cada login)', async () => {
+      stored[ROLES.ACCOUNTANT] = storedRole(ROLES.ACCOUNTANT, [PERMISSIONS.REPORTS_VIEW]);
+
+      await service.findByKey(ROLES.ACCOUNTANT);
+
+      expect(roleModel.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('no toca un rol a medida previo llamado contador (isSystem: false)', async () => {
+      stored[ROLES.ACCOUNTANT] = {
+        ...storedRole(ROLES.ACCOUNTANT, [PERMISSIONS.POS_SELL]),
+        isSystem: false,
+      };
+
+      await service.list();
+      await service.ensureSystemRoles();
+
+      expect(stored[ROLES.ACCOUNTANT]!.permissions).toEqual([PERMISSIONS.POS_SELL]);
+      expect(stored[ROLES.ACCOUNTANT]!.isSystem).toBe(false);
+    });
+
+    it('aparece en la lista de roles para invitar', async () => {
+      const views = await service.list();
+
+      expect(views.map((v) => v.key)).toContain(ROLES.ACCOUNTANT);
+    });
+
+    it('no pisa un Contador que el Dueño ya ajustó', async () => {
+      stored[ROLES.ACCOUNTANT] = storedRole(ROLES.ACCOUNTANT, [PERMISSIONS.REPORTS_VIEW]);
+
+      await service.list();
+
+      expect(await service.permissionsForRole(ROLES.ACCOUNTANT)).toEqual([
+        PERMISSIONS.REPORTS_VIEW,
+      ]);
+    });
   });
 
   it('un rol inexistente no da permisos', async () => {

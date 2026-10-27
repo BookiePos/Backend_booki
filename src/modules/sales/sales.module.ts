@@ -27,10 +27,30 @@ import {
   FinanceReceivableSchema,
 } from '../finance/infrastructure/schemas/finance-receivable.schema';
 import { SalesService } from './application/sales.service';
+import { OfflineSalesService } from './application/offline-sales.service';
+import {
+  OfflineReservation,
+  OfflineReservationSchema,
+} from './infrastructure/schemas/offline-reservation.schema';
+import {
+  OfflineConflictRecord,
+  OfflineConflictSchema,
+} from './infrastructure/schemas/offline-conflict.schema';
+import {
+  OfflineSaleClaim,
+  OfflineSaleClaimSchema,
+} from './infrastructure/schemas/offline-sale-claim.schema';
 import { SaleReturnsService } from './application/sale-returns.service';
 import { OrdersService } from './application/orders.service';
 import { PackagingService } from './application/packaging.service';
 import { SalesController } from './infrastructure/sales.controller';
+import { PlatformOrdersController } from './infrastructure/platform-orders.controller';
+import { PlatformOrdersService } from './application/platform-orders.service';
+import { PlatformSettlementsService } from './application/platform-settlements.service';
+import {
+  PlatformSettlement,
+  PlatformSettlementSchema,
+} from './infrastructure/schemas/platform-settlement.schema';
 import { OrdersController } from './infrastructure/orders.controller';
 import { InventoryModule } from '../inventory/inventory.module';
 import { SedesModule } from '../sedes/sedes.module';
@@ -73,6 +93,7 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
     // lo estaba, mongoose lanzaba MissingSchemaError (500).
     TenantMongooseModule.forFeature([
       { name: Sale.name, schema: SaleSchema },
+      { name: PlatformSettlement.name, schema: PlatformSettlementSchema },
       { name: SaleReturn.name, schema: SaleReturnSchema },
       { name: Order.name, schema: OrderSchema },
       { name: Counter.name, schema: CounterSchema },
@@ -81,10 +102,22 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
       { name: CajaMovement.name, schema: CajaMovementSchema },
       { name: FinanceReceivable.name, schema: FinanceReceivableSchema },
       { name: Sede.name, schema: SedeSchema },
+      // Modo sin conexión (ítem 6.3).
+      { name: OfflineReservation.name, schema: OfflineReservationSchema },
+      { name: OfflineSaleClaim.name, schema: OfflineSaleClaimSchema },
+      { name: OfflineConflictRecord.name, schema: OfflineConflictSchema },
     ]),
   ],
-  controllers: [SalesController, OrdersController],
-  providers: [SalesService, OrdersService, SaleReturnsService, PackagingService],
+  controllers: [SalesController, OrdersController, PlatformOrdersController],
+  providers: [
+    SalesService,
+    OrdersService,
+    SaleReturnsService,
+    PackagingService,
+    OfflineSalesService,
+    PlatformOrdersService,
+    PlatformSettlementsService,
+  ],
   exports: [SalesService, OrdersService, SaleReturnsService],
 })
 export class SalesModule {}

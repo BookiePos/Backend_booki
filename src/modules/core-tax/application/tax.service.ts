@@ -15,6 +15,7 @@ import {
   SetTaxRateVersionDto,
   UpdateTaxDto,
 } from './dto/tax.dto';
+import { cop } from '../../finance/domain/money.util';
 
 /** Impuesto con su tarifa vigente y su histórico de vigencias. */
 export interface TaxView {
@@ -140,8 +141,8 @@ export class TaxService {
     date?: string,
   ): Promise<TaxComputation> {
     const version = await this.resolveRate(code, date);
-    const safeBase = Math.max(0, Math.round(base || 0));
-    const taxAmount = Math.round((safeBase * version.rate) / 100);
+    const safeBase = Math.max(0, cop(base));
+    const taxAmount = cop((safeBase * version.rate) / 100);
     return {
       code: version.code,
       kind: version.kind,

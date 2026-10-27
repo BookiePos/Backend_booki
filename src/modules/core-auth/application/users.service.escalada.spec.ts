@@ -82,6 +82,7 @@ function rolesDoble() {
     admin: adminPerms,
     manager: permsDe('manager'),
     cashier: permsDe('cashier'),
+    contador: permsDe('contador'),
   };
   return {
     findByKey: vi.fn(async (k: string) =>
@@ -160,6 +161,26 @@ describe('UsersService · nadie toma la cuenta del Dueño', () => {
         actor,
       ),
     );
+
+  // ---- Ítem 7.8: el rol Contador no abre una escalada ----
+
+  it('un Gerente no puede asignar el rol Contador (trae permisos que no tiene)', async () => {
+    const gerente = {
+      userId: 'g1',
+      role: 'manager',
+      permissions: permsDe('manager'),
+      sedeIds: [SEDE_A],
+    };
+    await expect(
+      service.assertPuedeAsignarRol(gerente, 'contador'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('el Dueño sí puede asignar el rol Contador', async () => {
+    await expect(
+      service.assertPuedeAsignarRol(dueno, 'contador'),
+    ).resolves.toBeUndefined();
+  });
 
   // ---- Solo el Dueño asigna o edita al Dueño ----
 

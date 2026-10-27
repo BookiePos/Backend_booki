@@ -46,6 +46,14 @@ export const ACC = {
    */
   CXC_TRABAJADORES: '1365',
   INVENTARIO: '1435',
+  /**
+   * Cuenta puente del modo sin conexión (ítem 6.3): mercancía vendida offline
+   * que no estaba en el inventario registrado (venta autorizada con lo
+   * cobrado). Su costo va a 6135 contra esta subcuenta de 1435 (saldo crédito)
+   * hasta que se regulariza sacando ese stock cuando llega la compra o el
+   * ajuste. PENDIENTE de confirmar por el contador.
+   */
+  INVENTARIO_POR_REGULARIZAR: '143595',
   PROVEEDORES: '2205',
   RETENCION_FUENTE: '2365',
   /**
@@ -72,11 +80,34 @@ export const ACC = {
   SALARIOS_POR_PAGAR: '2505',
   /** Cesantías, intereses, prima y vacaciones causadas (PUC 2610). */
   PROVISIONES_LABORALES: '2610',
+  /**
+   * Retenciones que la plataforma practica al negocio al liquidar (anticipos de
+   * impuestos a favor, PUC 1355): retención en la fuente, ReteIVA y ReteICA.
+   */
+  RETEFUENTE_A_FAVOR: '135515',
+  RETEIVA_A_FAVOR: '135517',
+  RETEICA_A_FAVOR: '135518',
   INGRESOS_VENTAS: '4135',
+  /**
+   * Mayor valor cobrado por la plataforma frente al precio del POS (menú de la
+   * plataforma más caro). Ingreso no operacional (PUC 4295, diversos); el
+   * contador confirma si causa IVA/INC.
+   */
+  MAYOR_VALOR_PLATAFORMAS: '4295',
   /** Devoluciones en ventas (PUC 4175): resta del ingreso, separada de él. */
   DEVOLUCIONES_VENTAS: '4175',
   GASTOS_PERSONAL: '5105',
   GASTOS_SERVICIOS: '5135',
+  /**
+   * Comisión de las plataformas de domicilio (Rappi, DiDi Food, Uber Eats): gasto
+   * de ventas por servicios (PUC 5235). Se reconoce al liquidar, no al vender.
+   */
+  COMISIONES_PLATAFORMAS: '5235',
+  /**
+   * Comisión del adquirente (datáfono) o de la billetera: gasto financiero,
+   * PUC 5305 (gastos financieros - comisiones). Se reconoce al conciliar.
+   */
+  COMISIONES_FINANCIERAS: '5305',
   GASTOS_DIVERSOS: '5195',
   COSTO_VENTA: '6135',
   /**
@@ -105,8 +136,12 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   { code: '1105', name: 'Caja', type: 'asset' },
   { code: '1110', name: 'Bancos', type: 'asset' },
   { code: '1305', name: 'Clientes (CxC)', type: 'asset' },
+  { code: '135515', name: 'Retención en la fuente a favor (anticipo)', type: 'asset' },
+  { code: '135517', name: 'ReteIVA a favor (anticipo)', type: 'asset' },
+  { code: '135518', name: 'ReteICA a favor (anticipo)', type: 'asset' },
   { code: '1365', name: 'Cuentas por cobrar a trabajadores', type: 'asset' },
   { code: '1435', name: 'Inventario de mercancías', type: 'asset' },
+  { code: '143595', name: 'Inventario por regularizar (ventas sin conexión)', type: 'asset' },
   // Pasivo
   { code: '2205', name: 'Proveedores (CxP)', type: 'liability' },
   { code: '2365', name: 'Retención en la fuente', type: 'liability' },
@@ -126,10 +161,13 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   { code: '3605', name: 'Resultado del ejercicio', type: 'equity' },
   // Ingresos
   { code: '4135', name: 'Ingresos por ventas', type: 'income' },
+  { code: '4295', name: 'Mayor valor cobrado en plataformas', type: 'income' },
   { code: '4175', name: 'Devoluciones en ventas', type: 'income' },
   // Gastos / costos
   { code: '5105', name: 'Gastos de personal', type: 'expense' },
   { code: '5135', name: 'Servicios (arriendo, públicos)', type: 'expense' },
+  { code: '5235', name: 'Comisiones de plataformas de domicilio', type: 'expense' },
+  { code: '5305', name: 'Comisiones financieras (datáfono y billeteras)', type: 'expense' },
   { code: '5195', name: 'Gastos diversos', type: 'expense' },
   { code: '6135', name: 'Costo de mercancía vendida', type: 'expense' },
   // Costos de producción absorbidos (saldo crédito: restan del gasto).

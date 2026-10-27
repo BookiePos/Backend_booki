@@ -32,7 +32,7 @@ import { ProductsService } from '../../inventory/application/products.service';
 import { Product } from '../../inventory/infrastructure/schemas/product.schema';
 import { ProductCategory } from '../../inventory/infrastructure/schemas/product-category.schema';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
-import { cop } from '../../finance/domain/money.util';
+import { cop, redondearA } from '../../finance/domain/money.util';
 
 const PRODUCT_POPULATE = 'name sku unit';
 
@@ -134,6 +134,7 @@ export class CatalogService {
       salePrice: dto.salePrice,
       ivaRate: dto.ivaRate ?? 19,
       ivaType: dto.ivaType ?? 'gravado',
+      tratamientoFiscal: dto.tratamientoFiscal,
       active: dto.active ?? true,
       packaging: await this.resolvePackaging(dto.packaging),
       // Dinero en entero: el peso no tiene centavos y un costo con decimales
@@ -269,7 +270,7 @@ export class CatalogService {
 
     if (file.size > PRODUCT_IMAGE_MAX_BYTES) {
       throw new BadRequestException(
-        `La imagen supera los ${Math.round(PRODUCT_IMAGE_MAX_BYTES / 1024 / 1024)} MB.`,
+        `La imagen supera los ${redondearA(PRODUCT_IMAGE_MAX_BYTES / 1024 / 1024, 0)} MB.`,
       );
     }
     // El tipo sale de los bytes, no del mimetype que declara el cliente.
@@ -349,11 +350,17 @@ export class CatalogService {
    * Carga un producto de catálogo asegurando que se puede vender (activo y con
    * precio). Lo usa el POS al registrar la venta (precio siempre del servidor).
    */
-  async loadSellableOrFail(id: string): Promise<CatalogProductDocument> {
+  async loadSellableOrFail(
+    id: string,
+    opts: { allowInactive?: boolean } = {},
+  ): Promise<CatalogProductDocument> {
     const doc = Types.ObjectId.isValid(id)
       ? await this.model.findById(id).exec()
       : null;
     if (!doc) throw new NotFoundException('Producto no encontrado');
+    // `allowInactive`: venta offline ya cobrada que se registra con lo que se
+    // cobró (autorizada); el precio lo pone el comprobante, no la ficha.
+    if (opts.allowInactive) return doc;
     if (!doc.active || !doc.salePrice || doc.salePrice <= 0) {
       throw new BadRequestException(
         `${doc.name} no está disponible para la venta`,

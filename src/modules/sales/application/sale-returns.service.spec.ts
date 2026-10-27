@@ -338,6 +338,25 @@ describe('SaleReturnsService.create · lo que se mueve', () => {
     expect(stock.reverseSale).not.toHaveBeenCalled();
   });
 
+  it.each(['pendiente', 'regularizado'])(
+    'una venta offline con faltante %s no admite devoluciones (409)',
+    async (status) => {
+      build(
+        venta({
+          offlineOverride: {
+            byUserId: 'u',
+            at: new Date(),
+            faltantes: [{ productId: new Types.ObjectId(), qty: 1, status }],
+          },
+        }),
+      );
+      await expect(
+        service.create(saleId.toString(), devolucion(), user),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(stock.reverseSale).not.toHaveBeenCalled();
+    },
+  );
+
   it('cuenta las devoluciones anteriores y no deja pasarse del total vendido', async () => {
     build(venta(), [
       { lines: [{ productId: GASEOSA, qty: 9 }] },

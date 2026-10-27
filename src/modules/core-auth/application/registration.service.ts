@@ -21,7 +21,8 @@ import {
 } from '../../control/infrastructure/schemas/registro-pendiente.schema';
 import { SedesService } from '../../sedes/application/sedes.service';
 import { ROLES } from '../domain/roles';
-import { RegisterDto } from './dto/register.dto';
+import { CobraIva, RegisterDto } from './dto/register.dto';
+import { ResponsabilidadFiscal } from '../../sedes/domain/sede.constants';
 import { AuthService, AuthTokens, AuthUserView } from './auth.service';
 import { MailResult, MailService } from './mail.service';
 import { RolesService } from './roles.service';
@@ -52,6 +53,19 @@ export const RESPUESTA_REGISTRO = {
 } as const;
 
 type DatosRegistro = Omit<RegisterDto, 'password'>;
+
+/**
+ * «¿Cobras IVA?» → responsabilidad de la sede. Para INC no se infiere nada:
+ * dejar de ser responsable exige más datos (art. 512-13 ET) y el default
+ * conservador sigue causándolo.
+ */
+function responsabilidadDeCobraIva(
+  cobraIva?: CobraIva,
+): ResponsabilidadFiscal | undefined {
+  if (cobraIva === 'no') return 'no_responsable_iva';
+  if (cobraIva === 'si') return 'responsable_iva';
+  return undefined;
+}
 
 /**
  * Alta de una empresa nueva (tenant) desde la web pública.
@@ -386,7 +400,8 @@ export class RegistrationService {
             nit: dto.nit,
             nitDv: dto.nitDv,
             tipoPersona: dto.tipoPersona,
-            responsabilidadFiscal: dto.responsabilidadFiscal,
+            responsabilidadFiscal:
+              dto.responsabilidadFiscal ?? responsabilidadDeCobraIva(dto.cobraIva),
             ciiu: dto.ciiu,
             departamento: dto.departamento,
             ciudad: dto.ciudad,

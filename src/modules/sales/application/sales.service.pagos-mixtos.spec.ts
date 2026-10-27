@@ -214,6 +214,66 @@ describe('SalesService.create · pagos mixtos', () => {
     expect(creada.payment.method).toBe('transfer');
   });
 
+  it('efectivo + Nequi + Daviplata (6.4): guarda canal y referencia, una cuenta de tesorería por canal', async () => {
+    await service.create(
+      venta({
+        payments: [
+          { method: 'cash', amount: 3_000 },
+          { method: 'transfer', channel: 'nequi', reference: '3001234567', amount: 5_000 },
+          { method: 'transfer', channel: 'daviplata', amount: 3_900 },
+        ],
+      }),
+      user,
+    );
+    expect(creada.payments).toEqual([
+      { method: 'cash', amount: 3_000 },
+      { method: 'transfer', channel: 'nequi', reference: '3001234567', amount: 5_000 },
+      { method: 'transfer', channel: 'daviplata', amount: 3_900 },
+    ]);
+    const posts = treasury.post.mock.calls.map((c: any[]) => c[0]);
+    expect(posts.map((p: any) => p.channel)).toEqual(['nequi', 'daviplata']);
+    expect(new Set(posts.map((p: any) => p.sourceId)).size).toBe(2);
+    // El efectivo no se va a tesorería: queda en la caja del POS.
+    expect(posts.every((p: any) => p.method === 'transfer')).toBe(true);
+    // El asiento sigue leyendo el medio de siempre.
+    expect(ledger.postSale.mock.calls[0][0].payments).toEqual(creada.payments);
+  });
+
+  it('un solo pago con datáfono (6.4): payment lleva franquicia y aprobación', async () => {
+    await service.create(
+      venta({
+        payment: {
+          method: 'card',
+          channel: 'datafono',
+          cardType: 'credit',
+          franchise: 'visa',
+          reference: 'AP 123456',
+        },
+      }),
+      user,
+    );
+    expect(creada.payments).toBeUndefined();
+    expect(creada.payment).toEqual(
+      expect.objectContaining({
+        method: 'card',
+        channel: 'datafono',
+        cardType: 'credit',
+        franchise: 'visa',
+        reference: 'AP 123456',
+      }),
+    );
+    expect(treasury.post).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'datafono', sourceId: creada._id.toString() }),
+    );
+  });
+
+  it('un canal que no es del medio: 400 antes de tocar el inventario', async () => {
+    await expect(
+      service.create(venta({ payment: { method: 'card', channel: 'qr' } }), user),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(sell).not.toHaveBeenCalled();
+  });
+
   it('suma insuficiente: 400 antes de tocar el inventario', async () => {
     await expect(
       service.create(

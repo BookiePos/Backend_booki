@@ -1,9 +1,15 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 import {
+  CARD_FRANCHISES,
+  CARD_TYPES,
+  CardFranchise,
+  CardType,
   DISCOUNT_TYPES,
   DiscountType,
+  PAYMENT_CHANNELS,
   PAYMENT_METHODS,
+  PaymentChannel,
   PaymentMethod,
   SALE_STATUSES,
   SaleStatus,
@@ -18,6 +24,8 @@ import {
   SALE_TAX_KINDS,
   SaleTaxKind,
 } from '../../../core-tax/domain/sale-tax';
+
+import { PLATFORM_CODES, PlatformCode } from '../../domain/platform-orders';
 
 export type SaleDocument = HydratedDocument<Sale>;
 
@@ -183,6 +191,20 @@ class SalePayment {
 
   @Prop({ min: 0 })
   change?: number;
+
+  /** Canal digital (ítem 6.4). */
+  @Prop({ enum: PAYMENT_CHANNELS })
+  channel?: PaymentChannel;
+
+  @Prop({ enum: CARD_TYPES })
+  cardType?: CardType;
+
+  @Prop({ enum: CARD_FRANCHISES })
+  franchise?: CardFranchise;
+
+  /** Aprobación del datáfono, últimos 4 o número de la billetera. */
+  @Prop({ trim: true, maxlength: 120 })
+  reference?: string;
 }
 const SalePaymentSchema = SchemaFactory.createForClass(SalePayment);
 
@@ -197,6 +219,20 @@ class SalePaymentPart {
 
   @Prop({ required: true, min: 0 })
   amount!: number;
+
+  /** Canal digital (ítem 6.4). */
+  @Prop({ enum: PAYMENT_CHANNELS })
+  channel?: PaymentChannel;
+
+  @Prop({ enum: CARD_TYPES })
+  cardType?: CardType;
+
+  @Prop({ enum: CARD_FRANCHISES })
+  franchise?: CardFranchise;
+
+  /** Aprobación del datáfono, últimos 4 o número de la billetera. */
+  @Prop({ trim: true, maxlength: 120 })
+  reference?: string;
 }
 const SalePaymentPartSchema = SchemaFactory.createForClass(SalePaymentPart);
 
@@ -284,6 +320,38 @@ export class SaleDelivery {
   failureReason?: string;
 }
 const SaleDeliverySchema = SchemaFactory.createForClass(SaleDelivery);
+
+/**
+ * Pedido de una plataforma de domicilio (ítem 7.5). El par (`code`,
+ * `externalId`) identifica el pedido en el portal: es la llave de idempotencia
+ * para que importar dos veces el mismo CSV no duplique ventas.
+ */
+@Schema({ _id: false })
+class SalePlatform {
+  @Prop({ required: true, enum: PLATFORM_CODES })
+  code!: PlatformCode;
+
+  /** Código del pedido en la plataforma. */
+  @Prop({ required: true, trim: true, maxlength: 80 })
+  externalId!: string;
+
+  /** Fecha del pedido según el portal (YYYY-MM-DD). El asiento lleva esa fecha si es del mes en curso (ver accountingDate). */
+  @Prop()
+  orderedAt?: string;
+
+  /** Fecha contable del asiento de la venta (YYYY-MM-DD); base del orden de las liquidaciones. */
+  @Prop()
+  accountingDate?: string;
+
+  /** Comisión que el portal informó; la real se reconoce al liquidar. */
+  @Prop({ min: 0 })
+  commissionEstimate?: number;
+
+  /** Liquidación que cobró este pedido. Sin ella, la plataforma todavía lo debe. */
+  @Prop({ type: Types.ObjectId })
+  settlementId?: Types.ObjectId;
+}
+const SalePlatformSchema = SchemaFactory.createForClass(SalePlatform);
 
 /** Venta del POS. Documento único y atómico (Mongo standalone). */
 @Schema({ timestamps: true, collection: 'sales' })
@@ -414,9 +482,117 @@ export class Sale {
   /** Cuenta abierta que originó la venta (si se liquidó una cuenta). */
   @Prop({ type: Types.ObjectId, ref: 'Order' })
   orderId?: Types.ObjectId;
+
+  /**
+   * Venta cobrada sin internet y registrada al sincronizar (ítem 6.3): el UUID
+   * que le puso el terminal. Único: reenviar la misma venta no la duplica.
+   */
+  @Prop({ type: String })
+  offlineId?: string;
+
+  /**
+   * Cuándo se cobró de verdad, si fue offline. `createdAt` es cuándo llegó al
+   * servidor; el asiento usa esta fecha.
+   */
+  @Prop()
+  soldAt?: Date;
+
+  /**
+   * Venta offline cuyo turno de reserva ya estaba cerrado y entró al abierto a
+   * pedido: el turno donde de verdad se contó el efectivo.
+   */
+  @Prop({ type: Types.ObjectId })
+  offlineTurnoOrigenId?: Types.ObjectId;
+
+  /**
+   * Venta offline registrada «con lo cobrado» por quien autoriza anulaciones
+   * (TOTAL_DISTINTO, SIN_STOCK, PRODUCTO_INACTIVO). `faltantes` es lo que se
+   * vendió sin estar en el inventario registrado, costeado al último costo
+   * (6135 contra la puente 143595). Queda `pendiente` hasta que se regulariza
+   * sacando ese stock cuando entra (`regularizado`, con su costo real).
+   */
+  @Prop({
+    type: {
+      byUserId: { type: String, required: true },
+      byEmail: { type: String },
+      at: { type: Date, required: true },
+      faltantes: [
+        {
+          productId: { type: Types.ObjectId },
+          qty: { type: Number },
+          unitCost: { type: Number },
+          cost: { type: Number },
+          status: {
+            type: String,
+            enum: ['pendiente', 'consumiendo', 'asiento_pendiente', 'regularizado', 'anulado'],
+          },
+          realCost: { type: Number },
+          regularizadoAt: { type: Date },
+          regularizadoPor: { type: String },
+        },
+      ],
+      /** Candado de la regularización (una a la vez por venta). */
+      regularizandoAt: { type: Date },
+    },
+    _id: false,
+  })
+  offlineOverride?: {
+    byUserId: string;
+    byEmail?: string;
+    at: Date;
+    faltantes: {
+      productId: Types.ObjectId;
+      qty: number;
+      unitCost?: number;
+      cost?: number;
+      /**
+       * `consumiendo`: se está sacando el stock (un reintento no lo vuelve a
+       * sacar); `asiento_pendiente`: salió el stock y falta el asiento;
+       * `anulado`: la venta se anuló antes de regularizar.
+       */
+      status?: 'pendiente' | 'consumiendo' | 'asiento_pendiente' | 'regularizado' | 'anulado';
+      realCost?: number;
+      regularizadoAt?: Date;
+      regularizadoPor?: string;
+    }[];
+    regularizandoAt?: Date;
+  };
+
+  /**
+   * Si el pedido vino de una plataforma de domicilio. Con él, `payment.method`
+   * es `platform`: el cobro es una cuenta por cobrar a la plataforma.
+   */
+  @Prop({ type: SalePlatformSchema })
+  platform?: SalePlatform;
 }
 
 export const SaleSchema = SchemaFactory.createForClass(Sale);
 
 SaleSchema.index({ sedeId: 1, saleNumber: 1 }, { unique: true });
 SaleSchema.index({ sedeId: 1, createdAt: -1 });
+SaleSchema.index(
+  { offlineId: 1 },
+  { unique: true, partialFilterExpression: { offlineId: { $type: 'string' } } },
+);
+
+// Un pedido de plataforma vive una sola vez: (plataforma, código externo) único
+// entre las ventas completadas. Una venta anulada libera el código para
+// registrarlo de nuevo. Es el respaldo de la verificación previa del servicio.
+SaleSchema.index(
+  { 'platform.code': 1, 'platform.externalId': 1 },
+  {
+    unique: true,
+    name: 'pedido_plataforma_unico',
+    partialFilterExpression: { 'platform.externalId': { $type: 'string' }, status: 'completed' },
+  },
+);
+// Saldo por cobrar a cada plataforma: pedidos de la sede sin liquidar.
+SaleSchema.index(
+  { sedeId: 1, 'platform.code': 1, 'platform.settlementId': 1, createdAt: -1 },
+  { partialFilterExpression: { 'platform.code': { $exists: true } } },
+);
+// Faltantes de ventas offline autorizadas sin regularizar, por sede.
+SaleSchema.index(
+  { sedeId: 1, 'offlineOverride.faltantes.status': 1 },
+  { partialFilterExpression: { 'offlineOverride.faltantes': { $exists: true } } },
+);

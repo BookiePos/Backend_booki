@@ -10,6 +10,7 @@ import {
   FinanceMovementDocument,
 } from '../infrastructure/schemas/finance-movement.schema';
 import {
+  AccountAutoKey,
   FinancePaymentMethod,
   MovementDirection,
   MovementSource,
@@ -22,6 +23,8 @@ export interface TreasuryPost {
   sourceId: string;
   sedeId?: string | null;
   method: FinancePaymentMethod;
+  /** Canal digital (ítem 6.4): si hay una cuenta mapeada a él, manda sobre el medio. */
+  channel?: string;
   direction: MovementDirection;
   amount: number;
   date: string; // YYYY-MM-DD
@@ -57,16 +60,24 @@ export class TreasuryPostingService {
   private async accountForMethod(
     method: FinancePaymentMethod,
     sedeId?: string | null,
+    channel?: string,
   ): Promise<FinanceAccountDocument | null> {
-    const accts = await this.accounts
-      .find({ active: true, autoMethods: method })
-      .exec();
-    if (accts.length === 0) return null;
-    if (sedeId) {
-      const own = accts.find((a) => a.sedeId?.toString() === sedeId);
-      if (own) return own;
+    // Primero la cuenta mapeada al canal (Nequi, Daviplata, QR, datáfono) y,
+    // si el negocio no la configuró, la del medio de siempre.
+    const keys = (channel ? [channel, method] : [method]) as AccountAutoKey[];
+    for (const key of keys) {
+      const accts = await this.accounts
+        .find({ active: true, autoMethods: key })
+        .exec();
+      if (accts.length === 0) continue;
+      if (sedeId) {
+        const own = accts.find((a) => a.sedeId?.toString() === sedeId);
+        if (own) return own;
+      }
+      const shared = accts.find((a) => !a.sedeId);
+      if (shared) return shared;
     }
-    return accts.find((a) => !a.sedeId) ?? null;
+    return null;
   }
 
   /**
@@ -77,7 +88,7 @@ export class TreasuryPostingService {
     const amount = cop(p.amount);
     if (amount <= 0) return;
     try {
-      const acc = await this.accountForMethod(p.method, p.sedeId ?? null);
+      const acc = await this.accountForMethod(p.method, p.sedeId ?? null, p.channel);
       if (!acc) return;
       await this.movements.create({
         accountId: acc._id,
@@ -111,14 +122,20 @@ export class TreasuryPostingService {
     sourceType: MovementSource,
     sourceId: string | readonly string[],
   ): Promise<void> {
-    const ids = typeof sourceId === 'string' ? sourceId : [...sourceId];
+    const ids = typeof sourceId === 'string' ? [sourceId] : [...sourceId];
     try {
+      // Una venta con canales (ítem 6.4) deja movimientos `<ventaId>:<canal>...`.
+      const sourceFilter =
+        sourceType === 'sale'
+          ? {
+              $or: [
+                { sourceId: { $in: ids } },
+                { sourceId: { $regex: `^(${ids.map(escapeRegex).join('|')}):` } },
+              ],
+            }
+          : { sourceId: { $in: ids } };
       await this.movements
-        .deleteMany({
-          sourceType,
-          sourceId: typeof ids === 'string' ? ids : { $in: ids },
-          auto: true,
-        })
+        .deleteMany({ sourceType, ...sourceFilter, auto: true })
         .exec();
     } catch (err) {
       // Best-effort como el resto del servicio, pero el movimiento queda vivo
@@ -139,4 +156,8 @@ function isDuplicateKeyError(err: unknown): boolean {
     err !== null &&
     (err as { code?: number }).code === 11000
   );
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

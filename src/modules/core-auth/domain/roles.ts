@@ -9,6 +9,7 @@ export const ROLES = {
   ADMIN: 'admin',
   MANAGER: 'manager',
   CASHIER: 'cashier',
+  ACCOUNTANT: 'contador',
 } as const;
 
 /** La clave de rol es dinámica (creada por el dueño), así que es un string. */
@@ -71,6 +72,16 @@ const CASHIER_PERMISSIONS: Permission[] = [
   PERMISSIONS.EINVOICING_ISSUE,
 ];
 
+/** Contador (ítem 7.8): solo lectura contable, sin ningún permiso de escritura. */
+const ACCOUNTANT_PERMISSIONS: Permission[] = [
+  PERMISSIONS.FINANCE_VIEW,
+  PERMISSIONS.REPORTS_VIEW,
+  PERMISSIONS.PAYROLL_VIEW,
+  // Solo lectura: el contador externo necesita balance, conciliación y nómina
+  // consolidados de toda la empresa. El Dueño puede editar el rol.
+  PERMISSIONS.SEDE_VIEW_ALL,
+];
+
 /**
  * Definiciones de los roles de sistema. Son los datos con los que se
  * siembran (seed) las filas base de la colección `roles`. La resolución
@@ -114,6 +125,19 @@ export const SYSTEM_ROLES: {
     name: 'Cajero',
     description: 'Opera el punto de venta y la caja.',
     permissions: CASHIER_PERMISSIONS,
+    isSystem: true,
+  },
+  {
+    key: ROLES.ACCOUNTANT,
+    name: 'Contador',
+    // Ítem 7.8: el contador externo del cliente. Solo lectura sobre lo
+    // contable (libro, conciliación, reportes y estados financieros,
+    // compras/gastos y nómina). No vende, no abre caja, no escribe asientos ni
+    // gastos y no toca usuarios, planes ni cobros. Ve todas las sedes (solo
+    // lectura); el Dueño puede recortarlo editando el rol.
+    description:
+      'Consulta la contabilidad de la empresa en solo lectura: libro, conciliación, reportes, compras, gastos y nómina.',
+    permissions: ACCOUNTANT_PERMISSIONS,
     isSystem: true,
   },
 ];

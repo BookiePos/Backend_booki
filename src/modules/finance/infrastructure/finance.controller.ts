@@ -9,6 +9,11 @@ import {
   Query,
 } from '@nestjs/common';
 import { FinanceService } from '../application/finance.service';
+import { PaymentReconciliationService } from '../application/payment-reconciliation.service';
+import {
+  CreateSettlementsDto,
+  ImportStatementDto,
+} from '../application/dto/payment-reconciliation.dto';
 import {
   CreateCategoryDto,
   UpdateCategoryDto,
@@ -54,7 +59,10 @@ import {
 @RequireFeature(PLAN_FEATURES.EXPENSES)
 @Controller('finance')
 export class FinanceController {
-  constructor(private readonly finance: FinanceService) {}
+  constructor(
+    private readonly finance: FinanceService,
+    private readonly paymentRecon: PaymentReconciliationService,
+  ) {}
 
   // ── Categorías ─────────────────────────────────────────────────────────────
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
@@ -283,6 +291,40 @@ export class FinanceController {
     @CurrentUser() user: JwtUser,
   ) {
     return this.finance.reconcileAccount(id, dto, user);
+  }
+
+  // ── Conciliación de pagos digitales (ítem 6.4) ──────────────────────────────
+  @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
+  @Get('payment-reconciliation')
+  paymentReconciliation(
+    @CurrentUser() user: JwtUser,
+    @Query('sedeId') sedeId: string,
+    @Query('from') from: string,
+    @Query('to') to: string,
+  ) {
+    return this.paymentRecon.list(user, { sedeId, from, to });
+  }
+
+  @RequirePermissions(PERMISSIONS.FINANCE_MANAGE)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
+  @Post('payment-reconciliation/import')
+  previewPaymentStatement(@Body() dto: ImportStatementDto, @CurrentUser() user: JwtUser) {
+    return this.paymentRecon.previewImport(user, dto);
+  }
+
+  @RequirePermissions(PERMISSIONS.FINANCE_MANAGE)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
+  @Post('payment-reconciliation')
+  createPaymentSettlements(@Body() dto: CreateSettlementsDto, @CurrentUser() user: JwtUser) {
+    return this.paymentRecon.create(user, dto);
+  }
+
+  @RequirePermissions(PERMISSIONS.FINANCE_MANAGE)
+  @RequireFeature(PLAN_FEATURES.ACCOUNTING)
+  @Delete('payment-reconciliation/:id')
+  deletePaymentSettlement(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.paymentRecon.remove(user, id);
   }
 
   // ── Presupuestos ─────────────────────────────────────────────────────────────

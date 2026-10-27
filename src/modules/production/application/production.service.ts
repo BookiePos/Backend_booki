@@ -29,7 +29,7 @@ import {
   Product,
   ProductDocument,
 } from '../../inventory/infrastructure/schemas/product.schema';
-import { cop, sumBy, sumCop } from '../../finance/domain/money.util';
+import { cop, sumBy, sumCop, redondearA } from '../../finance/domain/money.util';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import {
   allowedSedeIds,
@@ -75,7 +75,7 @@ interface BuiltLine {
  * de un kilo, que es la unidad más fina que maneja el inventario.
  */
 function qtyRound(n: number): number {
-  return Math.round(n * 10_000) / 10_000;
+  return redondearA(n, 4);
 }
 
 /**
@@ -860,7 +860,7 @@ export class ProductionService {
         margin: salePrice !== undefined ? cop(salePrice - unitCost) : undefined,
         marginPct:
           salePrice !== undefined && salePrice > 0
-            ? Math.round(((salePrice - unitCost) / salePrice) * 100)
+            ? redondearA(((salePrice - unitCost) / salePrice) * 100, 0)
             : undefined,
       };
     });

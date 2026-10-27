@@ -3,8 +3,8 @@ import { HydratedDocument, Types } from 'mongoose';
 import {
   ACCOUNT_TYPES,
   AccountType,
-  PAYMENT_METHODS,
-  FinancePaymentMethod,
+  ACCOUNT_AUTO_KEYS,
+  AccountAutoKey,
 } from '../../domain/finance.constants';
 
 export type FinanceAccountDocument = HydratedDocument<FinanceAccount>;
@@ -35,8 +35,8 @@ export class FinanceAccount {
    * Métodos de pago que alimentan esta cuenta automáticamente (ventas con
    * tarjeta/transferencia, pagos/cobros por esos medios). Vacío = solo manual.
    */
-  @Prop({ type: [String], enum: PAYMENT_METHODS, default: [] })
-  autoMethods!: FinancePaymentMethod[];
+  @Prop({ type: [String], enum: ACCOUNT_AUTO_KEYS, default: [] })
+  autoMethods!: AccountAutoKey[];
 
   @Prop({ trim: true })
   note?: string;

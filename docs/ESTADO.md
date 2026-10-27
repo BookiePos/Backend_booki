@@ -4,69 +4,40 @@
 > está git): es la foto de hoy. Cada cifra sale de un comando; lo que no se midió dice
 > «sin medir».
 
-**Fecha:** 2026-10-12
+**Fecha:** 2026-10-17
 
 ## Repositorios
 
 | | Backend | Frontend |
 |---|---|---|
-| Rama de trabajo | `fix/hallazgos-estado` (desde `main` `1ba6ae8`) | `fix/hallazgos-estado` (desde `main` `a05ec26`) |
-| Qué lleva | hallazgos (a) specs que compilan y (c) Vercel Cron | hallazgo (b) hook después del return temprano |
-| PR | abierto contra `main` (ver GitHub) | #46 abierto contra `main` |
+| Rama base | `main` en `422d44d` | `main` en `6d8cea6` |
+| Trabajo abierto | #71 (auditoría de seguridad 4.11) y esta rama (2.13) | ver GitHub |
 
-`chore/metodologia` ya está mezclada en `main` en los dos repos.
+**Versión en producción:** sin medir. Córrela con `pnpm sonda` (o mira el resumen de la
+GitHub Action `sonda-prod`, que imprime el commit) y anótala aquí al cerrar la sesión.
 
-**Versión en producción:** sin medir. Córrela con `pnpm sonda` (ver `scripts/sonda-prod.mjs`)
-y anota aquí el resultado.
+## Operación
 
-## Qué está a medias
+- **Runbook:** `docs/RUNBOOK-INCIDENTES.md`. **Tablero y alertas:** `docs/TABLERO-SALUD.md`.
+- **Monitoreo (Sentry):** código en producción; activo solo con `SENTRY_DSN`. Sin medir si el
+  dueño ya lo configuró (tarea 3 de `documentacion/tareas-del-dueno.md`).
+- **Cron diario:** `GET /cron/diario` a las 11:00 UTC; responde 500 si un barrido falla.
+  Última ejecución con 200: sin medir (requiere logs de Vercel Pro).
+- **Sonda:** `sonda-prod` corre tras cada despliegue; falta que el dueño cargue sus secretos.
 
-- **CRON_SECRET en Vercel (bloquea el hallazgo c).** El código ya está, pero el endpoint
-  `GET /cron/diario` responde 503 hasta que el dueño defina `CRON_SECRET` en el entorno
-  **Production** del proyecto `backend` (equipo `booki-pos`) en Vercel. Ningún agente toca
-  esa configuración.
-- **Fluid compute en Vercel: sin comprobar.** Confirmar que está activo en el proyecto
-  `backend`. Sin él la función tiene un límite de 10–60 s; un corte entre la reserva del
-  cobro y `wompi.createTransaction` dejaría ese período sin cobrar hasta que alguien lo note.
-- **Facturación electrónica real: sin integración.** No hay proveedor elegido ni código de
-  transmisión a la DIAN; `einvoicing` solo genera el documento y el CUFE en ambiente de pruebas.
+## Qué está a medias (depende del dueño)
 
-## Gates en `fix/hallazgos-estado` (2026-10-12)
+Vercel Pro (2.1, 2.2), Atlas M10 (2.5, 2.6), Sentry y su tablero (2.4, 2.13), secretos de la
+sonda (2.8) y datos de soporte (2.12, 7.3). Pasos en `documentacion/tareas-del-dueno.md`.
+
+## Gates (2026-10-17, en la rama de 2.13)
 
 ```
-Backend:  tsc-codigo 0 · tsc-tests 0 [techo 0] · vitest 881 pasan · eslint 2 [techo 2] · secretos 0 · build OK → 6/6 OK
-Frontend: eslint techo 93 → 92 (según el commit c0747fc; los gates del Frontend los midió el otro agente)
+vitest src/shared/monitoreo: 15 pasan · tsc --noEmit 0 errores · eslint de lo tocado 0
 ```
+El resto de gates (`node scripts/gates.mjs`) corre en CI; no se midió en local.
 
-## Siguiente paso
+## Cómo mantener esta página
 
-1. CI verde en los dos PR de `fix/hallazgos-estado` y mezclarlos (backend primero).
-2. Dueño: definir `CRON_SECRET` en Production de Vercel (proyecto `backend`, equipo
-   `booki-pos`) y redesplegar.
-3. Verificar la primera ejecución del cron en el panel de Vercel (Settings → Cron Jobs →
-   logs): debe responder 200 y loguear «Barridos diarios terminados en N ms». Un 500 trae
-   en el cuerpo qué barrido falló (p. ej. la pasarela sin configurar).
-4. Confirmar que Fluid compute está activo en el proyecto `backend`.
-5. Decidir qué hacer con `fix/cobros-pendientes-y-tarjeta-guardada` (trae la facturación en pausa).
-
-## Hallazgos
-
-**(a) Tests que pasan sin cubrir lo que dicen — cerrado.** Los specs compilan contra el
-código real: errores de `tsc` en specs 54 → 0 y techo `tscConTests` 54 → 0 (commit `bb4762c`).
-
-**(b) Frontend: hook después de un return temprano — cerrado en código (PR Frontend #46).**
-`src/app/(secure)/panel/finanzas/gastos/page.tsx`: el `useMemo` va antes del
-`if (!canView) return`, y `visibleRows` se memoiza. Techo de lint del Frontend 93 → 92
-(commit `c0747fc`).
-
-**(c) Barridos programados que no corrían en producción — resuelto en código, pendiente de
-`CRON_SECRET`.** En Vercel (serverless, plan Hobby: cron como mucho diario) los `setInterval`
-de `BillingScheduler` y `RecurringExpenseScheduler` no corren. Ahora Vercel Cron
-(`vercel.json`, `0 11 * * *` = 6:00 Bogotá) llama `GET /cron/diario`, `@Public` y protegido
-por `Authorization: Bearer <CRON_SECRET>`, que corre los dos barridos en serie. En Vercel
-(`process.env.VERCEL`) los schedulers no arrancan temporizadores; fuera de Vercel siguen igual.
-Revisión adversarial del cambio: dos llamadas simultáneas podían cobrar dos veces la misma
-renovación (ahora cada intento se reserva con un `updateOne` condicionado y la referencia es
-determinista por día e intento); la espera entre reintentos bajó de 24 h a 20 h para no saltarse
-el reintento diario; y el endpoint responde 500 si un barrido falla.
-**Sin comprobar en producción** hasta que exista `CRON_SECRET` y se vea la primera ejecución.
+Al cerrar cada sesión: actualizar fecha, ramas/PR, versión en producción (de la sonda) y los
+resultados de gates. Si una cifra no se midió, escribir «sin medir».

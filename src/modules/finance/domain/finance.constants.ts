@@ -75,6 +75,8 @@ export const MOVEMENT_SOURCES = [
   'payable_payment',
   'receivable_payment',
   'reconcile',
+  'platform_settlement',
+  'payment_settlement',
 ] as const;
 export type MovementSource = (typeof MOVEMENT_SOURCES)[number];
 
@@ -84,6 +86,14 @@ export type MovementSource = (typeof MOVEMENT_SOURCES)[number];
  * fuente de verdad es la caja del POS (turnos), no una cuenta manual.
  */
 export const AUTO_POST_METHODS = ['transfer', 'card'] as const;
+
+/**
+ * Claves de `autoMethods` de una cuenta de tesorería (ítem 6.4): los medios de
+ * siempre más los canales digitales. Una cuenta mapeada a `nequi` recibe lo
+ * cobrado por Nequi aunque otra cuenta reciba las transferencias.
+ */
+export const ACCOUNT_AUTO_KEYS = ['cash', 'transfer', 'card', 'datafono', 'nequi', 'daviplata', 'qr'] as const;
+export type AccountAutoKey = (typeof ACCOUNT_AUTO_KEYS)[number];
 
 /** Escenario de un presupuesto. */
 export const BUDGET_SCENARIOS = ['base', 'optimista', 'pesimista'] as const;

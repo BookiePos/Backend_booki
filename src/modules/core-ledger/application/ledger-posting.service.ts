@@ -28,6 +28,9 @@ export class LedgerPostingService {
 
   private funding(method?: string): string {
     // Efectivo → Caja; débito/crédito/transferencia/Nequi/Daviplata → Bancos.
+    // Pedido de plataforma de domicilio: la plataforma cobró al cliente y le
+    // debe al negocio → cuenta por cobrar (1305), no Caja ni Bancos (ítem 7.5).
+    if (method === 'platform') return ACC.CLIENTES;
     return method === 'cash' ? ACC.CAJA : ACC.BANCOS;
   }
 
@@ -39,13 +42,13 @@ export class LedgerPostingService {
     memo: string;
     lines: PostLine[];
     userEmail?: string;
-  }): Promise<void> {
+  }): Promise<boolean> {
     try {
       const existing = await this.ledger.findBySource(
         input.sourceType,
         input.sourceId,
       );
-      if (existing) return; // ya posteado (atajo; el índice cubre la carrera)
+      if (existing) return true; // ya posteado (atajo; el índice cubre la carrera)
       await this.ledger.post({
         date: input.date,
         sourceType: input.sourceType,
@@ -54,6 +57,7 @@ export class LedgerPostingService {
         lines: input.lines,
         createdByEmail: input.userEmail,
       });
+      return true;
     } catch (err) {
       const error = (err as Error).message;
       this.logger.error(
@@ -65,6 +69,7 @@ export class LedgerPostingService {
         operacion: 'post',
         error,
       });
+      return false;
     }
   }
 
@@ -111,6 +116,11 @@ export class LedgerPostingService {
     /** INC incluido en el total (cuenta 2495). Restaurantes y bares. */
     consumptionTax?: number;
     cogs: number;
+    /**
+     * Costo estimado (último costo) de lo vendido sin conexión que no estaba
+     * en el inventario registrado: 6135 contra la puente 143595 (ítem 6.3).
+     */
+    faltanteCost?: number;
     /**
      * Cobro del domicilio. Es ingreso del negocio pero NO lleva IVA, así que
      * entra entero a Ingresos sin nada que separar.
@@ -176,6 +186,15 @@ export class LedgerPostingService {
       lines.push({ accountCode: ACC.COSTO_VENTA, debit: cogs, sedeId: input.sedeId });
       lines.push({ accountCode: ACC.INVENTARIO, credit: cogs, sedeId: input.sedeId });
     }
+    const faltante = cop(input.faltanteCost ?? 0);
+    if (faltante > 0) {
+      lines.push({ accountCode: ACC.COSTO_VENTA, debit: faltante, sedeId: input.sedeId });
+      lines.push({
+        accountCode: ACC.INVENTARIO_POR_REGULARIZAR,
+        credit: faltante,
+        sedeId: input.sedeId,
+      });
+    }
 
     await this.safePost({
       date: input.date,
@@ -185,6 +204,107 @@ export class LedgerPostingService {
       lines,
       userEmail: input.userEmail,
     });
+  }
+
+  /**
+   * Regularización del faltante de una venta offline autorizada (ítem 6.3).
+   * El stock que faltaba ya entró (compra o ajuste) y se saca ahora: se cierra
+   * la puente 143595 por lo estimado, sale de 1435 lo real (costo de los
+   * lotes) y la diferencia va a costo de ventas (6135), a débito o a crédito.
+   */
+  async postRegularizacionFaltante(input: {
+    saleId: string;
+    number: string;
+    date: string;
+    sedeId: string;
+    estimado: number;
+    real: number;
+    userEmail?: string;
+  }): Promise<boolean> {
+    const estimado = cop(input.estimado);
+    const real = cop(input.real);
+    const dif = real - estimado;
+    const lines: PostLine[] = [];
+    if (estimado > 0) {
+      lines.push({
+        accountCode: ACC.INVENTARIO_POR_REGULARIZAR,
+        debit: estimado,
+        sedeId: input.sedeId,
+      });
+    }
+    if (real > 0) {
+      lines.push({ accountCode: ACC.INVENTARIO, credit: real, sedeId: input.sedeId });
+    }
+    if (dif > 0) {
+      lines.push({ accountCode: ACC.COSTO_VENTA, debit: dif, sedeId: input.sedeId });
+    } else if (dif < 0) {
+      lines.push({ accountCode: ACC.COSTO_VENTA, credit: -dif, sedeId: input.sedeId });
+    }
+    if (lines.length < 2) return true;
+    return this.safePost({
+      date: input.date,
+      sourceType: 'offline_faltante',
+      sourceId: input.saleId,
+      memo: `Regularización del faltante de ${input.number}`,
+      lines,
+      userEmail: input.userEmail,
+    });
+  }
+
+  /**
+   * Conciliación de un medio digital contra el extracto (ítem 6.4).
+   *
+   * La venta ya debitó Bancos por el BRUTO cobrado. El adquirente o la
+   * billetera consignan menos: la diferencia es la comisión (gasto financiero),
+   * su IVA y las retenciones que practican (anticipos de impuestos a favor).
+   * Este asiento lleva Bancos al valor realmente consignado:
+   *   Dr 5305 comisión (+ IVA si no es descontable) · Dr 2408 IVA descontable
+   *   Dr 1355xx retenciones a favor · Cr 1110 Bancos por la suma.
+   * Nunca toca Caja: no entra al arqueo.
+   */
+  async postPaymentSettlement(input: {
+    settlementId: string;
+    label: string;
+    date: string;
+    sedeId: string;
+    commission: number;
+    commissionIva?: number;
+    /** Si es true el IVA de la comisión se descuenta (2408); si no, es mayor valor del gasto. */
+    ivaDescontable?: boolean;
+    retefuente?: number;
+    reteIca?: number;
+    reteIva?: number;
+    userEmail?: string;
+  }): Promise<boolean> {
+    const commission = cop(input.commission);
+    const iva = cop(input.commissionIva ?? 0);
+    const rf = cop(input.retefuente ?? 0);
+    const ri = cop(input.reteIca ?? 0);
+    const rv = cop(input.reteIva ?? 0);
+    const gasto = commission + (input.ivaDescontable ? 0 : iva);
+    const ivaDesc = input.ivaDescontable ? iva : 0;
+    const total = gasto + ivaDesc + rf + ri + rv;
+    if (total <= 0) return true; // nada que asentar
+    const sedeId = input.sedeId;
+    const lines: PostLine[] = [];
+    if (gasto > 0) lines.push({ accountCode: ACC.COMISIONES_FINANCIERAS, debit: gasto, sedeId });
+    if (ivaDesc > 0) lines.push({ accountCode: ACC.IVA_POR_PAGAR, debit: ivaDesc, sedeId });
+    if (rf > 0) lines.push({ accountCode: ACC.RETEFUENTE_A_FAVOR, debit: rf, sedeId });
+    if (ri > 0) lines.push({ accountCode: ACC.RETEICA_A_FAVOR, debit: ri, sedeId });
+    if (rv > 0) lines.push({ accountCode: ACC.RETEIVA_A_FAVOR, debit: rv, sedeId });
+    lines.push({ accountCode: ACC.BANCOS, credit: total, sedeId });
+    return this.safePost({
+      date: input.date,
+      sourceType: 'payment_settlement',
+      sourceId: input.settlementId,
+      memo: `Conciliación ${input.label}`,
+      lines,
+      userEmail: input.userEmail,
+    });
+  }
+
+  async reversePaymentSettlement(settlementId: string, userEmail?: string): Promise<void> {
+    await this.safeReverse('payment_settlement', settlementId, userEmail);
   }
 
   async reverseSale(saleId: string, userEmail?: string): Promise<void> {
@@ -397,6 +517,78 @@ export class LedgerPostingService {
       ],
       userEmail: input.userEmail,
     });
+  }
+
+  // ── Plataformas de domicilio (ítem 7.5) ─────────────────────────────────────
+
+  /**
+   * Liquidación de una plataforma (Rappi, DiDi Food, Uber Eats): cancela la
+   * cuenta por cobrar de los pedidos liquidados y reconoce la comisión.
+   *
+   *   Débito  Bancos (1110)                 lo consignado (neto)
+   *   Débito  Comisiones plataformas (5235) la comisión (y ajustes)
+   *   Débito  IVA (2408)                    IVA de la comisión, si es descontable
+   *   Crédito Clientes (1305)               lo que la plataforma debía (bruto)
+   *
+   * Cuadra por construcción: el bruto es la suma de los pedidos y el llamador
+   * valida `neto + comisión + IVA = bruto` antes de postear.
+   */
+  async postPlatformSettlement(input: {
+    settlementId: string;
+    platformLabel: string;
+    date: string;
+    sedeId: string;
+    gross: number;
+    received: number;
+    commission: number;
+    commissionIva?: number;
+    /** Si el IVA de la comisión es descontable (2408); si no, es mayor valor del gasto. */
+    ivaDescontable?: boolean;
+    retefuente?: number;
+    reteIca?: number;
+    reteIva?: number;
+    /** Con signo: >0 la plataforma cobró más que el POS (4295); <0 menos (5235). */
+    ajustePrecio?: number;
+    userEmail?: string;
+  }): Promise<void> {
+    const gross = cop(input.gross);
+    const received = cop(input.received);
+    const iva = cop(input.commissionIva ?? 0);
+    const ajuste = cop(input.ajustePrecio ?? 0);
+    // El IVA que no se descuenta (no responsable o INC, arts. 437 y 488 ET) es
+    // parte del costo del servicio: va a la misma 5235 de la comisión.
+    const commission = cop(input.commission) + (input.ivaDescontable ? 0 : iva) + (ajuste < 0 ? -ajuste : 0);
+    const lines: PostLine[] = [];
+    const debe = (accountCode: string, debit: number) => {
+      if (debit > 0) lines.push({ accountCode, debit, sedeId: input.sedeId });
+    };
+    debe(ACC.BANCOS, received);
+    debe(ACC.COMISIONES_PLATAFORMAS, commission);
+    if (input.ivaDescontable) debe(ACC.IVA_POR_PAGAR, iva);
+    debe(ACC.RETEFUENTE_A_FAVOR, cop(input.retefuente ?? 0));
+    debe(ACC.RETEICA_A_FAVOR, cop(input.reteIca ?? 0));
+    debe(ACC.RETEIVA_A_FAVOR, cop(input.reteIva ?? 0));
+    lines.push({ accountCode: ACC.CLIENTES, credit: gross, sedeId: input.sedeId });
+    if (ajuste > 0) {
+      lines.push({ accountCode: ACC.MAYOR_VALOR_PLATAFORMAS, credit: ajuste, sedeId: input.sedeId });
+    }
+    await this.safePost({
+      date: input.date,
+      sourceType: 'platform_settlement',
+      sourceId: input.settlementId,
+      memo: `Liquidación ${input.platformLabel}`,
+      lines,
+      userEmail: input.userEmail,
+    });
+  }
+
+  /**
+   * A diferencia del resto de reversas, ESTA no se traga el error: anular una
+   * liquidación libera los pedidos, y liberarlos con el asiento vivo dejaría la
+   * CxC cancelada en el libro y abierta en la operación.
+   */
+  async reversePlatformSettlement(settlementId: string, userEmail?: string): Promise<void> {
+    await this.ledger.reverseBySource('platform_settlement', settlementId, userEmail);
   }
 
   // ── Compras ───────────────────────────────────────────────────────────────────

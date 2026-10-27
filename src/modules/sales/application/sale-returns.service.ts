@@ -182,6 +182,26 @@ export class SaleReturnsService {
       );
     }
 
+    // Venta offline con faltante de stock (ítem 6.3): una devolución parcial
+    // no revierte la cuenta puente 143595 ni sabe si ese stock ya se
+    // regularizó. Pendiente, se anula la venta; regularizado, el ajuste de
+    // inventario es el camino.
+    if ((sale.offlineOverride?.faltantes ?? []).some((f) => f.status !== 'anulado')) {
+      throw new ConflictException(
+        'La venta se registró sin conexión con faltante de stock: no admite devoluciones. Si el faltante sigue pendiente, anula la venta; si ya se regularizó, registra un ajuste de inventario.',
+      );
+    }
+
+    if (sale.platform) {
+      // La plataforma es quien le devuelve la plata al cliente y ajusta lo que
+      // le paga al negocio: una devolución aquí descuadraría la cuenta por
+      // cobrar frente a su liquidación. Mientras no se liquide, se anula el
+      // pedido; si ya se liquidó, el ajuste se hace con la plataforma.
+      throw new BadRequestException(
+        'Es un pedido de plataforma: las devoluciones las maneja la plataforma. Si no está liquidado, anula el pedido.',
+      );
+    }
+
     const yaDevuelto = await this.alreadyReturned(sale._id);
     let plan: ReturnPlan;
     try {

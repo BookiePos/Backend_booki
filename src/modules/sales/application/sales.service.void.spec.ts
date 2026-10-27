@@ -492,4 +492,57 @@ describe('SalesService.void (anulación atómica)', () => {
       expect(stock.reverseSale).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('venta offline con faltantes de stock (6.3)', () => {
+    const conFaltante = (status: string) => ({
+      ...saleDoc(),
+      offlineOverride: {
+        byUserId: 'u-jefe',
+        at: new Date(),
+        faltantes: [{ productId: new Types.ObjectId(), qty: 1, cost: 4_000, status }],
+      },
+    });
+    function como(doc: unknown) {
+      saleModel.findById.mockReturnValue({
+        populate: () => ({ exec: () => Promise.resolve(doc) }),
+      });
+      saleModel.findOneAndUpdate.mockReturnValue({ exec: () => Promise.resolve(doc) });
+      saleModel.updateOne = vi
+        .fn()
+        .mockReturnValue({ exec: () => Promise.resolve({ modifiedCount: 1 }) });
+    }
+
+    it.each(['regularizado', 'asiento_pendiente', 'consumiendo'])(
+      'faltante %s: 409 claro sin tocar la venta',
+      async (status) => {
+        como(conFaltante(status));
+        await expect(service.void(saleObjId.toString(), user)).rejects.toMatchObject({
+          status: 409,
+        });
+        expect(saleModel.findOneAndUpdate).not.toHaveBeenCalled();
+        expect(stock.reverseSale).not.toHaveBeenCalled();
+      },
+    );
+
+    it('el flip exige que ningún faltante se haya regularizado entre medias', async () => {
+      como(conFaltante('pendiente'));
+      await service.void(saleObjId.toString(), user);
+      expect(saleModel.findOneAndUpdate.mock.calls[0][0]).toMatchObject({
+        'offlineOverride.faltantes.status': {
+          $nin: ['consumiendo', 'asiento_pendiente', 'regularizado'],
+        },
+      });
+    });
+
+    it('faltante pendiente: se anula y el faltante queda `anulado`', async () => {
+      como(conFaltante('pendiente'));
+      await service.void(saleObjId.toString(), user);
+      expect(ledgerPosting.reverseSale).toHaveBeenCalledTimes(1);
+      expect(saleModel.updateOne).toHaveBeenCalledWith(
+        { _id: saleObjId },
+        { $set: { 'offlineOverride.faltantes.$[f].status': 'anulado' } },
+        { arrayFilters: [{ 'f.status': 'pendiente' }] },
+      );
+    });
+  });
 });
