@@ -4,9 +4,9 @@ allowBuilds:
   mongodb-memory-server: false
 verifyDepsBeforeRun: false
 overrides:
-  multer: '>=2.4.0'
+  multer: '>=2.5.0'
   proxy-addr: '>=2.0.8'
-  body-parser: '>=1.20.6 <2'
+  body-parser: '>=1.20.9 <2'
   qs: '>=6.16.0 <7'
   # Transitivas de @sentry/node (bundler-plugins → webpack/glob): gate de pnpm audit --prod.
   fast-uri: '>=3.1.8 <4'
