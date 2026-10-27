@@ -25,7 +25,7 @@ import { ALL_PERMISSIONS } from '../domain/permissions';
 import { ROLES } from '../domain/roles';
 import { canViewAllSedes } from '../domain/sede-access';
 
-const BCRYPT_ROUNDS = 10;
+export const BCRYPT_ROUNDS = 10;
 const DUENO_UNICO_MSG =
   'La empresa debe conservar al menos un Dueño activo: nombra otro Dueño antes.';
 
@@ -66,6 +66,12 @@ export class UsersService {
   async create(
     dto: CreateUserDto,
     actor?: GestorDeUsuarios,
+    /**
+     * Hash bcrypt ya calculado. Lo usa la confirmación del registro: la
+     * contraseña se hasheó al pedir el alta y en claro no se guarda en ninguna
+     * parte mientras espera el correo.
+     */
+    opciones?: { passwordHash?: string },
   ): Promise<UserDocument> {
     const ctx = TenantContext.currentOrThrow();
     const { businessId, dbName } = ctx;
@@ -112,7 +118,8 @@ export class UsersService {
       this.assertPuedeConceder(actor, dto.extraPermissions ?? []);
       this.assertPuedeRepartirSedes(actor, dto.sedeIds ?? []);
     }
-    const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
+    const passwordHash =
+      opciones?.passwordHash ?? (await bcrypt.hash(dto.password, BCRYPT_ROUNDS));
     const created = await this.userModel.create({
       email,
       username,
@@ -298,6 +305,7 @@ export class UsersService {
     if (user.role === ROLES.OWNER && actor.role !== ROLES.OWNER) {
       throw new ForbiddenException('Solo el Dueño puede editar al Dueño');
     }
+    await this.assertGestionaSusSedes(actor, user);
     const cambiaRol =
       dto.role !== undefined && dto.role.toLowerCase() !== user.role;
     const extrasNuevos =
@@ -351,6 +359,38 @@ export class UsersService {
           'No puedes cambiar la contraseña, el rol, los permisos ni las sedes, ni desactivar, a alguien con permisos que tú no tienes.',
         );
       }
+    }
+  }
+
+  /**
+   * Quien no ve todas las sedes solo gestiona a usuarios de SUS sedes (ítem
+   * 4.11). Las reglas de arriba comparaban permisos y no sedes, así que un
+   * Administrador de la sede A le cambiaba la contraseña a un cajero de la B y
+   * entraba con su cuenta. El objetivo tampoco puede ver todas las sedes: eso
+   * sería gestionar a alguien con más alcance que uno.
+   */
+  private async assertGestionaSusSedes(
+    actor: GestorDeUsuarios,
+    user: UserDocument,
+  ): Promise<void> {
+    if (user.id === actor.userId || canViewAllSedes(actor)) return;
+    const propias = new Set(actor.sedeIds);
+    const sedesDelObjetivo = user.sedeIds.map((s) => s.toString());
+    const objetivoVeTodas = canViewAllSedes({
+      role: user.role,
+      permissions: await this.effectivePermissions(user),
+      sedeIds: sedesDelObjetivo,
+    });
+    // Sin sedes asignadas `some()` da false y dejaba pasar: quien no está en
+    // ninguna sede propia no es de quien gestiona (4.11).
+    if (
+      objetivoVeTodas ||
+      sedesDelObjetivo.length === 0 ||
+      sedesDelObjetivo.some((s) => !propias.has(s))
+    ) {
+      throw new ForbiddenException(
+        'No puedes gestionar usuarios de sedes a las que no tienes acceso',
+      );
     }
   }
 

@@ -31,6 +31,13 @@ export class DirectoryService {
       .exec();
   }
 
+  /** Quita el vínculo de un alta que no terminó (compensación del registro). */
+  async unlink(email: string, businessId: string): Promise<void> {
+    await this.directory
+      .deleteOne({ email: email.toLowerCase(), businessId })
+      .exec();
+  }
+
   /** ¿El correo ya está usado por alguna empresa? */
   async exists(email: string): Promise<boolean> {
     return (await this.directory.exists({ email: email.toLowerCase() })) != null;

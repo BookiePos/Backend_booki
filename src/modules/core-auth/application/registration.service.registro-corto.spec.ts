@@ -26,6 +26,9 @@ import { saleTaxFor } from '../../core-tax/domain/sale-tax';
  * Ítem 6.5, registro corto: el alta se hace solo con nombre del negocio, giro,
  * plan, nombre y correo del dueño y contraseña. Los datos fiscales (NIT,
  * régimen, dirección…) se piden después; la sede nace sin ellos.
+ *
+ * Desde 4.11 el alta tiene dos pasos (solicitar y confirmar por correo): los
+ * datos viajan en el pendiente, así que aquí se recorren los dos.
  */
 const CORTO = {
   businessName: 'Café Aurora',
@@ -36,6 +39,71 @@ const CORTO = {
   password: 'Secreta#2026x',
 };
 
+const exec = <T>(v: T) => ({ exec: vi.fn().mockResolvedValue(v) });
+
+function makeDeps(tipoNegocio: string) {
+  return {
+    businesses: {
+      nitExists: vi.fn(),
+      remove: vi.fn(),
+      create: vi.fn(async () => ({
+        id: '68b0f3c2a1d4e5f6a7b8c9d0',
+        dbName: 'biz_68b0f3c2a1d4e5f6a7b8c9d0',
+        tipoNegocio,
+        plan: 'negocio',
+      })),
+    },
+    directory: { exists: vi.fn(async () => false), unlink: vi.fn() },
+    roles: { ensureSystemRoles: vi.fn() },
+    sedes: { create: vi.fn(async () => ({ id: 'sede1' })) },
+    users: { create: vi.fn(async () => ({ id: 'u1' })) },
+    auth: { issueSession: vi.fn(async () => ({ tokens: {}, user: {} })) },
+    pendientes: {
+      find: vi.fn().mockReturnValue(exec([])),
+      findOne: vi.fn().mockReturnValue(exec(null)),
+      findOneAndUpdate: vi.fn().mockReturnValue(exec(null)),
+      updateOne: vi.fn().mockReturnValue(exec(undefined)),
+      deleteOne: vi.fn().mockReturnValue(exec(undefined)),
+    },
+    mail: { sendConfirmacionRegistro: vi.fn(async () => ({ sent: true })) },
+    config: { get: vi.fn(() => 'https://app.ejemplo.test') },
+  };
+}
+
+/** Solicita con `extra` y confirma con el pendiente que quedó guardado. */
+async function registrar(extra: Record<string, unknown>, tipoNegocio = 'retail') {
+  const d = makeDeps(tipoNegocio);
+  const service = new RegistrationService(
+    d.businesses as any,
+    d.directory as any,
+    d.roles as any,
+    d.sedes as any,
+    d.users as any,
+    d.auth as any,
+    d.pendientes as any,
+    d.mail as any,
+    d.config as any,
+  );
+
+  await service.solicitar(
+    plainToInstance(RegisterDto, { ...CORTO, tipoNegocio, ...extra }),
+  );
+  const { $set } = (d.pendientes.findOneAndUpdate.mock.calls[0] as any[])[1];
+  const pendiente = {
+    _id: 'p1',
+    email: 'ana@aurora.co',
+    tokenHash: $set.tokenHash,
+    passwordHash: $set.passwordHash,
+    datos: $set.datos,
+  };
+  d.pendientes.findOne.mockReturnValue(exec(pendiente));
+  d.pendientes.findOneAndUpdate.mockReturnValue(exec(pendiente));
+
+  const res = await service.confirmar('tok', CORTO.password);
+  const sede = (d.sedes.create.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
+  return { d, res, sede };
+}
+
 describe('registro corto', () => {
   it('el DTO acepta el alta sin ningún dato fiscal', async () => {
     const errores = await validate(plainToInstance(RegisterDto, CORTO));
@@ -43,39 +111,13 @@ describe('registro corto', () => {
   });
 
   it('crea empresa, sede y dueño sin NIT ni responsabilidad fiscal', async () => {
-    const sedeCreada = { id: 'sede1' };
-    const businesses = {
-      nitExists: vi.fn(),
-      create: vi.fn(async () => ({
-        id: '68b0f3c2a1d4e5f6a7b8c9d0',
-        dbName: 'biz_68b0f3c2a1d4e5f6a7b8c9d0',
-        tipoNegocio: 'restaurante',
-        plan: 'negocio',
-      })),
-    };
-    const sedes = { create: vi.fn(async () => sedeCreada) };
-    const users = { create: vi.fn(async () => ({ id: 'u1' })) };
-    const service = new RegistrationService(
-      businesses as any,
-      { exists: vi.fn(async () => false) } as any,
-      { ensureSystemRoles: vi.fn() } as any,
-      sedes as any,
-      users as any,
-      { issueSession: vi.fn(async () => ({ tokens: {}, user: {} })) } as any,
-    );
-
-    const dto = plainToInstance(RegisterDto, CORTO);
-    const res = await service.register(dto);
+    const { d, res, sede } = await registrar({}, 'restaurante');
 
     // Sin NIT no se consulta la unicidad del NIT.
-    expect(businesses.nitExists).not.toHaveBeenCalled();
+    expect(d.businesses.nitExists).not.toHaveBeenCalled();
     expect(res.plan).toBe('negocio');
 
-    const sedeDto = (sedes.create.mock.calls[0] as unknown[])[0] as Record<
-      string,
-      unknown
-    >;
-    expect(sedeDto).toMatchObject({ code: 'principal', businessName: 'Café Aurora' });
+    expect(sede).toMatchObject({ code: 'principal', businessName: 'Café Aurora' });
     for (const campo of [
       'nit',
       'nitDv',
@@ -87,39 +129,17 @@ describe('registro corto', () => {
       'phone',
       'emailFacturacion',
     ]) {
-      expect(sedeDto[campo]).toBeUndefined();
+      expect(sede[campo]).toBeUndefined();
     }
-    expect(users.create).toHaveBeenCalledWith(
+    expect(d.users.create).toHaveBeenCalledWith(
       expect.objectContaining({ email: 'ana@aurora.co', sedeIds: ['sede1'] }),
+      undefined,
+      expect.anything(),
     );
   });
 
-  async function registrar(extra: Record<string, unknown>) {
-    const sedes = { create: vi.fn(async () => ({ id: 'sede1' })) };
-    const service = new RegistrationService(
-      {
-        nitExists: vi.fn(),
-        create: vi.fn(async () => ({
-          id: '68b0f3c2a1d4e5f6a7b8c9d0',
-          dbName: 'biz_68b0f3c2a1d4e5f6a7b8c9d0',
-          tipoNegocio: 'retail',
-          plan: 'negocio',
-        })),
-      } as any,
-      { exists: vi.fn(async () => false) } as any,
-      { ensureSystemRoles: vi.fn() } as any,
-      sedes as any,
-      { create: vi.fn(async () => ({ id: 'u1' })) } as any,
-      { issueSession: vi.fn(async () => ({ tokens: {}, user: {} })) } as any,
-    );
-    await service.register(
-      plainToInstance(RegisterDto, { ...CORTO, tipoNegocio: 'retail', ...extra }),
-    );
-    return (sedes.create.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
-  }
-
   it('«¿Cobras IVA?» No: la sede nace no responsable y la venta de retail sale sin IVA', async () => {
-    const sede = await registrar({ cobraIva: 'no' });
+    const { sede } = await registrar({ cobraIva: 'no' });
     expect(sede.responsabilidadFiscal).toBe('no_responsable_iva');
     expect(
       saleTaxFor(
@@ -131,13 +151,18 @@ describe('registro corto', () => {
   });
 
   it('«¿Cobras IVA?» Sí: responsable de IVA; No sé o vacío: sin dato (default conservador)', async () => {
-    expect((await registrar({ cobraIva: 'si' })).responsabilidadFiscal).toBe('responsable_iva');
-    expect((await registrar({ cobraIva: 'no_se' })).responsabilidadFiscal).toBeUndefined();
-    expect((await registrar({})).responsabilidadFiscal).toBeUndefined();
+    expect((await registrar({ cobraIva: 'si' })).sede.responsabilidadFiscal).toBe(
+      'responsable_iva',
+    );
+    expect((await registrar({ cobraIva: 'no_se' })).sede.responsabilidadFiscal).toBeUndefined();
+    expect((await registrar({})).sede.responsabilidadFiscal).toBeUndefined();
   });
 
   it('una responsabilidad fiscal explícita gana sobre la pregunta', async () => {
-    const sede = await registrar({ cobraIva: 'no', responsabilidadFiscal: 'regimen_simple' });
+    const { sede } = await registrar({
+      cobraIva: 'no',
+      responsabilidadFiscal: 'regimen_simple',
+    });
     expect(sede.responsabilidadFiscal).toBe('regimen_simple');
   });
 

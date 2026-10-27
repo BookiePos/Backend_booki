@@ -14,9 +14,16 @@ import { Throttle } from '@nestjs/throttler';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from '../application/auth.service';
 import { UsersService } from '../application/users.service';
-import { RegistrationService } from '../application/registration.service';
+import {
+  RESPUESTA_REGISTRO,
+  RegistrationService,
+} from '../application/registration.service';
 import { LoginDto } from '../application/dto/login.dto';
 import { RegisterDto } from '../application/dto/register.dto';
+import {
+  ConfirmRegisterDto,
+  ResendRegisterDto,
+} from '../application/dto/confirm-register.dto';
 import { ForgotPasswordDto } from '../application/dto/forgot-password.dto';
 import { ResetPasswordDto } from '../application/dto/reset-password.dto';
 import { PasswordResetService } from '../application/password-reset.service';
@@ -55,18 +62,47 @@ export class AuthController {
     return sessionBody(result);
   }
 
-  /** Alta pública de una empresa nueva (tenant) + su dueño. */
+  /**
+   * Alta pública de una empresa nueva (tenant) + su dueño, paso 1.
+   *
+   * Responde 202 con el mismo cuerpo exista o no el correo (ítem 4.11): antes
+   * un 409 «El correo ya está registrado» servía para averiguar qué correos
+   * tienen cuenta. La empresa se crea al confirmar el enlace del correo.
+   */
   @Throttle({ default: { limit: 5, ttl: 300_000 } })
   @Public()
   @Post('register')
+  @HttpCode(202)
+  async register(@Body() dto: RegisterDto) {
+    await this.registration.solicitar(dto);
+    return RESPUESTA_REGISTRO;
+  }
+
+  /** Paso 2: el enlace del correo crea la empresa y abre la sesión. */
+  @Throttle({ default: { limit: 10, ttl: 300_000 } })
+  @Public()
+  @Post('register/confirm')
   @HttpCode(201)
-  async register(
-    @Body() dto: RegisterDto,
+  async confirmRegisterBody(
+    @Body() dto: ConfirmRegisterDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.registration.register(dto);
+    const result = await this.registration.confirmar(dto.token, dto.password);
     setRefreshCookie(res, result.tokens.refreshToken, this.config);
     return sessionBody(result);
+  }
+
+  /**
+   * Reenvía el correo de confirmación con un token nuevo (el anterior queda
+   * inválido). Responde lo mismo exista o no un registro pendiente.
+   */
+  @Throttle({ default: { limit: 5, ttl: 300_000 } })
+  @Public()
+  @Post('register/resend')
+  @HttpCode(202)
+  async resendRegister(@Body() dto: ResendRegisterDto) {
+    await this.registration.reenviar(dto.email);
+    return RESPUESTA_REGISTRO;
   }
 
   @Throttle({ default: { limit: 10, ttl: 300_000 } })

@@ -56,6 +56,11 @@ export class BusinessService {
     });
   }
 
+  /** Deshace un alta que no llegó a terminar (compensación del registro). */
+  async remove(id: string): Promise<void> {
+    await this.businesses.deleteOne({ _id: id }).exec();
+  }
+
   findById(id: string): Promise<BusinessDocument | null> {
     return this.businesses.findById(id).exec();
   }
