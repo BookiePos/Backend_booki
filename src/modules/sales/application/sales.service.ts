@@ -51,6 +51,7 @@ import {
 } from '../../delivery/domain/delivery.constants';
 import { Sede } from '../../sedes/infrastructure/schemas/sede.schema';
 import { CustomersService } from '../../customers/application/customers.service';
+import type { CustomerDocument } from '../../customers/infrastructure/schemas/customer.schema';
 import { PayrollService } from '../../payroll/application/payroll.service';
 import { ParamsService } from '../../core-params/application/params.service';
 import { PEDIDO_DUPLICADO_CODE, esDuplicadoDePedido, fechaContablePedido } from '../domain/platform-orders';
@@ -451,20 +452,29 @@ export class SalesService {
      * `rulesFor`): es la forma de dejar de vender a mayorista de un tirón.
      */
     let priceListId: string | undefined = dto.priceListId;
+    const idCliente = dto.customerId ?? credito?.customerId;
+    // Ficha del cliente registrado: de ahí salen los datos fiscales del
+    // adquiriente que se congelan en la venta para la factura electrónica.
+    let clienteFiscal: CustomerDocument | undefined;
     if (priceListId) {
       if (!user.permissions.includes(PERMISSIONS.POS_DISCOUNT_AUTHORIZE)) {
         throw new ForbiddenException(
           'No tienes permiso para cambiar la lista de precios de una venta',
         );
       }
+      // El dato fiscal es un extra: aquí nunca tumba la venta (comportamiento
+      // de antes), si el cliente no existe la venta sigue sin sus datos.
+      if (idCliente) {
+        clienteFiscal = await this.customers.getOrFail(idCliente).catch(() => undefined);
+      }
     } else {
       // El fiado identifica al deudor en `payment.customerId`; el resto de las
       // ventas, en `customerId`. La tienda que compra por cajas paga de
       // contado casi siempre, así que mirar solo el fiado dejaría la lista sin
       // aplicar justo en el caso que importa.
-      const customerId = dto.customerId ?? credito?.customerId;
-      if (customerId) {
-        const cliente = await this.customers.getOrFail(customerId);
+      if (idCliente) {
+        const cliente = await this.customers.getOrFail(idCliente);
+        clienteFiscal = cliente;
         priceListId = cliente.priceListId?.toString();
       }
     }
@@ -883,6 +893,7 @@ export class SalesService {
       return await this.finalizeSale(holder, {
         dto,
         user,
+        clienteFiscal,
         orderId,
         openCaja,
         components,
@@ -996,6 +1007,8 @@ export class SalesService {
     ctx: {
     dto: CreateSaleDto;
     user: JwtUser;
+    /** Ficha del cliente registrado, si la venta es a uno. */
+    clienteFiscal?: CustomerDocument;
     orderId?: Types.ObjectId;
     openCaja: CajaSessionDocument;
     components: {
@@ -1052,6 +1065,7 @@ export class SalesService {
   ): Promise<SaleDocument> {
     const {
       dto,
+      clienteFiscal,
       user,
       orderId,
       openCaja,
@@ -1144,7 +1158,7 @@ export class SalesService {
       delivery,
       payment: { method: metodo, received, change, ...detalle },
       payments: mixto?.parts,
-      customer: this.cleanCustomer(dto.customer),
+      customer: this.cleanCustomer(dto.customer, clienteFiscal),
       orderId,
       // Offline: el UUID de la venta. En línea: la llave de idempotencia del
       // cobro, la misma que usaría la cola si el reintento sale sin red.
@@ -1392,13 +1406,46 @@ export class SalesService {
     return dto.payment.method === 'credit' ? dto.payment : undefined;
   }
 
-  /** Descarta un customer vacío (sin ningún dato) para no guardar {} . */
-  private cleanCustomer(customer?: CreateSaleDto['customer']) {
-    if (!customer) return undefined;
-    const entries = (['name', 'idNumber', 'phone', 'email'] as const)
-      .map((k) => [k, customer[k]?.trim()] as const)
+  /**
+   * Descarta un customer vacío (sin ningún dato) para no guardar {} y, si la
+   * venta es a un cliente registrado, le copia sus datos fiscales.
+   *
+   * Los datos fiscales solo se copian si el documento que escribió el cajero
+   * es el de la ficha (o no escribió ninguno): si tecleó otro, esa ficha no
+   * describe al adquiriente de esta venta.
+   */
+  private cleanCustomer(
+    customer?: CreateSaleDto['customer'],
+    ficha?: CustomerDocument,
+  ) {
+    const entries: Array<readonly [string, unknown]> = (
+      ['name', 'idNumber', 'phone', 'email'] as const
+    )
+      .map((k) => [k, customer?.[k]?.trim()] as const)
       .filter(([, v]) => v);
-    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+    const base = Object.fromEntries(entries) as Record<string, unknown>;
+    if (ficha && (!base.idNumber || base.idNumber === ficha.docNumber)) {
+      const fiscal: Record<string, unknown> = {
+        // Con tipo DIAN el nombre es la razón social del RUT, no uno tecleado.
+        name: ficha.dianDocType ? ficha.name : (base.name ?? ficha.name),
+        idNumber: ficha.docNumber,
+        phone: base.phone ?? ficha.phone,
+        email: base.email ?? ficha.email,
+        docType: ficha.dianDocType,
+        nitDv: ficha.nitDv,
+        tipoPersona: ficha.tipoPersona,
+        responsabilidades: ficha.responsabilidadesFiscales?.length
+          ? [...ficha.responsabilidadesFiscales]
+          : undefined,
+        regimen: ficha.regimen,
+        municipioDane: ficha.municipioDane,
+        address: ficha.address,
+        emailFacturacion: ficha.emailFacturacion,
+      };
+      for (const k of Object.keys(fiscal)) if (!fiscal[k]) delete fiscal[k];
+      return fiscal;
+    }
+    return entries.length > 0 ? base : undefined;
   }
 
   /**

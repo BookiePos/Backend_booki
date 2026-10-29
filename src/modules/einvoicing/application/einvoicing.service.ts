@@ -28,6 +28,7 @@ import {
   allowedSedeIds,
   assertSedeAccess,
 } from '../../core-auth/domain/sede-access';
+import { buildAdquiriente } from '../domain/adquiriente';
 import {
   CONSUMIDOR_FINAL_NIT,
   MEDIO_PAGO_BY_METHOD,
@@ -709,21 +710,9 @@ export class EinvoicingService {
     };
   }
 
+  /** Adquiriente según lo capturado del cliente; ver `domain/adquiriente.ts`. */
   private buildAdquiriente(sale: SaleDocument) {
-    const c = sale.customer;
-    if (!c || (!c.name && !c.idNumber)) {
-      return { docType: '13', docNumber: CONSUMIDOR_FINAL_NIT, name: 'Consumidor final' };
-    }
-    const num = (c.idNumber ?? '').replace(/\s/g, '');
-    // Heurística simple: > 10 dígitos ⇒ NIT (31); si no, cédula (13).
-    const docType = num.replace(/\D/g, '').length > 10 ? '31' : '13';
-    return {
-      docType,
-      docNumber: num || CONSUMIDOR_FINAL_NIT,
-      name: c.name || 'Consumidor final',
-      phone: c.phone,
-      email: c.email,
-    };
+    return buildAdquiriente(sale.customer);
   }
 
   private buildResolution(r: ResolucionFe | undefined) {
