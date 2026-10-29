@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/node';
-import { redactarTexto } from './redaccion';
+import { redactar, redactarTexto } from './redaccion';
 
 /**
  * Monitoreo de errores (ítem 2.4). Sentry solo se activa si existe `SENTRY_DSN`;
@@ -86,6 +86,15 @@ export function limpiarEvento<T extends Sentry.ErrorEvent>(evento: T): T {
     if (typeof v.value === 'string') v.value = censurar(v.value);
   }
   if (typeof evento.message === 'string') evento.message = censurar(evento.message);
+  // Contextos, etiquetas y logentry los puede llenar cualquier integración o
+  // un `setContext` futuro: pasan por el mismo filtro de secretos que los logs.
+  if (evento.contexts) evento.contexts = redactar(evento.contexts) as typeof evento.contexts;
+  if (evento.tags) evento.tags = redactar(evento.tags) as typeof evento.tags;
+  if (evento.logentry) {
+    const entrada = evento.logentry;
+    if (typeof entrada.message === 'string') entrada.message = censurar(entrada.message);
+    if (entrada.params) entrada.params = redactar(entrada.params) as unknown[];
+  }
   return evento;
 }
 

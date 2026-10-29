@@ -1,8 +1,18 @@
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cifrar } from '../crypto/secretos';
-import { LoggerSeguro, REDACTADO, esClaveSensible, redactar, redactarTexto } from './redaccion';
-import { censurar } from './sentry';
+import {
+  LoggerSeguro,
+  MAX_TEXTO,
+  NO_REGISTRABLE,
+  REDACTADO,
+  esClaveSensible,
+  redactar,
+  redactarTexto,
+  registrable,
+} from './redaccion';
+import { censurar, limpiarEvento } from './sentry';
+import type * as Sentry from '@sentry/node';
 
 const env = { EINVOICING_ENCRYPTION_KEY: randomBytes(32).toString('base64') } as NodeJS.ProcessEnv;
 
@@ -24,13 +34,21 @@ describe('esClaveSensible', () => {
       'contraseña',
       'refreshToken',
       'Authorization',
+      'pass',
+      'db_pass',
+      'passwd',
+      'passphrase',
+      'pwd',
+      'apikey',
+      'api_key',
+      'clave-tecnica',
     ]) {
       expect(esClaveSensible(c), c).toBe(true);
     }
   });
 
   it('no censura campos normales que contienen «pin» u otras letras', () => {
-    for (const c of ['shipping', 'mapping', 'spinner', 'shopping', 'nombre', 'total', 'nit', 'opinion']) {
+    for (const c of ['shipping', 'mapping', 'spinner', 'shopping', 'nombre', 'total', 'nit', 'opinion', 'compass', 'passenger']) {
       expect(esClaveSensible(c), c).toBe(false);
     }
   });
@@ -52,7 +70,7 @@ describe('redactar', () => {
   });
 
   it('censura cualquier objeto cifrado aunque el campo tenga un nombre inocente', () => {
-    const r = redactar({ dato: cifrar('pin', { env }), otro: 1 }) as Record<string, unknown>;
+    const r = redactar({ dato: cifrar('pin', 'emisor1:pin', { env }), otro: 1 }) as Record<string, unknown>;
     expect(r.dato).toBe(REDACTADO);
     expect(r.otro).toBe(1);
   });
@@ -77,7 +95,8 @@ describe('redactar', () => {
 describe('redactarTexto', () => {
   it('censura pares clave=valor, clave: valor y JSON', () => {
     expect(redactarTexto('login password=Secreta123 ok')).toBe(`login password=${REDACTADO} ok`);
-    expect(redactarTexto('pin: 1234, nit: 900')).toBe(`pin: ${REDACTADO}, nit: 900`);
+    // La coma puede ser parte del valor: se censura con él.
+    expect(redactarTexto('pin: 1234, nit: 900')).toBe(`pin: ${REDACTADO} nit: 900`);
     expect(redactarTexto('{"claveTecnica":"abc123","nit":"900"}')).toBe(
       `{"claveTecnica":"${REDACTADO}","nit":"900"}`,
     );
@@ -91,6 +110,99 @@ describe('redactarTexto', () => {
 
   it('Sentry también lo aplica en los mensajes de excepción', () => {
     expect(censurar('p12Password=abc')).toBe(`p12Password=${REDACTADO}`);
+  });
+});
+
+describe('redactarTexto: valores completos', () => {
+  it('censura el esquema y el token de Authorization', () => {
+    const r = redactarTexto('Authorization: Bearer abc.def.ghi\nsiguiente linea');
+    expect(r).toBe(`Authorization: ${REDACTADO}\nsiguiente linea`);
+    expect(redactarTexto('token=Bearer abc.def')).toBe(`token=${REDACTADO}`);
+    expect(redactarTexto('Cookie: a=1; sesion=xyz')).toBe(`Cookie: ${REDACTADO}`);
+  });
+
+  it('consume el valor entre comillas hasta la de cierre, con escapes', () => {
+    expect(redactarTexto('password="mi clave secreta" ok')).toBe(`password="${REDACTADO}" ok`);
+    expect(redactarTexto(`pin='12 34' fin`)).toBe(`pin='${REDACTADO}' fin`);
+    expect(redactarTexto('password="a\\"b c" fin')).toBe(`password="${REDACTADO}" fin`);
+  });
+
+  it('no deja ver lo que sigue a una coma o punto y coma dentro del valor', () => {
+    expect(redactarTexto('password=ab,cd fin')).toBe(`password=${REDACTADO} fin`);
+    expect(redactarTexto('password=ab;cd fin')).toBe(`password=${REDACTADO} fin`);
+  });
+
+  it('cubre el JSON doblemente escapado', () => {
+    expect(redactarTexto('{\\"pin\\":\\"1234\\",\\"nit\\":\\"900\\"}')).toBe(
+      `{\\"pin\\":\\"${REDACTADO}\\",\\"nit\\":\\"900\\"}`,
+    );
+  });
+
+  it('cubre clave-tecnica y las variantes de contraseña y api key', () => {
+    for (const clave of ['clave-tecnica', 'pass', 'passwd', 'passphrase', 'pwd', 'apikey', 'api_key']) {
+      expect(redactarTexto(`${clave}=s3creto x`), clave).toBe(`${clave}=${REDACTADO} x`);
+    }
+  });
+
+  it('recorta los textos enormes en vez de dejarlos sin filtrar', () => {
+    const r = redactarTexto('a'.repeat(MAX_TEXTO + 500) + ' password=fuga');
+    expect(r).not.toContain('fuga');
+    expect(r.endsWith('[recortado]')).toBe(true);
+  });
+});
+
+describe('redactarTexto: tiempo lineal (ReDoS)', () => {
+  for (const [nombre, texto] of [
+    ["'pin'.repeat(5000)", 'pin'.repeat(5000)],
+    ["'a'.repeat(50000)", 'a'.repeat(50000)],
+    ["'pin='.repeat(5000)", 'pin='.repeat(5000)],
+    ['"x":'.repeat(5000), '"x":'.repeat(5000)],
+  ] as const) {
+    it(`${nombre.slice(0, 20)} tarda menos de 50 ms`, () => {
+      redactarTexto('calentar password=x');
+      const inicio = performance.now();
+      redactarTexto(texto);
+      expect(performance.now() - inicio).toBeLessThan(50);
+    });
+  }
+});
+
+describe('redactar: documentos, causas y fallos', () => {
+  it('convierte con toJSON antes de recorrer', () => {
+    const doc = { toJSON: () => ({ nit: '900', pin: '1234' }) };
+    expect(redactar(doc)).toEqual({ nit: '900', pin: REDACTADO });
+  });
+
+  it('censura la causa de un Error', () => {
+    // `cause` es ES2022 y el tsconfig apunta más atrás: se asigna a mano.
+    const err = Object.assign(new Error('externo'), { cause: new Error('fallo password=Secreta123') });
+    const r = redactar(err) as Error & { cause?: Error };
+    expect(r.cause).toBeInstanceOf(Error);
+    expect(r.cause?.message).toBe(`fallo password=${REDACTADO}`);
+  });
+
+  it('registrable() no lanza: un getter roto da [no-registrable]', () => {
+    const roto = Object.defineProperty({}, 'x', {
+      enumerable: true,
+      get() {
+        throw new Error('boom');
+      },
+    });
+    expect(registrable(roto)).toBe(NO_REGISTRABLE);
+  });
+});
+
+describe('limpiarEvento: contextos, etiquetas y logentry', () => {
+  it('pasa contexts, tags y logentry por el filtro', () => {
+    const evento = {
+      contexts: { emisor: { nit: '900', claveTecnica: 'zzz' } },
+      tags: { ruta: '/x', token: 'abc' },
+      logentry: { message: 'login password=Secreta1', params: [{ pin: '1234' }] },
+    } as unknown as Sentry.ErrorEvent;
+    const limpio = limpiarEvento(evento);
+    const texto = JSON.stringify(limpio);
+    for (const fuga of ['zzz', 'abc', 'Secreta1', '1234']) expect(texto).not.toContain(fuga);
+    expect(texto).toContain('/x');
   });
 });
 
