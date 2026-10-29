@@ -63,6 +63,7 @@ import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import { CreateSaleDto } from './dto/create-sale.dto';
 import { TaxService } from '../../core-tax/application/tax.service';
 import {
+  causaIncBolsas,
   causesInc,
   deliveryTaxFor,
   INC_RESTAURANTE_CODE,
@@ -140,6 +141,8 @@ export interface OfflineSaleOptions {
    */
   override?: { byUserId: string; byEmail?: string; at: Date };
   chargedPrices?: Record<string, number>;
+  /** INC de bolsas por unidad del comprobante, por producto (solo con `override`). */
+  chargedBagTax?: Record<string, number>;
   /** Lo que no había en el inventario registrado (lo llena `create`). */
   faltantes?: FaltanteOffline[];
   /**
@@ -518,11 +521,24 @@ export class SalesService {
      */
     const cobradoAntes = new Map(opts.paidBefore ?? []);
     // INC de bolsas (art. 512-15 ET): valor fijo por bolsa, solo si la empresa
-    // lo activó y la venta lleva el producto «Bolsa plástica».
+    // lo activó y la venta lleva el producto «Bolsa plástica». Solo lo cobran
+    // los responsables de IVA: el art. 512-15 hace responsables a quienes
+    // «pertenezcan al régimen de responsabilidad del IVA», así que el
+    // restaurante que solo es responsable de INC no lo cobra.
     const llevaBolsas = dto.lines.some(
       (l) => catalogById.get(l.productId)?.bolsaPlastica === true,
     );
-    const bagTaxUnit = llevaBolsas ? await this.tax.bagTaxPerUnit() : 0;
+    const cobraBolsas =
+      llevaBolsas &&
+      causaIncBolsas({
+        responsabilidadFiscal: sede.responsabilidadFiscal,
+        responsableIva: sede.responsableIva,
+      });
+    // La tarifa es la del día del cobro: una venta offline del 31-dic que se
+    // sincroniza en enero lleva la de su año.
+    const bagTaxUnit = cobraBolsas
+      ? await this.tax.bagTaxPerUnit(fechaColombia(offline?.soldAt ?? new Date()))
+      : 0;
     const lineTotals = dto.lines.map((line) => {
       const product = catalogById.get(line.productId)!;
       // Offline autorizada con lo cobrado: manda el precio del comprobante
@@ -541,10 +557,18 @@ export class SalesService {
       const gross = chargeForQty(unitPrice, previo, line.qty);
       // Mismo acumulado que el valor: en una cuenta dividida las partes del
       // impuesto de las bolsas suman exacto el de todas.
-      const bagTax =
-        product.bolsaPlastica === true && bagTaxUnit > 0
-          ? chargeForQty(bagTaxUnit, previo, line.qty)
-          : 0;
+      // Offline con lo cobrado: manda el INC de bolsas del comprobante, como
+      // el precio, para que el total cuadre con lo que entró al cajón.
+      const bagUnitCobrado = offline?.override
+        ? offline.chargedBagTax?.[line.productId]
+        : undefined;
+      const bagUnit =
+        bagUnitCobrado !== undefined
+          ? cop(bagUnitCobrado)
+          : product.bolsaPlastica === true
+            ? bagTaxUnit
+            : 0;
+      const bagTax = bagUnit > 0 ? chargeForQty(bagUnit, previo, line.qty) : 0;
       cobradoAntes.set(line.productId, previo + line.qty);
       let discountAmount = 0;
       let discountName: string | undefined;
@@ -562,7 +586,7 @@ export class SalesService {
         lineTotal: gross,
         discountAmount,
         discountName,
-        bagTaxUnit: bagTax > 0 ? bagTaxUnit : undefined,
+        bagTaxUnit: bagTax > 0 ? bagUnit : undefined,
         bagTax,
       };
     });

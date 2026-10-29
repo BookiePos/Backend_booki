@@ -129,6 +129,16 @@ export function deliveryTaxFor(
   );
 }
 
+/**
+ * Si el negocio cobra el INC de bolsas plásticas. El art. 512-15 ET hace
+ * responsables a quienes entregan las bolsas y «pertenezcan al régimen de
+ * responsabilidad del IVA»: un restaurante que solo es responsable de INC no
+ * lo cobra. Sin dato, todo salvo `no_responsable_iva` (como el IVA).
+ */
+export function causaIncBolsas(profile: SaleTaxProfile): boolean {
+  return responsableIva(profile);
+}
+
 /** Lo que mira el aviso de no responsable de INC. */
 export interface PerfilNoResponsableInc {
   responsableInc?: boolean;

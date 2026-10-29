@@ -316,6 +316,26 @@ describe('OfflineSalesService.sync', () => {
     expect(sales.create).not.toHaveBeenCalled();
   });
 
+  it('con bolsa: el INC de bolsas del comprobante cuenta para cuadrar y pasa a la venta', async () => {
+    // Bandeja: plato de $11.900 + 2 bolsas a $0 con $73 de INC cada una = $12.046.
+    const guardado = dto();
+    const bolsa = new Types.ObjectId().toString();
+    guardado.expectedGrandTotal = 12_046;
+    guardado.sale.lines.push({ productId: bolsa, qty: 2 });
+    guardado.chargedLines = [
+      { productId: guardado.sale.lines[0].productId, unitPrice: 11_900 },
+      { productId: bolsa, unitPrice: 0, bagTaxUnit: 73 },
+    ];
+    conflictos.findOne = vi.fn(() =>
+      exec({ _id: guardado.offlineId, sedeId, reason: 'TOTAL_DISTINTO', status: 'abierto', payload: guardado }),
+    );
+    const jefe = { ...user, permissions: ['pos.sell', 'pos.void.authorize'] } as JwtUser;
+    await service.sync({ ...guardado, override: true }, jefe);
+    const opts = sales.create.mock.calls[0][3].offline;
+    expect(opts.chargedBagTax).toEqual({ [bolsa]: 73 });
+    expect(opts.expectedGrandTotal).toBe(12_046);
+  });
+
   it('lo cobrado + propina tiene que sumar el total del comprobante guardado', async () => {
     const guardado = dto();
     guardado.chargedLines = [{ productId: guardado.sale.lines[0].productId, unitPrice: 10_000 }];

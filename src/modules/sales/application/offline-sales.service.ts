@@ -278,8 +278,14 @@ export class OfflineSalesService {
         'El comprobante guardado no trae el precio cobrado de todas las líneas',
       );
     }
+    // El INC de bolsas va aparte del precio (art. 512-15 ET): sin sumarlo, una
+    // venta con bolsa nunca cuadraría con el comprobante.
+    const bolsa = new Map(
+      (guardado.chargedLines ?? []).map((l) => [l.productId, l.bagTaxUnit ?? 0]),
+    );
     const cobrado =
       sumBy(guardado.sale.lines, (l) => cop(precio.get(l.productId)! * l.qty)) +
+      sumBy(guardado.sale.lines, (l) => cop((bolsa.get(l.productId) ?? 0) * l.qty)) +
       cop(guardado.sale.tip ?? 0);
     if (cobrado !== cop(guardado.expectedGrandTotal)) {
       throw new BadRequestException(
@@ -598,6 +604,13 @@ export class OfflineSalesService {
           (dto.chargedLines ?? []).map((l) => [l.productId, l.unitPrice]),
         )
       : undefined;
+    const chargedBagTax = dto.override
+      ? Object.fromEntries(
+          (dto.chargedLines ?? [])
+            .filter((l) => l.bagTaxUnit !== undefined)
+            .map((l) => [l.productId, l.bagTaxUnit!]),
+        )
+      : undefined;
 
     await this.tomarCandado(dto, reserva._id, user);
 
@@ -612,6 +625,7 @@ export class OfflineSalesService {
           expectedGrandTotal: dto.expectedGrandTotal,
           turnoOrigenId,
           chargedPrices,
+          chargedBagTax,
           // La venta es de quien la cobró (dueño de la reserva).
           cajero: { userId: reserva.userId, email: reserva.userEmail },
           override: dto.override

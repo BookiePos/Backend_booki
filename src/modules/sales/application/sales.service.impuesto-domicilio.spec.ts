@@ -276,6 +276,66 @@ describe('SalesService.create · impuesto del domicilio y de las bolsas', () => 
       expect(creada.total).toBe(0);
     });
 
+    it('restaurante solo responsable de INC: 2 bolsas, $0 de INC de bolsas (art. 512-15)', async () => {
+      // El art. 512-15 hace responsables a quienes pertenecen al régimen de
+      // responsabilidad del IVA; un restaurante que solo responde por INC no lo cobra.
+      sedes.findOrFail.mockResolvedValue({ _id: sedeId, responsableIva: false });
+      await vender({
+        orderType: 'llevar',
+        delivery: undefined,
+        lines: [
+          { productId: PLATO.toString(), qty: 1 },
+          { productId: BOLSA.toString(), qty: 2 },
+        ],
+      });
+      expect(tax.bagTaxPerUnit).not.toHaveBeenCalled();
+      expect(creada.bagTaxTotal).toBe(0);
+      expect(creada.lines[1].bagTax).toBeUndefined();
+      expect(creada.total).toBe(30_000);
+    });
+
+    it('venta offline: tarifa del día del cobro y, con lo cobrado, el INC del comprobante', async () => {
+      // Cobrada el 31-dic a las 10 p.m. en Bogotá (1-ene en UTC).
+      const soldAt = new Date('2027-01-01T03:00:00Z');
+      const offline = {
+        offlineId: '3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f',
+        saleNumber: 'FVC-000001',
+        soldAt,
+        cajaSessionId: new Types.ObjectId().toString(),
+        expectedGrandTotal: 146,
+      };
+      const dto = {
+        sedeId: sedeId.toString(),
+        lines: [{ productId: BOLSA.toString(), qty: 2 }],
+        payment: { method: 'cash' },
+      } as never;
+      const enRestaurante = (fn: () => Promise<unknown>) =>
+        TenantContext.run(
+          { businessId: 'b1', dbName: 'biz_b1', tipoNegocio: 'restaurante' as never },
+          fn,
+        );
+
+      await enRestaurante(() => service.create(dto, user, undefined, { offline }));
+      expect(tax.bagTaxPerUnit).toHaveBeenCalledWith('2026-12-31');
+      expect(creada.bagTaxTotal).toBe(146);
+
+      // Con lo cobrado manda el comprobante ($70 por bolsa), no la tarifa de hoy.
+      tax.bagTaxPerUnit.mockClear();
+      await enRestaurante(() =>
+        service.create(dto, user, undefined, {
+          offline: {
+            ...offline,
+            expectedGrandTotal: 140,
+            override: { byUserId: 'u-jefe', at: new Date() },
+            chargedPrices: { [BOLSA.toString()]: 0 },
+            chargedBagTax: { [BOLSA.toString()]: 70 },
+          },
+        }),
+      );
+      expect(creada.bagTaxTotal).toBe(140);
+      expect(creada.lines[0].bagTaxUnit).toBe(70);
+    });
+
     it('sin bolsas en la venta ni se consulta el impuesto', async () => {
       await vender();
       expect(tax.bagTaxPerUnit).not.toHaveBeenCalled();
