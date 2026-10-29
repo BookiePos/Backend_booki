@@ -1,5 +1,5 @@
-import type { DianStatus } from './einvoicing.constants';
-import type { RespuestaDian } from './transmisor-dian';
+import type { DianStatus } from "./einvoicing.constants";
+import { assertContratoRespuesta, type RespuestaDian } from "./transmisor-dian";
 
 /**
  * Máquina de estados del documento ante la DIAN (pura, sin I/O).
@@ -22,26 +22,32 @@ import type { RespuestaDian } from './transmisor-dian';
  * - PENDIENTE_DIAN: la DIAN aún valida (set en validación).
  * - NO_RECIBIDO_DIAN: la DIAN no confirma haberlo recibido.
  * - CONFIG_FALTANTE: sin .p12 vigente, SoftwareID o PIN; no salió a la red.
+ * - YA_PROCESADO_DIAN: reenvío de un documento que la DIAN ya procesó (regla 90 /
+ *   CUFE existente). SendBillSync responde IsValid=false aunque el documento
+ *   pueda estar aceptado; se resuelve consultando GetStatus, nunca rechazando.
  */
 export const CODIGOS_SIN_VEREDICTO = [
-  'RED',
-  'PENDIENTE_DIAN',
-  'NO_RECIBIDO_DIAN',
-  'CONFIG_FALTANTE',
+  "RED",
+  "PENDIENTE_DIAN",
+  "NO_RECIBIDO_DIAN",
+  "CONFIG_FALTANTE",
+  "YA_PROCESADO_DIAN",
 ] as const;
 export type CodigoSinVeredicto = (typeof CODIGOS_SIN_VEREDICTO)[number];
 
-type RespuestaMinima = Pick<RespuestaDian, 'origen' | 'isValid' | 'codigo'>;
+type RespuestaMinima = Pick<RespuestaDian, "origen" | "isValid" | "codigo">;
 
 /** Transiciones permitidas. `sent → sent` es la reconsulta sin veredicto. */
 const TRANSICIONES: Record<DianStatus, readonly DianStatus[]> = {
-  draft: ['signed', 'contingency'],
-  signed: ['sent', 'contingency'],
-  sent: ['sent', 'accepted', 'rejected', 'contingency'],
+  draft: ["signed", "contingency"],
+  signed: ["sent", "contingency"],
+  // Un documento en vuelo no entra a contingencia.
+  sent: ["sent", "accepted", "rejected"],
   // Corregido el motivo, se vuelve a firmar con el MISMO número.
-  rejected: ['signed'],
+  rejected: ["signed"],
   accepted: [],
-  contingency: ['sent'],
+  // La contingencia tipo 04 se vuelve a firmar (InvoiceTypeCode 04).
+  contingency: ["signed"],
 };
 
 export function transicionPermitida(
@@ -64,8 +70,8 @@ export function assertTransicion(desde: DianStatus, hacia: DianStatus): void {
  * lista negra.
  */
 export function esVeredictoDian(r: RespuestaMinima): boolean {
-  if (r.origen !== 'dian') return false;
-  if (typeof r.isValid !== 'boolean') return false;
+  if (r.origen !== "dian") return false;
+  if (typeof r.isValid !== "boolean") return false;
   if (
     r.codigo !== undefined &&
     (CODIGOS_SIN_VEREDICTO as readonly string[]).includes(r.codigo)
@@ -83,19 +89,21 @@ export function quedaEnVuelo(r: RespuestaMinima): boolean {
 /**
  * Estado resultante de aplicar una respuesta a un documento. Con veredicto:
  * `accepted` o `rejected` (solo desde `sent`; desde otro estado es un error de
- * flujo y lanza). Sin veredicto: el documento no se acepta ni se rechaza; solo
- * `PENDIENTE_DIAN` sobre un firmado lo deja en vuelo (`sent`), el resto
- * (RED, CONFIG_FALTANTE...) no lo mueve.
+ * flujo y lanza). Sin veredicto: nunca acepta ni rechaza. Desde `signed`, todo
+ * lo que no sea CONFIG_FALTANTE (que no salió a la red) pasa a `sent`: un
+ * timeout puede llegar cuando la DIAN ya recibió el documento. El resto no
+ * se mueve.
  */
 export function estadoTrasRespuesta(
   actual: DianStatus,
-  r: RespuestaMinima,
+  r: RespuestaDian,
 ): DianStatus {
+  assertContratoRespuesta(r);
   if (esVeredictoDian(r)) {
-    const destino: DianStatus = r.isValid ? 'accepted' : 'rejected';
+    const destino: DianStatus = r.isValid ? "accepted" : "rejected";
     assertTransicion(actual, destino);
     return destino;
   }
-  if (actual === 'signed' && r.codigo === 'PENDIENTE_DIAN') return 'sent';
+  if (actual === "signed" && r.codigo !== "CONFIG_FALTANTE") return "sent";
   return actual;
 }

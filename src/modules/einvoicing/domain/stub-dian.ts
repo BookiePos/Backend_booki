@@ -5,7 +5,7 @@ import type {
   RespuestaDian,
   RespuestaRangosDian,
   TransmisorDian,
-} from './transmisor-dian';
+} from "./transmisor-dian";
 
 /**
  * Transmisor de relleno: nunca sale a la red y nunca acepta. Responde
@@ -14,14 +14,14 @@ import type {
  */
 export class StubDian implements TransmisorDian {
   constructor(
-    private readonly motivo = 'Transmisión a la DIAN no configurada',
+    private readonly motivo = "Transmisión a la DIAN no configurada",
   ) {}
 
   private respuesta(): RespuestaDian {
     return {
       ok: false,
-      codigo: 'CONFIG_FALTANTE',
-      origen: 'adapter',
+      codigo: "CONFIG_FALTANTE",
+      origen: "adapter",
       mensajes: [this.motivo],
     };
   }

@@ -34,14 +34,14 @@ export interface ResolucionDatos {
  * caso puede cumplir varios y se reporta el que primero exige actuar.
  */
 export type EstadoResolucion =
-  | 'sin_configurar'
-  | 'incompleta'
-  | 'vencida'
-  | 'rango_agotado'
-  | 'aun_no_vigente'
-  | 'por_vencer'
-  | 'rango_bajo'
-  | 'ok';
+  | "sin_configurar"
+  | "incompleta"
+  | "vencida"
+  | "rango_agotado"
+  | "aun_no_vigente"
+  | "por_vencer"
+  | "rango_bajo"
+  | "ok";
 
 export interface ResolutionStatus {
   estado: EstadoResolucion;
@@ -86,8 +86,10 @@ export function computeResolutionStatus(
   hoy: Date = new Date(),
 ): ResolutionStatus {
   const vacio: ResolutionStatus = {
-    estado: 'sin_configurar',
-    alertas: ['Esta sede todavía no tiene resolución de numeración registrada.'],
+    estado: "sin_configurar",
+    alertas: [
+      "Esta sede todavía no tiene resolución de numeración registrada.",
+    ],
     puedeEmitir: false,
     claveTecnicaOk: false,
     consecutivo: { usados: 0 },
@@ -108,48 +110,52 @@ export function computeResolutionStatus(
     total && total > 0 ? Math.min(1, usados / total) : undefined;
 
   // ── Vigencia ─────────────────────────────────────────────────────────────
-  const diasRestantes = vigenciaHasta ? diasEntre(hoy, vigenciaHasta) : undefined;
+  const diasRestantes = vigenciaHasta
+    ? diasEntre(hoy, vigenciaHasta)
+    : undefined;
   const vencida = diasRestantes !== undefined && diasRestantes < 0;
-  const aunNoVigente = Boolean(vigenciaDesde && diasEntre(hoy, vigenciaDesde) > 0);
+  const aunNoVigente = Boolean(
+    vigenciaDesde && diasEntre(hoy, vigenciaDesde) > 0,
+  );
 
   // ── Alertas, de la más urgente a la menos ────────────────────────────────
   const alertas: string[] = [];
-  let estado: EstadoResolucion = 'ok';
+  let estado: EstadoResolucion = "ok";
 
   if (!claveTecnicaOk || rangoHasta == null) {
-    estado = 'incompleta';
+    estado = "incompleta";
     if (!claveTecnicaOk) {
       alertas.push(
-        'Falta la clave técnica: sin ella no se puede calcular el CUFE y no se emite ninguna factura.',
+        "Falta la clave técnica: sin ella no se puede calcular el CUFE y no se emite ninguna factura.",
       );
     }
     if (rangoHasta == null) {
       alertas.push(
-        'Falta el rango autorizado: sin él no se puede saber cuántos números quedan.',
+        "Falta el rango autorizado: sin él no se puede saber cuántos números quedan.",
       );
     }
   }
 
   if (vencida) {
-    estado = 'vencida';
+    estado = "vencida";
     alertas.unshift(
       `La resolución venció hace ${Math.abs(diasRestantes as number)} día(s). Hay que renovarla antes de seguir facturando.`,
     );
   } else if (restantes !== undefined && restantes <= 0) {
-    estado = 'rango_agotado';
+    estado = "rango_agotado";
     alertas.unshift(
-      'Se agotó el rango autorizado. Solicita una resolución nueva a la DIAN.',
+      "Se agotó el rango autorizado. Solicita una resolución nueva a la DIAN.",
     );
   } else if (aunNoVigente) {
-    estado = 'aun_no_vigente';
-    alertas.unshift('La vigencia de esta resolución todavía no ha empezado.');
+    estado = "aun_no_vigente";
+    alertas.unshift("La vigencia de esta resolución todavía no ha empezado.");
   } else if (diasRestantes !== undefined && diasRestantes <= DIAS_AVISO) {
-    estado = 'por_vencer';
+    estado = "por_vencer";
     alertas.unshift(
       `Vence en ${diasRestantes} día(s). Tramita la renovación con tiempo: la DIAN no responde al instante.`,
     );
   } else if (consumido !== undefined && consumido >= RANGO_AVISO) {
-    estado = 'rango_bajo';
+    estado = "rango_bajo";
     alertas.unshift(
       `Quedan ${restantes} número(s) de ${total}. Conviene pedir la próxima resolución ya.`,
     );
