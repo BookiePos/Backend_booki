@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   ServiceUnavailableException,
@@ -23,6 +24,11 @@ const DEFAULT_PRIVATE_BUCKET = 'bookipos-privado';
  * vence, la pantalla vuelve a pedir la factura y trae otra.
  */
 export const FIRMA_SEGUNDOS = 60 * 60;
+
+/** ¿Es la ruta de un certificado de factura electrónica? Nunca se firma. */
+function esRutaDeCertificado(ruta: string): boolean {
+  return /^einvoicing\/[^/]+\/[^/]+\/cert\//.test(ruta) || /\.p12$/i.test(ruta);
+}
 
 /**
  * Almacenamiento de archivos públicos en Supabase Storage.
@@ -149,6 +155,11 @@ export class StorageService {
     segundos = FIRMA_SEGUNDOS,
   ): Promise<Record<string, string>> {
     if (!this.client || pathnames.length === 0) return {};
+    // El certificado .p12 nunca se firma, venga de donde venga la ruta.
+    if (pathnames.some(esRutaDeCertificado)) {
+      throw new BadRequestException('Ese archivo no se entrega por URL.');
+    }
+    await this.asegurarBucketPrivado(this.client);
     const { data, error } = await this.client.storage
       .from(this.privateBucket)
       .createSignedUrls(pathnames, segundos);
@@ -168,6 +179,7 @@ export class StorageService {
     pathname: string,
   ): Promise<{ buffer: Buffer; mimetype: string }> {
     const client = this.requireClient();
+    await this.asegurarBucketPrivado(client);
     const { data, error } = await client.storage
       .from(this.privateBucket)
       .download(pathname);
