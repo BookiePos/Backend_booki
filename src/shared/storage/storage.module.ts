@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { StorageService } from './storage.service';
+import { EinvoicingStorageService } from './einvoicing-storage.service';
 
 /**
  * Almacenamiento de archivos (Supabase Storage). Se importa donde haga falta
@@ -7,7 +8,7 @@ import { StorageService } from './storage.service';
  * escriben archivos, que no deberían ser muchas.
  */
 @Module({
-  providers: [StorageService],
-  exports: [StorageService],
+  providers: [StorageService, EinvoicingStorageService],
+  exports: [StorageService, EinvoicingStorageService],
 })
 export class StorageModule {}

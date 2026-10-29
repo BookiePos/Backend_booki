@@ -58,9 +58,15 @@ export const PERMISSIONS = {
   PAYROLL_VIEW: 'payroll.view',
   PAYROLL_MANAGE: 'payroll.manage',
   PAYROLL_DEDUCTION_APPROVE: 'payroll.deduction.approve',
+  // Nómina electrónica: emitir y ajustar ante la DIAN.
+  PAYROLL_EINVOICE: 'payroll.einvoice',
   // Facturación electrónica (DIAN)
   EINVOICING_ISSUE: 'einvoicing.issue',
   EINVOICING_VOID: 'einvoicing.void',
+  // Configurar el emisor: datos fiscales, resoluciones y credenciales DIAN.
+  EINVOICING_CONFIGURE: 'einvoicing.configure',
+  // Subir y reemplazar el certificado .p12 (la firma de la empresa).
+  EINVOICING_CERTIFICATE: 'einvoicing.certificate',
   // Restaurante (comandas y mesas)
   RESTAURANT_OPERATE: 'restaurant.operate',
 } as const;
@@ -138,6 +144,14 @@ export const PERMISSION_GROUPS: {
     items: [
       { key: PERMISSIONS.EINVOICING_ISSUE, label: 'Emitir factura electrónica' },
       { key: PERMISSIONS.EINVOICING_VOID, label: 'Emitir nota crédito (anular)' },
+      {
+        key: PERMISSIONS.EINVOICING_CONFIGURE,
+        label: 'Configurar facturación electrónica (datos fiscales, resoluciones, credenciales DIAN)',
+      },
+      {
+        key: PERMISSIONS.EINVOICING_CERTIFICATE,
+        label: 'Subir y reemplazar el certificado de firma (.p12)',
+      },
     ],
   },
   {
@@ -188,6 +202,7 @@ export const PERMISSION_GROUPS: {
         key: PERMISSIONS.PAYROLL_DEDUCTION_APPROVE,
         label: 'Aprobar consumos de empleado (deducciones)',
       },
+      { key: PERMISSIONS.PAYROLL_EINVOICE, label: 'Emitir nómina electrónica ante la DIAN' },
     ],
   },
 ];
