@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument } from 'mongoose';
+import { HydratedDocument, Types } from 'mongoose';
 import {
   REGIMEN_RENTA,
   RegimenRenta,
@@ -151,6 +151,14 @@ export class Sede {
   /** Correo desde/para facturación electrónica. */
   @Prop({ trim: true, lowercase: true })
   emailFacturacion?: string;
+
+  /**
+   * Emisor fiscal (`fiscal_emitters`) al que pertenece la sede, uno por NIT.
+   * Lo pone `FiscalEmittersService.asegurarParaSede` o la migración
+   * `2026-10-emisores-desde-sedes`; ningún DTO lo acepta.
+   */
+  @Prop({ type: Types.ObjectId, ref: 'FiscalEmitter', index: true })
+  emisorId?: Types.ObjectId;
 
   /** Resolución de numeración DIAN vigente para la factura de venta. */
   @Prop({ type: ResolucionFeSchema })

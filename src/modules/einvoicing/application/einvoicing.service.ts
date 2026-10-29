@@ -684,6 +684,13 @@ export class EinvoicingService {
     return number;
   }
 
+  /**
+   * Sigue leyendo la sede aunque ya exista `fiscal_emitters` (Fase 1), a
+   * propósito: la pantalla de sedes es la única que edita estos datos y el
+   * emisor aún no se sincroniza con ella. Leer el emisor aquí haría que un
+   * cambio de razón social o de DV en la sede dejara de llegar a la factura sin
+   * avisar. Pasa al emisor cuando su pantalla de configuración sea la fuente.
+   */
   private buildEmisor(sede: SedeDocument) {
     return {
       name: sede.businessName || sede.name,
