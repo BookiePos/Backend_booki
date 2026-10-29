@@ -94,7 +94,10 @@ export class BusinessService {
    * seguro ante concurrencia; lanza 402 si no queda cupo. El contador mensual se
    * reinicia solo al cambiar de mes.
    */
-  async consumeDocument(id: string, plan?: string | null): Promise<void> {
+  async consumeDocument(
+    id: string,
+    plan?: string | null,
+  ): Promise<'monthly' | 'credit'> {
     const period = this.currentDocsPeriod();
     const base = PLAN_QUOTAS[normalizePlan(plan)].documentsPerMonth;
 
@@ -113,7 +116,7 @@ export class BusinessService {
         { $inc: { docsThisMonth: 1 } },
       )
       .exec();
-    if (monthly) return;
+    if (monthly) return 'monthly';
 
     // 2) Mes agotado → consumir un crédito comprado.
     const credit = await this.businesses
@@ -122,12 +125,51 @@ export class BusinessService {
         { $inc: { docCredits: -1, docsThisMonth: 1 } },
       )
       .exec();
-    if (credit) return;
+    if (credit) return 'credit';
 
     throw new PlanUpgradeRequiredException(
       `Alcanzaste el tope de ${base} documentos electrónicos de tu plan este mes. Compra un paquete de documentos o mejora tu plan.`,
       { reason: 'quota', quota: 'documents' },
     );
+  }
+
+  /**
+   * Devuelve un documento al cupo cuando la emisión falló DESPUÉS de cobrarlo
+   * (p. ej. el índice único del consecutivo rechazó la inserción). Deshace
+   * exactamente lo que hizo `consumeDocument`: `origen` dice de dónde salió
+   * (cupo mensual o crédito comprado). Atómico y sin pasar de cero.
+   */
+  async refundDocument(id: string, origen: 'monthly' | 'credit'): Promise<void> {
+    const period = this.currentDocsPeriod();
+    if (origen === 'credit') {
+      await this.businesses
+        .updateOne(
+          { _id: id },
+          [
+            {
+              $set: {
+                docCredits: { $add: ['$docCredits', 1] },
+                docsThisMonth: {
+                  $cond: [
+                    { $eq: ['$docsPeriod', period] },
+                    { $max: [0, { $subtract: ['$docsThisMonth', 1] }] },
+                    '$docsThisMonth',
+                  ],
+                },
+              },
+            },
+          ],
+        )
+        .exec();
+      return;
+    }
+    // Solo si seguimos en el mismo mes: si el contador ya se reinició, no hay nada que devolver.
+    await this.businesses
+      .updateOne(
+        { _id: id, docsPeriod: period, docsThisMonth: { $gt: 0 } },
+        { $inc: { docsThisMonth: -1 } },
+      )
+      .exec();
   }
 
   /**

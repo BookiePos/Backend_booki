@@ -6,12 +6,15 @@ import {
   DOC_TYPES,
   DocType,
 } from '../../domain/einvoicing.constants';
+import { INDICE_CONSECUTIVO_UNICO } from '../../domain/consecutivo-unico';
 
 /** Datos fiscales del emisor congelados al emitir. */
 @Schema({ _id: false })
 export class DocEmisor {
   @Prop() name?: string;
   @Prop() nit?: string;
+  /** NIT base sin DV y solo dígitos (ver `normalizarNit`): llave del consecutivo único. */
+  @Prop() nitNorm?: string;
   @Prop() nitDv?: string;
   @Prop() tipoPersona?: string;
   @Prop() responsabilidadFiscal?: string;
@@ -213,4 +216,19 @@ export const ElectronicDocumentSchema =
 ElectronicDocumentSchema.index(
   { saleId: 1, type: 1 },
   { unique: true, partialFilterExpression: { saleId: { $exists: true } } },
+);
+
+// Único (checklist 1, Fase 1): un solo documento por (emisor, prefijo, número).
+// Si una empresa ya tiene duplicados Mongo no lo crea al arrancar; el informe
+// `2026-10-consecutivo-duplicado-informe.ts` los lista antes. Ver
+// `domain/consecutivo-unico.ts` (el emisor es hoy el NIT; pasará a `emisorId`).
+// Si no se pudo crear, `TenantModelRegistry` deja un warn al arrancar.
+ElectronicDocumentSchema.index(
+  { ...INDICE_CONSECUTIVO_UNICO.keys },
+  {
+    ...INDICE_CONSECUTIVO_UNICO.options,
+    partialFilterExpression: {
+      ...INDICE_CONSECUTIVO_UNICO.options.partialFilterExpression,
+    },
+  },
 );

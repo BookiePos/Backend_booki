@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection, Model, Schema } from 'mongoose';
 import { TenantContext } from './tenant-context';
@@ -14,6 +14,8 @@ import { TenantContext } from './tenant-context';
  */
 @Injectable()
 export class TenantModelRegistry {
+  private readonly logger = new Logger(TenantModelRegistry.name);
+
   constructor(
     // Conexión raíz por defecto (NO se sobrescribe su token, para evitar
     // recursión: este registry ES quien la usa para derivar las de tenant).
@@ -39,6 +41,16 @@ export class TenantModelRegistry {
       n: string,
       s: Schema,
     ) => Model<unknown>;
-    return compile.call(conn, name, schema) as unknown as Model<T>;
+    const model = compile.call(conn, name, schema);
+    // Un índice único que Mongo no pudo crear (p. ej. hay duplicados) falla en
+    // silencio: Mongoose solo emite 'index' con el error. Se deja un warn sin
+    // datos (el mensaje de E11000 trae los valores) con el modelo y la llave.
+    model.on('index', (err?: { code?: number; keyPattern?: Record<string, unknown> }) => {
+      if (!err) return;
+      this.logger.warn(
+        `No se pudo crear un índice de ${name} (código ${err.code ?? '?'}, llave ${Object.keys(err.keyPattern ?? {}).join(',') || 'desconocida'}). Revisa si hay duplicados.`,
+      );
+    });
+    return model as unknown as Model<T>;
   }
 }

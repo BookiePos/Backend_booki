@@ -1,4 +1,5 @@
 import {
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -6,6 +7,11 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+
+import {
+  TIPOS_RESOLUCION,
+  TipoResolucion,
+} from '../../domain/resolucion-tipos';
 
 const YYYYMMDD = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -18,6 +24,14 @@ const YYYYMMDD = /^\d{4}-\d{2}-\d{2}$/;
  * ella incompleta, que se valida al facturar.
  */
 export class RegisterResolutionDto {
+  /**
+   * Tipo de documento al que aplica. Sin valor, `invoice`: así sigue
+   * funcionando el cliente que todavía no manda el tipo.
+   */
+  @IsOptional()
+  @IsIn(TIPOS_RESOLUCION)
+  tipoDocumento?: TipoResolucion;
+
   @IsOptional()
   @IsString()
   @MaxLength(40)
