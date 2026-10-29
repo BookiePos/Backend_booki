@@ -16,7 +16,6 @@ export const DIAN_DOC_TYPES = {
   '31': 'NIT',
   '41': 'Pasaporte',
   '42': 'Documento de identificación extranjero',
-  '43': 'Sin identificación del exterior o para uso definido por la DIAN',
   '47': 'PEP (Permiso Especial de Permanencia)',
   '48': 'PPT (Permiso por Protección Temporal)',
   '50': 'NIT de otro país',
@@ -52,6 +51,22 @@ export const DOC_TYPE_LEGADO_A_DIAN: Record<string, DianDocTypeCode> = {
   CE: '22',
   PAS: '41',
 };
+
+/** Tipos cuyo número son solo dígitos, sin ceros a la izquierda. */
+export const DOC_TYPES_NUMERICOS = ['11', '12', '13', '91'];
+
+/**
+ * Número de documento como lo espera la DIAN: en 11, 12, 13 y 91 solo dígitos y
+ * sin ceros a la izquierda; los demás (extranjeros) conservan letras.
+ */
+export function normalizarNumeroDocumento(
+  dianDocType: string,
+  numero: string,
+): string {
+  const t = numero.replace(/\s/g, '');
+  if (!DOC_TYPES_NUMERICOS.includes(dianDocType)) return t;
+  return t.replace(/\D/g, '').replace(/^0+/, '');
+}
 
 const PESOS_DV = [3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71];
 

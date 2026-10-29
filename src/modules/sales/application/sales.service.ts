@@ -452,30 +452,33 @@ export class SalesService {
      * `rulesFor`): es la forma de dejar de vender a mayorista de un tirón.
      */
     let priceListId: string | undefined = dto.priceListId;
+    const idCliente = dto.customerId ?? credito?.customerId;
+    // Ficha del cliente registrado: de ahí salen los datos fiscales del
+    // adquiriente que se congelan en la venta para la factura electrónica.
+    let clienteFiscal: CustomerDocument | undefined;
     if (priceListId) {
       if (!user.permissions.includes(PERMISSIONS.POS_DISCOUNT_AUTHORIZE)) {
         throw new ForbiddenException(
           'No tienes permiso para cambiar la lista de precios de una venta',
         );
       }
+      // El dato fiscal es un extra: aquí nunca tumba la venta (comportamiento
+      // de antes), si el cliente no existe la venta sigue sin sus datos.
+      if (idCliente) {
+        clienteFiscal = await this.customers.getOrFail(idCliente).catch(() => undefined);
+      }
     } else {
       // El fiado identifica al deudor en `payment.customerId`; el resto de las
       // ventas, en `customerId`. La tienda que compra por cajas paga de
       // contado casi siempre, así que mirar solo el fiado dejaría la lista sin
       // aplicar justo en el caso que importa.
-      const customerId = dto.customerId ?? credito?.customerId;
-      if (customerId) {
-        const cliente = await this.customers.getOrFail(customerId);
+      if (idCliente) {
+        const cliente = await this.customers.getOrFail(idCliente);
+        clienteFiscal = cliente;
         priceListId = cliente.priceListId?.toString();
       }
     }
     const priceRules = await this.priceLists.rulesFor(priceListId);
-    // Ficha del cliente registrado: de ahí salen los datos fiscales del
-    // adquiriente que se congelan en la venta para la factura electrónica.
-    const idClienteFiscal = dto.customerId ?? credito?.customerId;
-    const clienteFiscal = idClienteFiscal
-      ? await this.customers.getOrFail(idClienteFiscal)
-      : undefined;
 
     // Descuentos por línea: predefinidos de la sede. Aplicarlos requiere permiso.
     const lineDiscountIds = [
@@ -1423,7 +1426,8 @@ export class SalesService {
     const base = Object.fromEntries(entries) as Record<string, unknown>;
     if (ficha && (!base.idNumber || base.idNumber === ficha.docNumber)) {
       const fiscal: Record<string, unknown> = {
-        name: base.name ?? ficha.name,
+        // Con tipo DIAN el nombre es la razón social del RUT, no uno tecleado.
+        name: ficha.dianDocType ? ficha.name : (base.name ?? ficha.name),
         idNumber: ficha.docNumber,
         phone: base.phone ?? ficha.phone,
         email: base.email ?? ficha.email,

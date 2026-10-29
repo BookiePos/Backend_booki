@@ -65,6 +65,27 @@ describe('buildAdquiriente', () => {
   });
 });
 
+describe('número de documento por tipo', () => {
+  it('cédula: solo dígitos y sin ceros a la izquierda', () => {
+    const a = buildAdquiriente({ name: 'Ana', idNumber: '0012.345-678', docType: '13' });
+    expect(a.docNumber).toBe('12345678');
+  });
+  it.each(['11', '12', '91'])('tipo %s también se normaliza', (t) => {
+    expect(buildAdquiriente({ name: 'N', idNumber: '00987', docType: t }).docNumber).toBe('987');
+  });
+  it('tipos extranjeros conservan letras y ceros', () => {
+    expect(buildAdquiriente({ name: 'J', idNumber: 'ab0123', docType: '41' }).docNumber).toBe('ab0123');
+  });
+  it('número sin dígitos en tipo numérico se reporta', () => {
+    const r = validarAdquirienteParaFactura({ ...completo, docType: '13', idNumber: '000' });
+    expect(r.faltantes.join(' ')).toContain('número de documento');
+  });
+  it('el código 43 ya no es un tipo válido', () => {
+    const r = validarAdquirienteParaFactura({ ...completo, docType: '43' });
+    expect(r.faltantes).toContain('tipo de documento');
+  });
+});
+
 describe('validarAdquirienteParaFactura', () => {
   it('cliente completo: nada falta', () => {
     expect(validarAdquirienteParaFactura(completo)).toEqual({

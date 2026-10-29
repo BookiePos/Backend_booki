@@ -1,7 +1,9 @@
 import {
   DIAN_DOC_TYPES,
+  DOC_TYPES_NUMERICOS,
   RESPONSABILIDADES_FISCALES,
   errorDvCliente,
+  normalizarNumeroDocumento,
   separarNitConDv,
 } from '../../customers/domain/datos-fiscales';
 import { CONSUMIDOR_FINAL_NIT } from './einvoicing.constants';
@@ -72,7 +74,8 @@ export function buildAdquiriente(c?: ClienteVenta): Adquiriente {
   const nit = esNit ? separarNitConDv(c.idNumber) : undefined;
   return {
     docType: c.docType,
-    docNumber: esNit && nit ? nit.base : c.idNumber.replace(/\s/g, ''),
+    docNumber:
+      esNit && nit ? nit.base : normalizarNumeroDocumento(c.docType, c.idNumber),
     name: c.name?.trim() || 'Consumidor final',
     nitDv: esNit ? c.nitDv?.trim() || nit?.dv : undefined,
     tipoPersona: c.tipoPersona,
@@ -110,6 +113,13 @@ export function validarAdquirienteParaFactura(
   const faltantes: string[] = [];
   if (!c.docType || !(c.docType in DIAN_DOC_TYPES)) {
     faltantes.push('tipo de documento');
+  }
+  if (
+    c.docType &&
+    DOC_TYPES_NUMERICOS.includes(c.docType) &&
+    !normalizarNumeroDocumento(c.docType, c.idNumber)
+  ) {
+    faltantes.push('número de documento (solo dígitos, sin ceros a la izquierda)');
   }
   if (!c.name?.trim()) faltantes.push('nombre o razón social');
   if (c.docType === '31') {

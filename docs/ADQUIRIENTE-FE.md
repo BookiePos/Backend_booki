@@ -31,3 +31,17 @@ no bloquear a un cliente viejo.
 `node dist/datos/2026-10-tipo-documento-dian-clientes.js --empresa <id> [--aplicar]`
 propone `dianDocType` 31 y `nitDv` solo para `docType` NIT con guion y DV válido. El resto
 se cuenta como ambiguo y no se toca. Mientras no tengan tipo, saldrán como consumidor final.
+
+## Pendientes de confirmar y notas de catálogo
+
+- El código **43** (sin identificación del exterior) se quitó del catálogo: no se pudo
+  verificar en la tabla de la FEV 1.9 y parece del documento soporte. Pendiente de
+  confirmar contra el Excel de la Caja de herramientas de la DIAN (junto con 50 y 91).
+- Números de documento: en los tipos 11, 12, 13 y 91 el documento queda solo con dígitos y
+  sin ceros a la izquierda; los extranjeros conservan letras. `validarAdquirienteParaFactura`
+  lo exige.
+- `REGIMENES` (`responsable_iva`, `no_responsable_iva`) son valores internos, no códigos
+  DIAN. Al armar el XML se traducen a `PartyTaxScheme` (13.2.6.2); no se usan los antiguos
+  códigos 48/49.
+- Con ficha de cliente que tiene `dianDocType`, el nombre de la venta es el de la ficha
+  (razón social del RUT), no uno tecleado aparte. El dato fiscal nunca tumba la venta.

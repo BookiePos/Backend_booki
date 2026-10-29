@@ -281,4 +281,52 @@ describe('SalesService.create · lista de precios', () => {
     expect(createdSale.lines[0].lineTotal).toBe(10_800);
     expect(createdSale.total).toBe(10_800);
   });
+
+  it('lista a mano + customerId que no existe: se comporta como antes, sin 404', async () => {
+    build(null, { discountPercent: 12, items: [] });
+    (service as any).customers.getOrFail = vi
+      .fn()
+      .mockRejectedValue(new Error('Cliente no encontrado'));
+
+    await service.create(
+      venta({
+        priceListId: listaMayorista.toString(),
+        customerId: new Types.ObjectId().toString(),
+      }),
+      usuario(['pos.discount.authorize']),
+    );
+
+    expect(createdSale.lines[0].unitPrice).toBe(2_640);
+    expect(createdSale.customer).toBeUndefined();
+  });
+
+  it('con cliente registrado congela sus datos fiscales y la razón social de la ficha', async () => {
+    build(
+      {
+        _id: new Types.ObjectId(),
+        name: 'Tienda SAS',
+        docNumber: '860002964',
+        dianDocType: '31',
+        nitDv: '4',
+        tipoPersona: '1',
+        priceListId: undefined,
+      },
+      null,
+    );
+
+    await service.create(
+      venta({
+        customerId: new Types.ObjectId().toString(),
+        customer: { name: 'nombre tecleado' },
+      }),
+      usuario([]),
+    );
+
+    expect(createdSale.customer).toMatchObject({
+      name: 'Tienda SAS',
+      idNumber: '860002964',
+      docType: '31',
+      nitDv: '4',
+    });
+  });
 });
