@@ -100,8 +100,9 @@ gateTsc('tsc-tests', 'tscConTests', ['-p', 'tsconfig.json']);
 
 // --- cobertura ---------------------------------------------------------------
 // Ítem 5.1. Al revés que los techos: el PISO solo sube. Si la cobertura de
-// líneas baja del piso, FALLA; si lo supera por un punto o más, también falla
-// y pide subirlo, para que la mejora quede fijada.
+// líneas baja del piso, FALLA; si lo supera por dos puntos o más, también falla
+// y pide subirlo a un punto por debajo de la cifra, para que la mejora quede
+// fijada sin dejar el piso pegado a la cobertura real.
 function gateCobertura(ruta, log) {
   const rep = existsSync(ruta) ? leerJson(ruta) : null;
   const pct = rep?.total?.lines?.pct;
