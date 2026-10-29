@@ -1,5 +1,5 @@
-import { createHash } from "crypto";
-import { TIPO_AMBIENTE } from "./einvoicing.constants";
+import { createHash } from 'crypto';
+import { TIPO_AMBIENTE } from './einvoicing.constants';
 
 /** Formatea a 2 decimales con punto, como exige el Anexo Técnico DIAN. */
 function money(n: number): string {
@@ -38,18 +38,18 @@ export function computeCufe(input: {
     input.fecFac +
     input.horFac +
     money(input.valFac) +
-    "01" +
+    '01' +
     money(input.valIva) +
-    "04" +
+    '04' +
     money(0) +
-    "03" +
+    '03' +
     money(0) +
     money(input.valTot) +
     input.nitOFE +
     input.numAdq +
     input.claveTecnica +
     TIPO_AMBIENTE;
-  return createHash("sha384").update(raw, "utf8").digest("hex");
+  return createHash('sha384').update(raw, 'utf8').digest('hex');
 }
 
 /** URL pública de verificación de la DIAN a partir del CUFE. */
