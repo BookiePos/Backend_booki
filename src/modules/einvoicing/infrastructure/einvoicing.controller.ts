@@ -48,9 +48,8 @@ export class EinvoicingController {
   /**
    * Emisor fiscal de la sede y qué le falta para emitir. Solo lectura: nunca
    * devuelve secretos, a lo sumo si están configurados.
-   * TODO(#86): pasar a `PERMISSIONS.EINVOICING_CONFIGURE` cuando se mergee.
    */
-  @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
+  @RequirePermissions(PERMISSIONS.EINVOICING_CONFIGURE)
   @Get('sedes/:sedeId/emisor')
   emisorDeSede(@Param('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
     return this.emisores.vistaDeSede(sedeId, user);
