@@ -9,7 +9,12 @@ import {
   TaxRate,
   TaxRateDocument,
 } from '../infrastructure/schemas/tax-rate.schema';
-import { SEED_TAXES, TAX_KIND_LABELS } from '../domain/tax.constants';
+import {
+  INC_BOLSAS_CODE,
+  SEED_TAXES,
+  TAX_KIND_LABELS,
+  TaxBasis,
+} from '../domain/tax.constants';
 import {
   CreateTaxDto,
   SetTaxRateVersionDto,
@@ -23,6 +28,8 @@ export interface TaxView {
   name: string;
   kind: string;
   kindLabel: string;
+  /** Porcentaje o pesos por unidad (INC de bolsas). */
+  basis: TaxBasis;
   active: boolean;
   system: boolean;
   currentRate: number | null;
@@ -63,21 +70,38 @@ export class TaxService {
     });
   }
 
+  /**
+   * Siembra los impuestos de ley que le falten a la empresa. Antes solo
+   * sembraba si no había ninguno, y una empresa creada antes de un impuesto
+   * nuevo (el INC de bolsas) nunca lo recibía. Inserta solo los códigos que no
+   * existen y nunca pisa uno existente (ni su tarifa ni si está activo). Dos
+   * requests a la vez chocan con el índice único `code + effectiveFrom`: el
+   * duplicado se ignora.
+   */
   private async seed(): Promise<void> {
-    const existing = await this.taxes.countDocuments({ system: true }).exec();
-    if (existing > 0) return;
-    await this.taxes.insertMany(
-      SEED_TAXES.map((t) => ({
-        code: t.code,
-        name: t.name,
-        kind: t.kind,
-        rate: t.rate,
-        note: t.note,
-        effectiveFrom: '2026-01-01',
-        active: true,
-        system: true,
-      })),
+    const have = new Set<string>(
+      await this.taxes.distinct('code', { system: true }).exec(),
     );
+    const missing = SEED_TAXES.filter((t) => !have.has(t.code));
+    if (missing.length === 0) return;
+    try {
+      await this.taxes.insertMany(
+        missing.map((t) => ({
+          code: t.code,
+          name: t.name,
+          kind: t.kind,
+          rate: t.rate,
+          basis: t.basis ?? 'porcentaje',
+          note: t.note,
+          effectiveFrom: '2026-01-01',
+          active: t.active ?? true,
+          system: true,
+        })),
+        { ordered: false },
+      );
+    } catch (err) {
+      if ((err as { code?: number }).code !== 11000) throw err;
+    }
   }
 
   async list(): Promise<TaxView[]> {
@@ -103,6 +127,7 @@ export class TaxService {
         name: head.name,
         kind: head.kind,
         kindLabel: TAX_KIND_LABELS[head.kind],
+        basis: head.basis ?? 'porcentaje',
         active: head.active,
         system: head.system,
         currentRate: current ? current.rate : null,
@@ -141,6 +166,11 @@ export class TaxService {
     date?: string,
   ): Promise<TaxComputation> {
     const version = await this.resolveRate(code, date);
+    if (version.basis === 'por_unidad') {
+      throw new BadRequestException(
+        `'${version.code}' es un valor fijo por unidad, no un porcentaje de una base`,
+      );
+    }
     const safeBase = Math.max(0, cop(base));
     const taxAmount = cop((safeBase * version.rate) / 100);
     return {
@@ -152,6 +182,21 @@ export class TaxService {
       total: safeBase + taxAmount,
       date: date ?? this.today(),
     };
+  }
+
+  /**
+   * INC por bolsa plástica vigente a la fecha (art. 512-15 ET), en pesos. Es 0
+   * si la empresa no lo ha activado: nace inactivo y nadie lo cobra sin
+   * decidirlo.
+   */
+  async bagTaxPerUnit(date?: string): Promise<number> {
+    try {
+      const version = await this.resolveRate(INC_BOLSAS_CODE, date);
+      return version.active ? cop(version.rate) : 0;
+    } catch (err) {
+      if (err instanceof NotFoundException) return 0;
+      throw err;
+    }
   }
 
   async create(dto: CreateTaxDto, userEmail?: string): Promise<TaxView> {
@@ -198,6 +243,7 @@ export class TaxService {
       name: head.name,
       kind: head.kind,
       rate: dto.rate,
+      basis: head.basis ?? 'porcentaje',
       effectiveFrom: dto.effectiveFrom,
       note: dto.note,
       active: head.active,

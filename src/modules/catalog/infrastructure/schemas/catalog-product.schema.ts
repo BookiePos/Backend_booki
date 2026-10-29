@@ -62,6 +62,15 @@ export class CatalogProduct {
   @Prop({ enum: [...TRATAMIENTOS_FISCALES] })
   tratamientoFiscal?: TratamientoFiscal;
 
+  /**
+   * Bolsa plástica para cargar lo vendido: cada unidad causa el INC de bolsas
+   * (art. 512-15 ET), un valor fijo por bolsa que el servidor suma aparte del
+   * precio de la bolsa (`salePrice`, que puede ser 0). Solo si la empresa
+   * activó el impuesto `INC_BOLSA`.
+   */
+  @Prop({ default: false })
+  bolsaPlastica?: boolean;
+
   /** Cómo se abastece: directo del inventario o con receta. */
   @Prop({ required: true, enum: CATALOG_SOURCE_TYPES, default: 'inventory' })
   sourceType!: CatalogSourceType;

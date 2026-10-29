@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
-import { TAX_KINDS, TaxKind } from '../../domain/tax.constants';
+import { TAX_BASES, TAX_KINDS, TaxBasis, TaxKind } from '../../domain/tax.constants';
 
 export type TaxRateDocument = HydratedDocument<TaxRate>;
 
@@ -21,9 +21,16 @@ export class TaxRate {
   @Prop({ required: true, enum: TAX_KINDS })
   kind!: TaxKind;
 
-  /** Tarifa en porcentaje (19 = 19%). */
+  /**
+   * Tarifa: porcentaje (19 = 19 %) o, si `basis` es `por_unidad`, pesos por
+   * unidad (73 = $73 por bolsa).
+   */
   @Prop({ required: true, min: 0 })
   rate!: number;
+
+  /** Cómo se aplica `rate`. Las vigencias anteriores a este campo son porcentaje. */
+  @Prop({ enum: TAX_BASES, default: 'porcentaje' })
+  basis?: TaxBasis;
 
   /** Inicio de vigencia (YYYY-MM-DD). */
   @Prop({ required: true })

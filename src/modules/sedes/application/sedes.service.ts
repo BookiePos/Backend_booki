@@ -13,6 +13,7 @@ import { UpdateSedeDto } from './dto/update-sede.dto';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { effectiveEntitlements } from '../../control/domain/plans';
 import { PlanUpgradeRequiredException } from '../../control/domain/plan-upgrade.exception';
+import { advertenciasNoResponsableInc } from '../../core-tax/domain/sale-tax';
 
 /** Error de índice único de Mongo (documento duplicado). */
 const MONGO_DUPLICATE_KEY = 11000;
@@ -113,6 +114,14 @@ export class SedesService {
     if (dto.tipoPersona !== undefined) sede.tipoPersona = dto.tipoPersona;
     if (dto.responsabilidadFiscal !== undefined)
       sede.responsabilidadFiscal = dto.responsabilidadFiscal;
+    // Responsabilidades del RUT (ítem 1.17). El DTO las aceptaba pero no se
+    // guardaban al editar: solo al crear la sede.
+    if (dto.responsableIva !== undefined) sede.responsableIva = dto.responsableIva;
+    if (dto.responsableInc !== undefined) sede.responsableInc = dto.responsableInc;
+    if (dto.franquicia !== undefined) sede.franquicia = dto.franquicia;
+    if (dto.regimenRenta !== undefined) sede.regimenRenta = dto.regimenRenta;
+    if (dto.granContribuyente !== undefined)
+      sede.granContribuyente = dto.granContribuyente;
     if (dto.ciiu !== undefined) sede.ciiu = dto.ciiu || undefined;
     if (dto.departamento !== undefined)
       sede.departamento = dto.departamento || undefined;
@@ -149,6 +158,30 @@ export class SedesService {
     // `cobroDigital()`). Ya se guardó: esto solo afecta al documento devuelto.
     if (sede.cobroDigital?.qrImagen) sede.cobroDigital.qrImagen = undefined;
     return sede;
+  }
+
+  /**
+   * Chequeo fiscal de las sedes: avisos que no cambian la venta, como la sede
+   * marcada no responsable de INC siendo persona jurídica o con la empresa en
+   * varias sedes (art. 512-13 ET, ver `advertenciasNoResponsableInc`).
+   */
+  async chequeoFiscal(
+    scope?: string[] | null,
+  ): Promise<{ sedeId: string; name: string; advertencias: string[] }[]> {
+    const filter = scope ? { _id: { $in: scope } } : {};
+    const [sedes, activas] = await Promise.all([
+      this.sedeModel
+        .find(filter)
+        .select('name responsableInc franquicia tipoPersona')
+        .sort({ code: 1 })
+        .exec(),
+      this.sedeModel.countDocuments({ active: { $ne: false } }).exec(),
+    ]);
+    return sedes.map((s) => ({
+      sedeId: String(s._id),
+      name: s.name,
+      advertencias: advertenciasNoResponsableInc(s, activas),
+    }));
   }
 
   count(): Promise<number> {

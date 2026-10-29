@@ -24,7 +24,10 @@ export interface SaleTaxProfile {
   responsabilidadFiscal?: ResponsabilidadFiscal;
   /** Responsable de IVA (RUT 48) o no (RUT 49, art. 437 par. 3 ET). */
   responsableIva?: boolean;
-  /** Responsable de INC (RUT 33) o no (RUT 34, art. 512-13 ET). */
+  /**
+   * Responsable de INC (responsabilidad 33 del RUT) o no (art. 512-13 ET).
+   * Confirmar en el RUT del negocio.
+   */
   responsableInc?: boolean;
   /** Expendio de comidas bajo franquicia: IVA, no INC (art. 426 par. ET). */
   franquicia?: boolean;
@@ -97,6 +100,82 @@ export function saleTaxFor(
     kind: 'iva',
     rate: product.ivaType === 'gravado' ? product.ivaRate : 0,
   };
+}
+
+/**
+ * Impuesto del cobro de domicilio que hace el propio restaurante.
+ *
+ * La base del INC es el «precio total de consumo… y demás valores
+ * adicionales», sin desagregar salvo la propina (arts. 512-1 num. 3 y 512-9
+ * ET), y el valor del domicilio es un valor adicional del expendio (Oficio
+ * DIAN 664 (904106) de 2022). La exclusión de IVA del transporte (art. 476)
+ * no aplica al INC. Así que el domicilio lleva el mismo tratamiento que la
+ * comida: INC en el régimen normal, IVA 19 % en la franquicia (art. 447: el
+ * valor total de la operación) y nada si el negocio no es responsable.
+ *
+ * Fuera de un restaurante (retail) el domicilio sigue sin impuesto, como
+ * antes: ahí el bien vendido puede ser excluido o de varias tarifas y no hay
+ * una «comida» de la que heredar el tratamiento. Pendiente del contador.
+ */
+export function deliveryTaxFor(
+  profile: SaleTaxProfile,
+  incRate: number,
+): { kind: SaleTaxKind; rate: number } {
+  if (profile.tipoNegocio !== 'restaurante') return { kind: 'ninguno', rate: 0 };
+  return saleTaxFor(
+    profile,
+    { ivaType: 'gravado', ivaRate: 19, tratamiento: 'expendio' },
+    incRate,
+  );
+}
+
+/**
+ * Si el negocio cobra el INC de bolsas plásticas. El art. 512-15 ET hace
+ * responsables a quienes entregan las bolsas y «pertenezcan al régimen de
+ * responsabilidad del IVA»: un restaurante que solo es responsable de INC no
+ * lo cobra. Sin dato, todo salvo `no_responsable_iva` (como el IVA).
+ */
+export function causaIncBolsas(profile: SaleTaxProfile): boolean {
+  return responsableIva(profile);
+}
+
+/** Lo que mira el aviso de no responsable de INC. */
+export interface PerfilNoResponsableInc {
+  responsableInc?: boolean;
+  franquicia?: boolean;
+  tipoPersona?: 'natural' | 'juridica';
+}
+
+/**
+ * Avisos cuando una sede está marcada como NO responsable de INC y eso no
+ * cuadra con el art. 512-13 ET, que solo lo permite a la persona natural con
+ * un solo establecimiento e ingresos menores a 3.500 UVT. Es solo un aviso:
+ * la venta sigue sin INC hasta que alguien corrija el perfil, porque el dato
+ * que lo decide (el RUT) no lo tiene el sistema.
+ *
+ * @param sedesActivas sedes activas de la empresa (establecimientos).
+ */
+export function advertenciasNoResponsableInc(
+  sede: PerfilNoResponsableInc,
+  sedesActivas: number,
+): string[] {
+  if (sede.responsableInc !== false || sede.franquicia === true) return [];
+  const norma =
+    'El art. 512-13 ET solo permite no ser responsable de INC a una persona natural, con un ' +
+    'solo establecimiento e ingresos brutos menores a 3.500 UVT. Confirmar en el RUT.';
+  const avisos: string[] = [];
+  if (sede.tipoPersona === 'juridica') {
+    avisos.push(
+      `La sede está marcada como no responsable de INC, pero es persona jurídica. ${norma}`,
+    );
+  }
+  if (sedesActivas > 1) {
+    avisos.push(
+      `La sede está marcada como no responsable de INC, pero la empresa tiene ${sedesActivas} ` +
+        `sedes. ${norma}`,
+    );
+  }
+  return avisos;
 }
 
 /**

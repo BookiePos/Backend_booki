@@ -45,6 +45,15 @@ export class ChargedLineDto {
   @IsInt()
   @Min(0)
   unitPrice!: number;
+
+  /**
+   * INC de bolsas plásticas por unidad que cobró el comprobante (art. 512-15
+   * ET), aparte de `unitPrice`. Solo en la línea de la bolsa.
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  bagTaxUnit?: number;
 }
 
 /** Una venta cobrada sin red que el terminal envía al volver la conexión. */

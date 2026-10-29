@@ -104,6 +104,19 @@ class SaleLine {
   @Prop({ default: 0, min: 0 })
   taxAmount!: number;
 
+  /**
+   * INC de bolsas plásticas por unidad (art. 512-15 ET), en pesos. Solo en la
+   * línea del producto «Bolsa plástica» y si la empresa activó el impuesto.
+   * Va APARTE del valor de la bolsa (`lineTotal`, con su propio impuesto) y
+   * no lo toca ningún descuento: es un valor fijo por bolsa entregada.
+   */
+  @Prop({ min: 0 })
+  bagTaxUnit?: number;
+
+  /** INC de bolsas de la línea: qty × `bagTaxUnit`, en pesos. */
+  @Prop({ min: 0 })
+  bagTax?: number;
+
   /** Vestigial: la trazabilidad de lotes vive ahora en `components`. */
   @Prop({ type: [SaleConsumedLotSchema], default: [] })
   consumedLots!: SaleConsumedLot[];
@@ -452,8 +465,21 @@ export class Sale {
   @Prop({ default: 0, min: 0 })
   taxTotal!: number;
 
+  /**
+   * Lo que paga el cliente por los productos: Σ líneas netas de descuento
+   * (con su IVA/INC incluido) + el INC de bolsas (`bagTaxTotal`). Sin propina
+   * ni domicilio.
+   */
   @Prop({ required: true, min: 0 })
   total!: number;
+
+  /**
+   * INC de bolsas plásticas de la venta (art. 512-15 ET, cuenta 249510): Σ
+   * `lines.bagTax`. Está dentro de `total` pero fuera de `taxableBase` y de
+   * `taxTotal`, que son el IVA/INC ad valorem de las líneas.
+   */
+  @Prop({ default: 0, min: 0 })
+  bagTaxTotal!: number;
 
   /**
    * Propina (voluntaria, restaurante). NO es venta ni base gravable: se cobra
@@ -467,15 +493,38 @@ export class Sale {
   orderType!: OrderType;
 
   /**
-   * Cobro del domicilio. Se cobra ENCIMA del total y NO entra a la base
-   * gravable —decisión tomada con el dueño— así que va en su propio campo y no
-   * como una línea más. El monto a pagar = total + tip + deliveryFee.
+   * Cobro del domicilio, CON su impuesto incluido. Se cobra encima del total
+   * y va en su propio campo, no como una línea: el monto a pagar = total + tip
+   * + deliveryFee.
    *
-   * A diferencia de la propina, sí es ingreso del negocio y por eso sí va al
-   * libro contable.
+   * Desde oct-2026 lleva el mismo impuesto que la comida de la venta (ver
+   * `deliveryTaxKind`): la base del INC es el «precio total de consumo… y
+   * demás valores adicionales» sin desagregar salvo la propina (arts. 512-1
+   * num. 3 y 512-9 ET), y el domicilio es un valor adicional del expendio
+   * (Oficio DIAN 664 (904106) de 2022). Las ventas anteriores lo llevaron sin
+   * impuesto (no tienen `deliveryTaxKind`) y así quedan: el libro no se
+   * reescribe.
+   *
+   * A diferencia de la propina, es ingreso del negocio y va al libro contable.
    */
   @Prop({ default: 0, min: 0 })
   deliveryFee!: number;
+
+  /** Impuesto del domicilio: INC, IVA (franquicia) o ninguno. Vacío en ventas viejas. */
+  @Prop({ enum: SALE_TAX_KINDS })
+  deliveryTaxKind?: SaleTaxKind;
+
+  /** Tarifa del impuesto del domicilio (8, 19 o 0). */
+  @Prop({ min: 0 })
+  deliveryTaxRate?: number;
+
+  /** Base del domicilio: `deliveryFee − deliveryTax`. */
+  @Prop({ min: 0 })
+  deliveryTaxBase?: number;
+
+  /** Impuesto incluido en `deliveryFee` (2495 si es INC, 2408 si es IVA). */
+  @Prop({ min: 0 })
+  deliveryTax?: number;
 
   /** A dónde se lleva y quién lo lleva. Solo en `orderType: 'domicilio'`. */
   @Prop({ type: SaleDeliverySchema })

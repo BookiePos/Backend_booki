@@ -55,6 +55,11 @@ export interface VentaGuardada {
   status: string;
   total: number;
   deliveryFee?: number;
+  /** Impuesto del domicilio (oct-2026 en adelante); sin él, entra entero a Ingresos. */
+  deliveryTaxKind?: string;
+  deliveryTax?: number;
+  /** INC de bolsas plásticas, dentro de `total`. */
+  bagTaxTotal?: number;
   tip?: number;
   paymentMethod: string;
   /** Reparto del cobro mixto (ítem 6.9); vacío o ausente en un solo medio. */
@@ -138,6 +143,11 @@ export function insumoVenta(v: VentaGuardada): Parameters<Posting['postSale']>[0
     consumptionTax: taxOf('inc'),
     cogs: sumBy(v.components, (c) => c.cost ?? 0),
     deliveryFee,
+    deliveryTax:
+      v.deliveryTaxKind && v.deliveryTax
+        ? { kind: v.deliveryTaxKind, amount: cop(v.deliveryTax) }
+        : undefined,
+    bagTax: cop(v.bagTaxTotal ?? 0),
     tip: cop(v.tip ?? 0),
     paymentMethod: v.paymentMethod,
     payments: v.payments && v.payments.length > 1 ? v.payments : undefined,

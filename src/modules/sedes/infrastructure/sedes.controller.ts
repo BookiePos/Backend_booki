@@ -28,6 +28,15 @@ export class SedesController {
     return this.sedes.list(allowedSedeIds(user));
   }
 
+  // Avisos fiscales de las sedes del usuario (no cambian la venta). Mismo
+  // alcance que el listado. Va antes de `:id/...` solo por claridad: las rutas
+  // no chocan.
+  @NoPermissionRequired()
+  @Get('chequeo-fiscal')
+  chequeoFiscal(@CurrentUser() user: JwtUser) {
+    return this.sedes.chequeoFiscal(allowedSedeIds(user));
+  }
+
   // Imagen del QR para mostrarla al cobrar: el listado no la trae. Mismo
   // criterio que el listado (sin permiso propio, solo sedes del usuario).
   @NoPermissionRequired()

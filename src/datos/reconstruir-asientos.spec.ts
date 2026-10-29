@@ -136,6 +136,17 @@ describe('reconstruir asientos faltantes', () => {
       onCredit: false,
     });
     expect(insumoVenta(venta({ paymentMethod: 'credit' }))!.onCredit).toBe(true);
+    // Una venta anterior a oct-2026 no tiene impuesto del domicilio ni bolsas.
+    expect(insumoVenta(venta())!.deliveryTax).toBeUndefined();
+    expect(insumoVenta(venta())!.bagTax).toBe(0);
+  });
+
+  it('domicilio con INC y bolsas: se reconstruyen como los postea SalesService', () => {
+    const r = insumoVenta(
+      venta({ deliveryTaxKind: 'inc', deliveryTax: 370, bagTaxTotal: 146 }),
+    )!;
+    expect(r.deliveryTax).toEqual({ kind: 'inc', amount: 370 });
+    expect(r.bagTax).toBe(146);
   });
 
   it('cobro mixto (ítem 6.9): el reparto pasa al asiento y no se trata como fiado entero', () => {

@@ -23,10 +23,10 @@ import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 /**
  * El cobro del domicilio dentro de la venta.
  *
- * La regla que lo define, decidida con el dueño: el domicilio **no lleva IVA** y
- * se cobra **encima del total**, igual que la propina. Meterlo en la base
- * gravable saldría mal en la factura electrónica ante la DIAN, y eso no se
- * arregla solo.
+ * El domicilio se cobra **encima del total**, igual que la propina. Aquí no hay
+ * giro (sin tenant restaurante), así que va sin impuesto. En un restaurante
+ * lleva el impuesto de la comida incluido: ver
+ * `sales.service.impuesto-domicilio.spec.ts`.
  *
  * Pero a diferencia de la propina, el domicilio **sí es ingreso del negocio**:
  * la propina es del personal. Por eso uno va al libro contable y la otra no.
@@ -195,9 +195,7 @@ describe('SalesService.create · domicilio', () => {
     expect(creada.orderType).toBe('domicilio');
   });
 
-  it('el domicilio NO entra a la base gravable ni al IVA', async () => {
-    // Es la regla que se acordó con el dueño. Meterlo dentro saldría mal en la
-    // factura electrónica.
+  it('fuera de un restaurante el domicilio NO entra a la base gravable ni al IVA', async () => {
     build({ id: ZONA.toString(), name: 'Laureles', fee: 5_000 });
 
     await service.create(

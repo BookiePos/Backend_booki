@@ -135,6 +135,7 @@ export class CatalogService {
       ivaRate: dto.ivaRate ?? 19,
       ivaType: dto.ivaType ?? 'gravado',
       tratamientoFiscal: dto.tratamientoFiscal,
+      bolsaPlastica: dto.bolsaPlastica ?? false,
       active: dto.active ?? true,
       packaging: await this.resolvePackaging(dto.packaging),
       // Dinero en entero: el peso no tiene centavos y un costo con decimales
@@ -159,6 +160,7 @@ export class CatalogService {
     if (dto.salePrice !== undefined) product.salePrice = dto.salePrice;
     if (dto.ivaRate !== undefined) product.ivaRate = dto.ivaRate;
     if (dto.ivaType !== undefined) product.ivaType = dto.ivaType;
+    if (dto.bolsaPlastica !== undefined) product.bolsaPlastica = dto.bolsaPlastica;
     if (dto.active !== undefined) product.active = dto.active;
     // El empaque es independiente de la fuente: una lista vacía lo quita.
     if (dto.packaging !== undefined) {

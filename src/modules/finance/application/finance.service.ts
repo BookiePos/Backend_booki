@@ -134,11 +134,17 @@ export interface PLReport {
   ivaGenerado: number;
   ivaDescontable: number;
   ivaPorPagar: number;
-  /** INC generado por las ventas de restaurante (cuenta 2495). */
+  /** Base de las ventas con IVA, domicilio incluido. */
+  ivaBase: number;
+  /** INC generado por las ventas de restaurante (cuenta 2495), domicilio incluido. */
   incGenerado: number;
+  /** Base de las ventas con INC, domicilio incluido. */
+  incBase: number;
+  /** INC de bolsas plásticas (art. 512-15 ET, subcuenta 249510). */
+  incBolsas: number;
   /**
-   * INC por pagar. Igual al generado: al INC no se le descuenta el IVA pagado
-   * en compras (art. 512-1 ET); se declara sobre lo causado.
+   * INC por pagar: el generado más el de bolsas. Al INC no se le descuenta el
+   * IVA pagado en compras (art. 512-1 ET); se declara sobre lo causado.
    */
   incPorPagar: number;
 }
@@ -1615,8 +1621,13 @@ export class FinanceService {
       ivaGenerado,
       ivaDescontable,
       ivaPorPagar: cop(ivaGenerado - ivaDescontable),
+      ivaBase: generado.ivaBase,
       incGenerado: generado.inc,
-      incPorPagar: generado.inc,
+      incBase: generado.incBase,
+      // INC de bolsas plásticas (art. 512-15 ET): mismo formulario 310 que el
+      // INC, otro renglón. Tampoco admite descontables.
+      incBolsas: generado.incBolsas,
+      incPorPagar: cop(generado.inc + generado.incBolsas),
     };
   }
 
