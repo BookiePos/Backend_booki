@@ -1,4 +1,4 @@
-import type { DocType } from "./einvoicing.constants";
+import type { DocType } from './einvoicing.constants';
 
 /**
  * Puerto de transmisión a la DIAN. El dominio solo conoce esta interfaz; la
@@ -7,7 +7,7 @@ import type { DocType } from "./einvoicing.constants";
  */
 
 /** Quién produjo la respuesta: el propio adaptador (red, config) o la DIAN. */
-export type OrigenRespuesta = "adapter" | "dian";
+export type OrigenRespuesta = 'adapter' | 'dian';
 
 /**
  * Respuesta normalizada de cualquier operación contra la DIAN.
@@ -30,11 +30,15 @@ export interface RespuestaDian {
   cufe?: string;
 }
 
-/** Lanza si la respuesta rompe el contrato fail-closed (`ok` sin veredicto válido de la DIAN). */
+/**
+ * Lanza si la respuesta rompe el contrato fail-closed. `ok` es bicondicional:
+ * solo es true con `isValid === true` y `origen === 'dian'`, y en ese caso
+ * tiene que serlo (`ok:false` con veredicto válido de la DIAN es incoherente).
+ */
 export function assertContratoRespuesta(r: RespuestaDian): void {
-  if (r.ok && !(r.isValid === true && r.origen === "dian")) {
+  if (r.ok !== (r.isValid === true && r.origen === 'dian')) {
     throw new Error(
-      "Respuesta DIAN inválida: ok:true exige isValid=true y origen dian",
+      'Respuesta DIAN inválida: ok debe ser true solo con isValid=true y origen dian',
     );
   }
 }

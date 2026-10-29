@@ -1,5 +1,5 @@
-import type { DianStatus } from "./einvoicing.constants";
-import { assertContratoRespuesta, type RespuestaDian } from "./transmisor-dian";
+import type { DianStatus } from './einvoicing.constants';
+import { assertContratoRespuesta, type RespuestaDian } from './transmisor-dian';
 
 /**
  * Máquina de estados del documento ante la DIAN (pura, sin I/O).
@@ -27,27 +27,27 @@ import { assertContratoRespuesta, type RespuestaDian } from "./transmisor-dian";
  *   pueda estar aceptado; se resuelve consultando GetStatus, nunca rechazando.
  */
 export const CODIGOS_SIN_VEREDICTO = [
-  "RED",
-  "PENDIENTE_DIAN",
-  "NO_RECIBIDO_DIAN",
-  "CONFIG_FALTANTE",
-  "YA_PROCESADO_DIAN",
+  'RED',
+  'PENDIENTE_DIAN',
+  'NO_RECIBIDO_DIAN',
+  'CONFIG_FALTANTE',
+  'YA_PROCESADO_DIAN',
 ] as const;
 export type CodigoSinVeredicto = (typeof CODIGOS_SIN_VEREDICTO)[number];
 
-type RespuestaMinima = Pick<RespuestaDian, "origen" | "isValid" | "codigo">;
+type RespuestaMinima = Pick<RespuestaDian, 'origen' | 'isValid' | 'codigo'>;
 
 /** Transiciones permitidas. `sent → sent` es la reconsulta sin veredicto. */
 const TRANSICIONES: Record<DianStatus, readonly DianStatus[]> = {
-  draft: ["signed", "contingency"],
-  signed: ["sent", "contingency"],
+  draft: ['signed', 'contingency'],
+  signed: ['sent', 'contingency'],
   // Un documento en vuelo no entra a contingencia.
-  sent: ["sent", "accepted", "rejected"],
+  sent: ['sent', 'accepted', 'rejected'],
   // Corregido el motivo, se vuelve a firmar con el MISMO número.
-  rejected: ["signed"],
+  rejected: ['signed'],
   accepted: [],
   // La contingencia tipo 04 se vuelve a firmar (InvoiceTypeCode 04).
-  contingency: ["signed"],
+  contingency: ['signed'],
 };
 
 export function transicionPermitida(
@@ -70,8 +70,8 @@ export function assertTransicion(desde: DianStatus, hacia: DianStatus): void {
  * lista negra.
  */
 export function esVeredictoDian(r: RespuestaMinima): boolean {
-  if (r.origen !== "dian") return false;
-  if (typeof r.isValid !== "boolean") return false;
+  if (r.origen !== 'dian') return false;
+  if (typeof r.isValid !== 'boolean') return false;
   if (
     r.codigo !== undefined &&
     (CODIGOS_SIN_VEREDICTO as readonly string[]).includes(r.codigo)
@@ -100,10 +100,10 @@ export function estadoTrasRespuesta(
 ): DianStatus {
   assertContratoRespuesta(r);
   if (esVeredictoDian(r)) {
-    const destino: DianStatus = r.isValid ? "accepted" : "rejected";
+    const destino: DianStatus = r.isValid ? 'accepted' : 'rejected';
     assertTransicion(actual, destino);
     return destino;
   }
-  if (actual === "signed" && r.codigo !== "CONFIG_FALTANTE") return "sent";
+  if (actual === 'signed' && r.codigo !== 'CONFIG_FALTANTE') return 'sent';
   return actual;
 }
