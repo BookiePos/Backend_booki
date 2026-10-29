@@ -19,6 +19,11 @@ import { Schema } from 'mongoose';
  *
  * `v` es la versión de la llave con la que se cifró. Hoy solo existe la 1; para
  * rotar se añadirá una llave nueva con su versión y se volverá a cifrar.
+ *
+ * Contexto (obligatorio): `${emisorId}:${nombreCampo}`, p. ej.
+ * `66f0…a1:claveTecnica`. Va como dato asociado (AAD) del cifrado, así que un
+ * valor copiado a otro emisor o a otro campo deja de descifrar. Ármalo siempre
+ * con `contextoSecreto(emisorId, campo)` y con el mismo id al cifrar y al leer.
  */
 
 export const VARIABLE_LLAVE = 'EINVOICING_ENCRYPTION_KEY';
@@ -80,28 +85,44 @@ export function leerLlave(env: NodeJS.ProcessEnv = process.env): Buffer | null {
   return llave;
 }
 
+const RE_CONTEXTO = /^[^:\s]+:[^:\s]+$/;
+
+/** Arma el contexto `${emisorId}:${nombreCampo}` de un secreto. */
+export function contextoSecreto(emisorId: string, nombreCampo: string): string {
+  return validarContexto(`${emisorId}:${nombreCampo}`);
+}
+
+function validarContexto(contexto: string): string {
+  if (typeof contexto !== 'string' || !RE_CONTEXTO.test(contexto)) {
+    // Error de programación: sin contexto el secreto se podría trasplantar.
+    throw new Error('Contexto de secreto inválido: debe ser «emisorId:nombreCampo»');
+  }
+  return contexto;
+}
+
 /**
  * Datos asociados (AAD): la versión entra en el tag, así que cambiar `v` en la
- * base también rompe la verificación. `contexto` (opcional) ata el secreto a su
- * dueño, p. ej. el id del emisor: copiar el valor cifrado a otro documento hace
- * que deje de descifrar.
+ * base también rompe la verificación, y el contexto ata el secreto a su
+ * emisor y a su campo.
  */
-function aad(v: number, contexto?: string): Buffer {
-  return Buffer.from(`bookipos-secreto:v${v}:${contexto ?? ''}`, 'utf8');
+function aad(v: number, contexto: string): Buffer {
+  return Buffer.from(`bookipos-secreto:v${v}:${contexto}`, 'utf8');
 }
 
 /** Cifra un texto. Lanza si falta la llave o si es inválida. IV aleatorio en cada llamada. */
 export function cifrar(
   texto: string,
-  opciones: { contexto?: string; env?: NodeJS.ProcessEnv } = {},
+  contexto: string,
+  opciones: { env?: NodeJS.ProcessEnv } = {},
 ): SecretoCifrado {
+  validarContexto(contexto);
   const llave = leerLlave(opciones.env);
   if (!llave) {
     throw new Error(`${VARIABLE_LLAVE} no está configurada: no se puede guardar el secreto`);
   }
   const iv = randomBytes(BYTES_IV);
   const cifrador = createCipheriv(ALGORITMO, llave, iv, { authTagLength: BYTES_TAG });
-  cifrador.setAAD(aad(VERSION_LLAVE, opciones.contexto));
+  cifrador.setAAD(aad(VERSION_LLAVE, contexto));
   const data = Buffer.concat([cifrador.update(texto, 'utf8'), cifrador.final()]);
   return {
     iv: iv.toString('base64'),
@@ -130,8 +151,10 @@ export function esSecretoCifrado(valor: unknown): valor is SecretoCifrado {
  */
 export function descifrar(
   secreto: SecretoCifrado | null | undefined,
-  opciones: { contexto?: string; env?: NodeJS.ProcessEnv } = {},
+  contexto: string,
+  opciones: { env?: NodeJS.ProcessEnv } = {},
 ): string | null {
+  validarContexto(contexto);
   if (secreto == null) return null;
   const llave = leerLlave(opciones.env);
   if (!llave) return null;
@@ -146,7 +169,7 @@ export function descifrar(
   if (tag.length !== BYTES_TAG) throw new SecretoIlegibleError('tag de longitud inválida');
   try {
     const descifrador = createDecipheriv(ALGORITMO, llave, iv, { authTagLength: BYTES_TAG });
-    descifrador.setAAD(aad(secreto.v, opciones.contexto));
+    descifrador.setAAD(aad(secreto.v, contexto));
     descifrador.setAuthTag(tag);
     const texto = Buffer.concat([
       descifrador.update(Buffer.from(secreto.data, 'base64')),
@@ -164,8 +187,19 @@ export const set = cifrar;
 export const get = descifrar;
 
 /**
+ * Al serializar, el secreto desaparece: devolver `null` en el transform hace
+ * que Mongoose omita el campo en `toJSON()` y en `toObject()`.
+ */
+function sinSecreto(): null {
+  return null;
+}
+
+/**
  * Subesquema de Mongoose para un secreto cifrado. Sin `_id` y estricto: no se
- * cuela nada más que las cuatro piezas.
+ * cuela nada más que las cuatro piezas. `toJSON` y `toObject` lo omiten, así
+ * que ni la respuesta de `create()`/`save()` ni un `.select('+campo')`
+ * serializado lo dejan salir. Lo que se guarda no cambia: Mongoose escribe en
+ * la base con sus propias opciones (`toBSON`), sin este transform.
  */
 export const SecretoCifradoSchema = new Schema<SecretoCifrado>(
   {
@@ -174,7 +208,12 @@ export const SecretoCifradoSchema = new Schema<SecretoCifrado>(
     data: { type: String, required: true },
     v: { type: Number, required: true },
   },
-  { _id: false, strict: true },
+  {
+    _id: false,
+    strict: true,
+    toJSON: { transform: sinSecreto },
+    toObject: { transform: sinSecreto },
+  },
 );
 
 /**
@@ -182,6 +221,17 @@ export const SecretoCifradoSchema = new Schema<SecretoCifrado>(
  * consulta lo traiga sin pedirlo con `.select('+campo')`.
  *
  *   @Prop(campoSecreto()) claveTecnica?: SecretoCifrado;
+ *
+ * Para leerlo: `doc.get('claveTecnica')` (o `doc.claveTecnica`) y
+ * `descifrar(valor, contextoSecreto(emisorId, 'claveTecnica'))`; no pases por
+ * `toObject()`, que lo omite.
+ *
+ * Reglas para quien lo use (el esquema no las puede cubrir):
+ *   - `aggregate()` y `.lean()` devuelven objetos planos sin transform: el
+ *     valor cifrado viaja tal cual. En un `$project` excluye el campo
+ *     (`{ claveTecnica: 0 }`) y nunca devuelvas un resultado así en un DTO.
+ *   - Ningún DTO de respuesta declara estos campos; la UI recibe a lo sumo un
+ *     booleano «configurado».
  */
 export function campoSecreto(): {
   type: typeof SecretoCifradoSchema;
