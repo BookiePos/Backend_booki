@@ -168,6 +168,40 @@ export class ElectronicDocument {
   @Prop()
   xmlUrl?: string;
 
+  // ── Trazabilidad de la transmisión (todos opcionales: los documentos ya
+  // existentes no los tienen) ────────────────────────────────────────────────
+  /** Identificador del envío asíncrono (set de pruebas / GetStatusZip). */
+  @Prop()
+  trackId?: string;
+
+  @Prop()
+  zipKey?: string;
+
+  /** Última respuesta de la DIAN o del adaptador. Nunca guarda secretos. */
+  @Prop({ type: Object })
+  respuestaDian?: Record<string, unknown>;
+
+  /** Ruta privada del XML firmado (se entrega por URL firmada). */
+  @Prop()
+  xmlPath?: string;
+
+  @Prop()
+  pdfPath?: string;
+
+  /** Ruta del AttachedDocument (ZIP con XML + PDF) que se entrega al cliente. */
+  @Prop()
+  attachedPath?: string;
+
+  /** Motivo del rechazo, solo si la DIAN respondió IsValid=false. */
+  @Prop()
+  rechazoMotivo?: string;
+
+  @Prop({ default: 0, min: 0 })
+  intentos?: number;
+
+  @Prop()
+  enviadoAt?: Date;
+
   @Prop({ required: true })
   createdByEmail!: string;
 }
