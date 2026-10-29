@@ -115,8 +115,10 @@ function gateCobertura(ruta, log) {
     registrar('cobertura', cifra, 'FALLA', 'falta «coberturaLineasPiso» en techos.json', log);
   } else if (pct < piso) {
     registrar('cobertura', cifra, 'FALLA', `piso ${piso}: la cobertura BAJÓ`, log);
-  } else if (pct >= piso + 1) {
-    registrar('cobertura', cifra, 'FALLA', `piso ${piso} holgado: sube «coberturaLineasPiso» a ${Math.floor(pct)}`, log);
+  } else if (pct >= piso + 2) {
+    // El piso se fija un punto por debajo de la cifra real: con varios PR en
+    // paralelo, un piso pegado a la cobertura rompe main por pocas líneas.
+    registrar('cobertura', cifra, 'FALLA', `piso ${piso} holgado: sube «coberturaLineasPiso» a ${Math.floor(pct) - 1}`, log);
   } else {
     registrar('cobertura', cifra, 'OK', `piso ${piso}`, log);
   }
