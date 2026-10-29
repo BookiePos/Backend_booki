@@ -100,8 +100,9 @@ gateTsc('tsc-tests', 'tscConTests', ['-p', 'tsconfig.json']);
 
 // --- cobertura ---------------------------------------------------------------
 // Ítem 5.1. Al revés que los techos: el PISO solo sube. Si la cobertura de
-// líneas baja del piso, FALLA; si lo supera por un punto o más, también falla
-// y pide subirlo, para que la mejora quede fijada.
+// líneas baja del piso, FALLA; si lo supera por dos puntos o más, también falla
+// y pide subirlo a un punto por debajo de la cifra, para que la mejora quede
+// fijada sin dejar el piso pegado a la cobertura real.
 function gateCobertura(ruta, log) {
   const rep = existsSync(ruta) ? leerJson(ruta) : null;
   const pct = rep?.total?.lines?.pct;
@@ -115,8 +116,10 @@ function gateCobertura(ruta, log) {
     registrar('cobertura', cifra, 'FALLA', 'falta «coberturaLineasPiso» en techos.json', log);
   } else if (pct < piso) {
     registrar('cobertura', cifra, 'FALLA', `piso ${piso}: la cobertura BAJÓ`, log);
-  } else if (pct >= piso + 1) {
-    registrar('cobertura', cifra, 'FALLA', `piso ${piso} holgado: sube «coberturaLineasPiso» a ${Math.floor(pct)}`, log);
+  } else if (pct >= piso + 2) {
+    // El piso se fija un punto por debajo de la cifra real: con varios PR en
+    // paralelo, un piso pegado a la cobertura rompe main por pocas líneas.
+    registrar('cobertura', cifra, 'FALLA', `piso ${piso} holgado: sube «coberturaLineasPiso» a ${Math.floor(pct) - 1}`, log);
   } else {
     registrar('cobertura', cifra, 'OK', `piso ${piso}`, log);
   }
