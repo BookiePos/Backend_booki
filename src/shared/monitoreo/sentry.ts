@@ -1,4 +1,5 @@
 import * as Sentry from '@sentry/node';
+import { redactarTexto } from './redaccion';
 
 /**
  * Monitoreo de errores (ítem 2.4). Sentry solo se activa si existe `SENTRY_DSN`;
@@ -25,9 +26,13 @@ const RE_EMAIL = /[^\s@<>()"',;]+@[^\s@<>()"',;]+\.[^\s@<>()"',;]+/g;
 const RE_DOCUMENTO = /\d{6,}/g;
 const MAX_MENSAJE = 200;
 
-/** Censura emails y secuencias de 6 o más dígitos (cédulas, NIT, teléfonos). */
+/**
+ * Censura pares `clave=valor` sensibles (contraseña del .p12, PIN, clave
+ * técnica, tokens…), emails y secuencias de 6 o más dígitos (cédulas, NIT,
+ * teléfonos).
+ */
 export function censurar(texto: string): string {
-  return texto.replace(RE_EMAIL, '[email]').replace(RE_DOCUMENTO, '[num]');
+  return redactarTexto(texto).replace(RE_EMAIL, '[email]').replace(RE_DOCUMENTO, '[num]');
 }
 
 function mensajeSeguro(texto: unknown): string | undefined {
