@@ -112,6 +112,7 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `DELETE /discounts/:id` | `pos.discount.authorize` | ✓ | ✓ | ✓ | · | · |
 | `GET /einvoicing/resolutions` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /einvoicing/resolutions/:sedeId` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
+| `GET /einvoicing/sedes/:sedeId/emisor` | `einvoicing.configure` | ✓ | ✓ | · | · | · |
 | `GET /einvoicing` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /einvoicing/:id` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /einvoicing/from-sale` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
