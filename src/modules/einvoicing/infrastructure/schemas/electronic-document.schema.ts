@@ -13,6 +13,8 @@ import { INDICE_CONSECUTIVO_UNICO } from '../../domain/consecutivo-unico';
 export class DocEmisor {
   @Prop() name?: string;
   @Prop() nit?: string;
+  /** NIT base sin DV y solo dígitos (ver `normalizarNit`): llave del consecutivo único. */
+  @Prop() nitNorm?: string;
   @Prop() nitDv?: string;
   @Prop() tipoPersona?: string;
   @Prop() responsabilidadFiscal?: string;
@@ -220,6 +222,7 @@ ElectronicDocumentSchema.index(
 // Si una empresa ya tiene duplicados Mongo no lo crea al arrancar; el informe
 // `2026-10-consecutivo-duplicado-informe.ts` los lista antes. Ver
 // `domain/consecutivo-unico.ts` (el emisor es hoy el NIT; pasará a `emisorId`).
+// Si no se pudo crear, `TenantModelRegistry` deja un warn al arrancar.
 ElectronicDocumentSchema.index(
   { ...INDICE_CONSECUTIVO_UNICO.keys },
   {

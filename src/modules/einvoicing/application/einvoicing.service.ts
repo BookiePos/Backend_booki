@@ -33,6 +33,7 @@ import {
   MEDIO_PAGO_BY_METHOD,
 } from '../domain/einvoicing.constants';
 import { computeCufe, dianVerificationUrl } from '../domain/cufe';
+import { normalizarNit, tipoDeChoque } from '../domain/consecutivo-unico';
 import {
   computeResolutionStatus,
   type ResolutionStatus,
@@ -119,11 +120,130 @@ export class EinvoicingService {
    * Se llama ANTES de quemar el consecutivo DIAN: si no hay cupo, aborta con 402
    * sin consumir folio. Fail-open si la request no trae empresa en contexto.
    */
-  private async consumeDocQuota(): Promise<void> {
+  private async consumeDocQuota(): Promise<'monthly' | 'credit' | undefined> {
     const ctx = TenantContext.current();
     if (ctx?.businessId) {
-      await this.businesses.consumeDocument(ctx.businessId, ctx.plan);
+      return this.businesses.consumeDocument(ctx.businessId, ctx.plan);
     }
+    return undefined;
+  }
+
+  /** Devuelve al cupo lo cobrado por `consumeDocQuota` cuando la emisión falló. */
+  private async refundDocQuota(
+    origen: 'monthly' | 'credit' | undefined,
+  ): Promise<void> {
+    const ctx = TenantContext.current();
+    if (origen && ctx?.businessId) {
+      await this.businesses.refundDocument(ctx.businessId, origen);
+    }
+  }
+
+  /** Objeto plano de un subdocumento (o el mismo valor si ya lo es). */
+  private plano<T>(valor: T): Record<string, unknown> | undefined {
+    const v = valor as unknown as { toObject?: () => Record<string, unknown> };
+    return v && typeof v.toObject === 'function'
+      ? v.toObject()
+      : (valor as unknown as Record<string, unknown> | undefined);
+  }
+
+  /**
+   * Cobra el cupo, toma el folio y guarda el documento. Si la inserción falla,
+   * NUNCA deja cobrado el cupo ni gastado el folio por culpa del índice:
+   * - choque por número (`consecutivo_unico`): el contador iba por detrás de lo
+   *   ya emitido (renovación con otro prefijo, dos sedes con el mismo NIT...);
+   *   se sube al mayor número emitido para (NIT, prefijo) y se reintenta, hasta
+   *   3 intentos en total;
+   * - choque por venta+tipo (doble emisión en carrera): se devuelve el
+   *   documento que ya existe;
+   * - cualquier otro error: se relanza, con cupo y folio devueltos.
+   */
+  private async emitir(o: {
+    counterId: string;
+    desde: number;
+    hasta: number | undefined;
+    prefix: string;
+    nit: string | undefined;
+    construir: (number: number) => Record<string, unknown>;
+    existente: () => Promise<ElectronicDocumentDocument | null>;
+  }): Promise<ElectronicDocumentDocument> {
+    const MAX_INTENTOS = 3;
+    for (let intento = 1; ; intento++) {
+      // Cupo del plan antes de quemar folio: si no hay cupo, 402 sin consumir nada.
+      const origen = await this.consumeDocQuota();
+      let number: number | undefined;
+      try {
+        number = await this.nextNumber(o.counterId, o.desde, o.hasta);
+        return await this.model.create(o.construir(number));
+      } catch (err) {
+        await this.refundDocQuota(origen);
+        const choque = tipoDeChoque(err);
+        if (number !== undefined && choque !== 'consecutivo') {
+          await this.devolverFolio(o.counterId, number - o.desde + 1);
+        }
+        if (choque === 'venta') {
+          const existente = await o.existente();
+          if (existente) return existente;
+        }
+        if (choque === 'consecutivo' && intento < MAX_INTENTOS) {
+          await this.subirContador(o);
+          continue;
+        }
+        if (choque === 'consecutivo') {
+          throw new ConflictException(
+            'No se pudo asignar un número libre. Revisa la numeración de la sede e inténtalo de nuevo.',
+          );
+        }
+        throw err;
+      }
+    }
+  }
+
+  /** Mayor número ya emitido para (NIT normalizado, prefijo), o 0 si no hay. */
+  private async mayorNumeroEmitido(
+    nit: string | undefined,
+    prefijo: string,
+  ): Promise<number> {
+    const norm = normalizarNit(nit);
+    if (!norm) return 0;
+    const ultimo = await this.model
+      .findOne({
+        prefix: prefijo || null,
+        // `nitNorm` en los nuevos; `nit` tal cual en los que aún no se rellenaron.
+        $or: [{ 'emisor.nitNorm': norm }, { 'emisor.nit': nit }],
+      })
+      .sort({ number: -1 })
+      .select('number')
+      .lean()
+      .exec();
+    return ultimo?.number ?? 0;
+  }
+
+  /** Sube el contador al mayor número emitido (nunca lo baja). */
+  private async subirContador(o: {
+    counterId: string;
+    desde: number;
+    prefix: string;
+    nit: string | undefined;
+  }): Promise<void> {
+    const mayor = await this.mayorNumeroEmitido(o.nit, o.prefix);
+    if (mayor < o.desde) return;
+    await this.counters
+      .findOneAndUpdate(
+        { _id: o.counterId },
+        { $max: { seq: mayor - o.desde + 1 } },
+        { upsert: true },
+      )
+      .exec();
+  }
+
+  /**
+   * Devuelve el folio tomado, solo si nadie tomó otro después (el contador
+   * sigue en `seq`): bajarlo a ciegas pisaría el número de otra emisión.
+   */
+  private async devolverFolio(counterId: string, seq: number): Promise<void> {
+    await this.counters
+      .findOneAndUpdate({ _id: counterId, seq }, { $inc: { seq: -1 } })
+      .exec();
   }
 
   /** Documentos electrónicos de una sede (más recientes primero). */
@@ -179,18 +299,7 @@ export class EinvoicingService {
     // con normalidad e imprimiendo en cada factura una vigencia ya expirada.
     this.assertResolucionVigente(resolucion, 'invoice');
 
-    // Cupo de documentos del plan (antes de quemar folio: si no hay cupo, 402).
-    await this.consumeDocQuota();
-
     const prefix = resolucion.prefijo ?? '';
-    const number = await this.nextNumber(
-      contadorDeResolucion('invoice', sedeId, prefix),
-      resolucion.rangoDesde ?? 1,
-      resolucion.rangoHasta,
-    );
-    const fullNumber = `${prefix}${number}`;
-    const { issueDate, issueTime } = this.now();
-
     const lines = sale.lines.map((l) => {
       const net = round2(l.taxBase + l.taxAmount);
       return {
@@ -211,43 +320,54 @@ export class EinvoicingService {
     const emisor = this.buildEmisor(sede);
     const medioPago = MEDIO_PAGO_BY_METHOD[sale.payment.method] ?? '10';
 
-    // CUFE (Anexo 1.9). La clave técnica ya se validó arriba (folio no quemado).
-    const cufe = computeCufe({
-      numFac: fullNumber,
-      fecFac: issueDate,
-      horFac: issueTime,
-      valFac: sale.taxableBase ?? 0,
-      valIva: sale.taxTotal ?? 0,
-      valTot: sale.total,
-      nitOFE: (sede.nit ?? '').replace(/\D/g, ''),
-      numAdq: adquiriente.docNumber ?? CONSUMIDOR_FINAL_NIT,
-      claveTecnica: resolucion.claveTecnica,
-    });
-    const qrUrl = dianVerificationUrl(cufe);
-
-    return this.model.create({
-      type: 'invoice',
-      saleId: sale._id,
-      sedeId: new Types.ObjectId(sedeId),
-      prefix: prefix || undefined,
-      number,
-      fullNumber,
-      issueDate,
-      issueTime,
-      emisor,
-      adquiriente,
-      lines,
-      taxableBase: sale.taxableBase ?? 0,
-      ivaTotal: sale.taxTotal ?? 0,
-      discountTotal: sale.discountTotal ?? 0,
-      total: sale.total,
-      formaPago: '1',
-      medioPago,
-      resolution: this.buildResolution(resolucion),
-      cufe,
-      qrUrl,
-      dianStatus: 'draft',
-      createdByEmail: user.email,
+    return this.emitir({
+      counterId: contadorDeResolucion('invoice', sedeId, prefix),
+      desde: resolucion.rangoDesde ?? 1,
+      hasta: resolucion.rangoHasta,
+      prefix,
+      nit: emisor.nit,
+      existente: () =>
+        this.model.findOne({ saleId: sale._id, type: 'invoice' }).exec(),
+      construir: (number) => {
+        const fullNumber = `${prefix}${number}`;
+        const { issueDate, issueTime } = this.now();
+        // CUFE (Anexo 1.9). La clave técnica ya se validó arriba (folio no quemado).
+        const cufe = computeCufe({
+          numFac: fullNumber,
+          fecFac: issueDate,
+          horFac: issueTime,
+          valFac: sale.taxableBase ?? 0,
+          valIva: sale.taxTotal ?? 0,
+          valTot: sale.total,
+          nitOFE: (sede.nit ?? '').replace(/\D/g, ''),
+          numAdq: adquiriente.docNumber ?? CONSUMIDOR_FINAL_NIT,
+          claveTecnica: resolucion.claveTecnica as string,
+        });
+        return {
+          type: 'invoice',
+          saleId: sale._id,
+          sedeId: new Types.ObjectId(sedeId),
+          prefix: prefix || undefined,
+          number,
+          fullNumber,
+          issueDate,
+          issueTime,
+          emisor,
+          adquiriente,
+          lines,
+          taxableBase: sale.taxableBase ?? 0,
+          ivaTotal: sale.taxTotal ?? 0,
+          discountTotal: sale.discountTotal ?? 0,
+          total: sale.total,
+          formaPago: '1',
+          medioPago,
+          resolution: this.buildResolution(resolucion),
+          cufe,
+          qrUrl: dianVerificationUrl(cufe),
+          dianStatus: 'draft',
+          createdByEmail: user.email,
+        };
+      },
     });
   }
 
@@ -284,62 +404,70 @@ export class EinvoicingService {
       this.assertResolucionVigente(resolucionNota, 'credit_note');
     }
 
-    // Una nota crédito también es un documento electrónico: cuenta al cupo.
-    await this.consumeDocQuota();
-
     const prefix = resolucionNota ? (resolucionNota.prefijo ?? '') : 'NC';
-    const number = resolucionNota
-      ? await this.nextNumber(
-          contadorDeResolucion('credit_note', sedeId, prefix),
-          resolucionNota.rangoDesde ?? 1,
-          resolucionNota.rangoHasta,
-        )
-      : await this.nextNumber(`nc:${sedeId}`, 1, undefined);
-    const fullNumber = `${prefix}${number}`;
-    const { issueDate, issueTime } = this.now();
+    // El emisor se congela con la factura; las facturas viejas no traen
+    // `nitNorm`, así que se calcula aquí para que la nota entre al índice.
+    const emisorFactura = this.plano(invoice.emisor);
+    const nitFactura = emisorFactura?.nit as string | undefined;
+    const emisor = { ...emisorFactura, nitNorm: normalizarNit(nitFactura) };
 
-    const cufe = computeCufe({
-      numFac: fullNumber,
-      fecFac: issueDate,
-      horFac: issueTime,
-      valFac: invoice.taxableBase,
-      valIva: invoice.ivaTotal,
-      valTot: invoice.total,
-      nitOFE: (sede.nit ?? '').replace(/\D/g, ''),
-      numAdq: invoice.adquiriente?.docNumber ?? CONSUMIDOR_FINAL_NIT,
-      claveTecnica,
-    });
-    const qrUrl = dianVerificationUrl(cufe);
-
-    return this.model.create({
-      type: 'credit_note',
-      saleId: invoice.saleId,
-      sedeId: invoice.sedeId,
-      prefix: prefix || undefined,
-      number,
-      fullNumber,
-      issueDate,
-      issueTime,
-      emisor: invoice.emisor,
-      adquiriente: invoice.adquiriente,
-      lines: invoice.lines,
-      taxableBase: invoice.taxableBase,
-      ivaTotal: invoice.ivaTotal,
-      discountTotal: invoice.discountTotal,
-      total: invoice.total,
-      formaPago: invoice.formaPago,
-      medioPago: invoice.medioPago,
-      resolution: resolucionNota
-        ? this.buildResolution(resolucionNota)
-        : invoice.resolution,
-      reason,
-      referenceNumber: invoice.fullNumber,
-      referenceCufe: invoice.cufe,
-      referenceId: invoice._id,
-      cufe,
-      qrUrl,
-      dianStatus: 'draft',
-      createdByEmail: user.email,
+    // Una nota crédito también es un documento electrónico: cuenta al cupo
+    // (dentro de `emitir`, antes de quemar folio).
+    return this.emitir({
+      counterId: resolucionNota
+        ? contadorDeResolucion('credit_note', sedeId, prefix)
+        : `nc:${sedeId}`,
+      desde: resolucionNota?.rangoDesde ?? 1,
+      hasta: resolucionNota?.rangoHasta,
+      prefix,
+      nit: nitFactura,
+      existente: () =>
+        this.model.findOne({ saleId: invoice.saleId, type: 'credit_note' }).exec(),
+      construir: (number) => {
+        const fullNumber = `${prefix}${number}`;
+        const { issueDate, issueTime } = this.now();
+        const cufe = computeCufe({
+          numFac: fullNumber,
+          fecFac: issueDate,
+          horFac: issueTime,
+          valFac: invoice.taxableBase,
+          valIva: invoice.ivaTotal,
+          valTot: invoice.total,
+          nitOFE: (sede.nit ?? '').replace(/\D/g, ''),
+          numAdq: invoice.adquiriente?.docNumber ?? CONSUMIDOR_FINAL_NIT,
+          claveTecnica,
+        });
+        return {
+          type: 'credit_note',
+          saleId: invoice.saleId,
+          sedeId: invoice.sedeId,
+          prefix: prefix || undefined,
+          number,
+          fullNumber,
+          issueDate,
+          issueTime,
+          emisor,
+          adquiriente: invoice.adquiriente,
+          lines: invoice.lines,
+          taxableBase: invoice.taxableBase,
+          ivaTotal: invoice.ivaTotal,
+          discountTotal: invoice.discountTotal,
+          total: invoice.total,
+          formaPago: invoice.formaPago,
+          medioPago: invoice.medioPago,
+          resolution: resolucionNota
+            ? this.buildResolution(resolucionNota)
+            : invoice.resolution,
+          reason,
+          referenceNumber: invoice.fullNumber,
+          referenceCufe: invoice.cufe,
+          referenceId: invoice._id,
+          cufe,
+          qrUrl: dianVerificationUrl(cufe),
+          dianStatus: 'draft',
+          createdByEmail: user.email,
+        };
+      },
     });
   }
 
@@ -457,8 +585,25 @@ export class EinvoicingService {
     const tipo = dto.tipoDocumento ?? TIPO_RESOLUCION_POR_DEFECTO;
     const previa = resolucionDeTipo(sede, tipo);
 
+    const prefijo = dto.prefijo?.toUpperCase() ?? '';
+    // El consecutivo se comparte por (NIT, prefijo) entre todos los tipos: sin
+    // prefijo propio, un POS o una nota chocarían con la factura.
+    if (tipo !== 'invoice' && !prefijo) {
+      throw new BadRequestException(
+        `La resolución de ${NOMBRE_TIPO_RESOLUCION[tipo]} necesita un prefijo propio, distinto al de la factura.`,
+      );
+    }
+
     const desde = dto.rangoDesde ?? 1;
-    const empezarEn = dto.empezarEn ?? desde;
+    // Nunca arrancar en un número ya emitido para (NIT, prefijo), sea cual sea
+    // el tipo: la DIAN rechaza la repetición y el índice único también.
+    const mayor = await this.mayorNumeroEmitido(sede.nit, prefijo);
+    if (dto.empezarEn != null && dto.empezarEn <= mayor) {
+      throw new BadRequestException(
+        `El número inicial ${dto.empezarEn} ya fue emitido con el prefijo ${prefijo || '(sin prefijo)'}: el último fue el ${mayor}. Empieza en ${mayor + 1} o más.`,
+      );
+    }
+    const empezarEn = dto.empezarEn ?? Math.max(desde, mayor + 1);
     if (empezarEn < desde || (dto.rangoHasta != null && empezarEn > dto.rangoHasta)) {
       throw new BadRequestException(
         'El número inicial tiene que estar dentro del rango autorizado.',
@@ -471,7 +616,7 @@ export class EinvoicingService {
       fechaResolucion: dto.fechaResolucion
         ? new Date(dto.fechaResolucion)
         : undefined,
-      prefijo: dto.prefijo?.toUpperCase(),
+      prefijo: prefijo || undefined,
       rangoDesde: desde,
       rangoHasta: dto.rangoHasta,
       vigenciaDesde: dto.vigenciaDesde ? new Date(dto.vigenciaDesde) : undefined,
@@ -543,6 +688,8 @@ export class EinvoicingService {
     return {
       name: sede.businessName || sede.name,
       nit: sede.nit,
+      // NIT base normalizado: es la llave del índice `consecutivo_unico`.
+      nitNorm: normalizarNit(sede.nit),
       nitDv: sede.nitDv,
       tipoPersona: sede.tipoPersona,
       responsabilidadFiscal: sede.responsabilidadFiscal,

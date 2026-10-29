@@ -2,6 +2,7 @@ import { getModelToken } from '@nestjs/mongoose';
 import type { Model } from 'mongoose';
 import { enCadaEmpresa } from './en-cada-empresa';
 import {
+  FILTRO_SIN_NIT_NORM,
   PIPELINE_CONSECUTIVO_DUPLICADO,
   contarConsecutivosDuplicados,
   type GrupoConsecutivoDuplicado,
@@ -19,8 +20,11 @@ import {
  * electrónico duplicado ya pudo salir a la DIAN, así que se resuelve a mano
  * (anular o renumerar con criterio), nunca borrando por script.
  *
- * Mientras haya `llavesDuplicadas > 0` en una empresa, el índice no se crea ahí:
- * Mongoose lo intenta al arrancar y el fallo queda en el log.
+ * Normaliza el NIT desde `emisor.nit` (misma regla que `normalizarNit`), así
+ * cubre también los documentos viejos sin `emisor.nitNorm`. Mientras haya
+ * `llavesDuplicadas > 0` en una empresa, el índice no se crea ahí: Mongoose lo
+ * intenta al arrancar y el fallo queda como warn de `TenantModelRegistry` (sin
+ * datos). Si `sinNitNorm > 0`, corre antes `2026-10-nit-norm-electronic-documents.ts`.
  *
  *   pnpm build
  *   node dist/datos/2026-10-consecutivo-duplicado-informe.js --empresa <id>
@@ -40,7 +44,8 @@ void enCadaEmpresa({
       );
     }
     const indices = (await docs.collection.indexes()).map((i) => String(i.name));
-    return contarConsecutivosDuplicados(grupos, indices);
+    const sinNitNorm = await docs.countDocuments(FILTRO_SIN_NIT_NORM).exec();
+    return contarConsecutivosDuplicados(grupos, indices, sinNitNorm);
   },
   aplicar: () =>
     Promise.reject(
