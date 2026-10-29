@@ -287,6 +287,7 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `GET /sales/:id/returns` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /sales/:id/void` | `pos.void.authorize` | ✓ | ✓ | ✓ | · | · |
 | `GET /sedes` | con sesión | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `GET /sedes/chequeo-fiscal` | con sesión | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `GET /sedes/:id/cobro-digital` | con sesión | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `POST /sedes` | `sede.manage` | ✓ | ✓ | ✓ | · | · |
 | `PATCH /sedes/:id` | `sede.manage` | ✓ | ✓ | ✓ | · | · |

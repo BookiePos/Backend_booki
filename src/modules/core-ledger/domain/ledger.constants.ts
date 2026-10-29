@@ -66,6 +66,13 @@ export const ACC = {
    * impuestos por pagar); no es la 2368, que es la ReteICA.
    */
   INC_POR_PAGAR: '2495',
+  /**
+   * INC de bolsas plásticas (art. 512-15 ET, tributo DIAN 22). Subcuenta de la
+   * 2495 y no la 2495 misma: se declara en el mismo formulario del INC (310)
+   * pero en su propio renglón, y con la subcuenta el saldo sale directo sin
+   * separarlo del INC de restaurante del 8 %.
+   */
+  INC_BOLSAS_POR_PAGAR: '249510',
   /** Propinas recibidas para el personal (Ley 1935/2018: no son ingreso). */
   PROPINAS_POR_PAGAR: '2380',
   /** Salud, pensión y FSP retenidos al empleado + aportes del empleador (PUC 2370). */
@@ -154,6 +161,7 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   { code: '2380', name: 'Propinas por pagar', type: 'liability' },
   { code: '2408', name: 'Impuesto sobre las ventas por pagar (IVA)', type: 'liability' },
   { code: '2495', name: 'Impuesto nacional al consumo por pagar', type: 'liability' },
+  { code: '249510', name: 'INC de bolsas plásticas por pagar', type: 'liability' },
   { code: '2505', name: 'Salarios por pagar', type: 'liability' },
   { code: '2610', name: 'Para obligaciones laborales', type: 'liability' },
   // Patrimonio

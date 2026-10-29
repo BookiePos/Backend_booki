@@ -113,6 +113,17 @@ describe('PlatformOrdersService · importación de pedidos (7.5)', () => {
     }
   });
 
+  // La plataforma cobra el domicilio a su nombre: el restaurante no lo
+  // registra como ingreso (ni con INC). El pedido entra «para llevar».
+  it('el pedido de plataforma entra sin domicilio: ni tipo domicilio ni dirección', async () => {
+    await service.import(dto(), user);
+    expect(create).toHaveBeenCalled();
+    for (const [arg] of create.mock.calls) {
+      expect(arg.orderType).toBe('llevar');
+      expect(arg.delivery).toBeUndefined();
+    }
+  });
+
   it('un error al crear un pedido no frena a los demás; una carrera 409 cuenta como duplicado', async () => {
     // R-2 sale con error de producto; R-1 falla por stock y R-3 pierde la carrera.
     create

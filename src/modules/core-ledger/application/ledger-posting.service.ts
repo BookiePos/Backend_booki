@@ -122,10 +122,20 @@ export class LedgerPostingService {
      */
     faltanteCost?: number;
     /**
-     * Cobro del domicilio. Es ingreso del negocio pero NO lleva IVA, así que
-     * entra entero a Ingresos sin nada que separar.
+     * Cobro del domicilio, con su impuesto incluido. Es ingreso del negocio:
+     * la base va a Ingresos (4135) y el impuesto, igual que el de la comida, a
+     * la 2495 si es INC o a la 2408 si es IVA (arts. 512-1 num. 3 y 512-9 ET,
+     * Oficio DIAN 664 de 2022). Sin `deliveryTax` entra entero a Ingresos: así
+     * se posteaban las ventas anteriores a oct-2026 y así se reconstruyen.
      */
     deliveryFee?: number;
+    /** Impuesto incluido en `deliveryFee`. */
+    deliveryTax?: { kind: string; amount: number };
+    /**
+     * INC de bolsas plásticas (art. 512-15 ET), incluido en `total`. Va a su
+     * subcuenta 249510 y no a Ingresos: es un impuesto que se recauda.
+     */
+    bagTax?: number;
     /**
      * Propina (ítem 1.10). Entra a Caja o Bancos con el resto del cobro, pero
      * es del personal (Ley 1935/2018): va al pasivo 2380, nunca a Ingresos.
@@ -147,7 +157,13 @@ export class LedgerPostingService {
     const tax = cop(input.tax);
     const inc = cop(input.consumptionTax ?? 0);
     const delivery = cop(input.deliveryFee ?? 0);
-    const income = total - tax - inc + delivery;
+    const deliveryTax = cop(input.deliveryTax?.amount ?? 0);
+    const deliveryInc = input.deliveryTax?.kind === 'inc' ? deliveryTax : 0;
+    const deliveryIva = input.deliveryTax?.kind === 'iva' ? deliveryTax : 0;
+    const bagTax = cop(input.bagTax ?? 0);
+    const ivaTotal = tax + deliveryIva;
+    const incTotal = inc + deliveryInc;
+    const income = total - bagTax - tax - inc + delivery - deliveryInc - deliveryIva;
     const cogs = cop(input.cogs);
     const mixed = input.payments && input.payments.length > 0 ? input.payments : undefined;
     const tip = !mixed && input.onCredit ? 0 : cop(input.tip ?? 0);
@@ -176,11 +192,14 @@ export class LedgerPostingService {
     if (tip > 0) {
       lines.push({ accountCode: ACC.PROPINAS_POR_PAGAR, credit: tip, sedeId: input.sedeId });
     }
-    if (tax > 0) {
-      lines.push({ accountCode: ACC.IVA_POR_PAGAR, credit: tax, sedeId: input.sedeId });
+    if (ivaTotal > 0) {
+      lines.push({ accountCode: ACC.IVA_POR_PAGAR, credit: ivaTotal, sedeId: input.sedeId });
     }
-    if (inc > 0) {
-      lines.push({ accountCode: ACC.INC_POR_PAGAR, credit: inc, sedeId: input.sedeId });
+    if (incTotal > 0) {
+      lines.push({ accountCode: ACC.INC_POR_PAGAR, credit: incTotal, sedeId: input.sedeId });
+    }
+    if (bagTax > 0) {
+      lines.push({ accountCode: ACC.INC_BOLSAS_POR_PAGAR, credit: bagTax, sedeId: input.sedeId });
     }
     if (cogs > 0) {
       lines.push({ accountCode: ACC.COSTO_VENTA, debit: cogs, sedeId: input.sedeId });

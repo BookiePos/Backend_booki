@@ -56,6 +56,39 @@ describe('actuals · IVA e INC de las ventas por separado', () => {
 
   const range = { from: '2026-10-01', to: '2026-10-31' };
 
+  it('el domicilio suma a la base y al impuesto de su tipo; las bolsas van aparte', async () => {
+    const conDomicilio = {
+      taxTotal: 2_222,
+      lines: [{ taxKind: 'inc', taxAmount: 2_222, taxBase: 27_778 }],
+      deliveryTaxKind: 'inc',
+      deliveryTaxBase: 4_630,
+      deliveryTax: 370,
+      bagTaxTotal: 146,
+    };
+    const franquicia = {
+      taxTotal: 1_900,
+      lines: [{ taxKind: 'iva', taxAmount: 1_900, taxBase: 10_000 }],
+      deliveryTaxKind: 'iva',
+      deliveryTaxBase: 4_202,
+      deliveryTax: 798,
+    };
+    const r = await ivaEIncDeVentas(models([conDomicilio, franquicia]), range, null);
+    expect(r).toEqual({
+      inc: 2_592,
+      incBase: 32_408,
+      iva: 2_698,
+      ivaBase: 14_202,
+      incBolsas: 146,
+    });
+  });
+
+  it('ingresos: base de las líneas más la base del domicilio (la venta vieja, entero)', async () => {
+    const nueva = { taxableBase: 27_778, deliveryFee: 5_000, deliveryTax: 370 };
+    const vieja = { taxableBase: 10_000, deliveryFee: 5_000 };
+    const real = await actualForCategory(models([nueva, vieja]), 'income', null, range, null);
+    expect(real).toBe(27_778 + 4_630 + 10_000 + 5_000);
+  });
+
   it('separa el INC del IVA por el tipo de cada línea (sin tipo = IVA)', async () => {
     const r = await ivaEIncDeVentas(
       models([restaurante, retail, antigua]),
@@ -63,7 +96,7 @@ describe('actuals · IVA e INC de las ventas por separado', () => {
       null,
     );
 
-    expect(r).toEqual({ iva: 2_850, inc: 2_222 });
+    expect(r).toMatchObject({ iva: 2_850, inc: 2_222, incBolsas: 0 });
   });
 
   it('el «Real» de la categoría IVA no incluye el INC', async () => {

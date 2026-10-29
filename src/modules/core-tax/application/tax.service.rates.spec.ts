@@ -17,6 +17,7 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
 });
 
 import { TaxService } from './tax.service';
+import { SEED_TAXES } from '../domain/tax.constants';
 
 /**
  * Las tarifas de impuesto son VERSIONADAS por fecha: una reforma se carga con
@@ -43,7 +44,10 @@ describe('TaxService · tarifas vigentes', () => {
 
   beforeEach(() => {
     taxes = {
-      countDocuments: vi.fn(() => ({ exec: () => Promise.resolve(1) })),
+      // Ya sembrado: están todos los códigos de ley.
+      distinct: vi.fn(() => ({
+        exec: () => Promise.resolve(SEED_TAXES.map((t) => t.code)),
+      })),
       insertMany: vi.fn(),
       findOne: vi.fn((filter: any) => ({
         sort: () => ({

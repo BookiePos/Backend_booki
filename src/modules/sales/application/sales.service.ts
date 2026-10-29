@@ -64,6 +64,7 @@ import { CreateSaleDto } from './dto/create-sale.dto';
 import { TaxService } from '../../core-tax/application/tax.service';
 import {
   causesInc,
+  deliveryTaxFor,
   INC_RESTAURANTE_CODE,
   saleTaxFor,
   SaleTaxKind,
@@ -176,6 +177,14 @@ interface CreditoDeVenta {
   customerId?: string;
   employeeId?: string;
   dueDate?: string;
+}
+
+/** Impuesto incluido en el cobro del domicilio (ver `deliveryTaxFor`). */
+interface DeliveryTax {
+  kind: SaleTaxKind;
+  rate: number;
+  base: number;
+  amount: number;
 }
 
 @Injectable()
@@ -508,6 +517,12 @@ export class SalesService {
      * tres tercios de $10.001 suman $10.001 y no $10.000.
      */
     const cobradoAntes = new Map(opts.paidBefore ?? []);
+    // INC de bolsas (art. 512-15 ET): valor fijo por bolsa, solo si la empresa
+    // lo activó y la venta lleva el producto «Bolsa plástica».
+    const llevaBolsas = dto.lines.some(
+      (l) => catalogById.get(l.productId)?.bolsaPlastica === true,
+    );
+    const bagTaxUnit = llevaBolsas ? await this.tax.bagTaxPerUnit() : 0;
     const lineTotals = dto.lines.map((line) => {
       const product = catalogById.get(line.productId)!;
       // Offline autorizada con lo cobrado: manda el precio del comprobante
@@ -524,6 +539,12 @@ export class SalesService {
             });
       const previo = cobradoAntes.get(line.productId) ?? 0;
       const gross = chargeForQty(unitPrice, previo, line.qty);
+      // Mismo acumulado que el valor: en una cuenta dividida las partes del
+      // impuesto de las bolsas suman exacto el de todas.
+      const bagTax =
+        product.bolsaPlastica === true && bagTaxUnit > 0
+          ? chargeForQty(bagTaxUnit, previo, line.qty)
+          : 0;
       cobradoAntes.set(line.productId, previo + line.qty);
       let discountAmount = 0;
       let discountName: string | undefined;
@@ -541,6 +562,8 @@ export class SalesService {
         lineTotal: gross,
         discountAmount,
         discountName,
+        bagTaxUnit: bagTax > 0 ? bagTaxUnit : undefined,
+        bagTax,
       };
     });
     const subtotal = sumBy(lineTotals, (l) => l.lineTotal);
@@ -613,18 +636,20 @@ export class SalesService {
     });
     const taxableBase = sumBy(linesWithTax, (l) => l.taxBase);
     const taxTotal = sumBy(linesWithTax, (l) => l.taxAmount);
+    const bagTaxTotal = sumBy(linesWithTax, (l) => l.bagTax);
 
-    // El IVA está incluido en los precios: el total NO lo vuelve a sumar.
-    const total = subtotal - discountTotal;
+    // El IVA está incluido en los precios: el total NO lo vuelve a sumar. El
+    // INC de bolsas sí, porque no hace parte del precio de la bolsa.
+    const total = subtotal - discountTotal + bagTaxTotal;
 
     // Propina voluntaria (restaurante): se cobra ENCIMA del total. No es venta
     // ni base gravable; el monto a pagar por el cliente es total + tip.
     const tip = clampNonNegative(dto.tip ?? 0);
 
     /*
-     * Cobro del domicilio. Como la propina, se suma ENCIMA del total y no entra
-     * a la base gravable —decisión tomada con el dueño—. A diferencia de la
-     * propina sí es ingreso del negocio, así que sí va al libro contable.
+     * Cobro del domicilio. Como la propina, se suma ENCIMA del total, pero a
+     * diferencia de ella es ingreso del negocio y lleva el mismo impuesto que
+     * la comida, INCLUIDO en lo cobrado (ver `deliveryTaxFor`).
      *
      * La tarifa la pone el SERVIDOR a partir de la zona; del navegador solo
      * viaja el id. El valor a mano existe para el pedido que no cae en ninguna
@@ -653,6 +678,15 @@ export class SalesService {
       );
     }
     const deliveryFee = cop(delivery?.fee ?? 0);
+    // $5.000 de domicilio con INC 8 % = $4.630 de base + $370 de INC. El
+    // impuesto va incluido: la lista de precios del expendio lo trae dentro
+    // (art. 512-9 ET), así que lo que se le cobra al cliente no cambia.
+    let deliveryTax: DeliveryTax | undefined;
+    if (deliveryFee > 0) {
+      const { kind, rate } = deliveryTaxFor(taxProfile, incRate);
+      const { base, tax } = splitTaxIncluded(deliveryFee, rate);
+      deliveryTax = { kind, rate, base, amount: tax };
+    }
 
     const grandTotal = total + tip + deliveryFee;
 
@@ -897,6 +931,8 @@ export class SalesService {
         tip,
         orderType,
         deliveryFee,
+        deliveryTax,
+        bagTaxTotal,
         delivery: delivery
           ? {
               ...delivery,
@@ -1021,6 +1057,8 @@ export class SalesService {
       taxRate: number;
       taxBase: number;
       taxAmount: number;
+      bagTaxUnit?: number;
+      bagTax: number;
     }[];
     subtotal: number;
     discount?: { type: 'amount' | 'percent'; value: number; amount: number };
@@ -1031,6 +1069,10 @@ export class SalesService {
     tip: number;
     orderType: OrderType;
     deliveryFee: number;
+    /** Impuesto incluido en el domicilio; sin él, no hubo domicilio. */
+    deliveryTax?: DeliveryTax;
+    /** INC de bolsas plásticas de la venta (dentro de `total`). */
+    bagTaxTotal: number;
     delivery?: {
       zoneId?: Types.ObjectId;
       zoneName?: string;
@@ -1066,6 +1108,8 @@ export class SalesService {
       tip,
       orderType,
       deliveryFee,
+      deliveryTax,
+      bagTaxTotal,
       delivery,
       received,
       change,
@@ -1128,6 +1172,7 @@ export class SalesService {
         taxRate: l.taxRate,
         taxBase: l.taxBase,
         taxAmount: l.taxAmount,
+        ...(l.bagTax > 0 ? { bagTaxUnit: l.bagTaxUnit, bagTax: l.bagTax } : {}),
       })),
       components,
       packaging: packagingSnapshot,
@@ -1138,9 +1183,14 @@ export class SalesService {
       taxableBase,
       taxTotal,
       total,
+      bagTaxTotal,
       tip,
       orderType,
       deliveryFee,
+      deliveryTaxKind: deliveryTax?.kind,
+      deliveryTaxRate: deliveryTax?.rate,
+      deliveryTaxBase: deliveryTax?.base,
+      deliveryTax: deliveryTax?.amount,
       delivery,
       payment: { method: metodo, received, change, ...detalle },
       payments: mixto?.parts,
@@ -1273,8 +1323,13 @@ export class SalesService {
       consumptionTax: incTax,
       cogs: cop(cogs),
       faltanteCost: sumBy(offline?.faltantes ?? [], (f) => f.cost),
-      // El domicilio es ingreso del negocio, sin IVA que separar.
+      // El domicilio es ingreso del negocio con su impuesto incluido: la base
+      // va a Ingresos y el impuesto a la 2495 (INC) o a la 2408 (IVA).
       deliveryFee,
+      deliveryTax: deliveryTax
+        ? { kind: deliveryTax.kind, amount: deliveryTax.amount }
+        : undefined,
+      bagTax: bagTaxTotal,
       // La propina entra con el cobro pero va al pasivo 2380 (ítem 1.10).
       tip: cop(sale.tip ?? 0),
       paymentMethod: metodo,

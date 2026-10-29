@@ -61,6 +61,11 @@ export class UpdateCatalogProductDto {
   @IsIn(TRATAMIENTOS_FISCALES as readonly string[])
   tratamientoFiscal?: TratamientoFiscal;
 
+  /** Bolsa plástica: causa el INC de bolsas por unidad (art. 512-15 ET). */
+  @IsOptional()
+  @IsBoolean()
+  bolsaPlastica?: boolean;
+
   @IsOptional()
   @IsIn(CATALOG_SOURCE_TYPES as readonly string[])
   sourceType?: CatalogSourceType;

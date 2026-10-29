@@ -52,6 +52,9 @@ function modeloEnMemoria(filas: Fila[]) {
     countDocuments: (f: Record<string, unknown>) => ({
       exec: async () => filas.filter((x) => cumple(x, f)).length,
     }),
+    distinct: (campo: keyof Fila, f: Record<string, unknown>) => ({
+      exec: async () => [...new Set(filas.filter((x) => cumple(x, f)).map((x) => x[campo]))],
+    }),
     insertMany: async (docs: Fila[]) => filas.push(...docs),
     find: () => ({ sort: () => ({ exec: async () => ordenadas(filas) }) }),
     findOne: (f: Record<string, unknown>) => ({
@@ -95,6 +98,38 @@ describe('TaxService · catálogo de impuestos', () => {
     expect(lista.map((t) => t.code)).toEqual(SEED_TAXES.map((t) => t.code).sort());
     await service.list();
     expect(modelo.filas).toHaveLength(SEED_TAXES.length);
+  });
+
+  it('una empresa sembrada antes recibe el INC de bolsas, inactivo, sin tocar lo demás', async () => {
+    // Empresa con el catálogo viejo (sin INC_BOLSA) y el IVA desactivado a mano.
+    await service.list();
+    modelo.filas.splice(
+      modelo.filas.findIndex((f) => f.code === 'INC_BOLSA'),
+      1,
+    );
+    modelo.filas.find((f) => f.code === 'IVA_19')!.active = false;
+
+    const lista = await service.list();
+    const bolsa = lista.find((t) => t.code === 'INC_BOLSA')!;
+    expect(bolsa).toMatchObject({ active: false, basis: 'por_unidad', currentRate: 73 });
+    expect(lista.find((t) => t.code === 'IVA_19')!.active).toBe(false);
+    expect(modelo.filas).toHaveLength(SEED_TAXES.length);
+  });
+
+  it('INC de bolsas: $0 mientras no se active y la tarifa vigente al activarlo', async () => {
+    expect(await service.bagTaxPerUnit()).toBe(0);
+    await service.update('INC_BOLSA', { active: true });
+    expect(await service.bagTaxPerUnit()).toBe(73);
+    // La tarifa del año siguiente es una vigencia nueva, por unidad también.
+    await service.setVersion('INC_BOLSA', { rate: 77, effectiveFrom: '2027-01-01' });
+    expect(await service.bagTaxPerUnit('2027-03-01')).toBe(77);
+    expect(await service.bagTaxPerUnit()).toBe(73);
+    expect((await service.list()).find((t) => t.code === 'INC_BOLSA')!.basis).toBe('por_unidad');
+  });
+
+  it('un impuesto por unidad no se calcula como porcentaje de una base', async () => {
+    await service.list();
+    await expect(service.compute('INC_BOLSA', 10_000)).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('una tarifa futura aparece como próxima y no cambia la vigente', async () => {

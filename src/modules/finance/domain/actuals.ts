@@ -82,7 +82,13 @@ function periodInRange(period: string, range: DateRange): boolean {
   return period >= fromMonth && period <= toMonth;
 }
 
-/** Σ base gravable (neto sin IVA) de las ventas completadas del rango+sede. */
+/**
+ * Σ ingreso de las ventas completadas del rango+sede: la base gravable de las
+ * líneas (neto sin IVA/INC) más la base del domicilio, que también es ingreso
+ * (4135). Desde oct-2026 el domicilio lleva su impuesto incluido
+ * (`deliveryTax`); en las ventas anteriores entró entero a ingresos, como en
+ * su asiento. El INC de bolsas no es ingreso.
+ */
 async function incomeActual(
   models: ActualsModels,
   range: DateRange,
@@ -94,9 +100,14 @@ async function incomeActual(
       createdAt: { $gte: startOfDay(range.from), $lt: endExclusive(range.to) },
       ...sedeMatch(sedeIds),
     })
-    .select('taxableBase')
+    .select('taxableBase deliveryFee deliveryTax')
     .exec();
-  return cop(sales.reduce((a, s) => a + (s.taxableBase || 0), 0));
+  return cop(
+    sales.reduce(
+      (a, s) => a + (s.taxableBase || 0) + (s.deliveryFee || 0) - (s.deliveryTax || 0),
+      0,
+    ),
+  );
 }
 
 /** Σ costo de los `components[]` (COGS FEFO) de las ventas del rango+sede. */
@@ -196,30 +207,60 @@ async function expenseActual(
  * `taxKind` (ventas anteriores a ese campo, que eran IVA) y las `ninguno`, que
  * llevan impuesto 0. Ambos se acumulan sin redondear y se cierran con `cop()`
  * al final, con el mismo criterio.
+ *
+ * El domicilio suma a la base y al impuesto de su tipo (`deliveryTaxKind`,
+ * desde oct-2026): es un valor adicional del expendio (arts. 512-1 num. 3 y
+ * 512-9 ET). El INC de bolsas plásticas (art. 512-15) va aparte en
+ * `incBolsas`: es otro renglón del formulario 310.
  */
 export async function ivaEIncDeVentas(
   models: ActualsModels,
   range: DateRange,
   sedeIds: string[] | null,
-): Promise<{ iva: number; inc: number }> {
+): Promise<{ iva: number; inc: number; ivaBase: number; incBase: number; incBolsas: number }> {
   const sales = await models.sales
     .find({
       status: 'completed',
       createdAt: { $gte: startOfDay(range.from), $lt: endExclusive(range.to) },
       ...sedeMatch(sedeIds),
     })
-    .select('taxTotal lines.taxKind lines.taxAmount')
+    .select(
+      'taxTotal lines.taxKind lines.taxAmount lines.taxBase deliveryTaxKind deliveryTaxBase ' +
+        'deliveryTax bagTaxTotal',
+    )
     .exec();
   let iva = 0;
   let inc = 0;
+  let ivaBase = 0;
+  let incBase = 0;
+  let incBolsas = 0;
   for (const s of sales) {
-    const incVenta = (s.lines ?? [])
+    const lineas = s.lines ?? [];
+    const incVenta = lineas
       .filter((l) => l.taxKind === 'inc')
       .reduce((a, l) => a + (l.taxAmount || 0), 0);
     inc += incVenta;
     iva += (s.taxTotal || 0) - incVenta;
+    for (const l of lineas) {
+      if (l.taxKind === 'inc') incBase += l.taxBase || 0;
+      else if ((l.taxKind ?? 'iva') === 'iva') ivaBase += l.taxBase || 0;
+    }
+    if (s.deliveryTaxKind === 'inc') {
+      inc += s.deliveryTax || 0;
+      incBase += s.deliveryTaxBase || 0;
+    } else if (s.deliveryTaxKind === 'iva') {
+      iva += s.deliveryTax || 0;
+      ivaBase += s.deliveryTaxBase || 0;
+    }
+    incBolsas += s.bagTaxTotal || 0;
   }
-  return { iva: cop(iva), inc: cop(inc) };
+  return {
+    iva: cop(iva),
+    inc: cop(inc),
+    ivaBase: cop(ivaBase),
+    incBase: cop(incBase),
+    incBolsas: cop(incBolsas),
+  };
 }
 
 /**
