@@ -56,6 +56,15 @@ function assertSoloDigitos(valor: string, que: string): void {
   }
 }
 
+/** Formato de cbc:IssueDate / cbc:IssueTime que entra en el hash (hora de Colombia, GMT-5). */
+export const FORMATO_FECHA_DIAN = /^\d{4}-\d{2}-\d{2}$/;
+export const FORMATO_HORA_DIAN = /^\d{2}:\d{2}:\d{2}-05:00$/;
+
+export function assertFechaHoraDian(fecha: string, hora: string): void {
+  if (!FORMATO_FECHA_DIAN.test(fecha)) throw new Error(`Fecha inválida para la DIAN: «${fecha}» (AAAA-MM-DD)`);
+  if (!FORMATO_HORA_DIAN.test(hora)) throw new Error(`Hora inválida para la DIAN: «${hora}» (HH:MM:SS-05:00)`);
+}
+
 function assertAmbiente(t: string): void {
   if (t !== '1' && t !== '2') throw new Error(`Tipo de ambiente inválido: «${t}» (1 producción, 2 habilitación)`);
 }
@@ -63,6 +72,7 @@ function assertAmbiente(t: string): void {
 function cadena(d: DatosCodigoUnico, llave: string, queLlave: string): string {
   if (!llave.trim()) throw new Error(`Falta ${queLlave}: sin ella el código no es válido ante la DIAN.`);
   assertSoloDigitos(d.nitEmisor, 'El NIT del emisor');
+  assertFechaHoraDian(d.fecha, d.hora);
   assertAmbiente(d.tipoAmbiente);
   return componer(d, llave);
 }

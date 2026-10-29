@@ -1,4 +1,5 @@
 import { cop } from '../../finance/domain/money.util';
+import { splitTaxIncluded } from '../../sales/domain/sale-amounts';
 
 /**
  * Política única de redondeo del documento DIAN (Fase 2 del estudio de FE).
@@ -14,6 +15,14 @@ import { cop } from '../../finance/domain/money.util';
  *
  * No es un segundo `Money`: el redondeo sigue siendo `cop()` (aplicado sobre
  * centavos) y no se mezcla con `shared/money/Money.ts`.
+ *
+ * Modo de redondeo: `aCentavos` e `impuestoDeBase` redondean la mitad hacia
+ * arriba (`cop()` = `Math.round`), no al par (half-even de la NTC 3711). Se deja
+ * así a propósito para que coincida con `cop()` de caja y contabilidad; la
+ * diferencia entre ambos modos es como mucho 1 centavo por valor, muy dentro de
+ * la holgura de ±2.00 que la DIAN admite en los valores monetarios (anexo FEV
+ * 1.9, §5.1.1.1). Esa holgura es de la DIAN: dentro de nuestro propio cálculo
+ * la tolerancia es 0 (`descuadres`).
  */
 
 /** Monto en centavos de peso: entero, no negativo. 1.785.000,00 COP = 178500000. */
@@ -71,18 +80,28 @@ export function impuestoDeBase(base: Centavos, tarifaPct: number): Centavos {
 
 /**
  * Desglosa un precio de caja que YA incluye el impuesto (el caso del POS y del
- * restaurante con INC) en base + impuesto, en centavos. La base se redondea y el
- * impuesto es la diferencia, de modo que base + impuesto = precio exacto.
+ * restaurante con INC) en base + impuesto, en centavos.
+ *
+ * El documento tiene que salir del MISMO desglose que la venta y la
+ * contabilidad, así que reutiliza `splitTaxIncluded` (pesos enteros: con
+ * $10.000 e INC 8 % da 9.259 + 741) y solo lo pasa a centavos; no recalcula a
+ * 2 decimales (eso daría 9.259,26 + 740,74 y el impuesto del XML no sería el
+ * del libro). La diferencia con el desglose exacto es menor a un peso, dentro
+ * de la holgura de ±2.00 del anexo FEV 1.9 §5.1.1.1.
+ *
+ * Si la venta ya guarda `taxBase`/`taxAmount` por línea (`sale.schema.ts`), el
+ * paso que arma el documento debe leer ESOS valores guardados con
+ * `centavosDeCop` y no volver a desglosar: esta función es para cuando no hay
+ * desglose guardado.
  */
 export function desglosarPrecioConImpuesto(
   precioCop: number,
   tarifaPct: number,
 ): { base: Centavos; impuesto: Centavos } {
   if (!(tarifaPct >= 0)) throw new Error(`Tarifa inválida: ${tarifaPct}`);
-  const total = centavosDeCop(precioCop);
-  assertCentavos(total, 'Precio con impuesto');
-  const base = cop(Number((total / (1 + tarifaPct / 100)).toPrecision(15)));
-  return { base, impuesto: total - base };
+  if (!(precioCop >= 0)) throw new Error(`Precio inválido: ${precioCop}`);
+  const s = splitTaxIncluded(precioCop, tarifaPct);
+  return { base: centavosDeCop(s.base), impuesto: centavosDeCop(s.tax) };
 }
 
 /** Una línea del documento antes de redondear: base e impuestos en pesos (pueden traer decimales). */

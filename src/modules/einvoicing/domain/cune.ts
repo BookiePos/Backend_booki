@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { assertFechaHoraDian } from './cufe';
 import type { TipoAmbiente } from './emisor-fiscal';
 import { formatearMontoDian, type Centavos } from './redondeo';
 
@@ -10,6 +11,9 @@ import { formatearMontoDian, type Centavos } from './redondeo';
  *           DocEmp + TipoXML + Software-Pin + TipAmb)
  *
  * - Valores con punto y dos decimales, sin separadores (`formatearMontoDian`).
+ *   El anexo pide los decimales TRUNCADOS (no redondeados) a dos dígitos: quien
+ *   llama entrega los montos ya truncados en centavos enteros. Con la nómina de
+ *   BookiPos en COP entero no hay nada que truncar.
  * - NitNE y DocEmp sin puntos, guiones ni DV.
  * - Software-Pin: el PIN del software de NÓMINA, que no es el de la factura.
  * - Nota de ajuste «Eliminar» (§8.1.1.4): ValDev = ValDed = ValTol = 0.00 y DocEmp = 0.
@@ -49,8 +53,15 @@ export function cadenaCune(d: DatosCune): string {
   if (!/^\d+$/.test(d.nitEmpleador)) {
     throw new Error(`El NIT del empleador va solo con dígitos, sin DV: «${d.nitEmpleador}»`);
   }
+  assertFechaHoraDian(d.fecha, d.hora);
   if (d.tipoAmbiente !== '1' && d.tipoAmbiente !== '2') {
     throw new Error(`Tipo de ambiente inválido: «${d.tipoAmbiente}»`);
+  }
+  if (d.deducciones > d.devengados) {
+    throw new Error(
+      `Las deducciones de la nómina (${formatearMontoDian(d.deducciones)}) superan los devengados ` +
+        `(${formatearMontoDian(d.devengados)}): el total pagado no puede ser negativo.`,
+    );
   }
   if (d.total !== d.devengados - d.deducciones) {
     throw new Error(

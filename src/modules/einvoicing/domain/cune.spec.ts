@@ -60,5 +60,10 @@ describe('CUNE (anexo de nómina 1.0, §8.1.1)', () => {
     expect(() => cadenaCune({ ...ANEXO, nitEmpleador: '700085371-1' })).toThrow(/sin DV/);
     expect(() => cadenaCune({ ...ANEXO, tipoAmbiente: '3' as never })).toThrow(/ambiente/);
     expect(() => cadenaCune({ ...ANEXO, total: 250000001 })).toThrow(/devengados − deducciones/);
+    expect(() => cadenaCune({ ...ANEXO, deducciones: 400000000, total: -50000000 })).toThrow(
+      /no puede ser negativo/,
+    );
+    expect(() => cadenaCune({ ...ANEXO, fecha: '2020-1-16' })).toThrow(/Fecha inválida/);
+    expect(() => cadenaCune({ ...ANEXO, hora: '10:53-05:00' })).toThrow(/Hora inválida/);
   });
 });

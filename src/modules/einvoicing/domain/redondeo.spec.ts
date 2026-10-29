@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { splitTaxIncluded } from '../../sales/domain/sale-amounts';
 import {
   aCentavos,
   assertCuadre,
@@ -48,18 +49,27 @@ describe('conversión a centavos', () => {
     expect(() => impuestoDeBase(100, -1)).toThrow(/Tarifa/);
   });
 
-  it('desglose de un precio con impuesto incluido: base + impuesto = precio exacto', () => {
-    // 10.000 con INC 8 %: 9.259,26 + 740,74.
-    expect(desglosarPrecioConImpuesto(10000, 8)).toEqual({ base: 925926, impuesto: 74074 });
-    // 11.900 con IVA 19 %: exacto.
+  it('desglose de un precio con impuesto incluido: el MISMO de la venta, en centavos', () => {
+    // $10.000 con INC 8 %: la venta separa 9.259 + 741 (pesos enteros), no 9.259,26 + 740,74.
+    expect(desglosarPrecioConImpuesto(10000, 8)).toEqual({ base: 925900, impuesto: 74100 });
     expect(desglosarPrecioConImpuesto(11900, 19)).toEqual({ base: 1000000, impuesto: 190000 });
-    for (const precio of [1, 999, 4500, 12345, 87990]) {
-      for (const tarifa of [0, 5, 8, 19]) {
-        const { base, impuesto } = desglosarPrecioConImpuesto(precio, tarifa);
-        expect(base + impuesto).toBe(precio * 100);
+    expect(desglosarPrecioConImpuesto(5000, 0)).toEqual({ base: 500000, impuesto: 0 });
+    expect(() => desglosarPrecioConImpuesto(100, Number.NaN)).toThrow(/Tarifa/);
+    expect(() => desglosarPrecioConImpuesto(-1, 8)).toThrow(/Precio/);
+  });
+
+  it('barrido: coincide al centavo con splitTaxIncluded a 5, 8 y 19 %', () => {
+    const diferencias: string[] = [];
+    for (const tarifa of [5, 8, 19]) {
+      for (let precio = 0; precio <= 20000; precio += 7) {
+        const s = splitTaxIncluded(precio, tarifa);
+        const d = desglosarPrecioConImpuesto(precio, tarifa);
+        if (d.base !== s.base * 100 || d.impuesto !== s.tax * 100 || d.base + d.impuesto !== precio * 100) {
+          diferencias.push(`${precio} @ ${tarifa} %`);
+        }
       }
     }
-    expect(() => desglosarPrecioConImpuesto(100, Number.NaN)).toThrow(/Tarifa/);
+    expect(diferencias).toEqual([]);
   });
 });
 

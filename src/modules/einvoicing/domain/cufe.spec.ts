@@ -123,6 +123,9 @@ describe('CUFE (anexo FEV 1.9, §11.1.2)', () => {
     expect(() => calcularCufe({ ...ANEXO_FEV, nitEmisor: '700085371-1' })).toThrow(/sin puntos, guiones ni DV/);
     expect(() => calcularCufe({ ...ANEXO_FEV, tipoAmbiente: '3' as never })).toThrow(/ambiente/);
     expect(() => calcularCufe({ ...ANEXO_FEV, valorBruto: 1.5 })).toThrow(/centavos/);
+    expect(() => calcularCufe({ ...ANEXO_FEV, fecha: '16/01/2019' })).toThrow(/Fecha inválida/);
+    expect(() => calcularCufe({ ...ANEXO_FEV, hora: '10:53:10' })).toThrow(/Hora inválida/);
+    expect(() => calcularCude({ ...ANEXO_NC, hora: '07:00:00-0500' })).toThrow(/Hora inválida/);
   });
 });
 
