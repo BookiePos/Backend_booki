@@ -22,7 +22,9 @@ export function rutaCritica(url: string | undefined): string | undefined {
 /** Únicas cabeceras que viajan a Sentry; todo lo demás se descarta. */
 const CABECERAS_PERMITIDAS = new Set(['user-agent', 'content-type', 'accept']);
 
-const RE_EMAIL = /[^\s@<>()"',;]+@[^\s@<>()"',;]+\.[^\s@<>()"',;]+/g;
+// Cuantificadores acotados (64 local, 255 dominio, 63 TLD) para que el costo
+// de un texto largo sin email siga siendo lineal.
+const RE_EMAIL = /[^\s@<>()"',;]{1,64}@[^\s@<>()"',;]{1,255}\.[^\s@<>()"',;]{1,63}/g;
 const RE_DOCUMENTO = /\d{6,}/g;
 const MAX_MENSAJE = 200;
 

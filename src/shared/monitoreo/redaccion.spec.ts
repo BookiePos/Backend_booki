@@ -151,6 +151,48 @@ describe('redactarTexto: valores completos', () => {
   });
 });
 
+describe('redactarTexto: blanco inicial y claves de dos palabras', () => {
+  it('salta muchos espacios antes del valor', () => {
+    expect(redactarTexto('password:          spaced fin')).toBe(
+      `password:          ${REDACTADO} fin`,
+    );
+  });
+
+  it('salta el salto de línea de un YAML', () => {
+    expect(redactarTexto('password:\n  yaml\nnit: 900')).toBe(`password:\n  ${REDACTADO}\nnit: 900`);
+  });
+
+  it('reconoce claves de dos palabras', () => {
+    expect(redactarTexto('clave técnica: xyz fin')).toBe(`clave técnica: ${REDACTADO} fin`);
+    expect(redactarTexto('llave privada = abc')).toBe(`llave privada = ${REDACTADO}`);
+    expect(redactarTexto('api key: k1')).toBe(`api key: ${REDACTADO}`);
+    expect(redactarTexto('precio total: 5000')).toBe('precio total: 5000');
+  });
+
+  it('sigue siendo lineal con mucho blanco y palabras sueltas', () => {
+    for (const texto of ['password:' + ' '.repeat(9000), 'clave '.repeat(1600), 'a :'.repeat(3000)]) {
+      const inicio = performance.now();
+      redactarTexto(texto);
+      expect(performance.now() - inicio).toBeLessThan(50);
+    }
+  });
+});
+
+describe('censurar (Sentry): email con cuantificadores acotados', () => {
+  it("'a'.repeat(10000) tarda menos de 50 ms", () => {
+    censurar('calentar a@b.co');
+    for (const texto of ['a'.repeat(10000), 'a@'.repeat(5000), `${'a'.repeat(9000)}@b`]) {
+      const inicio = performance.now();
+      censurar(texto);
+      expect(performance.now() - inicio).toBeLessThan(50);
+    }
+  });
+
+  it('sigue censurando emails normales', () => {
+    expect(censurar('escribió ana.perez@bookipos.com ayer')).toBe('escribió [email] ayer');
+  });
+});
+
 describe('redactarTexto: tiempo lineal (ReDoS)', () => {
   for (const [nombre, texto] of [
     ["'pin'.repeat(5000)", 'pin'.repeat(5000)],

@@ -187,8 +187,8 @@ export const set = cifrar;
 export const get = descifrar;
 
 /**
- * Al serializar, el secreto desaparece: devolver `null` en el transform hace
- * que Mongoose omita el campo en `toJSON()` y en `toObject()`.
+ * Al serializar a JSON, el secreto desaparece: devolver `null` en el transform
+ * hace que Mongoose omita el campo en `toJSON()` (y en `JSON.stringify`).
  */
 function sinSecreto(): null {
   return null;
@@ -196,10 +196,12 @@ function sinSecreto(): null {
 
 /**
  * Subesquema de Mongoose para un secreto cifrado. Sin `_id` y estricto: no se
- * cuela nada más que las cuatro piezas. `toJSON` y `toObject` lo omiten, así
- * que ni la respuesta de `create()`/`save()` ni un `.select('+campo')`
- * serializado lo dejan salir. Lo que se guarda no cambia: Mongoose escribe en
- * la base con sus propias opciones (`toBSON`), sin este transform.
+ * cuela nada más que las cuatro piezas. `toJSON` lo omite, así que ni la
+ * respuesta de `create()`/`save()` ni un `.select('+campo')` llegan al JSON
+ * de una respuesta. `toObject` lo conserva a propósito: el código del servidor
+ * lo usa para leer el secreto o para reescribir el documento
+ * (`replaceOne(f, doc.toObject())`), y omitirlo ahí lo haría pasar por «sin
+ * configurar» o lo borraría de la base.
  */
 export const SecretoCifradoSchema = new Schema<SecretoCifrado>(
   {
@@ -212,7 +214,6 @@ export const SecretoCifradoSchema = new Schema<SecretoCifrado>(
     _id: false,
     strict: true,
     toJSON: { transform: sinSecreto },
-    toObject: { transform: sinSecreto },
   },
 );
 
@@ -222,14 +223,19 @@ export const SecretoCifradoSchema = new Schema<SecretoCifrado>(
  *
  *   @Prop(campoSecreto()) claveTecnica?: SecretoCifrado;
  *
- * Para leerlo: `doc.get('claveTecnica')` (o `doc.claveTecnica`) y
- * `descifrar(valor, contextoSecreto(emisorId, 'claveTecnica'))`; no pases por
- * `toObject()`, que lo omite.
+ * Para leerlo: `doc.get('claveTecnica')`, `doc.claveTecnica` o
+ * `doc.toObject().claveTecnica`, y luego
+ * `descifrar(valor, contextoSecreto(emisorId, 'claveTecnica'))`.
  *
  * Reglas para quien lo use (el esquema no las puede cubrir):
  *   - `aggregate()` y `.lean()` devuelven objetos planos sin transform: el
  *     valor cifrado viaja tal cual. En un `$project` excluye el campo
  *     (`{ claveTecnica: 0 }`) y nunca devuelvas un resultado así en un DTO.
+ *   - `toObject()` conserva el secreto: no devuelvas su resultado en una
+ *     respuesta HTTP ni lo loguees sin `redactar` (el `LoggerSeguro` ya lo hace).
+ *   - No llames `toJSON({ transform })` con un transform propio sobre un
+ *     documento con secretos: reemplaza el del subesquema y el valor cifrado
+ *     sale en el JSON. Si hace falta un transform, que borre también estos campos.
  *   - Ningún DTO de respuesta declara estos campos; la UI recibe a lo sumo un
  *     booleano «configurado».
  */

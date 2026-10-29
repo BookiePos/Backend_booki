@@ -179,12 +179,17 @@ describe('secretos: subesquema de Mongoose', () => {
   const conSecreto = () =>
     new Emisor({ nit: '900123456', claveTecnica: cifrar('abc', CTX, { env }) });
 
-  it('toJSON y toObject omiten el secreto (respuesta de create/save o select +campo)', () => {
+  it('toJSON omite el secreto (respuesta de create/save o select +campo)', () => {
     const doc = conSecreto();
     expect(doc.toJSON()).not.toHaveProperty('claveTecnica');
-    expect(doc.toObject()).not.toHaveProperty('claveTecnica');
     expect(JSON.stringify(doc)).not.toContain(doc.get('claveTecnica.data') as string);
     expect(doc.toJSON()).toMatchObject({ nit: '900123456' });
+  });
+
+  it('toObject conserva el secreto: se descifra y no se pierde al reescribir', () => {
+    const doc = conSecreto();
+    const plano = doc.toObject() as { claveTecnica?: SecretoCifrado };
+    expect(descifrar(plano.claveTecnica, CTX, { env })).toBe('abc');
   });
 
   it('el documento sigue pudiendo leer el secreto y lo guarda completo', () => {

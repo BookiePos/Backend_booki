@@ -137,6 +137,18 @@ function valorCensurado(original: string): string {
  * sensibles de un texto libre. Lineal en el largo del texto, que se recorta a
  * `MAX_TEXTO` caracteres.
  */
+/**
+ * Palabra suelta justo antes de la clave (`clave técnica`, `llave privada`,
+ * `api key`): con ella se decide si una clave de dos palabras es sensible. La
+ * mirada atrás está acotada a 33 caracteres, así que no rompe la linealidad.
+ */
+const RE_PALABRA_PREVIA = /([A-Za-zñÑáéíóúÁÉÍÓÚ]{1,32})[ \t]$/;
+
+function claveCompuesta(texto: string, inicio: number, clave: string): string {
+  const previa = RE_PALABRA_PREVIA.exec(texto.slice(Math.max(0, inicio - 33), inicio));
+  return previa ? `${previa[1]} ${clave}` : clave;
+}
+
 export function redactarTexto(entrada: string): string {
   const texto = entrada.length > MAX_TEXTO ? `${entrada.slice(0, MAX_TEXTO)}…[recortado]` : entrada;
   const re = new RegExp(RE_CLAVE.source, 'g');
@@ -144,11 +156,19 @@ export function redactarTexto(entrada: string): string {
   let copiadoHasta = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(texto)) !== null) {
-    const clave = m[2] ?? '';
+    const token = m[2] ?? '';
+    const clave = esClaveSensible(token) ? token : claveCompuesta(texto, m.index, token);
     if (!esClaveSensible(clave)) continue;
-    const inicioValor = m.index + m[0].length;
+    // Se salta todo el blanco inicial (espacios, tabs y saltos de línea):
+    // `password:          x` o `password:` con el valor en la línea siguiente
+    // (YAML). Cada carácter se mira una sola vez: la búsqueda sigue después.
+    let inicioValor = m.index + m[0].length;
+    while (inicioValor < texto.length && /\s/.test(texto[inicioValor] ?? '')) inicioValor += 1;
     const fin = finDelValor(texto, inicioValor, clave);
-    if (fin === inicioValor) continue;
+    if (fin === inicioValor) {
+      re.lastIndex = inicioValor;
+      continue;
+    }
     salida += texto.slice(copiadoHasta, inicioValor) + valorCensurado(texto.slice(inicioValor, fin));
     copiadoHasta = fin;
     re.lastIndex = fin;
