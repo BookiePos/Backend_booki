@@ -108,8 +108,12 @@ export const SYSTEM_ROLES: {
     // defecto: queda limitado a las que se le asignen (a diferencia del Dueño).
     description:
       'Acceso total a la administración, limitado a sus sedes asignadas.',
+    // Tampoco el certificado .p12: es la firma de la empresa ante la DIAN y
+    // solo el Dueño la sube o la reemplaza.
     permissions: ALL_PERMISSIONS.filter(
-      (p) => p !== PERMISSIONS.SEDE_VIEW_ALL,
+      (p) =>
+        p !== PERMISSIONS.SEDE_VIEW_ALL &&
+        p !== PERMISSIONS.EINVOICING_CERTIFICATE,
     ),
     isSystem: true,
   },

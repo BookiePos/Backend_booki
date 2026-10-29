@@ -103,11 +103,11 @@ describe('EinvoicingStorageService', () => {
       await enEmpresa(() => svc.guardarArtefacto('em1', 'doc1', tipo, Buffer.from(tipo)));
     }
     expect([...subidos.keys()].sort()).toEqual([
-      'einvoicing/emp1/em1/doc1/documento.pdf',
-      'einvoicing/emp1/em1/doc1/documento.xml',
-      'einvoicing/emp1/em1/doc1/documento.zip',
+      'einvoicing/emp1/em1/docs/doc1/documento.pdf',
+      'einvoicing/emp1/em1/docs/doc1/documento.xml',
+      'einvoicing/emp1/em1/docs/doc1/documento.zip',
     ]);
-    expect(subidos.get('einvoicing/emp1/em1/doc1/documento.xml')?.opts).toMatchObject({
+    expect(subidos.get('einvoicing/emp1/em1/docs/doc1/documento.xml')?.opts).toMatchObject({
       contentType: 'application/xml',
     });
     const xml = await enEmpresa(() => svc.leerArtefacto('em1', 'doc1', 'xml'));
@@ -117,7 +117,7 @@ describe('EinvoicingStorageService', () => {
   it('firma la URL de un artefacto con vida corta y la limita', async () => {
     const svc = crear();
     const url = await enEmpresa(() => svc.urlFirmadaArtefacto('em1', 'doc1', 'pdf'));
-    expect(url).toContain('einvoicing/emp1/em1/doc1/documento.pdf');
+    expect(url).toContain('einvoicing/emp1/em1/docs/doc1/documento.pdf');
     expect(firmas[0]?.segundos).toBe(300);
     await enEmpresa(() => svc.urlFirmadaArtefacto('em1', 'doc1', 'pdf', 86_400));
     expect(firmas[1]?.segundos).toBe(900);
@@ -130,6 +130,29 @@ describe('EinvoicingStorageService', () => {
     await expect(
       enEmpresa(() => svc.urlFirmadaArtefacto('em1', 'doc1', 'p12' as never)),
     ).rejects.toBeInstanceOf(BadRequestException);
+    expect(firmas).toHaveLength(0);
+  });
+
+  it("un docId 'cert' queda en docs/, nunca dentro de cert/", async () => {
+    const { pathname } = await enEmpresa(() =>
+      crear().guardarArtefacto('em1', 'cert', 'xml', Buffer.from('x')),
+    );
+    expect(pathname).toBe('einvoicing/emp1/em1/docs/cert/documento.xml');
+  });
+
+  it('StorageService.firmarUrls se niega a firmar un .p12 o cualquier cert/', async () => {
+    const storage = new StorageService(
+      config({ SUPABASE_URL: 'https://x', SUPABASE_SERVICE_ROLE_KEY: 'k' }),
+    );
+    for (const ruta of [
+      'einvoicing/emp1/em1/cert/firma.p12',
+      'facturas/emp1/FIRMA.P12',
+      'einvoicing/emp1/em1/cert/otro.txt',
+    ]) {
+      await expect(storage.firmarUrls([ruta])).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    }
     expect(firmas).toHaveLength(0);
   });
 

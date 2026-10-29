@@ -30,7 +30,7 @@ const NOMBRE_P12 = /^[A-Za-z0-9][A-Za-z0-9._-]{0,98}\.p12$/i;
  * Almacenamiento privado de la factura electrónica (Supabase, bucket privado).
  *
  *   einvoicing/<empresa>/<emisor>/cert/<archivo>.p12
- *   einvoicing/<empresa>/<emisor>/<docId>/documento.{xml,pdf,zip}
+ *   einvoicing/<empresa>/<emisor>/docs/<docId>/documento.{xml,pdf,zip}
  *
  * Reglas:
  * - La empresa SALE del `TenantContext`, nunca de un parámetro: quien llama no
@@ -154,7 +154,7 @@ export class EinvoicingStorageService {
     if (!Object.prototype.hasOwnProperty.call(CONTENT_TYPE, tipo)) {
       throw new BadRequestException('Tipo de archivo no permitido.');
     }
-    return `${this.prefijoEmisor(emisorId)}/${this.segmento(docId, 'documento')}/documento.${tipo}`;
+    return `${this.prefijoEmisor(emisorId)}/docs/${this.segmento(docId, 'documento')}/documento.${tipo}`;
   }
 
   /** Un solo segmento de ruta, de una lista cerrada de caracteres. */
