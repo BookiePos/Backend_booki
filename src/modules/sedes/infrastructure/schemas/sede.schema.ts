@@ -8,6 +8,11 @@ import {
   TIPO_PERSONA,
   TipoPersona,
 } from '../../domain/sede.constants';
+import {
+  TIPO_RESOLUCION_POR_DEFECTO,
+  TIPOS_RESOLUCION,
+  TipoResolucion,
+} from '../../../einvoicing/domain/resolucion-tipos';
 
 export type SedeDocument = HydratedDocument<Sede>;
 
@@ -17,6 +22,13 @@ export type SedeDocument = HydratedDocument<Sede>;
  */
 @Schema({ _id: false })
 export class ResolucionFe {
+  /**
+   * Para qué documento es la resolución. Sin valor se entiende `invoice`: así
+   * quedan las que se guardaron antes de separarlas por tipo.
+   */
+  @Prop({ enum: TIPOS_RESOLUCION, default: TIPO_RESOLUCION_POR_DEFECTO })
+  tipoDocumento?: TipoResolucion;
+
   @Prop({ trim: true })
   numero?: string;
 
@@ -140,9 +152,17 @@ export class Sede {
   @Prop({ trim: true, lowercase: true })
   emailFacturacion?: string;
 
-  /** Resolución de numeración DIAN vigente. */
+  /** Resolución de numeración DIAN vigente para la factura de venta. */
   @Prop({ type: ResolucionFeSchema })
   resolucionFe?: ResolucionFe;
+
+  /**
+   * Resoluciones de los demás tipos (POS, nota crédito, nota débito,
+   * contingencia): una por tipo. La de factura sigue en `resolucionFe`, así las
+   * sedes existentes no necesitan migración.
+   */
+  @Prop({ type: [ResolucionFeSchema], default: [] })
+  resolucionesFe?: ResolucionFe[];
 
   /** QR / llave Bre-B para cobrar por transferencia (ítem 6.4). */
   @Prop({ type: CobroDigitalSchema })

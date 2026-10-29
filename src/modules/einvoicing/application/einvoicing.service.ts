@@ -19,7 +19,10 @@ import { SedesService } from '../../sedes/application/sedes.service';
 import { BusinessService } from '../../control/application/business.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { SaleDocument } from '../../sales/infrastructure/schemas/sale.schema';
-import { SedeDocument } from '../../sedes/infrastructure/schemas/sede.schema';
+import {
+  ResolucionFe,
+  SedeDocument,
+} from '../../sedes/infrastructure/schemas/sede.schema';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import {
   allowedSedeIds,
@@ -34,28 +37,53 @@ import {
   computeResolutionStatus,
   type ResolutionStatus,
 } from '../domain/resolution-status';
+import {
+  contadorDeResolucion,
+  NOMBRE_TIPO_RESOLUCION,
+  resolucionDeTipo,
+  TIPO_RESOLUCION_POR_DEFECTO,
+  type TipoResolucion,
+} from '../domain/resolucion-tipos';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-/** Una sede con su resolución y su estado, para la pantalla de control. */
+/** Lo de una resolución que viaja a la pantalla (la clave técnica NO viaja). */
+export interface ResolucionVista {
+  numero?: string;
+  fechaResolucion?: Date;
+  prefijo?: string;
+  rangoDesde?: number;
+  rangoHasta?: number;
+  vigenciaDesde?: Date;
+  vigenciaHasta?: Date;
+}
+
+/** Resolución de un tipo de documento distinto de la factura, con su estado. */
+export interface ResolutionTipoRow {
+  tipoDocumento: TipoResolucion;
+  resolucion: ResolucionVista;
+  status: ResolutionStatus;
+}
+
+/**
+ * Una sede con su resolución y su estado, para la pantalla de control.
+ * `resolucion` y `status` son los de la factura (compatible con el cliente
+ * anterior); las de los demás tipos van en `otras`.
+ */
 export interface ResolutionRow {
   sedeId: string;
   sedeCode: string;
   sedeName: string;
-  resolucion?: {
-    numero?: string;
-    fechaResolucion?: Date;
-    prefijo?: string;
-    rangoDesde?: number;
-    rangoHasta?: number;
-    vigenciaDesde?: Date;
-    vigenciaHasta?: Date;
-  };
+  tipoDocumento: 'invoice';
+  resolucion?: ResolucionVista;
   status: ResolutionStatus;
+  otras: ResolutionTipoRow[];
 }
 
 /** Datos con los que se registra o renueva una resolución. */
 export interface RegisterResolutionInput {
+  /** Tipo de documento. Por defecto `invoice`. */
+  tipoDocumento?: TipoResolucion;
   numero?: string;
   fechaResolucion?: string;
   prefijo?: string;
@@ -134,12 +162,13 @@ export class EinvoicingService {
     if (existing) return existing;
 
     const sede = await this.sedes.findOrFail(sedeId);
+    const resolucion = resolucionDeTipo(sede, 'invoice');
 
     // No quemar folio en un documento inválido: sin clave técnica no se puede
     // calcular el CUFE (ni el QR), y el consecutivo del rango autorizado por la
     // DIAN es un recurso escaso. Validamos ANTES de incrementar el contador; si
     // falta, se aborta sin consumir número.
-    if (!sede.resolucionFe?.claveTecnica) {
+    if (!resolucion?.claveTecnica) {
       throw new BadRequestException(
         'No se puede emitir: falta la clave técnica DIAN de la sede para calcular el CUFE.',
       );
@@ -148,16 +177,16 @@ export class EinvoicingService {
     // La vigencia también se comprueba antes de tocar nada. Una resolución
     // vencida no autoriza a facturar, y sin esto el sistema seguía emitiendo
     // con normalidad e imprimiendo en cada factura una vigencia ya expirada.
-    this.assertResolucionVigente(sede);
+    this.assertResolucionVigente(resolucion, 'invoice');
 
     // Cupo de documentos del plan (antes de quemar folio: si no hay cupo, 402).
     await this.consumeDocQuota();
 
-    const prefix = sede.resolucionFe.prefijo ?? '';
+    const prefix = resolucion.prefijo ?? '';
     const number = await this.nextNumber(
-      `fe:${sedeId}:${prefix}`,
-      sede.resolucionFe.rangoDesde ?? 1,
-      sede.resolucionFe.rangoHasta,
+      contadorDeResolucion('invoice', sedeId, prefix),
+      resolucion.rangoDesde ?? 1,
+      resolucion.rangoHasta,
     );
     const fullNumber = `${prefix}${number}`;
     const { issueDate, issueTime } = this.now();
@@ -192,7 +221,7 @@ export class EinvoicingService {
       valTot: sale.total,
       nitOFE: (sede.nit ?? '').replace(/\D/g, ''),
       numAdq: adquiriente.docNumber ?? CONSUMIDOR_FINAL_NIT,
-      claveTecnica: sede.resolucionFe.claveTecnica,
+      claveTecnica: resolucion.claveTecnica,
     });
     const qrUrl = dianVerificationUrl(cufe);
 
@@ -214,7 +243,7 @@ export class EinvoicingService {
       total: sale.total,
       formaPago: '1',
       medioPago,
-      resolution: this.buildResolution(sede),
+      resolution: this.buildResolution(resolucion),
       cufe,
       qrUrl,
       dianStatus: 'draft',
@@ -237,19 +266,36 @@ export class EinvoicingService {
 
     const sede = await this.sedes.findOrFail(sedeId);
 
+    // Resolución propia de nota crédito si la sede la tiene registrada. Si no,
+    // se conserva el comportamiento de siempre: numeración libre `NC<n>` (contador
+    // `nc:<sede>`, sin rango ni vigencia) y la clave técnica de la factura.
+    const resolucionNota = resolucionDeTipo(sede, 'credit_note');
+    const claveTecnica = (resolucionNota ?? resolucionDeTipo(sede, 'invoice'))
+      ?.claveTecnica;
+
     // Igual que en la factura: sin clave técnica no hay CUFE, así que no se
     // consume el consecutivo de la nota crédito. Validar ANTES de nextNumber.
-    if (!sede.resolucionFe?.claveTecnica) {
+    if (!claveTecnica) {
       throw new BadRequestException(
         'No se puede emitir: falta la clave técnica DIAN de la sede para calcular el CUFE.',
       );
+    }
+    if (resolucionNota) {
+      this.assertResolucionVigente(resolucionNota, 'credit_note');
     }
 
     // Una nota crédito también es un documento electrónico: cuenta al cupo.
     await this.consumeDocQuota();
 
-    const number = await this.nextNumber(`nc:${sedeId}`, 1, undefined);
-    const fullNumber = `NC${number}`;
+    const prefix = resolucionNota ? (resolucionNota.prefijo ?? '') : 'NC';
+    const number = resolucionNota
+      ? await this.nextNumber(
+          contadorDeResolucion('credit_note', sedeId, prefix),
+          resolucionNota.rangoDesde ?? 1,
+          resolucionNota.rangoHasta,
+        )
+      : await this.nextNumber(`nc:${sedeId}`, 1, undefined);
+    const fullNumber = `${prefix}${number}`;
     const { issueDate, issueTime } = this.now();
 
     const cufe = computeCufe({
@@ -261,7 +307,7 @@ export class EinvoicingService {
       valTot: invoice.total,
       nitOFE: (sede.nit ?? '').replace(/\D/g, ''),
       numAdq: invoice.adquiriente?.docNumber ?? CONSUMIDOR_FINAL_NIT,
-      claveTecnica: sede.resolucionFe.claveTecnica,
+      claveTecnica,
     });
     const qrUrl = dianVerificationUrl(cufe);
 
@@ -269,7 +315,7 @@ export class EinvoicingService {
       type: 'credit_note',
       saleId: invoice.saleId,
       sedeId: invoice.sedeId,
-      prefix: 'NC',
+      prefix: prefix || undefined,
       number,
       fullNumber,
       issueDate,
@@ -283,7 +329,9 @@ export class EinvoicingService {
       total: invoice.total,
       formaPago: invoice.formaPago,
       medioPago: invoice.medioPago,
-      resolution: invoice.resolution,
+      resolution: resolucionNota
+        ? this.buildResolution(resolucionNota)
+        : invoice.resolution,
       reason,
       referenceNumber: invoice.fullNumber,
       referenceCufe: invoice.cufe,
@@ -318,17 +366,21 @@ export class EinvoicingService {
    * autorizado es un recurso escaso y no se gasta en una factura que no se
    * debería estar emitiendo.
    */
-  private assertResolucionVigente(sede: SedeDocument): void {
-    const r = sede.resolucionFe;
+  private assertResolucionVigente(
+    r: ResolucionFe | undefined,
+    tipo: TipoResolucion,
+  ): void {
     const hoy = new Date();
+    // La factura conserva el mensaje de siempre; los demás nombran el tipo.
+    const de = tipo === 'invoice' ? '' : ` de ${NOMBRE_TIPO_RESOLUCION[tipo]}`;
     if (r?.vigenciaHasta && new Date(r.vigenciaHasta) < startOfDay(hoy)) {
       throw new BadRequestException(
-        'La resolución de numeración de esta sede está vencida. Renuévala ante la DIAN antes de seguir facturando.',
+        `La resolución de numeración${de} de esta sede está vencida. Renuévala ante la DIAN antes de seguir facturando.`,
       );
     }
     if (r?.vigenciaDesde && new Date(r.vigenciaDesde) > endOfDay(hoy)) {
       throw new BadRequestException(
-        'La vigencia de la resolución de numeración de esta sede todavía no ha empezado.',
+        `La vigencia de la resolución de numeración${de} de esta sede todavía no ha empezado.`,
       );
     }
   }
@@ -343,29 +395,42 @@ export class EinvoicingService {
    */
   async resolutionStatus(user: JwtUser): Promise<ResolutionRow[]> {
     const sedes = await this.sedes.list(allowedSedeIds(user));
+    // La clave técnica NO viaja: solo si está puesta, dentro del estado.
+    const vista = (r: ResolucionFe): ResolucionVista => ({
+      numero: r.numero,
+      fechaResolucion: r.fechaResolucion,
+      prefijo: r.prefijo,
+      rangoDesde: r.rangoDesde,
+      rangoHasta: r.rangoHasta,
+      vigenciaDesde: r.vigenciaDesde,
+      vigenciaHasta: r.vigenciaHasta,
+    });
     return Promise.all(
       sedes.map(async (sede) => {
-        const r = sede.resolucionFe;
+        const sedeId = sede.id as string;
+        const r = resolucionDeTipo(sede, 'invoice');
         const siguiente = r
-          ? await this.peekNumber(sede.id as string, r.prefijo, r.rangoDesde)
+          ? await this.peekNumber('invoice', sedeId, r.prefijo, r.rangoDesde)
           : undefined;
+        const otras = await Promise.all(
+          (sede.resolucionesFe ?? []).map(async (o) => {
+            const tipo = o.tipoDocumento ?? TIPO_RESOLUCION_POR_DEFECTO;
+            const sig = await this.peekNumber(tipo, sedeId, o.prefijo, o.rangoDesde);
+            return {
+              tipoDocumento: tipo,
+              resolucion: vista(o),
+              status: computeResolutionStatus(o, sig),
+            };
+          }),
+        );
         return {
-          sedeId: sede.id as string,
+          sedeId,
           sedeCode: sede.code,
           sedeName: sede.name,
-          // La clave técnica NO viaja: solo si está puesta, dentro del estado.
-          resolucion: r
-            ? {
-                numero: r.numero,
-                fechaResolucion: r.fechaResolucion,
-                prefijo: r.prefijo,
-                rangoDesde: r.rangoDesde,
-                rangoHasta: r.rangoHasta,
-                vigenciaDesde: r.vigenciaDesde,
-                vigenciaHasta: r.vigenciaHasta,
-              }
-            : undefined,
+          tipoDocumento: 'invoice' as const,
+          resolucion: r ? vista(r) : undefined,
           status: computeResolutionStatus(r, siguiente),
+          otras,
         };
       }),
     );
@@ -389,6 +454,8 @@ export class EinvoicingService {
   ): Promise<ResolutionRow[]> {
     assertSedeAccess(user, sedeId);
     const sede = await this.sedes.findOrFail(sedeId);
+    const tipo = dto.tipoDocumento ?? TIPO_RESOLUCION_POR_DEFECTO;
+    const previa = resolucionDeTipo(sede, tipo);
 
     const desde = dto.rangoDesde ?? 1;
     const empezarEn = dto.empezarEn ?? desde;
@@ -398,7 +465,8 @@ export class EinvoicingService {
       );
     }
 
-    sede.resolucionFe = {
+    const nueva = {
+      tipoDocumento: tipo,
       numero: dto.numero,
       fechaResolucion: dto.fechaResolucion
         ? new Date(dto.fechaResolucion)
@@ -410,13 +478,22 @@ export class EinvoicingService {
       vigenciaHasta: dto.vigenciaHasta ? new Date(dto.vigenciaHasta) : undefined,
       // La clave técnica se conserva si no viene una nueva: es un dato que se
       // teclea una vez y perderlo dejaría la sede sin poder emitir.
-      claveTecnica: dto.claveTecnica ?? sede.resolucionFe?.claveTecnica,
+      claveTecnica: dto.claveTecnica ?? previa?.claveTecnica,
     };
+    if (tipo === 'invoice') {
+      sede.resolucionFe = nueva;
+    } else {
+      // Una por tipo: la nueva reemplaza a la del mismo tipo.
+      sede.resolucionesFe = [
+        ...(sede.resolucionesFe ?? []).filter((r) => r.tipoDocumento !== tipo),
+        nueva,
+      ];
+    }
     await sede.save();
 
     await this.counters
       .findOneAndUpdate(
-        { _id: `fe:${sedeId}:${sede.resolucionFe.prefijo ?? ''}` },
+        { _id: contadorDeResolucion(tipo, sedeId, nueva.prefijo) },
         { $set: { seq: empezarEn - desde } },
         { upsert: true },
       )
@@ -430,12 +507,13 @@ export class EinvoicingService {
    * Leer el contador no lo incrementa; el `$inc` solo ocurre al emitir.
    */
   private async peekNumber(
+    tipo: TipoResolucion,
     sedeId: string,
     prefijo: string | undefined,
     rangoDesde: number | undefined,
   ): Promise<number> {
     const counter = await this.counters
-      .findById(`fe:${sedeId}:${prefijo ?? ''}`)
+      .findById(contadorDeResolucion(tipo, sedeId, prefijo))
       .exec();
     return (rangoDesde ?? 1) + (counter?.seq ?? 0);
   }
@@ -494,8 +572,7 @@ export class EinvoicingService {
     };
   }
 
-  private buildResolution(sede: SedeDocument) {
-    const r = sede.resolucionFe;
+  private buildResolution(r: ResolucionFe | undefined) {
     if (!r) return undefined;
     return {
       numero: r.numero,
