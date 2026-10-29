@@ -36,6 +36,14 @@ export class DocAdquiriente {
   @Prop() name?: string;
   @Prop() phone?: string;
   @Prop() email?: string;
+  @Prop() nitDv?: string;
+  /** 1 = jurídica, 2 = natural. */
+  @Prop() tipoPersona?: string;
+  @Prop({ type: [String] }) responsabilidades?: string[];
+  @Prop() regimen?: string;
+  /** Código DANE del municipio (5 dígitos). */
+  @Prop() municipioDane?: string;
+  @Prop() address?: string;
 }
 const DocAdquirienteSchema = SchemaFactory.createForClass(DocAdquiriente);
 

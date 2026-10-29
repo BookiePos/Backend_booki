@@ -51,6 +51,7 @@ import {
 } from '../../delivery/domain/delivery.constants';
 import { Sede } from '../../sedes/infrastructure/schemas/sede.schema';
 import { CustomersService } from '../../customers/application/customers.service';
+import type { CustomerDocument } from '../../customers/infrastructure/schemas/customer.schema';
 import { PayrollService } from '../../payroll/application/payroll.service';
 import { ParamsService } from '../../core-params/application/params.service';
 import { PEDIDO_DUPLICADO_CODE, esDuplicadoDePedido, fechaContablePedido } from '../domain/platform-orders';
@@ -469,6 +470,12 @@ export class SalesService {
       }
     }
     const priceRules = await this.priceLists.rulesFor(priceListId);
+    // Ficha del cliente registrado: de ahí salen los datos fiscales del
+    // adquiriente que se congelan en la venta para la factura electrónica.
+    const idClienteFiscal = dto.customerId ?? credito?.customerId;
+    const clienteFiscal = idClienteFiscal
+      ? await this.customers.getOrFail(idClienteFiscal)
+      : undefined;
 
     // Descuentos por línea: predefinidos de la sede. Aplicarlos requiere permiso.
     const lineDiscountIds = [
@@ -883,6 +890,7 @@ export class SalesService {
       return await this.finalizeSale(holder, {
         dto,
         user,
+        clienteFiscal,
         orderId,
         openCaja,
         components,
@@ -996,6 +1004,8 @@ export class SalesService {
     ctx: {
     dto: CreateSaleDto;
     user: JwtUser;
+    /** Ficha del cliente registrado, si la venta es a uno. */
+    clienteFiscal?: CustomerDocument;
     orderId?: Types.ObjectId;
     openCaja: CajaSessionDocument;
     components: {
@@ -1052,6 +1062,7 @@ export class SalesService {
   ): Promise<SaleDocument> {
     const {
       dto,
+      clienteFiscal,
       user,
       orderId,
       openCaja,
@@ -1144,7 +1155,7 @@ export class SalesService {
       delivery,
       payment: { method: metodo, received, change, ...detalle },
       payments: mixto?.parts,
-      customer: this.cleanCustomer(dto.customer),
+      customer: this.cleanCustomer(dto.customer, clienteFiscal),
       orderId,
       // Offline: el UUID de la venta. En línea: la llave de idempotencia del
       // cobro, la misma que usaría la cola si el reintento sale sin red.
@@ -1392,13 +1403,45 @@ export class SalesService {
     return dto.payment.method === 'credit' ? dto.payment : undefined;
   }
 
-  /** Descarta un customer vacío (sin ningún dato) para no guardar {} . */
-  private cleanCustomer(customer?: CreateSaleDto['customer']) {
-    if (!customer) return undefined;
-    const entries = (['name', 'idNumber', 'phone', 'email'] as const)
-      .map((k) => [k, customer[k]?.trim()] as const)
+  /**
+   * Descarta un customer vacío (sin ningún dato) para no guardar {} y, si la
+   * venta es a un cliente registrado, le copia sus datos fiscales.
+   *
+   * Los datos fiscales solo se copian si el documento que escribió el cajero
+   * es el de la ficha (o no escribió ninguno): si tecleó otro, esa ficha no
+   * describe al adquiriente de esta venta.
+   */
+  private cleanCustomer(
+    customer?: CreateSaleDto['customer'],
+    ficha?: CustomerDocument,
+  ) {
+    const entries: Array<readonly [string, unknown]> = (
+      ['name', 'idNumber', 'phone', 'email'] as const
+    )
+      .map((k) => [k, customer?.[k]?.trim()] as const)
       .filter(([, v]) => v);
-    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+    const base = Object.fromEntries(entries) as Record<string, unknown>;
+    if (ficha && (!base.idNumber || base.idNumber === ficha.docNumber)) {
+      const fiscal: Record<string, unknown> = {
+        name: base.name ?? ficha.name,
+        idNumber: ficha.docNumber,
+        phone: base.phone ?? ficha.phone,
+        email: base.email ?? ficha.email,
+        docType: ficha.dianDocType,
+        nitDv: ficha.nitDv,
+        tipoPersona: ficha.tipoPersona,
+        responsabilidades: ficha.responsabilidadesFiscales?.length
+          ? [...ficha.responsabilidadesFiscales]
+          : undefined,
+        regimen: ficha.regimen,
+        municipioDane: ficha.municipioDane,
+        address: ficha.address,
+        emailFacturacion: ficha.emailFacturacion,
+      };
+      for (const k of Object.keys(fiscal)) if (!fiscal[k]) delete fiscal[k];
+      return fiscal;
+    }
+    return entries.length > 0 ? base : undefined;
   }
 
   /**

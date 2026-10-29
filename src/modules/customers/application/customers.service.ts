@@ -13,6 +13,7 @@ import {
 } from '../infrastructure/schemas/customer.schema';
 import { CreateCustomerDto, UpdateCustomerDto } from './dto/customer.dto';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
+import { errorDvCliente } from '../domain/datos-fiscales';
 
 /**
  * Asignarle una lista de precios a un cliente es decidir el precio que se le
@@ -47,6 +48,17 @@ function parsePriceListId(raw?: string): Types.ObjectId | undefined {
     throw new BadRequestException('Lista de precios inválida');
   }
   return new Types.ObjectId(raw);
+}
+
+/** Rechaza un NIT cuyo DV no cuadra, diciendo qué campo corregir. */
+function assertDvValido(c: {
+  dianDocType?: string;
+  docType?: string;
+  docNumber?: string;
+  nitDv?: string;
+}): void {
+  const error = errorDvCliente(c);
+  if (error) throw new BadRequestException(error);
 }
 
 function isDuplicateKeyError(err: unknown): boolean {
@@ -95,6 +107,12 @@ export class CustomersService {
   ): Promise<CustomerDocument> {
     const priceListId = parsePriceListId(dto.priceListId);
     assertPuedeAsignarLista(priceListId, undefined, permisos);
+    assertDvValido({
+      dianDocType: dto.dianDocType,
+      docType: dto.docType ?? 'CC',
+      docNumber: dto.docNumber,
+      nitDv: dto.nitDv,
+    });
     try {
       return await this.customers.create({
         name: dto.name.trim(),
@@ -106,6 +124,13 @@ export class CustomersService {
         city: dto.city?.trim(),
         creditLimit: dto.creditLimit ?? 0,
         priceListId,
+        dianDocType: dto.dianDocType || undefined,
+        nitDv: dto.nitDv?.trim() || undefined,
+        tipoPersona: dto.tipoPersona || undefined,
+        responsabilidadesFiscales: dto.responsabilidadesFiscales,
+        regimen: dto.regimen || undefined,
+        municipioDane: dto.municipioDane?.trim() || undefined,
+        emailFacturacion: dto.emailFacturacion?.trim() || undefined,
         notes: dto.notes?.trim(),
         active: true,
         createdByEmail: userEmail,
@@ -138,6 +163,22 @@ export class CustomersService {
       assertPuedeAsignarLista(nueva, c.priceListId ?? undefined, permisos);
       c.priceListId = nueva;
     }
+    if (dto.dianDocType !== undefined) c.dianDocType = dto.dianDocType || undefined;
+    if (dto.nitDv !== undefined) c.nitDv = dto.nitDv.trim() || undefined;
+    if (dto.tipoPersona !== undefined) c.tipoPersona = dto.tipoPersona || undefined;
+    if (dto.responsabilidadesFiscales !== undefined) {
+      c.responsabilidadesFiscales = dto.responsabilidadesFiscales;
+    }
+    if (dto.regimen !== undefined) c.regimen = dto.regimen || undefined;
+    if (dto.municipioDane !== undefined) {
+      c.municipioDane = dto.municipioDane.trim() || undefined;
+    }
+    if (dto.emailFacturacion !== undefined) {
+      c.emailFacturacion = dto.emailFacturacion.trim() || undefined;
+    }
+    // Solo si se tocó el tipo o el DV: un cliente viejo con el DV mal escrito no
+    // debe quedar bloqueado para cambiar su teléfono.
+    if (dto.dianDocType !== undefined || dto.nitDv !== undefined) assertDvValido(c);
     if (dto.notes !== undefined) c.notes = dto.notes.trim() || undefined;
     if (dto.active !== undefined) c.active = dto.active;
     await c.save();

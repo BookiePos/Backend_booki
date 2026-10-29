@@ -1,5 +1,11 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
+import {
+  DIAN_DOC_TYPE_CODES,
+  REGIMENES,
+  RESPONSABILIDADES_FISCALES,
+  TIPOS_PERSONA,
+} from '../../domain/datos-fiscales';
 
 export type CustomerDocument = HydratedDocument<Customer>;
 
@@ -33,6 +39,35 @@ export class Customer {
 
   @Prop({ trim: true })
   city?: string;
+
+  // ── Datos fiscales del adquiriente DIAN (Anexo FEV 1.9). Todos opcionales:
+  // los clientes anteriores no los tienen y no se adivinan. ────────────────────
+
+  /** Código DIAN del tipo de documento (13 CC, 31 NIT, 22 CE, 41 pasaporte…). */
+  @Prop({ enum: DIAN_DOC_TYPE_CODES })
+  dianDocType?: string;
+
+  /** Dígito de verificación; solo para NIT (tipo 31). */
+  @Prop({ trim: true })
+  nitDv?: string;
+
+  /** 1 = jurídica, 2 = natural. */
+  @Prop({ enum: TIPOS_PERSONA })
+  tipoPersona?: string;
+
+  /** Responsabilidades fiscales del RUT: O-13, O-15, O-23, O-47, R-99-PN. */
+  @Prop({ type: [String], enum: RESPONSABILIDADES_FISCALES })
+  responsabilidadesFiscales?: string[];
+
+  @Prop({ enum: REGIMENES })
+  regimen?: string;
+
+  /** Código DANE del municipio (5 dígitos). */
+  @Prop({ trim: true })
+  municipioDane?: string;
+
+  @Prop({ trim: true })
+  emailFacturacion?: string;
 
   /** Cupo de crédito para fiado (0 = sin control de cupo). */
   @Prop({ default: 0, min: 0 })

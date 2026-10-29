@@ -251,6 +251,32 @@ class SaleCustomer {
 
   @Prop({ trim: true })
   email?: string;
+
+  // Datos fiscales del adquiriente, copiados de la ficha del cliente al vender
+  // (código DIAN del tipo de documento, DV, persona, responsabilidades…).
+  @Prop({ trim: true })
+  docType?: string;
+
+  @Prop({ trim: true })
+  nitDv?: string;
+
+  @Prop({ trim: true })
+  tipoPersona?: string;
+
+  @Prop({ type: [String] })
+  responsabilidades?: string[];
+
+  @Prop({ trim: true })
+  regimen?: string;
+
+  @Prop({ trim: true })
+  municipioDane?: string;
+
+  @Prop({ trim: true })
+  address?: string;
+
+  @Prop({ trim: true })
+  emailFacturacion?: string;
 }
 const SaleCustomerSchema = SchemaFactory.createForClass(SaleCustomer);
 
