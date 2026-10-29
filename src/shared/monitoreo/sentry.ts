@@ -1,4 +1,5 @@
 import * as Sentry from '@sentry/node';
+import { redactar, redactarTexto } from './redaccion';
 
 /**
  * Monitoreo de errores (ítem 2.4). Sentry solo se activa si existe `SENTRY_DSN`;
@@ -21,13 +22,19 @@ export function rutaCritica(url: string | undefined): string | undefined {
 /** Únicas cabeceras que viajan a Sentry; todo lo demás se descarta. */
 const CABECERAS_PERMITIDAS = new Set(['user-agent', 'content-type', 'accept']);
 
-const RE_EMAIL = /[^\s@<>()"',;]+@[^\s@<>()"',;]+\.[^\s@<>()"',;]+/g;
+// Cuantificadores acotados (64 local, 255 dominio, 63 TLD) para que el costo
+// de un texto largo sin email siga siendo lineal.
+const RE_EMAIL = /[^\s@<>()"',;]{1,64}@[^\s@<>()"',;]{1,255}\.[^\s@<>()"',;]{1,63}/g;
 const RE_DOCUMENTO = /\d{6,}/g;
 const MAX_MENSAJE = 200;
 
-/** Censura emails y secuencias de 6 o más dígitos (cédulas, NIT, teléfonos). */
+/**
+ * Censura pares `clave=valor` sensibles (contraseña del .p12, PIN, clave
+ * técnica, tokens…), emails y secuencias de 6 o más dígitos (cédulas, NIT,
+ * teléfonos).
+ */
 export function censurar(texto: string): string {
-  return texto.replace(RE_EMAIL, '[email]').replace(RE_DOCUMENTO, '[num]');
+  return redactarTexto(texto).replace(RE_EMAIL, '[email]').replace(RE_DOCUMENTO, '[num]');
 }
 
 function mensajeSeguro(texto: unknown): string | undefined {
@@ -81,6 +88,15 @@ export function limpiarEvento<T extends Sentry.ErrorEvent>(evento: T): T {
     if (typeof v.value === 'string') v.value = censurar(v.value);
   }
   if (typeof evento.message === 'string') evento.message = censurar(evento.message);
+  // Contextos, etiquetas y logentry los puede llenar cualquier integración o
+  // un `setContext` futuro: pasan por el mismo filtro de secretos que los logs.
+  if (evento.contexts) evento.contexts = redactar(evento.contexts) as typeof evento.contexts;
+  if (evento.tags) evento.tags = redactar(evento.tags) as typeof evento.tags;
+  if (evento.logentry) {
+    const entrada = evento.logentry;
+    if (typeof entrada.message === 'string') entrada.message = censurar(entrada.message);
+    if (entrada.params) entrada.params = redactar(entrada.params) as unknown[];
+  }
   return evento;
 }
 

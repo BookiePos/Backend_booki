@@ -5,11 +5,22 @@ import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { iniciarSentry } from './shared/monitoreo/sentry';
+import { LoggerSeguro } from './shared/monitoreo/redaccion';
+import { leerLlave } from './shared/crypto/secretos';
 
 async function bootstrap(): Promise<void> {
+  // Todo log (los de Nest y los `new Logger(...)` de cada servicio) pasa por el
+  // filtro de secretos: la contraseña del .p12, el PIN o la clave técnica no
+  // pueden quedar en los logs de Vercel por un `logger.error(dto)`.
+  const loggerSeguro = new LoggerSeguro();
+  Logger.overrideLogger(loggerSeguro);
+  // Una llave de secretos mal formada aborta el arranque: mejor caerse al
+  // desplegar que descubrirlo al primer secreto guardado. Si falta, se arranca
+  // igual (la factura electrónica aún no está activa en todos los entornos).
+  leerLlave();
   const logger = new Logger('Bootstrap');
   if (iniciarSentry()) logger.log('Sentry activo.');
-  const app = await NestFactory.create(AppModule, { bufferLogs: false });
+  const app = await NestFactory.create(AppModule, { bufferLogs: false, logger: loggerSeguro });
 
   // Confiamos en UN salto de reverse proxy (Nginx/ingress/etc.) para que
   // Express derive `req.ip` del primer valor de X-Forwarded-For puesto por el
