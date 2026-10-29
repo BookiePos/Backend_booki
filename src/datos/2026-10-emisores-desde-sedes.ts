@@ -8,6 +8,7 @@ import {
   type EmisorExistente,
   type SedeParaPlan,
 } from './emisores-desde-sedes';
+import { diferenciasFiscales } from '../modules/einvoicing/domain/emisor-fiscal';
 import {
   Sede,
   type SedeDocument,
@@ -133,10 +134,24 @@ void enCadaEmpresa({
       try {
         emisor = await emisores.create(c.datos);
       } catch (err) {
-        // Lo creó otra corrida a la vez: se enlaza al que ya existe.
         if ((err as { code?: number })?.code !== 11000) throw err;
+        // Lo creó otra corrida a la vez. Solo se enlaza si coincide en la
+        // identidad fiscal; si no, es un conflicto como cualquier otro.
         emisor = await emisores.findOne({ nitNorm: c.nitNorm }).exec();
-        if (!emisor) throw err;
+        if (!emisor) {
+          // Sin el mensaje crudo del E11000: lleva el NIT en claro.
+          throw new Error(
+            `NIT ${nitEnmascarado(c.nitNorm)}: choque del índice único sin emisor que lo explique`,
+          );
+        }
+        const campos = diferenciasFiscales(emisor, c.datos);
+        if (campos.length > 0) {
+          logger.warn(
+            `NIT ${nitEnmascarado(c.nitNorm)} saltado: el emisor creado a la vez difiere en ` +
+              `${campos.join(', ')}. Corrígelo y repite.`,
+          );
+          continue;
+        }
       }
       await enlazar(emisor._id, c.sedeIds);
     }

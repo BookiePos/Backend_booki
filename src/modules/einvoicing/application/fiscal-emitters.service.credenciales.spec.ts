@@ -124,6 +124,19 @@ describe('FiscalEmittersService', () => {
       expect(String(sedes.get(s).emisorId)).toBe(b.id);
     });
 
+    it('enlace viejo (la sede cambió de NIT): obtenerPorSede da null y el transmisor cae al stub', async () => {
+      const s = nuevaSede();
+      await svc.asegurarParaSede(s);
+      sedes.get(s).nit = '800111222';
+      const warn = vi.spyOn((svc as any).logger, 'warn').mockImplementation(() => undefined);
+      expect(await svc.obtenerPorSede(s)).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).not.toMatch(/800111222|900123456/);
+      const r = await (await svc.transmisorParaSede(s)).enviar({ tipo: 'invoice', fullNumber: 'FE1' });
+      expect(r.codigo).toBe('CONFIG_FALTANTE');
+      expect(r.mensajes[0]).toContain('no tiene emisor');
+    });
+
     it('una creación simultánea (E11000) se queda con el emisor que ganó', async () => {
       const s = nuevaSede();
       const ganador = doc({ _id: new Types.ObjectId(), nitNorm: '900123456' });
@@ -206,6 +219,11 @@ describe('FiscalEmittersService', () => {
         svc.guardarCredenciales(new Types.ObjectId().toString(), { facturaPin: 'x' }),
       ).rejects.toBeInstanceOf(NotFoundException);
       await expect(svc.leerSecreto('malo', 'facturaPin')).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('leerSecreto rechaza un campo que no es secreto', async () => {
+      const e = await svc.asegurarParaSede(nuevaSede());
+      await expect(svc.leerSecreto(e.id, 'nit' as never)).rejects.toThrow('Campo secreto desconocido');
     });
 
     it('un secreto no guardado se lee como null', async () => {

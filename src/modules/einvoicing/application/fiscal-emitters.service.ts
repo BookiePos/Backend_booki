@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -16,7 +17,9 @@ import {
   descifrar,
   type SecretoCifrado,
 } from '../../../shared/crypto/secretos';
+import { normalizarNit } from '../domain/consecutivo-unico';
 import {
+  CAMPOS_SECRETOS_EMISOR,
   datosEmisorDeSede,
   estadoDeEmisor,
   type CampoSecretoEmisor,
@@ -97,6 +100,8 @@ const idValido = (id: string) => Types.ObjectId.isValid(id);
  */
 @Injectable()
 export class FiscalEmittersService {
+  private readonly logger = new Logger(FiscalEmittersService.name);
+
   constructor(
     @InjectModel(FiscalEmitter.name)
     private readonly model: Model<FiscalEmitterDocument>,
@@ -104,11 +109,26 @@ export class FiscalEmittersService {
     private readonly sedes: Model<SedeDocument>,
   ) {}
 
-  /** Emisor de la sede, o `null` si aún no tiene. Sin secretos. */
+  /**
+   * Emisor de la sede, o `null` si aún no tiene. Sin secretos. Si el emisor
+   * enlazado es de otro NIT (la sede cambió de NIT y nadie la reenlazó), el
+   * enlace está viejo y también devuelve `null`: transmitir con las
+   * credenciales de otro NIT sería firmar a nombre de otro facturador.
+   */
   async obtenerPorSede(sedeId: string): Promise<FiscalEmitterDocument | null> {
     const sede = await this.sedeOrFail(sedeId);
     if (!sede.emisorId) return null;
-    return this.model.findById(sede.emisorId).exec();
+    const emisor = await this.model.findById(sede.emisorId).exec();
+    if (!emisor) return null;
+    if (emisor.nitNorm !== normalizarNit(sede.nit)) {
+      // Sin el NIT en claro: basta con los ids para encontrarlo.
+      this.logger.warn(
+        `Sede ${String(sede._id)}: su emisor ${emisor.id as string} es de otro NIT; ` +
+          'se trata como sin emisor hasta reenlazarla (asegurarParaSede).',
+      );
+      return null;
+    }
+    return emisor;
   }
 
   /**
@@ -228,6 +248,11 @@ export class FiscalEmittersService {
    * devuelvas en una respuesta.
    */
   async leerSecreto(emisorId: string, campo: CampoSecretoEmisor): Promise<string | null> {
+    // El tipo no protege en runtime: un campo cualquiera leería un dato del
+    // documento como si fuera secreto.
+    if (!(CAMPOS_SECRETOS_EMISOR as readonly string[]).includes(campo)) {
+      throw new Error(`Campo secreto desconocido: ${String(campo)}`);
+    }
     const e = await this.conSecretosOrFail(emisorId);
     const valor = e.get(campo) as SecretoCifrado | undefined;
     return descifrar(valor ?? null, contextoSecreto(e.id as string, campo));
