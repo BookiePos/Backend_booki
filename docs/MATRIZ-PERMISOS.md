@@ -90,6 +90,7 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `GET /reports/trial-balance` | `reports.view` | ✓ | ✓ | ✓ | · | ✓ |
 | `GET /reports/sales` | `reports.view` | ✓ | ✓ | ✓ | · | ✓ |
 | `GET /taxes` | `tax.manage` | ✓ | ✓ | ✓ | · | · |
+| `GET /taxes/inc-bolsas/vigente` | `pos.sell` o `tax.manage` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /taxes/compute` | `tax.manage` | ✓ | ✓ | ✓ | · | · |
 | `POST /taxes` | `tax.manage` | ✓ | ✓ | ✓ | · | · |
 | `PATCH /taxes/:code` | `tax.manage` | ✓ | ✓ | ✓ | · | · |
