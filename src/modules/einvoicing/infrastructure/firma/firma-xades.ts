@@ -19,6 +19,7 @@ import {
   idsFirma,
   signingTimeColombia,
 } from '../../domain/firma/propiedades-firmadas';
+import { atributoConControl, TAMANO_MAXIMO_XML, traeDoctype } from '../../domain/firma/revision-xml';
 import { abrirP12, ErrorFirma } from './material-p12';
 
 /**
@@ -50,6 +51,12 @@ export interface OpcionesFirma {
 const ruta = (nombre: string): string => `*[local-name()='${nombre}']`;
 
 function parsear(xml: string): Document {
+  if (Buffer.byteLength(xml, 'utf8') > TAMANO_MAXIMO_XML) {
+    throw new ErrorFirma('xml_invalido', 'El XML supera el tamaño máximo admitido (5 MB)');
+  }
+  if (traeDoctype(xml)) {
+    throw new ErrorFirma('xml_invalido', 'El XML no puede traer <!DOCTYPE>');
+  }
   let error = false;
   const doc = new DOMParser({
     errorHandler: { warning: () => undefined, error: () => (error = true), fatalError: () => (error = true) },
@@ -57,6 +64,7 @@ function parsear(xml: string): Document {
   if (error || !doc?.documentElement) {
     throw new ErrorFirma('xml_invalido', 'El XML a firmar no está bien formado');
   }
+  if (doc.doctype) throw new ErrorFirma('xml_invalido', 'El XML no puede traer <!DOCTYPE>');
   return doc;
 }
 
@@ -90,8 +98,32 @@ function ranura(doc: Document): { contenido: Element; posicion: number } {
   return { contenido, posicion };
 }
 
+/**
+ * Atributos con tab, salto de línea o retorno de carro: se RECHAZAN, no se
+ * normalizan. Ver `atributoConControl` para el porqué. Se miran dos cosas: lo
+ * escrito tal cual en el texto y los valores ya parseados, que es donde aparecen
+ * las referencias `&#9;`, `&#10;` y `&#13;`.
+ */
+function exigirAtributosLimpios(xml: string, doc: Document): void {
+  const enTexto = atributoConControl(xml);
+  if (enTexto) {
+    throw new ErrorFirma('xml_invalido', `El atributo ${enTexto} trae tab o salto de línea`);
+  }
+  const todos = doc.getElementsByTagName('*');
+  for (let i = 0; i < todos.length; i += 1) {
+    const attrs = todos[i]!.attributes;
+    for (let k = 0; k < attrs.length; k += 1) {
+      const a = attrs[k]!;
+      if (/[\t\n\r]/.test(a.value)) {
+        throw new ErrorFirma('xml_invalido', `El atributo ${a.name} trae tab o salto de línea`);
+      }
+    }
+  }
+}
+
 export function firmarXml(xml: string, cert: CertificadoP12, opciones: OpcionesFirma = {}): string {
   const doc = parsear(xml);
+  exigirAtributosLimpios(xml, doc);
   if (doc.getElementsByTagNameNS(NS_DS, 'Signature').length > 0) {
     throw new ErrorFirma('ya_firmado', 'El documento ya trae una ds:Signature');
   }
@@ -185,16 +217,23 @@ const ALG_HASH: Record<string, string> = {
 const invalida = (motivo: string): ResultadoVerificacion => ({ valida: false, motivo });
 
 /**
- * Verifica la integridad de una firma XAdES-EPES de la DIAN con el certificado
- * que trae su propio `KeyInfo`. NO valida la confianza del certificado (ECD,
- * vigencia, revocación): eso es de la carga del .p12 y de la DIAN.
+ * Verifica una firma XAdES-EPES de la DIAN con el certificado de su propio `KeyInfo`.
+ *
+ * Sin `huellaEsperada`, SOLO comprueba integridad: el documento no cambió desde
+ * que lo firmó quien tenga la llave del certificado embebido, sea quien sea.
+ * Cualquiera puede firmar con un certificado propio y pasar. Para saber que lo
+ * firmó el emisor, pase `huellaEsperada`, el SHA-256 del DER del certificado del
+ * emisor (hex, con o sin `:`, como `X509Certificate.fingerprint256`).
+ *
+ * Nunca valida la confianza en el certificado (ECD, vigencia, revocación): eso
+ * le toca a la carga del .p12 y a la DIAN.
  */
-export function verificarFirma(xmlFirmado: string): ResultadoVerificacion {
+export function verificarFirma(xmlFirmado: string, huellaEsperada?: string): ResultadoVerificacion {
   let doc: Document;
   try {
     doc = parsear(xmlFirmado);
-  } catch {
-    return invalida('El XML no está bien formado');
+  } catch (e) {
+    return invalida(e instanceof ErrorFirma ? e.message : 'El XML no está bien formado');
   }
   const firmas = Array.from(doc.getElementsByTagNameNS(NS_DS, 'Signature'));
   if (firmas.length !== 1) return invalida(`Se esperaba una ds:Signature y hay ${firmas.length}`);
@@ -239,6 +278,12 @@ export function verificarFirma(xmlFirmado: string): ResultadoVerificacion {
   if (refProps.getAttribute('Type') !== TIPO_REF_SIGNED_PROPERTIES) {
     return invalida('La referencia a SignedProperties no declara su Type');
   }
+  for (const r of refs) {
+    const [dm] = hijos(r, NS_DS, 'DigestMethod');
+    if (dm?.getAttribute('Algorithm') !== ALG_RESUMEN_SHA256) {
+      return invalida('Las referencias deben usar SHA-256 (xmlenc#sha256)');
+    }
+  }
 
   const [x509Data] = hijos(keyInfo, NS_DS, 'X509Data');
   const [x509] = x509Data ? hijos(x509Data, NS_DS, 'X509Certificate') : [];
@@ -265,6 +310,13 @@ export function verificarFirma(xmlFirmado: string): ResultadoVerificacion {
   if (motivoCert) return invalida(motivoCert);
   const motivoPolitica = verificarPolitica(signedProps[0]!);
   if (motivoPolitica) return invalida(motivoPolitica);
+  if (huellaEsperada !== undefined) {
+    const normal = (h: string): string => h.replace(/:/g, '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(normal(huellaEsperada))) return invalida('La huella esperada no es un SHA-256');
+    if (normal(certificado.fingerprint256) !== normal(huellaEsperada)) {
+      return invalida('El certificado de la firma no es el esperado');
+    }
+  }
   return { valida: true };
 }
 

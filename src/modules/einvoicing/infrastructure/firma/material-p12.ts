@@ -5,6 +5,7 @@ import {
   type AtributoNombre,
   type CertificadoFirmante,
 } from '../../domain/firma/propiedades-firmadas';
+import { LIMITES_P12, revisarLimitesP12 } from './limites-p12';
 
 /**
  * Error de la firma. El mensaje es siempre fijo: nunca lleva la contraseña, la
@@ -43,16 +44,22 @@ const OID_LLAVE_CIFRADA = forge.pki.oids.pkcs8ShroudedKeyBag as string;
 const OID_LLAVE = forge.pki.oids.keyBag as string;
 const OID_CERT = forge.pki.oids.certBag as string;
 
+const P12_ILEGIBLE =
+  'No se pudo abrir el certificado: la contraseña no corresponde o el archivo no es un .p12 válido';
+
 export function abrirP12(p12: Buffer, password: string): MaterialFirma {
+  // Antes de descifrar: tamaño, iteraciones del MAC y de cada bolsa (DoS).
+  try {
+    revisarLimitesP12(p12);
+  } catch {
+    throw new ErrorFirma('p12_ilegible', P12_ILEGIBLE);
+  }
   let contenedor: forge.pkcs12.Pkcs12Pfx;
   try {
     const asn1 = forge.asn1.fromDer(forge.util.createBuffer(p12.toString('binary')));
     contenedor = forge.pkcs12.pkcs12FromAsn1(asn1, false, password);
   } catch {
-    throw new ErrorFirma(
-      'p12_ilegible',
-      'No se pudo abrir el certificado: la contraseña no corresponde o el archivo no es un .p12 válido',
-    );
+    throw new ErrorFirma('p12_ilegible', P12_ILEGIBLE);
   }
 
   const llaves = [
@@ -67,7 +74,12 @@ export function abrirP12(p12: Buffer, password: string): MaterialFirma {
     throw new ErrorFirma('p12_llave_no_rsa', 'La llave del certificado no es RSA');
   }
 
-  const certs = (contenedor.getBags({ bagType: OID_CERT })[OID_CERT] ?? [])
+  const bolsasCert = contenedor.getBags({ bagType: OID_CERT })[OID_CERT] ?? [];
+  // Las bolsas cifradas solo se cuentan ya abiertas.
+  if (bolsasCert.length > LIMITES_P12.bolsasCertificado) {
+    throw new ErrorFirma('p12_ilegible', P12_ILEGIBLE);
+  }
+  const certs = bolsasCert
     .map((b: forge.pkcs12.Bag) => b.cert)
     .filter((c): c is forge.pki.Certificate => Boolean(c));
   const firmante = certs.find((c: forge.pki.Certificate) => {
