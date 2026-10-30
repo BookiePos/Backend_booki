@@ -41,8 +41,13 @@ import {
   calcularCufe,
   dianVerificationUrl,
 } from '../domain/cufe';
-import { documentoDeVenta } from '../domain/documento-venta';
-import { centavosDeCop } from '../domain/redondeo';
+import {
+  documentoDeVenta,
+  DocumentoDescuadradoError,
+  type DocumentoDeVenta,
+} from '../domain/documento-venta';
+import { aCentavos } from '../domain/redondeo';
+import { hasCreditPart } from '../../sales/domain/sale-payments';
 import {
   TIPO_AMBIENTE_POR_DEFECTO,
   type TipoAmbiente,
@@ -61,10 +66,9 @@ import {
   type TipoResolucion,
 } from '../domain/resolucion-tipos';
 
-/** Aviso de la nota que queda sin CUDE porque el emisor no tiene PIN. */
-export const AVISO_NOTA_SIN_PIN =
-  'Nota sin CUDE: el emisor fiscal de la sede no tiene cargado el PIN del software. ' +
-  'Cárgalo en la configuración de facturación electrónica antes de transmitirla.';
+/** Rechazo de la nota cuando el emisor no tiene PIN: sin él no hay CUDE. */
+export const MENSAJE_NOTA_SIN_PIN =
+  'Carga el PIN del software DIAN del emisor antes de emitir notas.';
 
 /** Lo de una resolución que viaja a la pantalla (la clave técnica NO viaja). */
 export interface ResolucionVista {
@@ -148,6 +152,25 @@ export class EinvoicingService {
       );
     }
     return norm;
+  }
+
+  /**
+   * Líneas y totales de la venta (`domain/documento-venta.ts`). Un descuadre,
+   * consigo mismo o con lo cobrado, es un 400 antes de cupo y folio.
+   */
+  private armarDocumento(sale: SaleDocument, sede: SedeDocument): DocumentoDeVenta {
+    try {
+      return documentoDeVenta(sale, {
+        causaInc:
+          sede.responsableInc === true ||
+          sale.lines.some((l) => l.taxKind === 'inc'),
+      });
+    } catch (err) {
+      if (err instanceof DocumentoDescuadradoError) {
+        throw new BadRequestException(err.message);
+      }
+      throw err;
+    }
   }
 
   /** Documento del adquiriente para el CUFE/CUDE: el NIT va sin DV. */
@@ -352,7 +375,7 @@ export class EinvoicingService {
 
     // Líneas con su tributo real, domicilio como línea, propina como cargo y
     // cuadre al centavo; todo antes del folio (si no cuadra, no se gasta).
-    const doc = documentoDeVenta(sale);
+    const doc = this.armarDocumento(sale, sede);
     const nitOfe = this.nitParaCodigo(sede.nit);
     const emisorFiscal = await this.emisores.obtenerPorSede(sedeId);
     const tipoAmbiente = this.ambienteDe(emisorFiscal);
@@ -400,10 +423,12 @@ export class EinvoicingService {
           ...doc.totales,
           discountTotal: sale.discountTotal ?? 0,
           total: doc.totales.payableAmount,
-          formaPago: '1',
+          // '2' crédito si la venta se fió (toda o en parte); '1' contado.
+          formaPago: hasCreditPart(sale) ? '2' : '1',
           medioPago,
           resolution: this.buildResolution(resolucion),
           tipoAmbiente,
+          aviso: doc.aviso,
           cufe,
           qrUrl: dianVerificationUrl(cufe, tipoAmbiente),
           dianStatus: 'draft',
@@ -446,13 +471,15 @@ export class EinvoicingService {
     const nitOfe = this.nitParaCodigo(nitFactura ?? sede.nit);
 
     // La nota lleva CUDE, con el PIN del software del emisor (anexo FEV 1.9
-    // §11.1.4), nunca con la clave técnica de la resolución. Sin PIN la nota
-    // queda en borrador sin código y con el aviso de qué falta.
+    // §11.1.4), nunca con la clave técnica de la resolución. Sin PIN no se
+    // emite: igual que la factura sin clave técnica, se rechaza antes de
+    // cobrar cupo o gastar folio.
     const emisorFiscal = await this.emisores.obtenerPorSede(sedeId);
     const tipoAmbiente = this.ambienteDe(emisorFiscal);
     const pin = emisorFiscal
       ? await this.emisores.leerSecreto(emisorFiscal.id as string, 'facturaPin')
       : null;
+    if (!pin) throw new BadRequestException(MENSAJE_NOTA_SIN_PIN);
 
     // Una nota crédito también es un documento electrónico: cuenta al cupo
     // (dentro de `emitir`, antes de quemar folio).
@@ -471,24 +498,23 @@ export class EinvoicingService {
         const { issueDate, issueTime } = this.now();
         // Los valores son los de la factura tal como se guardó: un documento
         // viejo no se recalcula (su INC, si lo tenía, quedó en `ivaTotal`).
-        const cude = pin
-          ? calcularCude({
-              numero: fullNumber,
-              fecha: issueDate,
-              hora: issueTime,
-              valorBruto: centavosDeCop(invoice.taxableBase ?? 0),
-              impuestos: {
-                '01': centavosDeCop(invoice.ivaTotal ?? 0),
-                '04': centavosDeCop(invoice.incTotal ?? 0),
-                '03': centavosDeCop(invoice.icaTotal ?? 0),
-              },
-              valorTotal: centavosDeCop(invoice.payableAmount ?? invoice.total),
-              nitEmisor: nitOfe,
-              numAdquiriente: this.numeroAdquiriente(invoice.adquiriente),
-              softwarePin: pin,
-              tipoAmbiente,
-            })
-          : undefined;
+        // `aCentavos` conserva los centavos que traiga una factura vieja.
+        const cude = calcularCude({
+          numero: fullNumber,
+          fecha: issueDate,
+          hora: issueTime,
+          valorBruto: aCentavos(invoice.taxableBase ?? 0),
+          impuestos: {
+            '01': aCentavos(invoice.ivaTotal ?? 0),
+            '04': aCentavos(invoice.incTotal ?? 0),
+            '03': aCentavos(invoice.icaTotal ?? 0),
+          },
+          valorTotal: aCentavos(invoice.payableAmount ?? invoice.total),
+          nitEmisor: nitOfe,
+          numAdquiriente: this.numeroAdquiriente(invoice.adquiriente),
+          softwarePin: pin,
+          tipoAmbiente,
+        });
         return {
           type: 'credit_note',
           saleId: invoice.saleId,
@@ -503,6 +529,7 @@ export class EinvoicingService {
           lines: invoice.lines,
           charges: invoice.charges,
           taxableBase: invoice.taxableBase,
+          taxExclusiveAmount: invoice.taxExclusiveAmount,
           ivaTotal: invoice.ivaTotal,
           incTotal: invoice.incTotal,
           icaTotal: invoice.icaTotal,
@@ -523,8 +550,7 @@ export class EinvoicingService {
           referenceId: invoice._id,
           tipoAmbiente,
           cufe: cude,
-          qrUrl: cude ? dianVerificationUrl(cude, tipoAmbiente) : undefined,
-          aviso: cude ? undefined : AVISO_NOTA_SIN_PIN,
+          qrUrl: dianVerificationUrl(cude, tipoAmbiente),
           dianStatus: 'draft',
           createdByEmail: user.email,
         };

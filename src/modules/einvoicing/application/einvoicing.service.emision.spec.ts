@@ -63,7 +63,8 @@ describe('EinvoicingService · emisión frente a choques del índice', () => {
     status: 'paid',
     lines: [],
     payment: { method: 'cash' },
-    total: 1000,
+    // Sin líneas: el documento suma 0 y tiene que coincidir con lo cobrado.
+    total: 0,
   });
 
   const emitir = () =>

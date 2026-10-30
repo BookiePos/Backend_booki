@@ -16,7 +16,8 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
   };
 });
 
-import { AVISO_NOTA_SIN_PIN, EinvoicingService } from './einvoicing.service';
+import { MENSAJE_NOTA_SIN_PIN, EinvoicingService } from './einvoicing.service';
+import { AVISO_DOMICILIO_SIN_INC } from '../domain/documento-venta';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 
@@ -245,6 +246,130 @@ describe('EinvoicingService · documento de la Fase 2', () => {
     const doc: any = await emitir();
     expect(doc.lines[1]).toMatchObject({ taxScheme: undefined, base: 5000, taxAmount: 0 });
     expect(doc).toMatchObject({ taxableBase: 14259, incTotal: 741, payableAmount: 15000 });
+    // Negocio que causa INC: emite, pero deja el aviso para el contador.
+    expect(doc.aviso).toBe(AVISO_DOMICILIO_SIN_INC);
+  });
+
+  it('descuento del 100 %: se factura en $0, nunca por el bruto', async () => {
+    venta = ventaBase({
+      lines: [
+        linea({ unitPrice: 20000, lineTotal: 20000, discountAmount: 20000, taxKind: 'iva', taxRate: 19, ivaRate: 19, taxBase: 0, taxAmount: 0 }),
+      ],
+      discountTotal: 20000,
+      total: 0,
+    });
+    const linea100: any = await emitir();
+    expect(linea100.lines[0]).toMatchObject({ base: 0, taxAmount: 0, total: 0 });
+    expect(linea100.payableAmount).toBe(0);
+
+    // El mismo 100 % como descuento de venta (sin descuento de línea).
+    venta = ventaBase({
+      lines: [linea({ unitPrice: 20000, lineTotal: 20000, taxKind: 'iva', taxRate: 19, ivaRate: 19, taxBase: 0, taxAmount: 0 })],
+      discountTotal: 20000,
+      total: 0,
+    });
+    const venta100: any = await emitir();
+    expect(venta100.lines[0].base).toBe(0);
+    expect(venta100.payableAmount).toBe(0);
+  });
+
+  it('línea que `prorateCop` deja en 0 dentro de una venta con desglose: vale 0', async () => {
+    venta = ventaBase({
+      lines: [
+        linea({ unitPrice: 10000, lineTotal: 10000, taxKind: 'inc', taxRate: 8, taxBase: 9259, taxAmount: 741 }),
+        linea({ sku: 'P2', unitPrice: 1, lineTotal: 1, taxKind: 'inc', taxRate: 8, taxBase: 0, taxAmount: 0 }),
+      ],
+      discountTotal: 1,
+      total: 10000,
+    });
+    const doc: any = await emitir();
+    expect(doc.lines[1]).toMatchObject({ base: 0, taxAmount: 0, total: 0 });
+    expect(doc.payableAmount).toBe(10000);
+  });
+
+  describe('ventas viejas: el documento suma lo cobrado', () => {
+    it('3 × $10.000 al 0 % con $1.000 de descuento → $29.000 (con y sin desglose)', async () => {
+      venta = ventaBase({
+        lines: [9667, 9667, 9666].map((b, i) =>
+          linea({ sku: `P${i}`, unitPrice: 10000, lineTotal: 10000, taxKind: 'iva', taxRate: 0, taxBase: b, taxAmount: 0 }),
+        ),
+        discountTotal: 1000,
+        total: 29000,
+      });
+      const conDesglose: any = await emitir();
+      expect(conDesglose.payableAmount).toBe(29000);
+      expect(conDesglose.lines.every((l: any) => l.taxScheme === undefined)).toBe(true);
+
+      venta = ventaBase({
+        lines: [0, 1, 2].map((i) => linea({ sku: `P${i}`, unitPrice: 10000, lineTotal: 10000 })),
+        discountTotal: 1000,
+        total: 29000,
+      });
+      const sinDesglose: any = await emitir();
+      expect(sinDesglose.lines.map((l: any) => l.base)).toEqual([9667, 9666, 9667]); // prorateCop: el residuo acumulado
+      expect(sinDesglose.payableAmount).toBe(29000);
+    });
+
+    it('base 1.000,50 + IVA 190,50 → $1.191, sin un peso de más', async () => {
+      venta = ventaBase({
+        lines: [linea({ unitPrice: 1191, lineTotal: 1191, taxKind: 'iva', taxRate: 19, ivaRate: 19, taxBase: 1000.5, taxAmount: 190.5 })],
+        total: 1191,
+      });
+      const doc: any = await emitir();
+      expect(doc.lines[0]).toMatchObject({ base: 1000, taxAmount: 191, total: 1191 });
+      expect(doc).toMatchObject({ taxableBase: 1000, ivaTotal: 191, payableAmount: 1191 });
+    });
+
+    it('anterior a julio (sin desglose ni descuento de línea) con descuento de venta: se reparte', async () => {
+      venta = ventaBase({
+        lines: [
+          linea({ sku: 'A', unitPrice: 12000, lineTotal: 12000, ivaRate: 19 }),
+          linea({ sku: 'B', unitPrice: 8000, lineTotal: 8000, ivaRate: 19 }),
+        ],
+        discountTotal: 2000,
+        total: 18000,
+      });
+      const doc: any = await emitir();
+      expect(doc.lines.map((l: any) => [l.base, l.taxScheme])).toEqual([
+        [10800, undefined],
+        [7200, undefined],
+      ]);
+      expect(doc.payableAmount).toBe(18000);
+    });
+
+    it('si no suma lo cobrado: 400 antes de cupo y folio', async () => {
+      venta = ventaBase({
+        lines: [linea({ unitPrice: 10000, lineTotal: 10000, taxKind: 'inc', taxRate: 8, taxBase: 9259, taxAmount: 741 })],
+        total: 9999,
+      });
+      const err = await emitir().catch((e) => e);
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect(err.message).toMatch(/cobró \$9999/);
+      expect(businesses.consumeDocument).not.toHaveBeenCalled();
+      expect(counters.findOneAndUpdate).not.toHaveBeenCalled();
+    });
+  });
+
+  it('exento lleva tributo 01 al 0 %; excluido va sin tributo; TaxExclusiveAmount solo con las exentas', async () => {
+    venta = ventaBase({
+      lines: [
+        linea({ name: 'Huevos', unitPrice: 10000, lineTotal: 10000, taxKind: 'iva', taxRate: 0, taxTreatment: 'exento', taxBase: 10000, taxAmount: 0 }),
+        linea({ sku: 'P2', name: 'Arroz', unitPrice: 5000, lineTotal: 5000, taxKind: 'iva', taxRate: 0, taxTreatment: 'excluido', taxBase: 5000, taxAmount: 0 }),
+      ],
+      total: 15000,
+    });
+    const doc: any = await emitir();
+    expect(doc.lines[0]).toMatchObject({ taxScheme: '01', taxRate: 0, taxAmount: 0 });
+    expect(doc.lines[1].taxScheme).toBeUndefined();
+    expect(doc).toMatchObject({ taxableBase: 15000, taxExclusiveAmount: 10000, ivaTotal: 0, payableAmount: 15000 });
+  });
+
+  it('forma de pago: 2 si la venta se fió, 1 de contado', async () => {
+    const lineas = [linea({ unitPrice: 10000, lineTotal: 10000, taxKind: 'inc', taxRate: 8, taxBase: 9259, taxAmount: 741 })];
+    venta = ventaBase({ lines: lineas, total: 10000, payment: { method: 'credit' } });
+    expect(((await emitir()) as any).formaPago).toBe('2');
+    venta = ventaBase({ lines: lineas, total: 10000 });
+    expect(((await emitir()) as any).formaPago).toBe('1');
   });
 
   it('ambiente del emisor: 1 y 2 dan CUFE y catálogo del QR distintos', async () => {
@@ -348,23 +473,36 @@ describe('EinvoicingService · documento de la Fase 2', () => {
       expect(nota.dianStatus).toBe('draft');
     });
 
-    it('sin PIN: queda en borrador sin CUDE y con el aviso, nunca con la clave técnica', async () => {
+    it('sin PIN: se rechaza antes de cupo y folio, nunca con la clave técnica', async () => {
       factura = facturaGuardada();
       emisor = { id: 'e1', tipoAmbiente: '2' };
       pin = null;
-      const nota: any = await anular();
-      expect(nota.cufe).toBeUndefined();
-      expect(nota.qrUrl).toBeUndefined();
-      expect(nota.aviso).toBe(AVISO_NOTA_SIN_PIN);
-      expect(nota.dianStatus).toBe('draft');
+      const err = await anular().catch((e) => e);
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect(err.message).toBe(MENSAJE_NOTA_SIN_PIN);
+      expect(businesses.consumeDocument).not.toHaveBeenCalled();
+      expect(counters.findOneAndUpdate).not.toHaveBeenCalled();
+      expect(model.create).not.toHaveBeenCalled();
     });
 
-    it('sin emisor fiscal: tampoco hay CUDE', async () => {
+    it('sin emisor fiscal: también se rechaza', async () => {
       factura = facturaGuardada();
+      await expect(anular()).rejects.toThrow(MENSAJE_NOTA_SIN_PIN);
+      expect(model.create).not.toHaveBeenCalled();
+    });
+
+    it('factura vieja con centavos: el CUDE los conserva', async () => {
+      factura = { ...facturaGuardada(), taxableBase: 1000.5, ivaTotal: 190.5, incTotal: undefined, payableAmount: undefined, total: 1191 };
+      emisor = { id: 'e1', tipoAmbiente: '2' };
+      pin = '12345';
       const nota: any = await anular();
-      expect(nota.cufe).toBeUndefined();
-      expect(nota.aviso).toBe(AVISO_NOTA_SIN_PIN);
-      expect(nota.tipoAmbiente).toBe('2');
+      expect(nota.cufe).toBe(
+        sha384(
+          nota.fullNumber + nota.issueDate + nota.issueTime + '1000.50' +
+            '01' + '190.50' + '04' + '0.00' + '03' + '0.00' + '1191.00' +
+            '900123456' + '222222222222' + '12345' + '2',
+        ),
+      );
     });
   });
 });

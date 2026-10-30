@@ -160,6 +160,10 @@ export class ElectronicDocument {
   ivaTotal!: number;
 
   // ── Totales por tributo y cargos (Fase 2). Ausentes en documentos viejos ──
+  /** TaxExclusiveAmount: Σ bases de las líneas con TaxTotal, incluidas las exentas (FAU04). */
+  @Prop({ min: 0 })
+  taxExclusiveAmount?: number;
+
   /** Σ tributo 04 (INC). */
   @Prop({ min: 0 })
   incTotal?: number;
@@ -192,7 +196,7 @@ export class ElectronicDocument {
   @Prop()
   tipoAmbiente?: string;
 
-  /** Por qué el documento quedó incompleto (p. ej. nota sin CUDE por falta de PIN). */
+  /** Algo que revisar sin bloquear la emisión (p. ej. domicilio viejo sin INC). */
   @Prop()
   aviso?: string;
 
