@@ -199,6 +199,20 @@ export class TaxService {
     }
   }
 
+  /**
+   * Tarifa de `INC_BOLSA` para el POS: solo lo que necesita para cobrar, sin el
+   * resto del catálogo de impuestos. Usa `bagTaxPerUnit`, la misma función que
+   * la venta, para que pantalla y factura nunca difieran.
+   */
+  async incBolsasVigente(
+    date?: string,
+  ): Promise<{ activo: boolean; tarifa: number; vigenteDesde: string | null }> {
+    const tarifa = await this.bagTaxPerUnit(date);
+    if (tarifa <= 0) return { activo: false, tarifa: 0, vigenteDesde: null };
+    const version = await this.resolveRate(INC_BOLSAS_CODE, date);
+    return { activo: true, tarifa, vigenteDesde: version.effectiveFrom };
+  }
+
   async create(dto: CreateTaxDto, userEmail?: string): Promise<TaxView> {
     await this.seed();
     const code = dto.code.toUpperCase();
