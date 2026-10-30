@@ -156,8 +156,38 @@ export interface VentaParaDocumento {
 }
 
 export interface OpcionesDocumento {
-  /** El negocio causa INC: una venta vieja con domicilio sin impuesto deja aviso. */
+  /**
+   * El negocio causa INC (lo decide quien llama con `causesInc()` de
+   * `core-tax/domain/sale-tax.ts` o con las líneas de la venta): una venta
+   * vieja con domicilio sin impuesto deja aviso.
+   */
   causaInc?: boolean;
+}
+
+/** El primer TaxTotal de una línea del XML y su TaxableAmount. */
+export interface PrimerTributo {
+  codigo: TributoLinea | '22';
+  /** TaxableAmount de ese TaxTotal, en pesos. */
+  taxableAmount: number;
+}
+
+/**
+ * Primer TaxTotal de la línea, en el orden en que va en el XML: el tributo ad
+ * valorem (01/04) primero y el 22 de la bolsa después. Sin tributo, no hay.
+ *
+ * Es la fuente única de dos cosas que tienen que coincidir: el
+ * `TaxExclusiveAmount` del documento (regla FAU04: la suma EXACTA de los
+ * `TaxableAmount` del primer TaxTotal de cada línea) y el armado del XML de
+ * la Fase 5, que debe usar este mismo helper para cada línea.
+ *
+ * Una línea con solo el tributo 22 toma su base como TaxableAmount. En la
+ * práctica no ocurre (el INC de bolsas solo lo cobra el responsable de IVA, así
+ * que la bolsa siempre trae su 01): confirmar con el anexo al armar el XML.
+ */
+export function primerTributo(l: LineaDocumento): PrimerTributo | undefined {
+  if (l.taxScheme) return { codigo: l.taxScheme, taxableAmount: l.base };
+  if (l.perUnitTax) return { codigo: '22', taxableAmount: l.base };
+  return undefined;
 }
 
 export const DESCRIPCION_DOMICILIO = 'Servicio de domicilio';
@@ -319,7 +349,8 @@ export function documentoDeVenta(
   const de = (codigo: TributoLinea) =>
     sumBy(lines, (l) => (l.taxScheme === codigo ? l.taxAmount : 0));
   const taxableBase = sumBy(lines, (l) => l.base);
-  const taxExclusiveAmount = sumBy(lines, (l) => (l.taxScheme || l.perUnitTax ? l.base : 0));
+  // FAU04: exactamente la suma del TaxableAmount del primer TaxTotal de cada línea.
+  const taxExclusiveAmount = sumBy(lines, (l) => primerTributo(l)?.taxableAmount ?? 0);
   const ivaTotal = de('01');
   const incTotal = de('04');
   const icaTotal = 0;
@@ -363,7 +394,7 @@ export function documentoDeVenta(
   const domicilioSinInc =
     domicilio !== undefined &&
     !v.deliveryTaxKind &&
-    (opciones.causaInc === true || lines.some((l) => l.taxScheme === '04'));
+    opciones.causaInc === true;
 
   return {
     lines,

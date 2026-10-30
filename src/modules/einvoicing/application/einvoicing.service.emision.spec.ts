@@ -105,6 +105,7 @@ describe('EinvoicingService · emisión frente a choques del índice', () => {
     businesses = {
       consumeDocument: vi.fn(async () => 'monthly'),
       refundDocument: vi.fn(async () => undefined),
+      findById: vi.fn(async () => null),
     };
     sedes = { findOrFail: vi.fn(async () => sede()) };
     sales = { getOrFail: vi.fn(async () => sale()) };

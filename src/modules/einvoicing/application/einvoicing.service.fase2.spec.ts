@@ -39,6 +39,7 @@ describe('EinvoicingService · documento de la Fase 2', () => {
 
   let venta: any;
   let emisor: { id: string; tipoAmbiente: string } | null;
+  let tipoNegocio: string | undefined;
   let pin: string | null;
   let factura: any;
   let model: any;
@@ -75,6 +76,7 @@ describe('EinvoicingService · documento de la Fase 2', () => {
   beforeEach(() => {
     emisor = null;
     pin = null;
+    tipoNegocio = undefined;
     factura = null;
     let seq = 0;
     const cadena = (v: unknown): any => {
@@ -98,6 +100,7 @@ describe('EinvoicingService · documento de la Fase 2', () => {
     businesses = {
       consumeDocument: vi.fn(async () => 'monthly'),
       refundDocument: vi.fn(async () => undefined),
+      findById: vi.fn(async () => ({ tipoNegocio })),
     };
     const sedes = {
       findOrFail: vi.fn(async () => ({
@@ -248,6 +251,22 @@ describe('EinvoicingService · documento de la Fase 2', () => {
     expect(doc).toMatchObject({ taxableBase: 14259, incTotal: 741, payableAmount: 15000 });
     // Negocio que causa INC: emite, pero deja el aviso para el contador.
     expect(doc.aviso).toBe(AVISO_DOMICILIO_SIN_INC);
+  });
+
+  it('restaurante con `responsableInc` sin definir: causa INC (512-13) y el domicilio viejo deja aviso', async () => {
+    // Venta vieja: anterior al INC por línea (taxKind por defecto) y sin `deliveryTaxKind`.
+    venta = ventaBase({
+      lines: [linea({ unitPrice: 10000, lineTotal: 10000, taxKind: 'iva', taxRate: 0, taxBase: 10000, taxAmount: 0 })],
+      total: 10000,
+      deliveryFee: 5000,
+    });
+    tipoNegocio = 'restaurante';
+    const restaurante: any = await emitir();
+    expect(restaurante.aviso).toBe(AVISO_DOMICILIO_SIN_INC);
+
+    tipoNegocio = 'retail';
+    const tienda: any = await emitir();
+    expect(tienda.aviso).toBeUndefined();
   });
 
   it('descuento del 100 %: se factura en $0, nunca por el bruto', async () => {

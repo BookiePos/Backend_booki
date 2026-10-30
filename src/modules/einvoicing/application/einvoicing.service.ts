@@ -48,6 +48,8 @@ import {
 } from '../domain/documento-venta';
 import { aCentavos } from '../domain/redondeo';
 import { hasCreditPart } from '../../sales/domain/sale-payments';
+import { causesInc } from '../../core-tax/domain/sale-tax';
+import type { BusinessType } from '../../control/domain/control.constants';
 import {
   TIPO_AMBIENTE_POR_DEFECTO,
   type TipoAmbiente,
@@ -158,19 +160,38 @@ export class EinvoicingService {
    * Líneas y totales de la venta (`domain/documento-venta.ts`). Un descuadre,
    * consigo mismo o con lo cobrado, es un 400 antes de cupo y folio.
    */
-  private armarDocumento(sale: SaleDocument, sede: SedeDocument): DocumentoDeVenta {
+  private async armarDocumento(
+    sale: SaleDocument,
+    sede: SedeDocument,
+  ): Promise<DocumentoDeVenta> {
+    // Si el negocio causa INC lo decide `causesInc` con el perfil de la sede
+    // (art. 512-13 ET: sin dato de responsabilidad, el restaurante lo causa),
+    // o lo dicen las propias líneas de la venta.
+    const causaInc =
+      causesInc({
+        tipoNegocio: await this.tipoNegocio(),
+        responsabilidadFiscal: sede.responsabilidadFiscal,
+        responsableIva: sede.responsableIva,
+        responsableInc: sede.responsableInc,
+        franquicia: sede.franquicia,
+      }) || sale.lines.some((l) => l.taxKind === 'inc');
     try {
-      return documentoDeVenta(sale, {
-        causaInc:
-          sede.responsableInc === true ||
-          sale.lines.some((l) => l.taxKind === 'inc'),
-      });
+      return documentoDeVenta(sale, { causaInc });
     } catch (err) {
       if (err instanceof DocumentoDescuadradoError) {
         throw new BadRequestException(err.message);
       }
       throw err;
     }
+  }
+
+  /** Giro de la empresa activa (como en `SalesService`). */
+  private async tipoNegocio(): Promise<BusinessType | undefined> {
+    const ctx = TenantContext.current();
+    if (!ctx) return undefined;
+    if (ctx.tipoNegocio) return ctx.tipoNegocio;
+    const business = await this.businesses.findById(ctx.businessId);
+    return business?.tipoNegocio;
   }
 
   /** Documento del adquiriente para el CUFE/CUDE: el NIT va sin DV. */
@@ -375,7 +396,7 @@ export class EinvoicingService {
 
     // Líneas con su tributo real, domicilio como línea, propina como cargo y
     // cuadre al centavo; todo antes del folio (si no cuadra, no se gasta).
-    const doc = this.armarDocumento(sale, sede);
+    const doc = await this.armarDocumento(sale, sede);
     const nitOfe = this.nitParaCodigo(sede.nit);
     const emisorFiscal = await this.emisores.obtenerPorSede(sedeId);
     const tipoAmbiente = this.ambienteDe(emisorFiscal);
