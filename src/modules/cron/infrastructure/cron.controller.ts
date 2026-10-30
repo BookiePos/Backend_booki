@@ -11,6 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import { Public } from '../../core-auth/infrastructure/decorators/public.decorator';
 import { BillingScheduler } from '../../billing/application/billing.scheduler';
 import { RecurringExpenseScheduler } from '../../finance/application/recurring-expense.scheduler';
+import { CertificadoEmisorService } from '../../einvoicing/application/certificado-emisor.service';
 import { secretoDeCronValido } from '../domain/cron-auth';
 import type { ResultadoBarrido } from '../../../shared/barridos/resultado-barrido';
 
@@ -40,6 +41,7 @@ export class CronController {
     private readonly config: ConfigService,
     private readonly billing: BillingScheduler,
     private readonly recurrentes: RecurringExpenseScheduler,
+    private readonly certificados: CertificadoEmisorService,
   ) {}
 
   @Public()
@@ -65,6 +67,10 @@ export class CronController {
     const tareas: Record<string, ResultadoBarrido> = {
       cobros,
       'gastos-recurrentes': await this.recurrentes.sweep({
+        hasta: inicio + PLAZO_BARRIDOS_MS,
+      }),
+      // Marca los certificados .p12 que vencen en 30 días o menos (Fase 3 FE).
+      'certificados-fe': await this.certificados.barrerVencimientos({
         hasta: inicio + PLAZO_BARRIDOS_MS,
       }),
     };
