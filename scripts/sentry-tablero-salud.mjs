@@ -55,6 +55,8 @@ const tablero = {
       widgetType: 'error-events',
       interval: '1h',
       layout: { x: 0, y: 0, w: 6, h: 2, minH: 2 },
+      // Una serie por ruta: Sentry exige `limit` (máximo 10) al agrupar.
+      limit: 5,
       queries: [{
         name: '',
         conditions: '',
@@ -62,7 +64,6 @@ const tablero = {
         aggregates: ['count()'],
         columns: ['ruta'],
         orderby: '-count()',
-        limit: 5,
       }],
     },
     p95('Latencia del POS (p95, /sales*)', '*/sales*', 0, 2),

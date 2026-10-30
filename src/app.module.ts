@@ -3,7 +3,7 @@ import { POOL_MONGO, uriSinCredenciales } from './shared/config/mongo';
 import { Module, Logger } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MongooseModule, getConnectionToken } from '@nestjs/mongoose';
-import { APP_FILTER, APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import type { Connection } from 'mongoose';
 import { TenancyModule } from './shared/tenancy/tenancy.module';
@@ -11,6 +11,7 @@ import { MongoThrottlerStorage } from './shared/throttle/mongo-throttler.storage
 import { sinLimitesParaE2e } from './shared/throttle/sin-limites-e2e';
 import type { ColeccionVentanas } from './shared/throttle/contador-ventana';
 import { SentryExceptionFilter } from './shared/monitoreo/sentry-exception.filter';
+import { SentryTransaccionInterceptor } from './shared/monitoreo/sentry-transaccion.interceptor';
 import { CONTROL_CONNECTION } from './modules/control/domain/control.constants';
 import { ControlModule } from './modules/control/control.module';
 import { HealthModule } from './modules/health/health.module';
@@ -174,6 +175,8 @@ function adjuntarPoolAVercel(connection: Connection, logger: Logger): void {
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     // Reporta a Sentry los 5xx (ítem 2.4); no-op sin SENTRY_DSN.
     { provide: APP_FILTER, useClass: SentryExceptionFilter },
+    // Nombra cada traza con su ruta para el tablero de salud (ítem 2.13).
+    { provide: APP_INTERCEPTOR, useClass: SentryTransaccionInterceptor },
   ],
 })
 export class AppModule {}
