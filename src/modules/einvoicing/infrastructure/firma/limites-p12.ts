@@ -26,6 +26,7 @@ export class P12FueraDeLimites extends Error {
 const OID_DATA = '1.2.840.113549.1.7.1';
 const OID_ENCRYPTED_DATA = '1.2.840.113549.1.7.6';
 const OID_CERT_BAG = '1.2.840.113549.1.12.10.1.3';
+const OID_SHROUDED_KEY_BAG = '1.2.840.113549.1.12.10.1.2';
 const OID_PBES2 = '1.2.840.113549.1.5.13';
 const OID_PBKDF2 = '1.2.840.113549.1.5.12';
 /** PBE de PKCS#12 (1.2.840.113549.1.12.1.1–6) y PBES1 de PKCS#5. */
@@ -67,14 +68,16 @@ function octetos(n: Nodo | undefined): string {
 function revisarAlgoritmo(alg: Nodo | undefined): void {
   const [idNodo, params] = hijos(alg);
   const id = oid(idNodo);
-  if (!id) return;
-  if (OID_PBE_DIRECTO.test(id)) {
+  if (id && OID_PBE_DIRECTO.test(id)) {
     exigirIteraciones(entero(hijos(params)[1]));
   } else if (id === OID_PBES2) {
     const [kdf] = hijos(params);
     const [kdfId, kdfParams] = hijos(kdf);
     if (oid(kdfId) !== OID_PBKDF2) throw new P12FueraDeLimites('estructura');
     exigirIteraciones(entero(hijos(kdfParams)[1]));
+  } else {
+    // Un algoritmo que no sabemos acotar no se le entrega a forge.
+    throw new P12FueraDeLimites('estructura');
   }
 }
 
@@ -88,9 +91,11 @@ function revisarSafeContents(der: string, cuenta: { certs: number }): void {
       cuenta.certs += 1;
       if (cuenta.certs > LIMITES_P12.bolsasCertificado) throw new P12FueraDeLimites('certificados');
     }
-    // pkcs8ShroudedKeyBag: EncryptedPrivateKeyInfo { encryptionAlgorithm, encryptedData }.
-    const [contenido] = hijos(valor);
-    revisarAlgoritmo(hijos(contenido)[0]);
+    if (id === OID_SHROUDED_KEY_BAG) {
+      // EncryptedPrivateKeyInfo { encryptionAlgorithm, encryptedData }.
+      const [contenido] = hijos(valor);
+      revisarAlgoritmo(hijos(contenido)[0]);
+    }
   }
 }
 

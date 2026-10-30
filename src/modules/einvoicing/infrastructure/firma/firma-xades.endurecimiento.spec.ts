@@ -113,14 +113,14 @@ type Nodo = forge.asn1.Asn1;
 const hijos = (n: Nodo | undefined): Nodo[] => (n?.value ?? []) as Nodo[];
 
 /** Reescribe las iteraciones del MAC y/o de la bolsa de la llave (PBE de PKCS#12). */
-function conIteraciones(der: Buffer, opciones: { mac?: number; llave?: number }): Buffer {
+function conIteraciones(der: Buffer, opciones: { mac?: number; llave?: number; oidLlave?: string }): Buffer {
   const { asn1 } = forge;
   const entero = (n: number): Nodo =>
     asn1.create(asn1.Class.UNIVERSAL, asn1.Type.INTEGER, false, asn1.integerToDer(n).getBytes());
   const pfx = asn1.fromDer(forge.util.createBuffer(der.toString('binary')));
   const [, authSafe, macData] = hijos(pfx);
   if (opciones.mac !== undefined) hijos(macData)[2] = entero(opciones.mac);
-  if (opciones.llave !== undefined) {
+  if (opciones.llave !== undefined || opciones.oidLlave !== undefined) {
     const octetoAuth = hijos(hijos(authSafe)[1])[0]!;
     const auth = asn1.fromDer(octetoAuth.value as string);
     for (const info of hijos(auth)) {
@@ -132,7 +132,15 @@ function conIteraciones(der: Buffer, opciones: { mac?: number; llave?: number })
         const [bagId, valor] = hijos(bolsa);
         if (asn1.derToOid(bagId!.value as string) !== forge.pki.oids.pkcs8ShroudedKeyBag) continue;
         const algoritmo = hijos(hijos(valor)[0])[0];
-        hijos(hijos(algoritmo)[1])[1] = entero(opciones.llave);
+        if (opciones.llave !== undefined) hijos(hijos(algoritmo)[1])[1] = entero(opciones.llave);
+        if (opciones.oidLlave !== undefined) {
+          hijos(algoritmo)[0] = asn1.create(
+            asn1.Class.UNIVERSAL,
+            asn1.Type.OID,
+            false,
+            asn1.oidToDer(opciones.oidLlave).getBytes(),
+          );
+        }
       }
       octeto.value = asn1.toDer(bolsas).getBytes();
     }
@@ -169,6 +177,12 @@ describe('revisarLimitesP12 (DoS)', () => {
     expect(performance.now() - t0).toBeLessThan(500);
     // Justo en el límite sí pasa la revisión (no se descifra aquí).
     expect(() => revisarLimitesP12(conIteraciones(p12, { llave: LIMITES_P12.iteraciones }))).not.toThrow();
+  });
+
+  it('rechaza un algoritmo de cifrado de llave que no sabe acotar', () => {
+    const raro = conIteraciones(p12, { oidLlave: '1.3.6.1.4.1.99999.1' });
+    expect(() => revisarLimitesP12(raro)).toThrow(/estructura/);
+    expect(() => abrirP12(raro, PASSWORD)).toThrow(/no es un .p12 válido/);
   });
 
   it('rechaza más de 10 certificados, archivos de más de 64 KB y basura', () => {
