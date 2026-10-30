@@ -166,10 +166,14 @@ describe('matriz de permisos por rol (ítem 3.10)', () => {
     expect(ENDPOINTS.filter((e) => !puede(ROLES.OWNER, e)).map((e) => e.ruta)).toEqual([]);
   });
 
-  it('el Administrador entra a todo salvo ver todas las sedes', () => {
+  it('el Administrador entra a todo salvo ver todas las sedes y el certificado .p12', () => {
     const fuera = ENDPOINTS.filter((e) => !puede(ROLES.ADMIN, e));
     for (const e of fuera) {
-      expect(e.politica).toMatchObject({ permisos: expect.arrayContaining([PERMISSIONS.SEDE_VIEW_ALL]) });
+      const exige = (e.politica as { permisos?: string[] } | null)?.permisos ?? [];
+      expect(
+        exige.some((p) => p === PERMISSIONS.SEDE_VIEW_ALL || p === PERMISSIONS.EINVOICING_CERTIFICATE),
+        e.ruta,
+      ).toBe(true);
     }
   });
 

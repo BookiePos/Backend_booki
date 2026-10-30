@@ -50,6 +50,17 @@ export class AuditLog {
   @Prop({ trim: true })
   error?: string;
 
+  /**
+   * Evento de negocio explícito (p. ej. 'einvoicing.certificado.reemplazado'),
+   * para lo que el interceptor no ve: qué se cambió, no solo la ruta.
+   */
+  @Prop({ trim: true, index: true })
+  action?: string;
+
+  /** Datos del evento, solo texto y nunca secretos (huellas, ids, fechas). */
+  @Prop({ type: Object })
+  detail?: Record<string, string>;
+
   /** `at` lo añade timestamps (createdAt renombrado). */
   at?: Date;
 }

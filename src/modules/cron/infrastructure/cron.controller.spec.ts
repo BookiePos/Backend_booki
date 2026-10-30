@@ -33,17 +33,20 @@ describe('CronController.diario', () => {
   const ok = { estado: 'ok' };
   const billing = { sweep: vi.fn() };
   const recurrentes = { sweep: vi.fn() };
+  const certificados = { barrerVencimientos: vi.fn() };
   const conSecreto = (secreto?: string) =>
     new CronController(
       { get: () => secreto } as never,
       billing as never,
       recurrentes as never,
+      certificados as never,
     );
 
   beforeEach(() => {
     vi.clearAllMocks();
     billing.sweep.mockResolvedValue(ok);
     recurrentes.sweep.mockResolvedValue(ok);
+    certificados.barrerVencimientos.mockResolvedValue(ok);
   });
 
   it('con el secreto correcto corre los dos barridos', async () => {
@@ -51,6 +54,8 @@ describe('CronController.diario', () => {
     expect(r.ok).toBe(true);
     expect(billing.sweep).toHaveBeenCalledTimes(1);
     expect(recurrentes.sweep).toHaveBeenCalledTimes(1);
+    expect(certificados.barrerVencimientos).toHaveBeenCalledTimes(1);
+    expect(r.tareas['certificados-fe']).toEqual(ok);
   });
 
   it('sin el secreto correcto responde 401 y no corre nada', async () => {
