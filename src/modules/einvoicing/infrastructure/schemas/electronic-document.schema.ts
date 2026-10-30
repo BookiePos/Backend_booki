@@ -47,7 +47,17 @@ export class DocAdquiriente {
 }
 const DocAdquirienteSchema = SchemaFactory.createForClass(DocAdquiriente);
 
-/** Línea del documento (con IVA discriminado). */
+/** Tributo por unidad de una línea (INC de bolsas, código 22). */
+@Schema({ _id: false })
+export class DocPerUnitTax {
+  @Prop({ required: true }) codigo!: string;
+  @Prop({ required: true, min: 0 }) unidades!: number;
+  @Prop({ required: true, min: 0 }) valorUnitario!: number;
+  @Prop({ required: true, min: 0 }) valor!: number;
+}
+const DocPerUnitTaxSchema = SchemaFactory.createForClass(DocPerUnitTax);
+
+/** Línea del documento, con su tributo real (`taxScheme`). */
 @Schema({ _id: false })
 export class DocLine {
   @Prop() code?: string;
@@ -61,10 +71,28 @@ export class DocLine {
   @Prop({ required: true, min: 0 }) base!: number;
   @Prop({ default: 0, min: 0 }) ivaRate!: number;
   @Prop({ default: 0, min: 0 }) ivaAmount!: number;
-  /** Total de la línea (neto, IVA incluido). */
+  /**
+   * Tributo de la línea: '01' IVA o '04' INC; vacío = sin tributo. Los
+   * documentos anteriores no lo tienen (su impuesto quedó en `ivaAmount`).
+   */
+  @Prop() taxScheme?: string;
+  @Prop({ min: 0 }) taxRate?: number;
+  @Prop({ min: 0 }) taxAmount?: number;
+  /** INC de bolsas (tributo 22), aparte del impuesto ad valorem. */
+  @Prop({ type: DocPerUnitTaxSchema }) perUnitTax?: DocPerUnitTax;
+  /** Total de la línea (base + impuestos). */
   @Prop({ required: true, min: 0 }) total!: number;
 }
 const DocLineSchema = SchemaFactory.createForClass(DocLine);
+
+/** Cargo o descuento de documento (AllowanceCharge). Hoy: la propina. */
+@Schema({ _id: false })
+export class DocCharge {
+  @Prop({ required: true }) chargeIndicator!: boolean;
+  @Prop({ required: true }) reason!: string;
+  @Prop({ required: true, min: 0 }) amount!: number;
+}
+const DocChargeSchema = SchemaFactory.createForClass(DocCharge);
 
 /** Resolución de numeración DIAN congelada al emitir. */
 @Schema({ _id: false })
@@ -123,15 +151,55 @@ export class ElectronicDocument {
   @Prop({ type: [DocLineSchema], default: [] })
   lines!: DocLine[];
 
+  /** LineExtensionAmount: Σ bases de las líneas (ValFac del CUFE). */
   @Prop({ default: 0, min: 0 })
   taxableBase!: number;
 
+  /** Σ tributo 01. En documentos anteriores a la Fase 2 incluye el INC. */
   @Prop({ default: 0, min: 0 })
   ivaTotal!: number;
+
+  // ── Totales por tributo y cargos (Fase 2). Ausentes en documentos viejos ──
+  /** Σ tributo 04 (INC). */
+  @Prop({ min: 0 })
+  incTotal?: number;
+
+  /** Σ tributo 03 (ICA). */
+  @Prop({ min: 0 })
+  icaTotal?: number;
+
+  /** Σ tributo 22 (INC de bolsas). */
+  @Prop({ min: 0 })
+  bagTaxTotal?: number;
+
+  /** TaxInclusiveAmount: bases + todos los tributos. */
+  @Prop({ min: 0 })
+  taxInclusiveAmount?: number;
+
+  /** Cargos de documento no gravados (la propina). */
+  @Prop({ type: [DocChargeSchema], default: undefined })
+  charges?: DocCharge[];
+
+  /** ChargeTotalAmount. */
+  @Prop({ min: 0 })
+  chargeTotal?: number;
+
+  /** PayableAmount (ValTot del CUFE): incluye domicilio, bolsas y propina. */
+  @Prop({ min: 0 })
+  payableAmount?: number;
+
+  /** '1' producción, '2' habilitación: el ambiente con el que se calculó el CUFE/CUDE. */
+  @Prop()
+  tipoAmbiente?: string;
+
+  /** Por qué el documento quedó incompleto (p. ej. nota sin CUDE por falta de PIN). */
+  @Prop()
+  aviso?: string;
 
   @Prop({ default: 0, min: 0 })
   discountTotal!: number;
 
+  /** Total del documento. Desde la Fase 2 = `payableAmount`; antes, `sale.total`. */
   @Prop({ required: true, min: 0 })
   total!: number;
 

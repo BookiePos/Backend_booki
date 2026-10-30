@@ -28,12 +28,26 @@ import {
   allowedSedeIds,
   assertSedeAccess,
 } from '../../core-auth/domain/sede-access';
-import { buildAdquiriente } from '../domain/adquiriente';
+import {
+  buildAdquiriente,
+  validarAdquirienteParaFactura,
+} from '../domain/adquiriente';
 import {
   CONSUMIDOR_FINAL_NIT,
   MEDIO_PAGO_BY_METHOD,
 } from '../domain/einvoicing.constants';
-import { computeCufe, dianVerificationUrl } from '../domain/cufe';
+import {
+  calcularCude,
+  calcularCufe,
+  dianVerificationUrl,
+} from '../domain/cufe';
+import { documentoDeVenta } from '../domain/documento-venta';
+import { centavosDeCop } from '../domain/redondeo';
+import {
+  TIPO_AMBIENTE_POR_DEFECTO,
+  type TipoAmbiente,
+} from '../domain/emisor-fiscal';
+import { FiscalEmittersService } from './fiscal-emitters.service';
 import { normalizarNit, tipoDeChoque } from '../domain/consecutivo-unico';
 import {
   computeResolutionStatus,
@@ -47,7 +61,10 @@ import {
   type TipoResolucion,
 } from '../domain/resolucion-tipos';
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
+/** Aviso de la nota que queda sin CUDE porque el emisor no tiene PIN. */
+export const AVISO_NOTA_SIN_PIN =
+  'Nota sin CUDE: el emisor fiscal de la sede no tiene cargado el PIN del software. ' +
+  'Cárgalo en la configuración de facturación electrónica antes de transmitirla.';
 
 /** Lo de una resolución que viaja a la pantalla (la clave técnica NO viaja). */
 export interface ResolucionVista {
@@ -114,7 +131,31 @@ export class EinvoicingService {
     private readonly sales: SalesService,
     private readonly sedes: SedesService,
     private readonly businesses: BusinessService,
+    private readonly emisores: FiscalEmittersService,
   ) {}
+
+  /** Ambiente del emisor fiscal de la sede; sin emisor, habilitación ('2'). */
+  private ambienteDe(emisor: { tipoAmbiente?: string } | null): TipoAmbiente {
+    return emisor?.tipoAmbiente === '1' ? '1' : TIPO_AMBIENTE_POR_DEFECTO;
+  }
+
+  /** NIT del emisor para el CUFE/CUDE: solo dígitos y sin DV. Se valida antes del folio. */
+  private nitParaCodigo(nit: string | undefined): string {
+    const norm = normalizarNit(nit);
+    if (!norm) {
+      throw new BadRequestException(
+        'No se puede emitir: la sede no tiene NIT. Complétalo en los datos fiscales de la sede.',
+      );
+    }
+    return norm;
+  }
+
+  /** Documento del adquiriente para el CUFE/CUDE: el NIT va sin DV. */
+  private numeroAdquiriente(a?: { docType?: string; docNumber?: string }): string {
+    const n = a?.docNumber?.trim();
+    if (!n) return CONSUMIDOR_FINAL_NIT;
+    return a?.docType === '31' ? (normalizarNit(n) ?? n) : n;
+  }
 
   /**
    * Descuenta un documento del cupo del plan (o de los créditos comprados).
@@ -300,23 +341,23 @@ export class EinvoicingService {
     // con normalidad e imprimiendo en cada factura una vigencia ya expirada.
     this.assertResolucionVigente(resolucion, 'invoice');
 
-    const prefix = resolucion.prefijo ?? '';
-    const lines = sale.lines.map((l) => {
-      const net = round2(l.taxBase + l.taxAmount);
-      return {
-        code: l.sku,
-        description: l.name,
-        qty: l.qty,
-        unitCode: '94',
-        unitPrice: l.unitPrice,
-        discountAmount: l.discountAmount ?? 0,
-        base: l.taxBase ?? 0,
-        ivaRate: l.ivaRate ?? 0,
-        ivaAmount: l.taxAmount ?? 0,
-        total: net,
-      };
-    });
+    // FEV con datos del cliente: si falta algo, se rechaza aquí, antes de
+    // cobrar cupo o reservar folio, diciendo qué completar en la ficha.
+    const validacion = validarAdquirienteParaFactura(sale.customer);
+    if (!validacion.esConsumidorFinal && validacion.faltantes.length > 0) {
+      throw new BadRequestException(
+        `No se puede emitir la factura: en la ficha del cliente falta ${validacion.faltantes.join(', ')}.`,
+      );
+    }
 
+    // Líneas con su tributo real, domicilio como línea, propina como cargo y
+    // cuadre al centavo; todo antes del folio (si no cuadra, no se gasta).
+    const doc = documentoDeVenta(sale);
+    const nitOfe = this.nitParaCodigo(sede.nit);
+    const emisorFiscal = await this.emisores.obtenerPorSede(sedeId);
+    const tipoAmbiente = this.ambienteDe(emisorFiscal);
+
+    const prefix = resolucion.prefijo ?? '';
     const adquiriente = this.buildAdquiriente(sale);
     const emisor = this.buildEmisor(sede);
     const medioPago = MEDIO_PAGO_BY_METHOD[sale.payment.method] ?? '10';
@@ -332,17 +373,16 @@ export class EinvoicingService {
       construir: (number) => {
         const fullNumber = `${prefix}${number}`;
         const { issueDate, issueTime } = this.now();
-        // CUFE (Anexo 1.9). La clave técnica ya se validó arriba (folio no quemado).
-        const cufe = computeCufe({
-          numFac: fullNumber,
-          fecFac: issueDate,
-          horFac: issueTime,
-          valFac: sale.taxableBase ?? 0,
-          valIva: sale.taxTotal ?? 0,
-          valTot: sale.total,
-          nitOFE: (sede.nit ?? '').replace(/\D/g, ''),
-          numAdq: adquiriente.docNumber ?? CONSUMIDOR_FINAL_NIT,
+        // CUFE (anexo FEV 1.9 §11.1.2). La clave técnica ya se validó arriba.
+        const cufe = calcularCufe({
+          numero: fullNumber,
+          fecha: issueDate,
+          hora: issueTime,
+          ...doc.codigoUnico,
+          nitEmisor: nitOfe,
+          numAdquiriente: this.numeroAdquiriente(adquiriente),
           claveTecnica: resolucion.claveTecnica as string,
+          tipoAmbiente,
         });
         return {
           type: 'invoice',
@@ -355,16 +395,17 @@ export class EinvoicingService {
           issueTime,
           emisor,
           adquiriente,
-          lines,
-          taxableBase: sale.taxableBase ?? 0,
-          ivaTotal: sale.taxTotal ?? 0,
+          lines: doc.lines,
+          charges: doc.charges.length ? doc.charges : undefined,
+          ...doc.totales,
           discountTotal: sale.discountTotal ?? 0,
-          total: sale.total,
+          total: doc.totales.payableAmount,
           formaPago: '1',
           medioPago,
           resolution: this.buildResolution(resolucion),
+          tipoAmbiente,
           cufe,
-          qrUrl: dianVerificationUrl(cufe),
+          qrUrl: dianVerificationUrl(cufe, tipoAmbiente),
           dianStatus: 'draft',
           createdByEmail: user.email,
         };
@@ -389,18 +430,9 @@ export class EinvoicingService {
 
     // Resolución propia de nota crédito si la sede la tiene registrada. Si no,
     // se conserva el comportamiento de siempre: numeración libre `NC<n>` (contador
-    // `nc:<sede>`, sin rango ni vigencia) y la clave técnica de la factura.
+    // `nc:<sede>`, sin rango ni vigencia). La clave técnica ya no se pide: el
+    // CUDE va con el PIN del software (ver abajo).
     const resolucionNota = resolucionDeTipo(sede, 'credit_note');
-    const claveTecnica = (resolucionNota ?? resolucionDeTipo(sede, 'invoice'))
-      ?.claveTecnica;
-
-    // Igual que en la factura: sin clave técnica no hay CUFE, así que no se
-    // consume el consecutivo de la nota crédito. Validar ANTES de nextNumber.
-    if (!claveTecnica) {
-      throw new BadRequestException(
-        'No se puede emitir: falta la clave técnica DIAN de la sede para calcular el CUFE.',
-      );
-    }
     if (resolucionNota) {
       this.assertResolucionVigente(resolucionNota, 'credit_note');
     }
@@ -411,6 +443,16 @@ export class EinvoicingService {
     const emisorFactura = this.plano(invoice.emisor);
     const nitFactura = emisorFactura?.nit as string | undefined;
     const emisor = { ...emisorFactura, nitNorm: normalizarNit(nitFactura) };
+    const nitOfe = this.nitParaCodigo(nitFactura ?? sede.nit);
+
+    // La nota lleva CUDE, con el PIN del software del emisor (anexo FEV 1.9
+    // §11.1.4), nunca con la clave técnica de la resolución. Sin PIN la nota
+    // queda en borrador sin código y con el aviso de qué falta.
+    const emisorFiscal = await this.emisores.obtenerPorSede(sedeId);
+    const tipoAmbiente = this.ambienteDe(emisorFiscal);
+    const pin = emisorFiscal
+      ? await this.emisores.leerSecreto(emisorFiscal.id as string, 'facturaPin')
+      : null;
 
     // Una nota crédito también es un documento electrónico: cuenta al cupo
     // (dentro de `emitir`, antes de quemar folio).
@@ -427,17 +469,26 @@ export class EinvoicingService {
       construir: (number) => {
         const fullNumber = `${prefix}${number}`;
         const { issueDate, issueTime } = this.now();
-        const cufe = computeCufe({
-          numFac: fullNumber,
-          fecFac: issueDate,
-          horFac: issueTime,
-          valFac: invoice.taxableBase,
-          valIva: invoice.ivaTotal,
-          valTot: invoice.total,
-          nitOFE: (sede.nit ?? '').replace(/\D/g, ''),
-          numAdq: invoice.adquiriente?.docNumber ?? CONSUMIDOR_FINAL_NIT,
-          claveTecnica,
-        });
+        // Los valores son los de la factura tal como se guardó: un documento
+        // viejo no se recalcula (su INC, si lo tenía, quedó en `ivaTotal`).
+        const cude = pin
+          ? calcularCude({
+              numero: fullNumber,
+              fecha: issueDate,
+              hora: issueTime,
+              valorBruto: centavosDeCop(invoice.taxableBase ?? 0),
+              impuestos: {
+                '01': centavosDeCop(invoice.ivaTotal ?? 0),
+                '04': centavosDeCop(invoice.incTotal ?? 0),
+                '03': centavosDeCop(invoice.icaTotal ?? 0),
+              },
+              valorTotal: centavosDeCop(invoice.payableAmount ?? invoice.total),
+              nitEmisor: nitOfe,
+              numAdquiriente: this.numeroAdquiriente(invoice.adquiriente),
+              softwarePin: pin,
+              tipoAmbiente,
+            })
+          : undefined;
         return {
           type: 'credit_note',
           saleId: invoice.saleId,
@@ -450,8 +501,15 @@ export class EinvoicingService {
           emisor,
           adquiriente: invoice.adquiriente,
           lines: invoice.lines,
+          charges: invoice.charges,
           taxableBase: invoice.taxableBase,
           ivaTotal: invoice.ivaTotal,
+          incTotal: invoice.incTotal,
+          icaTotal: invoice.icaTotal,
+          bagTaxTotal: invoice.bagTaxTotal,
+          taxInclusiveAmount: invoice.taxInclusiveAmount,
+          chargeTotal: invoice.chargeTotal,
+          payableAmount: invoice.payableAmount,
           discountTotal: invoice.discountTotal,
           total: invoice.total,
           formaPago: invoice.formaPago,
@@ -463,8 +521,10 @@ export class EinvoicingService {
           referenceNumber: invoice.fullNumber,
           referenceCufe: invoice.cufe,
           referenceId: invoice._id,
-          cufe,
-          qrUrl: dianVerificationUrl(cufe),
+          tipoAmbiente,
+          cufe: cude,
+          qrUrl: cude ? dianVerificationUrl(cude, tipoAmbiente) : undefined,
+          aviso: cude ? undefined : AVISO_NOTA_SIN_PIN,
           dianStatus: 'draft',
           createdByEmail: user.email,
         };
