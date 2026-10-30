@@ -24,7 +24,7 @@ import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 /**
  * Qué pasa cuando el índice único `consecutivo_unico` (o el de venta+tipo)
  * rechaza la inserción: el cupo vuelve, el folio no se pierde y el consecutivo
- * se repara. Constructor: (model, counters, sales, sedes, businesses).
+ * se repara. Constructor: (model, counters, sales, sedes, businesses, emisores).
  */
 describe('EinvoicingService · emisión frente a choques del índice', () => {
   const sedeId = new Types.ObjectId().toString();
@@ -63,7 +63,8 @@ describe('EinvoicingService · emisión frente a choques del índice', () => {
     status: 'paid',
     lines: [],
     payment: { method: 'cash' },
-    total: 1000,
+    // Sin líneas: el documento suma 0 y tiene que coincidir con lo cobrado.
+    total: 0,
   });
 
   const emitir = () =>
@@ -104,10 +105,13 @@ describe('EinvoicingService · emisión frente a choques del índice', () => {
     businesses = {
       consumeDocument: vi.fn(async () => 'monthly'),
       refundDocument: vi.fn(async () => undefined),
+      findById: vi.fn(async () => null),
     };
     sedes = { findOrFail: vi.fn(async () => sede()) };
     sales = { getOrFail: vi.fn(async () => sale()) };
-    svc = new EinvoicingService(model, counters, sales, sedes, businesses);
+    svc = new EinvoicingService(model, counters, sales, sedes, businesses, {
+      obtenerPorSede: async () => null,
+    } as any);
   });
 
   it('sin choque: cobra el cupo una vez y guarda el NIT normalizado', async () => {
@@ -213,7 +217,7 @@ describe('EinvoicingService.registerResolution · número inicial y prefijo', ()
       findOrFail: vi.fn(async () => sedeDoc),
       list: vi.fn(async () => []),
     };
-    svc = new EinvoicingService(model, counters, {} as any, sedes, {} as any);
+    svc = new EinvoicingService(model, counters, {} as any, sedes, {} as any, {} as any);
     guardada = sedeDoc;
   });
 

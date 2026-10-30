@@ -6,7 +6,6 @@ import {
   calcularCude,
   calcularCudePos,
   calcularCufe,
-  computeCufe,
   dianVerificationUrl,
   type DatosCodigoUnico,
 } from './cufe';
@@ -187,25 +186,6 @@ describe('URL de verificación (QR) por ambiente (anexo FEV 1.9, §11.1.7.1)', (
     expect(dianVerificationUrl('abc', '2')).toBe(
       'https://catalogo-vpfe-hab.dian.gov.co/document/searchqr?documentkey=abc',
     );
-    // Sin ambiente: el por defecto del emisor (habilitación), coherente con el CUFE antiguo.
-    expect(dianVerificationUrl('abc')).toBe(dianVerificationUrl('abc', '2'));
     expect(() => dianVerificationUrl('abc', '0' as never)).toThrow(/ambiente/);
-  });
-});
-
-describe('computeCufe (firma antigua, solo mientras se conecta la nueva)', () => {
-  it('equivale a calcularCufe con el impuesto como IVA, INC/ICA en 0 y ambiente 2', () => {
-    const antiguo = computeCufe({
-      numFac: '323200000129',
-      fecFac: '2019-01-16',
-      horFac: '10:53:10-05:00',
-      valFac: 1500000,
-      valIva: 285000,
-      valTot: 1785000,
-      nitOFE: '700085371',
-      numAdq: '800199436',
-      claveTecnica: ANEXO_FEV.claveTecnica,
-    });
-    expect(antiguo).toBe(calcularCufe({ ...ANEXO_FEV, tipoAmbiente: '2' }));
   });
 });

@@ -38,9 +38,6 @@ export const MEDIO_PAGO_BY_METHOD: Record<string, string> = {
   transfer: '42',
 };
 
-/** Ambiente DIAN: 1 = producción, 2 = pruebas/habilitación. Sin PT: pruebas. */
-export const TIPO_AMBIENTE = '2';
-
 /** Unidad de medida por defecto (94 = unidad, catálogo DIAN). */
 export const UNIT_CODE = '94';
 

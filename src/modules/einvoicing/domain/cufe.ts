@@ -1,8 +1,6 @@
 import { createHash } from 'crypto';
-import { TIPO_AMBIENTE } from './einvoicing.constants';
-import { TIPO_AMBIENTE_POR_DEFECTO, type TipoAmbiente } from './emisor-fiscal';
+import type { TipoAmbiente } from './emisor-fiscal';
 import {
-  aCentavos,
   formatearMontoDian,
   type Centavos,
   type ImpuestosCentavos,
@@ -145,46 +143,12 @@ export const URL_CATALOGO_DIAN: Record<TipoAmbiente, string> = {
 /**
  * URL pública de verificación (contenido del QR) para un CUFE, CUDE o CUNE. El
  * ambiente decide el catálogo: habilitación (2) consulta `catalogo-vpfe-hab`.
- * El valor por defecto existe solo para el llamador antiguo; el nuevo pasa el
- * ambiente del emisor.
+ * Sin valor por defecto: quien llama pasa siempre el ambiente del emisor.
  */
 export function dianVerificationUrl(
   codigo: string,
-  tipoAmbiente: TipoAmbiente = TIPO_AMBIENTE_POR_DEFECTO,
+  tipoAmbiente: TipoAmbiente,
 ): string {
   assertAmbiente(tipoAmbiente);
   return `${URL_CATALOGO_DIAN[tipoAmbiente]}${codigo}`;
-}
-
-/**
- * @deprecated Firma antigua: mete todo el impuesto como IVA, deja INC e ICA en
- * 0 y usa la constante `TIPO_AMBIENTE`. Se conserva solo para que
- * `einvoicing.service.ts` siga compilando hasta que lo conecten a
- * `calcularCufe` / `calcularCude`. No la uses en código nuevo.
- */
-export function computeCufe(input: {
-  numFac: string;
-  fecFac: string;
-  horFac: string;
-  valFac: number;
-  valIva: number;
-  valTot: number;
-  nitOFE: string;
-  numAdq: string;
-  claveTecnica: string;
-}): string {
-  // Sin las validaciones nuevas (NIT solo dígitos, etc.): el llamador antiguo no
-  // las cumple siempre y esta ruta no debe empezar a lanzar antes de conectarla.
-  const datos: DatosCodigoUnico = {
-    numero: input.numFac,
-    fecha: input.fecFac,
-    hora: input.horFac,
-    valorBruto: aCentavos(input.valFac),
-    impuestos: { '01': aCentavos(input.valIva), '04': 0, '03': 0 },
-    valorTotal: aCentavos(input.valTot),
-    nitEmisor: input.nitOFE,
-    numAdquiriente: input.numAdq,
-    tipoAmbiente: TIPO_AMBIENTE,
-  };
-  return sha384(componer(datos, input.claveTecnica));
 }

@@ -99,6 +99,15 @@ import { BusinessService } from '../../control/application/business.service';
 import { offlineConflict } from './offline-conflict';
 import { fechaContableOffline } from '../domain/offline-sales';
 import type { BusinessType } from '../../control/domain/control.constants';
+import {
+  IVA_TYPES,
+  type IvaType,
+} from '../../catalog/domain/catalog.constants';
+
+/** Tratamiento de IVA del producto al vender; un valor desconocido no se congela. */
+function ivaTypeDe(v: unknown): IvaType | undefined {
+  return (IVA_TYPES as readonly unknown[]).includes(v) ? (v as IvaType) : undefined;
+}
 
 /** ¿El error de Mongo es el choque del índice único de `offlineId`? */
 function esDuplicadoDeLlave(err: unknown): boolean {
@@ -664,6 +673,9 @@ export class SalesService {
         ivaRate: taxKind === 'iva' ? rate : 0,
         taxKind,
         taxRate: rate,
+        // Exento o excluido decide el TaxTotal de la factura electrónica
+        // (exento: tributo 01 al 0 %; excluido: sin tributo). Solo aplica al IVA.
+        taxTreatment: taxKind === 'iva' ? ivaTypeDe(l.product.ivaType) : undefined,
         taxBase: base,
         taxAmount: iva,
       };
@@ -1092,6 +1104,7 @@ export class SalesService {
       ivaRate: number;
       taxKind: SaleTaxKind;
       taxRate: number;
+      taxTreatment?: IvaType;
       taxBase: number;
       taxAmount: number;
       bagTaxUnit?: number;
@@ -1208,6 +1221,7 @@ export class SalesService {
         ivaRate: l.ivaRate,
         taxKind: l.taxKind,
         taxRate: l.taxRate,
+        ...(l.taxTreatment ? { taxTreatment: l.taxTreatment } : {}),
         taxBase: l.taxBase,
         taxAmount: l.taxAmount,
         ...(l.bagTax > 0 ? { bagTaxUnit: l.bagTaxUnit, bagTax: l.bagTax } : {}),
