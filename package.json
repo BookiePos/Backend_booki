@@ -36,6 +36,7 @@
     "@sentry/node": "^11.8.0",
     "@supabase/supabase-js": "^2.118.0",
     "@vercel/functions": "3.10.3",
+    "@xmldom/xmldom": "0.8.15",
     "bcryptjs": "^3.0.3",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
@@ -49,7 +50,9 @@
     "pdfkit": "^0.20.2",
     "reflect-metadata": "^0.2.2",
     "resend": "^6.34.1",
-    "rxjs": "^7.8.2"
+    "rxjs": "^7.8.2",
+    "xml-crypto": "6.4.0",
+    "xpath": "0.0.33"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
