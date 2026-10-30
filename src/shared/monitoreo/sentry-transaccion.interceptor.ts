@@ -3,7 +3,7 @@ import * as Sentry from '@sentry/node';
 import { waitUntil } from '@vercel/functions';
 import type { Request, Response } from 'express';
 import { Observable, tap } from 'rxjs';
-import { vaciarSentry } from './sentry';
+import { diagSentry } from './diagnostico-sentry';
 
 /** Bandera W3C de traza muestreada: solo esas se envían a Sentry. */
 const MUESTREADA = 1;
@@ -29,11 +29,24 @@ export class SentryTransaccionInterceptor implements NestInterceptor {
       const req = context.switchToHttp().getRequest<Request>();
       res = context.switchToHttp().getResponse<Response>();
       const ruta = (req.route as { path?: string } | undefined)?.path;
-      if (!ruta) return next.handle();
+      if (!ruta) {
+        diagSentry('peticion-sin-ruta', { metodo: req.method });
+        return next.handle();
+      }
       const nombre = `${req.method} ${ruta}`;
       const activo = Sentry.getActiveSpan();
       if (activo) {
-        Sentry.updateSpanName(Sentry.getRootSpan(activo), nombre);
+        const raiz = Sentry.getRootSpan(activo);
+        const json = Sentry.spanToJSON(raiz) as { description?: string; name?: string; op?: string };
+        diagSentry('peticion-con-span', {
+          nombre,
+          inicializado: Sentry.isInitialized(),
+          raiz: json.description ?? json.name ?? null,
+          raizOp: json.op ?? null,
+          grabando: raiz.isRecording(),
+          flags: raiz.spanContext().traceFlags,
+        });
+        Sentry.updateSpanName(raiz, nombre);
         return next.handle();
       }
       span = Sentry.startInactiveSpan({
@@ -42,8 +55,15 @@ export class SentryTransaccionInterceptor implements NestInterceptor {
         forceTransaction: true,
         attributes: { 'http.request.method': req.method, 'http.route': ruta },
       });
-    } catch {
+      diagSentry('peticion-sin-span', {
+        nombre,
+        inicializado: Sentry.isInitialized(),
+        grabando: span.isRecording(),
+        flags: span.spanContext().traceFlags,
+      });
+    } catch (e) {
       // El monitoreo jamás debe romper la respuesta.
+      diagSentry('interceptor-fallo', { error: String(e) });
       return next.handle();
     }
     const cerrar = (status: number): void => {
@@ -53,7 +73,14 @@ export class SentryTransaccionInterceptor implements NestInterceptor {
         const enviar = span.spanContext().traceFlags === MUESTREADA;
         span.end();
         span = undefined;
-        if (enviar) waitUntil(vaciarSentry());
+        if (enviar) {
+          waitUntil(
+            Sentry.flush(2000).then(
+              (ok) => diagSentry('envio', { ok }),
+              (e: unknown) => diagSentry('envio-fallo', { error: String(e) }),
+            ),
+          );
+        }
       } catch {
         // Ídem.
       }
