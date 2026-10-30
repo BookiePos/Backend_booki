@@ -1,20 +1,17 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { NotFoundException } from '@nestjs/common';
 import type { CallHandler, ExecutionContext } from '@nestjs/common';
+import { EventEmitter } from 'node:events';
 import { lastValueFrom, of, throwError } from 'rxjs';
 
 const spanPropio = vi.hoisted(() => ({
   end: vi.fn(),
-  isRecording: vi.fn(() => true),
   spanContext: vi.fn(() => ({ traceFlags: 1 })),
 }));
-const raiz = vi.hoisted(() => ({ isRecording: () => true, spanContext: () => ({ traceFlags: 1 }) }));
+const raiz = vi.hoisted(() => ({ spanContext: vi.fn(() => ({ traceFlags: 1 })) }));
 const sentry = vi.hoisted(() => ({
   getActiveSpan: vi.fn((): unknown => undefined),
   getRootSpan: vi.fn((..._a: unknown[]) => raiz),
-  isInitialized: vi.fn(() => true),
-  spanToJSON: vi.fn(() => ({ description: 'GET', op: 'http.server' })),
-  flush: vi.fn(async () => true),
   updateSpanName: vi.fn((..._a: unknown[]) => undefined),
   startInactiveSpan: vi.fn((..._a: unknown[]) => spanPropio),
   setHttpStatus: vi.fn((..._a: unknown[]) => undefined),
@@ -22,14 +19,20 @@ const sentry = vi.hoisted(() => ({
 vi.mock('@sentry/node', () => sentry);
 const esperar = vi.hoisted(() => vi.fn((..._a: unknown[]) => undefined));
 vi.mock('@vercel/functions', () => ({ waitUntil: esperar }));
-vi.mock('./diagnostico-sentry', () => ({ diagSentry: vi.fn() }));
+const vaciar = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('./sentry', () => ({ vaciarSentry: vaciar }));
 
 import { SentryTransaccionInterceptor } from './sentry-transaccion.interceptor';
 
-function contexto(req: object, tipo = 'http', statusCode = 200): ExecutionContext {
+/** Respuesta mínima: `statusCode` y los eventos `finish`/`close` de Express. */
+function respuesta(statusCode = 200): EventEmitter & { statusCode: number; writableFinished: boolean } {
+  return Object.assign(new EventEmitter(), { statusCode, writableFinished: false });
+}
+
+function contexto(req: object, tipo = 'http', res: object = respuesta()): ExecutionContext {
   return {
     getType: () => tipo,
-    switchToHttp: () => ({ getRequest: () => req, getResponse: () => ({ statusCode }) }),
+    switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }),
   } as unknown as ExecutionContext;
 }
 
@@ -41,17 +44,34 @@ describe('SentryTransaccionInterceptor', () => {
     vi.clearAllMocks();
     sentry.getActiveSpan.mockReturnValue(undefined);
     spanPropio.spanContext.mockReturnValue({ traceFlags: 1 });
+    raiz.spanContext.mockReturnValue({ traceFlags: 1 });
   });
 
-  it('con transacción HTTP activa solo le pone método y plantilla de la ruta', async () => {
+  it('con transacción HTTP activa le pone método y plantilla y la envía al terminar la respuesta', async () => {
     sentry.getActiveSpan.mockReturnValue({ id: 'span' });
-    await lastValueFrom(new SentryTransaccionInterceptor().intercept(contexto(venta), ok));
+    const res = respuesta();
+    await lastValueFrom(new SentryTransaccionInterceptor().intercept(contexto(venta, 'http', res), ok));
     expect(sentry.updateSpanName).toHaveBeenCalledWith(raiz, 'POST /sales/:id/void');
     expect(sentry.startInactiveSpan).not.toHaveBeenCalled();
+    expect(esperar).toHaveBeenCalledTimes(1);
+    // No se vacía antes de responder: la transacción aún no se ha cerrado.
+    await new Promise((r) => setImmediate(r));
+    expect(vaciar).not.toHaveBeenCalled();
+    res.emit('finish');
+    await esperar.mock.calls[0]?.[0];
+    expect(vaciar).toHaveBeenCalledTimes(1);
+  });
+
+  it('con transacción activa fuera del muestreo no programa envío', async () => {
+    sentry.getActiveSpan.mockReturnValue({ id: 'span' });
+    raiz.spanContext.mockReturnValue({ traceFlags: 0 });
+    await lastValueFrom(new SentryTransaccionInterceptor().intercept(contexto(venta), ok));
+    expect(sentry.updateSpanName).toHaveBeenCalledTimes(1);
+    expect(esperar).not.toHaveBeenCalled();
   });
 
   it('sin transacción activa (Vercel) abre una propia, la cierra con el estado y la envía', async () => {
-    const valor = await lastValueFrom(new SentryTransaccionInterceptor().intercept(contexto(venta, 'http', 201), ok));
+    const valor = await lastValueFrom(new SentryTransaccionInterceptor().intercept(contexto(venta, 'http', respuesta(201)), ok));
     expect(valor).toBe('ok');
     expect(sentry.startInactiveSpan).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'POST /sales/:id/void', op: 'http.server', forceTransaction: true }),
