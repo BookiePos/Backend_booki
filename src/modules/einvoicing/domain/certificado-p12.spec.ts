@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   avisoCertificado,
   CertificadoInvalidoError,
@@ -17,6 +17,10 @@ import {
   ITERACIONES_ENORMES,
   p12DePrueba,
 } from './p12-de-prueba.test';
+
+// node-forge abre y cifra .p12 en JS puro: con la máquina cargada (la suite
+// completa en paralelo) un test pasa de los 5 s por defecto sin estar colgado.
+vi.setConfig({ testTimeout: 30_000 });
 
 const NIT = '900123456';
 const PASS = 'clave-de-prueba';

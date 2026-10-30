@@ -36,6 +36,10 @@ import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { p12DePrueba } from '../domain/p12-de-prueba.test';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 
+// node-forge abre y cifra .p12 en JS puro: con la máquina cargada (la suite
+// completa en paralelo) un test pasa de los 5 s por defecto sin estar colgado.
+vi.setConfig({ testTimeout: 30_000 });
+
 const PASS = 'clave-de-prueba';
 const DIA = 86_400_000;
 
