@@ -3,8 +3,14 @@ import * as forge from 'node-forge';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ALG_C14N, ALG_RESUMEN_SHA256 } from '../../domain/firma/firma.constants';
 import { firmarXml, verificarFirma } from './firma-xades';
-import { LIMITES_P12, P12FueraDeLimites, revisarLimitesP12 } from './limites-p12';
-import { abrirP12, ErrorFirma } from './material-p12';
+import { MAX_CERT_BAGS_P12 } from '../../domain/certificado-p12';
+import {
+  conIteracionesLlave,
+  conIteracionesMac,
+  conMac,
+  ITERACIONES_ENORMES,
+} from '../../domain/p12-de-prueba.test';
+import { abrirP12, ErrorFirma, MAX_BYTES_P12_FIRMA } from './material-p12';
 
 /**
  * Revisión de seguridad del #94: límites del .p12 (DoS por iteraciones o por
@@ -110,90 +116,98 @@ describe('verificarFirma: endurecimiento', () => {
 });
 
 type Nodo = forge.asn1.Asn1;
+const A = forge.asn1;
 const hijos = (n: Nodo | undefined): Nodo[] => (n?.value ?? []) as Nodo[];
+const OID_DATA = '1.2.840.113549.1.7.1';
+const OID_ENCRYPTED_DATA = '1.2.840.113549.1.7.6';
 
-/** Reescribe las iteraciones del MAC y/o de la bolsa de la llave (PBE de PKCS#12). */
-function conIteraciones(der: Buffer, opciones: { mac?: number; llave?: number; oidLlave?: string }): Buffer {
-  const { asn1 } = forge;
-  const entero = (n: number): Nodo =>
-    asn1.create(asn1.Class.UNIVERSAL, asn1.Type.INTEGER, false, asn1.integerToDer(n).getBytes());
-  const pfx = asn1.fromDer(forge.util.createBuffer(der.toString('binary')));
-  const [, authSafe, macData] = hijos(pfx);
-  if (opciones.mac !== undefined) hijos(macData)[2] = entero(opciones.mac);
-  if (opciones.llave !== undefined || opciones.oidLlave !== undefined) {
-    const octetoAuth = hijos(hijos(authSafe)[1])[0]!;
-    const auth = asn1.fromDer(octetoAuth.value as string);
-    for (const info of hijos(auth)) {
-      const [tipo, envoltura] = hijos(info);
-      if (asn1.derToOid(tipo!.value as string) !== '1.2.840.113549.1.7.1') continue;
-      const octeto = hijos(envoltura)[0]!;
-      const bolsas = asn1.fromDer(octeto.value as string);
-      for (const bolsa of hijos(bolsas)) {
-        const [bagId, valor] = hijos(bolsa);
-        if (asn1.derToOid(bagId!.value as string) !== forge.pki.oids.pkcs8ShroudedKeyBag) continue;
-        const algoritmo = hijos(hijos(valor)[0])[0];
-        if (opciones.llave !== undefined) hijos(hijos(algoritmo)[1])[1] = entero(opciones.llave);
-        if (opciones.oidLlave !== undefined) {
-          hijos(algoritmo)[0] = asn1.create(
-            asn1.Class.UNIVERSAL,
-            asn1.Type.OID,
-            false,
-            asn1.oidToDer(opciones.oidLlave).getBytes(),
-          );
-        }
-      }
-      octeto.value = asn1.toDer(bolsas).getBytes();
-    }
-    octetoAuth.value = asn1.toDer(auth).getBytes();
-  }
-  return Buffer.from(asn1.toDer(pfx).getBytes(), 'binary');
+/**
+ * Mete en un EncryptedData (cifrado con `password`, 2 048 iteraciones) el
+ * SafeContents que trae la llave cifrada. Así la llave queda ANIDADA: sus
+ * iteraciones solo se ven después de descifrar el contenedor. Sale sin MAC;
+ * `conMac` se lo pone.
+ */
+function conLlaveEnEncryptedData(p12Der: Buffer, password: string): Buffer {
+  const pfx = A.fromDer(forge.util.createBuffer(p12Der.toString('binary')));
+  const octeto = hijos(hijos(hijos(pfx)[1])[1])[0]!;
+  const infos = hijos(A.fromDer(octeto.value as string)).map((info) => {
+    const [tipo, envoltura] = hijos(info);
+    if (A.derToOid(tipo!.value as string) !== OID_DATA) return info;
+    const safe = A.fromDer(hijos(envoltura)[0]!.value as string);
+    const bagId = A.derToOid(hijos(hijos(safe)[0])[0]!.value as string);
+    if (bagId !== forge.pki.oids.pkcs8ShroudedKeyBag) return info;
+    const epki = forge.pki.encryptPrivateKeyInfo(safe, password, { algorithm: '3des', count: 2048 });
+    return A.create(A.Class.UNIVERSAL, A.Type.SEQUENCE, true, [
+      A.create(A.Class.UNIVERSAL, A.Type.OID, false, A.oidToDer(OID_ENCRYPTED_DATA).getBytes()),
+      A.create(A.Class.CONTEXT_SPECIFIC, 0, true, [
+        A.create(A.Class.UNIVERSAL, A.Type.SEQUENCE, true, [
+          A.create(A.Class.UNIVERSAL, A.Type.INTEGER, false, A.integerToDer(0).getBytes()),
+          A.create(A.Class.UNIVERSAL, A.Type.SEQUENCE, true, [
+            A.create(A.Class.UNIVERSAL, A.Type.OID, false, A.oidToDer(OID_DATA).getBytes()),
+            hijos(epki)[0]!,
+            A.create(A.Class.CONTEXT_SPECIFIC, 0, false, hijos(epki)[1]!.value as string),
+          ]),
+        ]),
+      ]),
+    ]);
+  });
+  octeto.value = A.toDer(A.create(A.Class.UNIVERSAL, A.Type.SEQUENCE, true, infos)).getBytes();
+  pfx.value = hijos(pfx).slice(0, 2);
+  return Buffer.from(A.toDer(pfx).getBytes(), 'binary');
 }
 
-describe('revisarLimitesP12 (DoS)', () => {
-  it('deja pasar un .p12 normal', () => {
-    expect(() => revisarLimitesP12(p12)).not.toThrow();
+/** `p12_ilegible` con el mensaje fijo, sin `cause`, en menos de `ms`. */
+function exigirIlegibleRapido(der: Buffer, ms = 500): void {
+  const t0 = performance.now();
+  let error: unknown;
+  try {
+    abrirP12(der, PASSWORD);
+  } catch (e) {
+    error = e;
+  }
+  expect(performance.now() - t0).toBeLessThan(ms);
+  expect(error).toBeInstanceOf(ErrorFirma);
+  expect((error as ErrorFirma).codigo).toBe('p12_ilegible');
+  expect((error as ErrorFirma).message).toMatch(/no es un .p12 válido/);
+  expect((error as Error & { cause?: unknown }).cause).toBeUndefined();
+}
+
+/**
+ * La revisión del .p12 es `prepararP12` (domain/certificado-p12.ts, #95); sus
+ * casos están en certificado-p12.spec.ts. Aquí se comprueba que la firma la usa
+ * y que hacia afuera todo rechazo es `p12_ilegible`.
+ */
+describe('abrirP12 usa la revisión del #95 (DoS)', () => {
+  it('abre un .p12 normal, también con la llave dentro de un EncryptedData', () => {
+    expect(abrirP12(p12, PASSWORD).cadena).toHaveLength(1);
+    const anidado = conMac(conLlaveEnEncryptedData(p12, PASSWORD), PASSWORD);
+    expect(abrirP12(anidado, PASSWORD).cadena).toHaveLength(1);
   });
 
-  it('corta sin descifrar un MAC con iteraciones enormes', () => {
-    const malo = conIteraciones(p12, { mac: 2_000_000_000 });
-    const t0 = performance.now();
-    expect(() => revisarLimitesP12(malo)).toThrow(P12FueraDeLimites);
-    expect(() => abrirP12(malo, PASSWORD)).toThrow(ErrorFirma);
-    expect(performance.now() - t0).toBeLessThan(500);
+  it('MAC con iteraciones enormes: p12_ilegible enseguida', () => {
+    exigirIlegibleRapido(conIteracionesMac(p12, ITERACIONES_ENORMES));
   });
 
-  it('corta sin descifrar una llave cifrada con iteraciones enormes', () => {
-    const malo = conIteraciones(p12, { llave: 2_000_000_000 });
-    let error: unknown;
-    try {
-      revisarLimitesP12(malo);
-    } catch (e) {
-      error = e;
-    }
-    expect(error).toBeInstanceOf(P12FueraDeLimites);
-    expect((error as P12FueraDeLimites).motivo).toBe('iteraciones');
-    const t0 = performance.now();
-    expect(() => abrirP12(malo, PASSWORD)).toThrow(/no es un .p12 válido/);
-    expect(performance.now() - t0).toBeLessThan(500);
-    // Justo en el límite sí pasa la revisión (no se descifra aquí).
-    expect(() => revisarLimitesP12(conIteraciones(p12, { llave: LIMITES_P12.iteraciones }))).not.toThrow();
+  it('llave con iteraciones enormes en claro: p12_ilegible enseguida', () => {
+    exigirIlegibleRapido(conMac(conIteracionesLlave(p12, ITERACIONES_ENORMES), PASSWORD));
   });
 
-  it('rechaza un algoritmo de cifrado de llave que no sabe acotar', () => {
-    const raro = conIteraciones(p12, { oidLlave: '1.3.6.1.4.1.99999.1' });
-    expect(() => revisarLimitesP12(raro)).toThrow(/estructura/);
-    expect(() => abrirP12(raro, PASSWORD)).toThrow(/no es un .p12 válido/);
+  it('llave con iteraciones enormes ANIDADA en un EncryptedData: p12_ilegible enseguida', () => {
+    const anidado = conMac(
+      conLlaveEnEncryptedData(conIteracionesLlave(p12, ITERACIONES_ENORMES), PASSWORD),
+      PASSWORD,
+    );
+    exigirIlegibleRapido(anidado);
   });
 
-  it('rechaza más de 10 certificados, archivos de más de 64 KB y basura', () => {
-    const muchos = Array.from({ length: LIMITES_P12.bolsasCertificado + 1 }, () => firmante);
+  it('más de 10 certificados, más de 64 KB o basura: p12_ilegible', () => {
+    const muchos = Array.from({ length: MAX_CERT_BAGS_P12 + 1 }, () => firmante);
     const der = Buffer.from(
       forge.asn1.toDer(forge.pkcs12.toPkcs12Asn1(llave, muchos, PASSWORD, { algorithm: '3des' })).getBytes(),
       'binary',
     );
-    expect(() => revisarLimitesP12(der)).toThrow(/certificados/);
-    expect(() => abrirP12(der, PASSWORD)).toThrow(ErrorFirma);
-    expect(() => revisarLimitesP12(Buffer.alloc(LIMITES_P12.bytes + 1))).toThrow(/tamano/);
-    expect(() => revisarLimitesP12(Buffer.from('no soy asn1'))).toThrow(/estructura/);
+    exigirIlegibleRapido(der);
+    exigirIlegibleRapido(Buffer.alloc(MAX_BYTES_P12_FIRMA + 1));
+    exigirIlegibleRapido(Buffer.from('no soy asn1'));
   });
 });

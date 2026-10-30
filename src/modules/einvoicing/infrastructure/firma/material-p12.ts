@@ -5,7 +5,7 @@ import {
   type AtributoNombre,
   type CertificadoFirmante,
 } from '../../domain/firma/propiedades-firmadas';
-import { LIMITES_P12, revisarLimitesP12 } from './limites-p12';
+import { MAX_CERT_BAGS_P12, prepararP12 } from '../../domain/certificado-p12';
 
 /**
  * Error de la firma. El mensaje es siempre fijo: nunca lleva la contraseña, la
@@ -47,17 +47,24 @@ const OID_CERT = forge.pki.oids.certBag as string;
 const P12_ILEGIBLE =
   'No se pudo abrir el certificado: la contraseña no corresponde o el archivo no es un .p12 válido';
 
+/** Un .p12 de una ECD con su cadena pesa unos pocos KB. */
+export const MAX_BYTES_P12_FIRMA = 64 * 1024;
+
+/**
+ * Abre el .p12 con la MISMA revisión que la carga del certificado
+ * (`prepararP12`, #95). Esa revisión verifica primero el MAC, limita las
+ * iteraciones por algoritmo y en total por archivo, descifra cada EncryptedData
+ * una sola vez y revisa las llaves anidadas antes de que forge las derive.
+ * Cualquier rechazo sale hacia afuera como `p12_ilegible`, con mensaje fijo.
+ */
 export function abrirP12(p12: Buffer, password: string): MaterialFirma {
-  // Antes de descifrar: tamaño, iteraciones del MAC y de cada bolsa (DoS).
-  try {
-    revisarLimitesP12(p12);
-  } catch {
+  if (p12.length === 0 || p12.length > MAX_BYTES_P12_FIRMA) {
     throw new ErrorFirma('p12_ilegible', P12_ILEGIBLE);
   }
   let contenedor: forge.pkcs12.Pkcs12Pfx;
   try {
     const asn1 = forge.asn1.fromDer(forge.util.createBuffer(p12.toString('binary')));
-    contenedor = forge.pkcs12.pkcs12FromAsn1(asn1, false, password);
+    contenedor = forge.pkcs12.pkcs12FromAsn1(prepararP12(asn1, password), true, password);
   } catch {
     throw new ErrorFirma('p12_ilegible', P12_ILEGIBLE);
   }
@@ -75,8 +82,8 @@ export function abrirP12(p12: Buffer, password: string): MaterialFirma {
   }
 
   const bolsasCert = contenedor.getBags({ bagType: OID_CERT })[OID_CERT] ?? [];
-  // Las bolsas cifradas solo se cuentan ya abiertas.
-  if (bolsasCert.length > LIMITES_P12.bolsasCertificado) {
+  // prepararP12 ya cuenta las bolsas; esto es solo un seguro barato.
+  if (bolsasCert.length > MAX_CERT_BAGS_P12) {
     throw new ErrorFirma('p12_ilegible', P12_ILEGIBLE);
   }
   const certs = bolsasCert
