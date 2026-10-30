@@ -2,11 +2,21 @@ import { describe, expect, it } from 'vitest';
 import {
   avisoCertificado,
   CertificadoInvalidoError,
+  MAX_CERT_BAGS_P12,
+  MAX_ITERACIONES_P12,
   nitCoincide,
+  nitDelEmisor,
   validarCertificadoP12,
   type MotivoRechazoCertificado,
 } from './certificado-p12';
-import { p12DePrueba } from './p12-de-prueba.test';
+import {
+  conCertsCifrados,
+  conIteracionesContenido,
+  conIteracionesLlave,
+  conIteracionesMac,
+  ITERACIONES_ENORMES,
+  p12DePrueba,
+} from './p12-de-prueba.test';
 
 const NIT = '900123456';
 const PASS = 'clave-de-prueba';
@@ -120,15 +130,111 @@ describe('validarCertificadoP12', () => {
 });
 
 describe('nitCoincide', () => {
-  it('igual, o con el DV correcto pegado de cualquier lado', () => {
-    expect(nitCoincide('900123456', '900123456')).toBe(true);
-    expect(nitCoincide('9001234568', '900123456')).toBe(true);
-    expect(nitCoincide('900123456', '9001234568')).toBe(true);
+  const emisor = { base: '900123456', dv: '8' };
+  it('la base igual, con su DV tras guion o pegado si es el DV conocido', () => {
+    expect(nitCoincide({ base: '900123456' }, emisor)).toBe(true);
+    expect(nitCoincide({ base: '900123456', dv: '8' }, emisor)).toBe(true);
+    expect(nitCoincide({ base: '9001234568' }, emisor)).toBe(true);
   });
-  it('un dígito de más que no es el DV no pasa', () => {
-    expect(nitCoincide('9001234561', '900123456')).toBe(false);
-    expect(nitCoincide('800123456', '900123456')).toBe(false);
-    expect(nitCoincide('', '900123456')).toBe(false);
+  it('otro DV, otra base o un DV pegado sin DV conocido no pasan', () => {
+    expect(nitCoincide({ base: '900123456', dv: '1' }, emisor)).toBe(false);
+    expect(nitCoincide({ base: '9001234561' }, emisor)).toBe(false);
+    expect(nitCoincide({ base: '800123456' }, emisor)).toBe(false);
+    expect(nitCoincide({ base: '9001234568' }, { base: '900123456' })).toBe(false);
+    expect(nitCoincide({ base: '' }, emisor)).toBe(false);
+  });
+  it('el NIT de 8 dígitos 90012345-6 no pasa por 900123456', () => {
+    expect(nitCoincide({ base: '90012345', dv: '6' }, emisor)).toBe(false);
+    const p12 = p12DePrueba({ nit: '90012345-6' });
+    expect(motivo(() => validarCertificadoP12(p12, PASS, emisor))).toBe('nit');
+    expect(motivo(() => validarCertificadoP12(p12, PASS, { base: '900123456' }))).toBe('nit');
+  });
+});
+
+describe('nitDelEmisor', () => {
+  it('toma el DV de nitDv o del guion del NIT', () => {
+    expect(nitDelEmisor({ nitNorm: '900123456', nitDv: '8' })).toEqual({ base: '900123456', dv: '8' });
+    expect(nitDelEmisor({ nitNorm: '900123456', nit: '900.123.456-8' })).toEqual({ base: '900123456', dv: '8' });
+    expect(nitDelEmisor({ nitNorm: '900123456', nit: '900123456' })).toEqual({ base: '900123456' });
+  });
+});
+
+describe('prioridad del NIT de empresa', () => {
+  // Certificado de la empresa 900999888 con la cédula del representante legal
+  // en el campo de persona de Certicámara y en el CN.
+  const sujeto = [
+    { name: 'commonName', value: 'ANA PEREZ 1020304050' },
+    { type: '1.3.6.1.4.1.23267.2.2', value: '1020304050' },
+    { type: '1.3.6.1.4.1.23267.2.3', value: '900999888' },
+  ];
+  it('la cédula del representante no pasa para un emisor persona natural', () => {
+    const p12 = p12DePrueba({ sujeto });
+    expect(motivo(() => validarCertificadoP12(p12, PASS, { base: '1020304050' }))).toBe('nit');
+    expect(() => validarCertificadoP12(p12, PASS, { base: '900999888' })).not.toThrow();
+  });
+  it('sin campo de empresa, un certificado de persona natural sí pasa por su documento', () => {
+    const p12 = p12DePrueba({
+      sujeto: [
+        { name: 'commonName', value: 'ANA PEREZ' },
+        { type: '1.3.6.1.4.1.23267.2.2', value: '1020304050' },
+      ],
+    });
+    expect(() => validarCertificadoP12(p12, PASS, { base: '1020304050' })).not.toThrow();
+  });
+});
+
+describe('topes contra DoS (antes de usar la contraseña)', () => {
+  const rapido = (fn: () => unknown) => {
+    const t0 = Date.now();
+    const m = motivo(fn);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    return m;
+  };
+
+  it('el tope es de 100.000 iteraciones y 10 certificados', () => {
+    expect(MAX_ITERACIONES_P12).toBe(100_000);
+    expect(MAX_CERT_BAGS_P12).toBe(10);
+  });
+
+  it('rechaza un MAC con 2^31 iteraciones sin derivar la llave', () => {
+    const p12 = conIteracionesMac(p12DePrueba(), ITERACIONES_ENORMES);
+    expect(rapido(() => validarCertificadoP12(p12, PASS, NIT))).toBe('iteraciones');
+    expect(rapido(() => validarCertificadoP12(p12, 'mala', NIT))).toBe('iteraciones');
+  });
+
+  it('rechaza un MAC con 100.001 iteraciones', () => {
+    const p12 = conIteracionesMac(p12DePrueba(), MAX_ITERACIONES_P12 + 1);
+    expect(rapido(() => validarCertificadoP12(p12, PASS, NIT))).toBe('iteraciones');
+  });
+
+  it('rechaza la llave privada cifrada con 2^31 iteraciones', () => {
+    const p12 = conIteracionesLlave(p12DePrueba(), ITERACIONES_ENORMES);
+    expect(rapido(() => validarCertificadoP12(p12, PASS, NIT))).toBe('iteraciones');
+  });
+
+  it.each(['3des', 'aes128'] as const)('rechaza el contenido cifrado (%s) con 2^31 iteraciones', (alg) => {
+    const p12 = conIteracionesContenido(conCertsCifrados(p12DePrueba(), PASS, alg), ITERACIONES_ENORMES);
+    expect(rapido(() => validarCertificadoP12(p12, PASS, NIT))).toBe('iteraciones');
+  });
+
+  it('un .p12 con los certificados cifrados (como OpenSSL) sí abre', () => {
+    for (const alg of ['3des', 'aes128'] as const) {
+      expect(() => validarCertificadoP12(conCertsCifrados(p12DePrueba(), PASS, alg), PASS, NIT)).not.toThrow();
+    }
+    expect(motivo(() => validarCertificadoP12(conCertsCifrados(p12DePrueba(), PASS), 'mala', NIT))).toBe(
+      'password',
+    );
+  });
+
+  it('rechaza más de 10 certificados, en claro o cifrados', () => {
+    // Titular + ECD + 9 copias = 11.
+    const p12 = p12DePrueba({ certsExtra: 9 });
+    expect(rapido(() => validarCertificadoP12(p12, PASS, NIT))).toBe('demasiados-certificados');
+    expect(rapido(() => validarCertificadoP12(conCertsCifrados(p12, PASS), PASS, NIT))).toBe(
+      'demasiados-certificados',
+    );
+    // 10 justos pasan.
+    expect(() => validarCertificadoP12(p12DePrueba({ certsExtra: 8 }), PASS, NIT)).not.toThrow();
   });
 });
 

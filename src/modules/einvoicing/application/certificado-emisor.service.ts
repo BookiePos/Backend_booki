@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
@@ -27,6 +28,7 @@ import {
 import {
   avisoCertificado,
   CertificadoInvalidoError,
+  nitDelEmisor,
   validarCertificadoP12,
 } from '../domain/certificado-p12';
 import { recorrerEmpresas } from '../../../shared/barridos/recorrer-empresas';
@@ -138,7 +140,7 @@ export class CertificadoEmisorService {
 
     let validado;
     try {
-      validado = validarCertificadoP12(archivo.buffer, password, emisor.nitNorm, ahora);
+      validado = validarCertificadoP12(archivo.buffer, password, nitDelEmisor(emisor), ahora);
     } catch (err) {
       if (err instanceof CertificadoInvalidoError) {
         // Sin detalle del contenido: solo el motivo y el emisor.
@@ -152,7 +154,9 @@ export class CertificadoEmisorService {
     const passwordCifrada = cifrar(password, contextoSecreto(emisorId, 'certPasswordCifrada'));
     const anterior = emisor.certPath;
     const huellaAnterior = emisor.certHuella;
-    const nombre = `cert-${sello(ahora)}-${validado.huellaSha256.slice(0, 12)}.p12`;
+    // El sufijo aleatorio hace única cada carga: un doble clic con el mismo
+    // .p12 en el mismo segundo no comparte ruta con la carga que ganó.
+    const nombre = `cert-${sello(ahora)}-${validado.huellaSha256.slice(0, 12)}-${randomUUID().slice(0, 8)}.p12`;
     const { pathname } = await this.storage.guardarCertificado(emisorId, nombre, archivo.buffer);
 
     const aviso = avisoCertificado(validado.venceAt, ahora);
@@ -177,11 +181,11 @@ export class CertificadoEmisorService {
         )
         .exec();
     } catch (err) {
-      await this.borrarSinFallar(emisorId, nombre);
+      await this.borrarSiNoEsElVigente(emisor._id, emisorId, pathname, nombre);
       throw err;
     }
     if (!res.matchedCount) {
-      await this.borrarSinFallar(emisorId, nombre);
+      await this.borrarSiNoEsElVigente(emisor._id, emisorId, pathname, nombre);
       throw new ConflictException(
         'Otro certificado se cargó al mismo tiempo para este emisor. Recarga y vuelve a intentarlo.',
       );
@@ -304,6 +308,30 @@ export class CertificadoEmisorService {
     } finally {
       this.barriendo = false;
     }
+  }
+
+  /**
+   * Borra el archivo recién subido de una carga que no quedó, salvo que la base
+   * ya apunte a él (p. ej. el `updateOne` sí escribió y lo que falló fue la
+   * respuesta): nunca se borra el certificado vigente.
+   */
+  private async borrarSiNoEsElVigente(
+    _id: unknown,
+    emisorId: string,
+    pathname: string,
+    nombre: string,
+  ): Promise<void> {
+    let vigente: string | undefined;
+    try {
+      const actual = await this.model.findById(_id).select('certPath').exec();
+      vigente = actual?.certPath;
+    } catch {
+      // Sin poder confirmar, se deja el archivo: un huérfano es mejor que
+      // borrar el certificado con el que se firma.
+      return;
+    }
+    if (vigente === pathname) return;
+    await this.borrarSinFallar(emisorId, nombre);
   }
 
   private async borrarSinFallar(emisorId: string, nombre: string): Promise<void> {

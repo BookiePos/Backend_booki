@@ -46,10 +46,6 @@ export interface CredencialesEmisorInput {
   nominaSoftwareId?: string;
   nominaPin?: string;
   nominaTestSetId?: string;
-  certPath?: string;
-  certVenceAt?: Date;
-  certTitular?: string;
-  certPassword?: string;
 }
 
 /**
@@ -109,10 +105,23 @@ const idValido = (id: string) => Types.ObjectId.isValid(id);
  * `JSON.stringify` accidental no saca ni la llave ni la contraseña.
  */
 export class CertificadoCargado {
-  constructor(
-    readonly p12: Buffer,
-    readonly password: string,
-  ) {}
+  // Campos privados de verdad: `{ ...cert }`, `Object.entries` y
+  // `Object.keys` no los ven.
+  readonly #p12: Buffer;
+  readonly #password: string;
+
+  constructor(p12: Buffer, password: string) {
+    this.#p12 = p12;
+    this.#password = password;
+  }
+
+  get p12(): Buffer {
+    return this.#p12;
+  }
+
+  get password(): string {
+    return this.#password;
+  }
 
   toJSON(): string {
     return '[certificado .p12 oculto]';
@@ -244,7 +253,8 @@ export class FiscalEmittersService {
   /**
    * Guarda credenciales DIAN. Los secretos se cifran con el contexto
    * `<emisorId>:<campo>`; sin `EINVOICING_ENCRYPTION_KEY` lanza y no guarda
-   * nada. Sin endpoint todavía: lo usará la pantalla de configuración (Fase 3).
+   * nada. El certificado .p12 NO pasa por aquí: su único camino es
+   * `CertificadoEmisorService.cargar`, que lo valida antes de guardarlo.
    */
   async guardarCredenciales(
     emisorId: string,
@@ -262,14 +272,8 @@ export class FiscalEmittersService {
     if (input.facturaTestSetId !== undefined) set.facturaTestSetId = input.facturaTestSetId;
     if (input.nominaSoftwareId !== undefined) set.nominaSoftwareId = input.nominaSoftwareId;
     if (input.nominaTestSetId !== undefined) set.nominaTestSetId = input.nominaTestSetId;
-    if (input.certPath !== undefined) set.certPath = input.certPath;
-    if (input.certVenceAt !== undefined) set.certVenceAt = input.certVenceAt;
-    if (input.certTitular !== undefined) set.certTitular = input.certTitular;
     if (input.facturaPin) set.facturaPin = secreto(input.facturaPin, 'facturaPin');
     if (input.nominaPin) set.nominaPin = secreto(input.nominaPin, 'nominaPin');
-    if (input.certPassword) {
-      set.certPasswordCifrada = secreto(input.certPassword, 'certPasswordCifrada');
-    }
     if (Object.keys(set).length === 0) return;
     await this.model.updateOne({ _id: emisor._id }, { $set: set }).exec();
   }

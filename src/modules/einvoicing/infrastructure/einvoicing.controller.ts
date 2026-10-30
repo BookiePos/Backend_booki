@@ -77,7 +77,10 @@ export class EinvoicingController {
   @Post('sedes/:sedeId/emisor/certificado')
   @UseInterceptors(
     LlaveCifradoInterceptor,
-    FileInterceptor('file', { limits: { fileSize: CERT_MAX_BYTES, files: 1 } }),
+    FileInterceptor('file', {
+      // Un archivo y un campo de texto (`password`): nada más pasa de multer.
+      limits: { fileSize: CERT_MAX_BYTES, files: 1, fields: 2, fieldSize: 1024, parts: 3 },
+    }),
   )
   cargarCertificado(
     @Param('sedeId') sedeId: string,

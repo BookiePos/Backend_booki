@@ -127,7 +127,7 @@ describe('CertificadoEmisorService.cargar', () => {
     const r = await enEmpresa(() => svc.cargar(sedeId, archivo(p12DePrueba()), PASS, dueno, '1.2.3.4'));
     expect(r.reemplazado).toBe(false);
     expect(bucket.size).toBe(1);
-    expect(emisor.certPath).toMatch(new RegExp(`^einvoicing/biz1/${emisor.id}/cert/cert-\\d{8}-\\d{6}-[0-9a-f]{12}\\.p12$`));
+    expect(emisor.certPath).toMatch(new RegExp(`^einvoicing/biz1/${emisor.id}/cert/cert-\\d{8}-\\d{6}-[0-9a-f]{12}-[0-9a-f]{8}\\.p12$`));
     expect(emisor.certTitular).toBe('CRUNCHY PRUEBAS SAS');
     expect(emisor.certHuella).toMatch(/^[0-9a-f]{64}$/);
     expect(emisor.certVenceAt).toBeInstanceOf(Date);
@@ -213,6 +213,38 @@ describe('CertificadoEmisorService.cargar', () => {
     expect(audit.record).not.toHaveBeenCalled();
   });
 
+  it('doble carga simultánea del mismo .p12: queda una, y la que pierde no borra la vigente', async () => {
+    // Cada carga ve el emisor como estaba al empezar (dos peticiones).
+    vi.mocked(fiscal.asegurarParaSede).mockImplementation(async () => ({ ...emisor }));
+    const p12 = p12DePrueba();
+    const ahora = new Date();
+    const r = await enEmpresa(() =>
+      Promise.allSettled([
+        svc.cargar(sedeId, archivo(p12), PASS, dueno, undefined, ahora),
+        svc.cargar(sedeId, archivo(p12), PASS, dueno, undefined, ahora),
+      ]),
+    );
+    expect(r.map((x) => x.status).sort()).toEqual(['fulfilled', 'rejected']);
+    const perdida = r.find((x) => x.status === 'rejected') as PromiseRejectedResult;
+    expect(perdida.reason).toBeInstanceOf(ConflictException);
+    // Rutas distintas aunque sea el mismo archivo en el mismo segundo.
+    const subidas = storage.guardarCertificado.mock.calls.map((c: any[]) => c[1]);
+    expect(new Set(subidas).size).toBe(2);
+    // El bucket conserva justo el archivo al que apunta la base.
+    expect([...bucket.keys()]).toEqual([emisor.certPath]);
+  });
+
+  it('si el updateOne falla pero la base ya apunta al archivo nuevo, no se borra', async () => {
+    model.updateOne.mockImplementationOnce((f: any, u: any) => {
+      Object.assign(emisor, u.$set);
+      return { exec: () => Promise.reject(new Error('se cortó la respuesta')) };
+    });
+    await expect(enEmpresa(() => svc.cargar(sedeId, archivo(p12DePrueba()), PASS, dueno))).rejects.toThrow(
+      'se cortó la respuesta',
+    );
+    expect(bucket.has(emisor.certPath)).toBe(true);
+  });
+
   it('un certificado que vence en menos de 30 días entra con su aviso', async () => {
     const p12 = p12DePrueba({ hasta: new Date(Date.now() + 10 * DIA) });
     const r = await enEmpresa(() => svc.cargar(sedeId, archivo(p12), PASS, dueno));
@@ -229,6 +261,11 @@ describe('CertificadoEmisorService.cargar', () => {
       expect(cert?.password).toBe(PASS);
       expect(JSON.stringify({ cert })).not.toContain(PASS);
       expect(inspect(cert)).not.toContain(PASS);
+      // Campos privados: ni el spread ni Object.entries/keys los exponen.
+      expect({ ...cert }).toEqual({});
+      expect(Object.entries(cert!)).toEqual([]);
+      expect(Object.keys(cert!)).toEqual([]);
+      expect(JSON.stringify({ ...cert })).not.toContain(PASS);
       const uso = audit.record.mock.calls.at(-1)[0];
       expect(uso).toMatchObject({ action: 'einvoicing.certificado.usado', detail: { huella: emisor.certHuella, motivo: 'factura' } });
       expect(JSON.stringify(uso)).not.toContain(PASS);

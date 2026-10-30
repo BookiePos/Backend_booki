@@ -18,6 +18,7 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
 
 import { FiscalEmittersService } from './fiscal-emitters.service';
 import {
+  cifrar,
   contextoSecreto,
   descifrar,
   SecretoIlegibleError,
@@ -180,10 +181,6 @@ describe('FiscalEmittersService', () => {
         nominaSoftwareId: 'sw-ne',
         nominaPin: 'pin-ne',
         nominaTestSetId: 'ts-ne',
-        certPath: 'certs/a.p12',
-        certVenceAt: new Date('2099-01-01'),
-        certTitular: 'Crunchy SAS',
-        certPassword: 'clave-p12',
       });
       const guardado = emisores.get(e.id);
       // Lo no secreto va en claro; lo secreto, solo cifrado.
@@ -193,7 +190,20 @@ describe('FiscalEmittersService', () => {
 
       expect(descifrar(guardado.facturaPin, contextoSecreto(e.id, 'facturaPin'))).toBe('pin-fe');
       expect(await svc.leerSecreto(e.id, 'nominaPin')).toBe('pin-ne');
-      expect(await svc.leerSecreto(e.id, 'certPasswordCifrada')).toBe('clave-p12');
+    });
+
+    it('el certificado no entra por guardarCredenciales: solo por la carga validada', async () => {
+      const e = await svc.asegurarParaSede(nuevaSede());
+      await svc.guardarCredenciales(e.id, {
+        facturaPin: 'pin',
+        certPath: 'otra-empresa/x.p12',
+        certPassword: 'clave-p12',
+        certVenceAt: new Date('2099-01-01'),
+      } as never);
+      const guardado = emisores.get(e.id);
+      expect(guardado.certPath).toBeUndefined();
+      expect(guardado.certVenceAt).toBeUndefined();
+      expect(guardado.certPasswordCifrada).toBeUndefined();
     });
 
     it('no descifra con otro campo ni con otro emisor', async () => {
@@ -244,12 +254,12 @@ describe('FiscalEmittersService', () => {
       expect(antes).toMatchObject({ certificadoVigente: false, tienePin: false, habilitado: false });
       expect(antes.faltaParaTransmitir).toHaveLength(3);
 
-      await svc.guardarCredenciales(e.id, {
-        facturaSoftwareId: 'sw',
-        facturaPin: 'pin',
+      await svc.guardarCredenciales(e.id, { facturaSoftwareId: 'sw', facturaPin: 'pin' });
+      // El certificado lo deja `CertificadoEmisorService.cargar`; aquí se simula.
+      Object.assign(emisores.get(e.id), {
         certPath: 'c.p12',
         certVenceAt: new Date('2099-01-01'),
-        certPassword: 'p',
+        certPasswordCifrada: cifrar('p', contextoSecreto(e.id, 'certPasswordCifrada')),
       });
       const despues = await svc.estadoConfiguracion(e.id);
       expect(despues).toMatchObject({ certificadoVigente: true, softwareId: 'sw', tienePin: true });
@@ -272,7 +282,8 @@ describe('FiscalEmittersService', () => {
     it('la vista solo trae booleanos de los secretos y respeta el alcance de sedes', async () => {
       const s = nuevaSede();
       const e = await svc.asegurarParaSede(s);
-      await svc.guardarCredenciales(e.id, { facturaPin: 'pin-fe', certPassword: 'clave-p12' });
+      await svc.guardarCredenciales(e.id, { facturaPin: 'pin-fe' });
+      emisores.get(e.id).certPasswordCifrada = cifrar('clave-p12', contextoSecreto(e.id, 'certPasswordCifrada'));
       const user = { role: 'owner', permissions: [], sedeIds: [s] } as unknown as JwtUser;
       const r = await svc.vistaDeSede(s, user);
       expect(r.emisor).toMatchObject({ tieneFacturaPin: true, tieneNominaPin: false, tieneCertificado: false });

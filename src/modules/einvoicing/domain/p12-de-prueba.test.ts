@@ -50,6 +50,8 @@ export interface OpcionesP12 {
   conCadena?: boolean;
   /** Firma el certificado con otra llave que no es la de la ECD declarada. */
   cadenaRota?: boolean;
+  /** Copias extra del certificado de la ECD (para el tope de cert bags). */
+  certsExtra?: number;
 }
 
 const SUJETO_ECD: forge.pki.CertificateField[] = [
@@ -109,6 +111,7 @@ export function p12DePrueba(op: OpcionesP12 = {}): Buffer {
 
   const cadena = [cert];
   if (!op.autofirmado && op.conCadena !== false) cadena.push(certEcd());
+  for (let i = 0; i < (op.certsExtra ?? 0); i++) cadena.push(certEcd());
   const asn1 = forge.pkcs12.toPkcs12Asn1(
     op.conLlave === false ? null : titular.privateKey,
     cadena,
@@ -116,4 +119,138 @@ export function p12DePrueba(op: OpcionesP12 = {}): Buffer {
     { algorithm: '3des' },
   );
   return Buffer.from(forge.asn1.toDer(asn1).getBytes(), 'binary');
+}
+
+// ── Archivos alterados para los topes contra DoS ────────────────────────────
+//
+// Se editan en el ASN.1 sin recalcular nada: la validación debe rechazarlos
+// antes de derivar una sola llave, así que el MAC o el cifrado roto no importan.
+
+const A = forge.asn1;
+type Nodo = forge.asn1.Asn1;
+
+const OID_DATA = '1.2.840.113549.1.7.1';
+const OID_ENCRYPTED_DATA = '1.2.840.113549.1.7.6';
+const OID_BOLSA_CERT = '1.2.840.113549.1.12.10.1.3';
+const OID_BOLSA_LLAVE_CIFRADA = '1.2.840.113549.1.12.10.1.2';
+const OID_PBES2 = '1.2.840.113549.1.5.13';
+
+/** 2^31 - 1 iteraciones: horas de event loop bloqueado si nadie lo frena. */
+export const ITERACIONES_ENORMES = 0x7fffffff;
+
+function entero(n: number): Nodo {
+  return A.create(A.Class.UNIVERSAL, A.Type.INTEGER, false, A.integerToDer(n).getBytes());
+}
+const hijos = (n: Nodo | undefined): Nodo[] => (n?.value as Nodo[]) ?? [];
+const oid = (n: Nodo | undefined): string => A.derToOid(n?.value as string);
+const aNodo = (b: Buffer): Nodo => A.fromDer(forge.util.createBuffer(b.toString('binary')));
+const aBuffer = (n: Nodo): Buffer => Buffer.from(A.toDer(n).getBytes(), 'binary');
+
+/** Edita los ContentInfo del authSafe y los vuelve a meter. */
+function editarContenidos(p12: Buffer, fn: (infos: Nodo[]) => Nodo[], conMac = true): Buffer {
+  const pfx = aNodo(p12);
+  const octeto = hijos(hijos(hijos(pfx)[1])[1])[0]!;
+  const infos = hijos(A.fromDer(octeto.value as string));
+  octeto.value = A.toDer(A.create(A.Class.UNIVERSAL, A.Type.SEQUENCE, true, fn(infos))).getBytes();
+  if (!conMac) pfx.value = hijos(pfx).slice(0, 2);
+  return aBuffer(pfx);
+}
+
+/** SafeContents de un ContentInfo de datos en claro. */
+function safeContents(info: Nodo): Nodo {
+  return A.fromDer(hijos(hijos(info)[1])[0]!.value as string);
+}
+
+function infoDeDatos(safe: Nodo): Nodo {
+  return A.create(A.Class.UNIVERSAL, A.Type.SEQUENCE, true, [
+    A.create(A.Class.UNIVERSAL, A.Type.OID, false, A.oidToDer(OID_DATA).getBytes()),
+    A.create(A.Class.CONTEXT_SPECIFIC, 0, true, [
+      A.create(A.Class.UNIVERSAL, A.Type.OCTETSTRING, false, A.toDer(safe).getBytes()),
+    ]),
+  ]);
+}
+
+function infoCifrada(alg: Nodo, cifrado: string): Nodo {
+  return A.create(A.Class.UNIVERSAL, A.Type.SEQUENCE, true, [
+    A.create(A.Class.UNIVERSAL, A.Type.OID, false, A.oidToDer(OID_ENCRYPTED_DATA).getBytes()),
+    A.create(A.Class.CONTEXT_SPECIFIC, 0, true, [
+      A.create(A.Class.UNIVERSAL, A.Type.SEQUENCE, true, [
+        entero(0),
+        A.create(A.Class.UNIVERSAL, A.Type.SEQUENCE, true, [
+          A.create(A.Class.UNIVERSAL, A.Type.OID, false, A.oidToDer(OID_DATA).getBytes()),
+          alg,
+          A.create(A.Class.CONTEXT_SPECIFIC, 0, false, cifrado),
+        ]),
+      ]),
+    ]),
+  ]);
+}
+
+const esDeCerts = (info: Nodo) =>
+  oid(hijos(info)[0]) === OID_DATA && oid(hijos(hijos(safeContents(info))[0])[0]) === OID_BOLSA_CERT;
+
+/**
+ * Pasa los certificados a un EncryptedData (como lo exporta OpenSSL), cifrado
+ * con la contraseña. Sin MAC: forge lo abre igual y así no hay que recalcularlo.
+ */
+export function conCertsCifrados(
+  p12: Buffer,
+  password: string,
+  algoritmo: '3des' | 'aes128' = '3des',
+): Buffer {
+  return editarContenidos(
+    p12,
+    (infos) =>
+      infos.map((info) => {
+        if (!esDeCerts(info)) return info;
+        const epki = forge.pki.encryptPrivateKeyInfo(safeContents(info), password, { algorithm: algoritmo });
+        return infoCifrada(hijos(epki)[0]!, hijos(epki)[1]!.value as string);
+      }),
+    false,
+  );
+}
+
+/** Pone `n` iteraciones en el MAC del archivo. */
+export function conIteracionesMac(p12: Buffer, n: number): Buffer {
+  const pfx = aNodo(p12);
+  const mac = hijos(pfx)[2]!;
+  mac.value = [...hijos(mac).slice(0, 2), entero(n)];
+  return aBuffer(pfx);
+}
+
+/** Pone `n` iteraciones en el PBE de la llave privada cifrada. */
+export function conIteracionesLlave(p12: Buffer, n: number): Buffer {
+  return editarContenidos(p12, (infos) =>
+    infos.map((info) => {
+      if (oid(hijos(info)[0]) !== OID_DATA) return info;
+      const safe = safeContents(info);
+      for (const bolsa of hijos(safe)) {
+        if (oid(hijos(bolsa)[0]) !== OID_BOLSA_LLAVE_CIFRADA) continue;
+        const params = hijos(hijos(hijos(hijos(bolsa)[1])[0])[0])[1]!;
+        params.value = [hijos(params)[0]!, entero(n)];
+      }
+      return infoDeDatos(safe);
+    }),
+  );
+}
+
+/** Pone `n` iteraciones en el algoritmo del EncryptedData (PKCS#12 PBE o PBES2). */
+export function conIteracionesContenido(p12Cifrado: Buffer, n: number): Buffer {
+  return editarContenidos(
+    p12Cifrado,
+    (infos) =>
+      infos.map((info) => {
+        if (oid(hijos(info)[0]) !== OID_ENCRYPTED_DATA) return info;
+        const alg = hijos(hijos(hijos(hijos(info)[1])[0])[1])[1]!;
+        const params = hijos(alg)[1]!;
+        if (oid(hijos(alg)[0]) === OID_PBES2) {
+          const kdfParams = hijos(hijos(params)[0])[1]!;
+          kdfParams.value = [hijos(kdfParams)[0]!, entero(n), ...hijos(kdfParams).slice(2)];
+        } else {
+          params.value = [hijos(params)[0]!, entero(n)];
+        }
+        return info;
+      }),
+    false,
+  );
 }
