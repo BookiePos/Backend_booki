@@ -5,11 +5,16 @@ import { lastValueFrom, of, throwError } from 'rxjs';
 
 const spanPropio = vi.hoisted(() => ({
   end: vi.fn(),
+  isRecording: vi.fn(() => true),
   spanContext: vi.fn(() => ({ traceFlags: 1 })),
 }));
+const raiz = vi.hoisted(() => ({ isRecording: () => true, spanContext: () => ({ traceFlags: 1 }) }));
 const sentry = vi.hoisted(() => ({
   getActiveSpan: vi.fn((): unknown => undefined),
-  getRootSpan: vi.fn((s: unknown) => ({ raiz: s })),
+  getRootSpan: vi.fn((..._a: unknown[]) => raiz),
+  isInitialized: vi.fn(() => true),
+  spanToJSON: vi.fn(() => ({ description: 'GET', op: 'http.server' })),
+  flush: vi.fn(async () => true),
   updateSpanName: vi.fn((..._a: unknown[]) => undefined),
   startInactiveSpan: vi.fn((..._a: unknown[]) => spanPropio),
   setHttpStatus: vi.fn((..._a: unknown[]) => undefined),
@@ -17,8 +22,7 @@ const sentry = vi.hoisted(() => ({
 vi.mock('@sentry/node', () => sentry);
 const esperar = vi.hoisted(() => vi.fn((..._a: unknown[]) => undefined));
 vi.mock('@vercel/functions', () => ({ waitUntil: esperar }));
-const vaciar = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock('./sentry', () => ({ vaciarSentry: vaciar }));
+vi.mock('./diagnostico-sentry', () => ({ diagSentry: vi.fn() }));
 
 import { SentryTransaccionInterceptor } from './sentry-transaccion.interceptor';
 
@@ -42,7 +46,7 @@ describe('SentryTransaccionInterceptor', () => {
   it('con transacción HTTP activa solo le pone método y plantilla de la ruta', async () => {
     sentry.getActiveSpan.mockReturnValue({ id: 'span' });
     await lastValueFrom(new SentryTransaccionInterceptor().intercept(contexto(venta), ok));
-    expect(sentry.updateSpanName).toHaveBeenCalledWith({ raiz: { id: 'span' } }, 'POST /sales/:id/void');
+    expect(sentry.updateSpanName).toHaveBeenCalledWith(raiz, 'POST /sales/:id/void');
     expect(sentry.startInactiveSpan).not.toHaveBeenCalled();
   });
 
