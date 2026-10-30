@@ -15,6 +15,9 @@ import {
 import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
 import { EinvoicingService } from './application/einvoicing.service';
 import { FiscalEmittersService } from './application/fiscal-emitters.service';
+import { CertificadoEmisorService } from './application/certificado-emisor.service';
+import { StorageModule } from '../../shared/storage/storage.module';
+import { CoreAuditModule } from '../core-audit/core-audit.module';
 import { EinvoicingController } from './infrastructure/einvoicing.controller';
 import { SalesModule } from '../sales/sales.module';
 import { SedesModule } from '../sedes/sedes.module';
@@ -31,9 +34,11 @@ import { ControlModule } from '../control/control.module';
     SalesModule,
     SedesModule,
     ControlModule,
+    StorageModule,
+    CoreAuditModule,
   ],
   controllers: [EinvoicingController],
-  providers: [EinvoicingService, FiscalEmittersService],
-  exports: [EinvoicingService, FiscalEmittersService],
+  providers: [EinvoicingService, FiscalEmittersService, CertificadoEmisorService],
+  exports: [EinvoicingService, FiscalEmittersService, CertificadoEmisorService],
 })
 export class EinvoicingModule {}

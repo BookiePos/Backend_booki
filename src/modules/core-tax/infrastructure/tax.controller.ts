@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -13,7 +14,10 @@ import {
   SetTaxRateVersionDto,
   UpdateTaxDto,
 } from '../application/dto/tax.dto';
-import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
+import {
+  RequireAnyPermission,
+  RequirePermissions,
+} from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
@@ -26,6 +30,16 @@ export class TaxController {
   @Get()
   list() {
     return this.tax.list();
+  }
+
+  /** Tarifa vigente del INC de bolsas, de solo lectura, para el cajero del POS. */
+  @RequireAnyPermission(PERMISSIONS.POS_SELL, PERMISSIONS.TAX_MANAGE)
+  @Get('inc-bolsas/vigente')
+  incBolsasVigente(@Query('fecha') fecha?: string) {
+    if (fecha && !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+      throw new BadRequestException('fecha debe ser YYYY-MM-DD');
+    }
+    return this.tax.incBolsasVigente(fecha);
   }
 
   @RequirePermissions(PERMISSIONS.TAX_MANAGE)

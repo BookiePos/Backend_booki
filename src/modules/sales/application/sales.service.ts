@@ -1933,6 +1933,8 @@ export class SalesService {
         variantGroupName: variant?.groupName ?? null,
         variantAttrs: variant?.attrs ?? null,
         variantAxes: variant?.axes ?? null,
+        // El POS suma el INC por bolsa solo a los productos que la llevan.
+        bolsaPlastica: p.bolsaPlastica === true,
       };
     });
   }

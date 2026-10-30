@@ -90,6 +90,7 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `GET /reports/trial-balance` | `reports.view` | ✓ | ✓ | ✓ | · | ✓ |
 | `GET /reports/sales` | `reports.view` | ✓ | ✓ | ✓ | · | ✓ |
 | `GET /taxes` | `tax.manage` | ✓ | ✓ | ✓ | · | · |
+| `GET /taxes/inc-bolsas/vigente` | `pos.sell` o `tax.manage` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /taxes/compute` | `tax.manage` | ✓ | ✓ | ✓ | · | · |
 | `POST /taxes` | `tax.manage` | ✓ | ✓ | ✓ | · | · |
 | `PATCH /taxes/:code` | `tax.manage` | ✓ | ✓ | ✓ | · | · |
@@ -113,6 +114,7 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `GET /einvoicing/resolutions` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /einvoicing/resolutions/:sedeId` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /einvoicing/sedes/:sedeId/emisor` | `einvoicing.configure` | ✓ | ✓ | · | · | · |
+| `POST /einvoicing/sedes/:sedeId/emisor/certificado` | `einvoicing.certificate` | ✓ | · | · | · | · |
 | `GET /einvoicing` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /einvoicing/:id` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /einvoicing/from-sale` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |

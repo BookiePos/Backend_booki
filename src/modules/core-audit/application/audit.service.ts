@@ -18,6 +18,10 @@ export interface AuditRecord {
   ip?: string;
   durationMs?: number;
   error?: string;
+  /** Evento de negocio explícito; ver `AuditLog.action`. */
+  action?: string;
+  /** Datos del evento. Nunca secretos ni contraseñas. */
+  detail?: Record<string, string>;
 }
 
 export interface AuditQuery {
