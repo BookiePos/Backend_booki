@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import forge from 'node-forge';
 import {
   avisoCertificado,
   CertificadoInvalidoError,
   MAX_CERT_BAGS_P12,
+  MAX_CONTENIDOS_P12,
   MAX_ITERACIONES_P12,
+  PRESUPUESTO_ITERACIONES_P12,
   nitCoincide,
   nitDelEmisor,
   validarCertificadoP12,
@@ -11,9 +14,11 @@ import {
 } from './certificado-p12';
 import {
   conCertsCifrados,
+  conContenidosRepetidos,
   conIteracionesContenido,
   conIteracionesLlave,
   conIteracionesMac,
+  conMac,
   ITERACIONES_ENORMES,
   p12DePrueba,
 } from './p12-de-prueba.test';
@@ -229,6 +234,65 @@ describe('topes contra DoS (antes de usar la contraseña)', () => {
       'password',
     );
   });
+
+  it('16 EncryptedData de 100.000 iteraciones: rechazo rápido, sin derivar', () => {
+    const base = conIteracionesContenido(conCertsCifrados(p12DePrueba(), PASS), MAX_ITERACIONES_P12);
+    const p12 = conMac(conContenidosRepetidos(base, 16), PASS, 2048);
+    const generar = vi.spyOn(forge.pkcs12, 'generateKey');
+    try {
+      expect(rapido(() => validarCertificadoP12(p12, PASS, NIT))).toBe('formato');
+      expect(generar).not.toHaveBeenCalled();
+    } finally {
+      generar.mockRestore();
+    }
+  });
+
+  it('4 contenidos de 100.000 pasan del presupuesto total (300.000) sin derivar', () => {
+    expect(PRESUPUESTO_ITERACIONES_P12).toBeLessThanOrEqual(300_000);
+    expect(MAX_CONTENIDOS_P12).toBe(4);
+    const base = conIteracionesContenido(conCertsCifrados(p12DePrueba(), PASS), MAX_ITERACIONES_P12);
+    const p12 = conContenidosRepetidos(base, 3);
+    const generar = vi.spyOn(forge.pkcs12, 'generateKey');
+    try {
+      expect(rapido(() => validarCertificadoP12(p12, PASS, NIT))).toBe('iteraciones');
+      expect(generar).not.toHaveBeenCalled();
+    } finally {
+      generar.mockRestore();
+    }
+  });
+
+  it('contraseña mala con muchos contenidos: una sola derivación (el MAC)', () => {
+    const p12 = conMac(conContenidosRepetidos(conCertsCifrados(p12DePrueba(), PASS), 3), PASS);
+    const generar = vi.spyOn(forge.pkcs12, 'generateKey');
+    const pbe = (forge.pki as unknown as { pbe: { getCipher: (...a: unknown[]) => unknown } }).pbe;
+    const descifrar = vi.spyOn(pbe, 'getCipher');
+    try {
+      expect(rapido(() => validarCertificadoP12(p12, 'mala', NIT))).toBe('password');
+      expect(generar).toHaveBeenCalledTimes(1);
+      expect(descifrar).not.toHaveBeenCalled();
+    } finally {
+      generar.mockRestore();
+      descifrar.mockRestore();
+    }
+  });
+
+  it.each([2048, 10_000])(
+    'un .p12 típico (1 contenido cifrado, 1 llave, MAC) con %i iteraciones abre',
+    (n) => {
+      const p12 = conMac(conCertsCifrados(p12DePrueba({ iteraciones: n }), PASS, '3des', n), PASS, n);
+      const pbe = (forge.pki as unknown as { pbe: { getCipher: (...a: unknown[]) => unknown } }).pbe;
+      const descifrar = vi.spyOn(pbe, 'getCipher');
+      try {
+        expect(() => validarCertificadoP12(p12, PASS, NIT)).not.toThrow();
+        // El EncryptedData se descifra una sola vez: forge lo recibe en claro.
+        // La otra llamada es la llave privada cifrada.
+        expect(descifrar).toHaveBeenCalledTimes(2);
+      } finally {
+        descifrar.mockRestore();
+      }
+      expect(motivo(() => validarCertificadoP12(p12, 'mala', NIT))).toBe('password');
+    },
+  );
 
   it('rechaza más de 10 certificados, en claro o cifrados', () => {
     // Titular + ECD + 9 copias = 11.

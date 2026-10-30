@@ -44,14 +44,23 @@ export type MotivoRechazoCertificado =
   | 'demasiados-certificados'
   | 'iteraciones';
 
-// ── Topes contra DoS (ver `revisarTopesP12`) ────────────────────────────────
+// ── Topes contra DoS (ver `prepararP12`) ────────────────────────────────────
 
 /** Tope de iteraciones de MAC, PBE y PBKDF2. Una ECD usa 2.048-10.000. */
 export const MAX_ITERACIONES_P12 = 100_000;
 /** Tope de certificados (cert bags). Un .p12 real trae 1-4. */
 export const MAX_CERT_BAGS_P12 = 10;
+/**
+ * Presupuesto de iteraciones de TODO el archivo (MAC + cada EncryptedData +
+ * cada llave cifrada): el tope por derivación no basta, porque un archivo con
+ * muchas derivaciones de 100.000 bloquea igual. Uno real gasta 6.000-30.000.
+ */
+export const PRESUPUESTO_ITERACIONES_P12 = 300_000;
+/** Contenidos del authSafe. OpenSSL y Windows exportan 2 (certs y llave). */
+export const MAX_CONTENIDOS_P12 = 4;
+/** Llaves privadas cifradas. Un .p12 de firma trae 1. */
+export const MAX_LLAVES_CIFRADAS_P12 = 2;
 const MAX_BOLSAS_P12 = 32;
-const MAX_CONTENIDOS_P12 = 16;
 
 const MENSAJES: Record<MotivoRechazoCertificado, string> = {
   formato: 'El archivo no es un certificado .p12/.pfx válido.',
@@ -269,32 +278,47 @@ function entero(n: Nodo | undefined): number {
   return v;
 }
 
-function topeIteraciones(iteraciones: number): void {
-  if (!(iteraciones <= MAX_ITERACIONES_P12)) throw new CertificadoInvalidoError('iteraciones');
+/** Cuenta de lo revisado: bolsas, certificados, llaves e iteraciones gastadas. */
+interface Cuenta {
+  bolsas: number;
+  certs: number;
+  llaves: number;
+  iteraciones: number;
 }
 
-/** Revisa las iteraciones de un AlgorithmIdentifier de PBE (PKCS#12, PBES1 o PBES2). */
-function revisarAlgoritmo(alg: Nodo | undefined): void {
+/**
+ * Suma una derivación al presupuesto. Rechaza si ella sola pasa del tope por
+ * derivación o si el archivo entero pasa del presupuesto total.
+ */
+function gastar(cuenta: Cuenta, iteraciones: number): void {
+  if (!(iteraciones <= MAX_ITERACIONES_P12)) throw new CertificadoInvalidoError('iteraciones');
+  cuenta.iteraciones += iteraciones;
+  if (cuenta.iteraciones > PRESUPUESTO_ITERACIONES_P12) throw new CertificadoInvalidoError('iteraciones');
+}
+
+/** Iteraciones de un AlgorithmIdentifier de PBE (PKCS#12, PBES1 o PBES2). */
+function iteracionesDeAlgoritmo(alg: Nodo | undefined): number {
   const [oidNodo, params] = hijos(alg);
   const oid = oidDe(oidNodo);
   if (oid === OID_PBES2) {
     // PBES2-params ::= SEQUENCE { keyDerivationFunc, encryptionScheme }
     // PBKDF2-params ::= SEQUENCE { salt, iterationCount, ... }
     const kdf = hijos(params)[0];
-    topeIteraciones(entero(hijos(hijos(kdf)[1])[1]));
-    return;
+    return entero(hijos(hijos(kdf)[1])[1]);
   }
   if (oid.startsWith(ARCO_PBE_PKCS12) || oid.startsWith(ARCO_PBE_PKCS5)) {
     // pkcs-12PbeParams / PBEParameter ::= SEQUENCE { salt, iterations }
-    topeIteraciones(entero(hijos(params)[1]));
-    return;
+    return entero(hijos(params)[1]);
   }
   // Algoritmo desconocido: forge tampoco lo sabría descifrar.
   throw new CertificadoInvalidoError('formato');
 }
 
-/** Cuenta las bolsas de un SafeContents y revisa las llaves cifradas. */
-function revisarBolsas(safeContents: Nodo, cuenta: { bolsas: number; certs: number }): void {
+/**
+ * Cuenta las bolsas de un SafeContents y carga al presupuesto la derivación de
+ * cada llave cifrada (la hará forge al abrir el archivo).
+ */
+function revisarBolsas(safeContents: Nodo, cuenta: Cuenta): void {
   for (const bolsa of hijos(safeContents)) {
     const [idNodo, valor] = hijos(bolsa);
     const id = oidDe(idNodo);
@@ -304,36 +328,89 @@ function revisarBolsas(safeContents: Nodo, cuenta: { bolsas: number; certs: numb
       cuenta.certs++;
       if (cuenta.certs > MAX_CERT_BAGS_P12) throw new CertificadoInvalidoError('demasiados-certificados');
     } else if (id === OID_BOLSA_LLAVE_CIFRADA) {
+      cuenta.llaves++;
+      if (cuenta.llaves > MAX_LLAVES_CIFRADAS_P12) throw new CertificadoInvalidoError('formato');
       // [0] EXPLICIT EncryptedPrivateKeyInfo ::= SEQUENCE { algoritmo, datos }
-      revisarAlgoritmo(hijos(hijos(valor)[0])[0]);
+      gastar(cuenta, iteracionesDeAlgoritmo(hijos(hijos(valor)[0])[0]));
     }
     // Otras bolsas (llave en claro, CRL, secretos) no derivan llaves; cuentan
     // para el tope de bolsas.
   }
 }
 
+const MD_DEL_MAC: Record<string, { crear: () => forge.md.MessageDigest; bytes: number }> = {
+  '1.3.14.3.2.26': { crear: () => forge.md.sha1.create(), bytes: 20 },
+  '2.16.840.1.101.3.4.2.1': { crear: () => forge.md.sha256.create(), bytes: 32 },
+  '2.16.840.1.101.3.4.2.2': { crear: () => forge.md.sha384.create(), bytes: 48 },
+  '2.16.840.1.101.3.4.2.3': { crear: () => forge.md.sha512.create(), bytes: 64 },
+};
+
 /**
- * Topes de iteraciones y de bolsas ANTES de que forge use la contraseña.
- * Primero todo lo visible (MAC, algoritmo de cada EncryptedData, llaves de los
- * contenidos en claro); con eso ya acotado se descifra cada EncryptedData
- * para revisar las bolsas de dentro, que forge descifraría igual después.
+ * Verifica el MAC del PKCS#12 (RFC 7292 §B, igual que forge): una sola
+ * derivación, ya cargada al presupuesto. Con la contraseña mala se rechaza
+ * aquí, sin descifrar ningún contenido.
  */
-export function revisarTopesP12(pfx: Nodo, password: string): void {
+function verificarMac(macData: Nodo, datosAuthSafe: string, password: string, iteraciones: number): void {
+  // MacData ::= SEQUENCE { mac DigestInfo, macSalt, iterations }
+  // DigestInfo ::= SEQUENCE { AlgorithmIdentifier, digest }
+  const [digestInfo, sal] = hijos(macData);
+  const [algoritmo, digest] = hijos(digestInfo);
+  const md = MD_DEL_MAC[oidDe(hijos(algoritmo)[0])];
+  if (!md) throw new CertificadoInvalidoError('formato');
+  const llave = forge.pkcs12.generateKey(
+    password,
+    forge.util.createBuffer(octetos(sal)),
+    3,
+    iteraciones,
+    md.bytes,
+    md.crear(),
+  );
+  const hmac = forge.hmac.create();
+  hmac.start(md.crear(), llave);
+  hmac.update(datosAuthSafe);
+  if (hmac.digest().getBytes() !== octetos(digest)) throw new CertificadoInvalidoError('password');
+}
+
+function nodo(tipo: number, constructed: boolean, valor: string | Nodo[], clase = forge.asn1.Class.UNIVERSAL): Nodo {
+  return forge.asn1.create(clase, tipo, constructed, valor);
+}
+
+/** ContentInfo de datos en claro con un SafeContents ya descifrado. */
+function contenidoEnClaro(safeContentsDer: string): Nodo {
+  return nodo(forge.asn1.Type.SEQUENCE, true, [
+    nodo(forge.asn1.Type.OID, false, forge.asn1.oidToDer(OID_DATA).getBytes()),
+    nodo(0, true, [nodo(forge.asn1.Type.OCTETSTRING, false, safeContentsDer)], forge.asn1.Class.CONTEXT_SPECIFIC),
+  ]);
+}
+
+/**
+ * Revisa topes y presupuesto ANTES de que forge use la contraseña, y devuelve
+ * el PFX listo para forge, sin trabajo repetido.
+ *
+ *   1. Sin derivar nada: estructura, ≤ 4 contenidos, iteraciones del MAC, de
+ *      cada EncryptedData y de las llaves en claro, todas dentro del
+ *      presupuesto total.
+ *   2. Verifica el MAC (una derivación): contraseña mala = rechazo aquí.
+ *   3. Descifra cada EncryptedData UNA vez, revisa sus bolsas y lo deja en
+ *      claro en el PFX que recibe forge, que así no lo vuelve a descifrar.
+ *      Tampoco le llega el MAC (ya verificado): forge solo deriva las llaves.
+ */
+export function prepararP12(pfx: Nodo, password: string): Nodo {
   try {
-    const [, authSafe, macData] = hijos(pfx);
-    // MacData ::= SEQUENCE { mac, macSalt, iterations INTEGER DEFAULT 1 }
-    if (macData) {
-      const iter = hijos(macData)[2];
-      if (iter) topeIteraciones(entero(iter));
-    }
+    const [version, authSafe, macData] = hijos(pfx);
     const [tipo, contenido] = hijos(authSafe);
     if (oidDe(tipo) !== OID_DATA) throw new CertificadoInvalidoError('formato');
-    const infos = hijos(forge.asn1.fromDer(octetos(hijos(contenido)[0])));
-    if (infos.length > MAX_CONTENIDOS_P12) throw new CertificadoInvalidoError('demasiados-certificados');
+    const datosAuthSafe = octetos(hijos(contenido)[0]);
+    const infos = hijos(forge.asn1.fromDer(datosAuthSafe));
+    if (infos.length > MAX_CONTENIDOS_P12) throw new CertificadoInvalidoError('formato');
 
-    const cuenta = { bolsas: 0, certs: 0 };
-    const cifrados: Array<{ alg: Nodo; datos: Nodo | undefined }> = [];
-    for (const info of infos) {
+    const cuenta: Cuenta = { bolsas: 0, certs: 0, llaves: 0, iteraciones: 0 };
+    // MacData.iterations INTEGER DEFAULT 1
+    const iteracionesMac = macData ? (hijos(macData)[2] ? entero(hijos(macData)[2]) : 1) : 0;
+    if (macData) gastar(cuenta, iteracionesMac);
+
+    const cifrados: Array<{ indice: number; alg: Nodo; datos: Nodo | undefined }> = [];
+    infos.forEach((info, indice) => {
       const [oidNodo, c0] = hijos(info);
       const interior = hijos(c0)[0];
       const oid = oidDe(oidNodo);
@@ -343,27 +420,49 @@ export function revisarTopesP12(pfx: Nodo, password: string): void {
         // EncryptedData ::= SEQUENCE { version, EncryptedContentInfo }
         // EncryptedContentInfo ::= SEQUENCE { contentType, algoritmo, [0] datos }
         const eci = hijos(hijos(interior)[1]);
-        revisarAlgoritmo(eci[1]);
-        cifrados.push({ alg: eci[1]!, datos: eci[2] });
+        gastar(cuenta, iteracionesDeAlgoritmo(eci[1]));
+        cifrados.push({ indice, alg: eci[1]!, datos: eci[2] });
       } else {
         throw new CertificadoInvalidoError('formato');
       }
-    }
+    });
 
-    for (const { alg, datos } of cifrados) {
+    if (macData) verificarMac(macData, datosAuthSafe, password, iteracionesMac);
+
+    const nuevos = [...infos];
+    for (const { indice, alg, datos } of cifrados) {
       const [oidNodo, params] = hijos(alg);
       const cifrador = pbe().getCipher(oidDe(oidNodo), params!, password);
       cifrador.update(forge.util.createBuffer(octetos(datos)));
       if (!cifrador.finish()) throw new CertificadoInvalidoError('password');
+      const der = cifrador.output.getBytes();
       let interior: Nodo;
       try {
-        interior = forge.asn1.fromDer(cifrador.output.getBytes());
+        interior = forge.asn1.fromDer(der);
       } catch {
-        // Relleno válido por azar con una contraseña equivocada.
+        // Relleno válido por azar con una contraseña equivocada (sin MAC).
         throw new CertificadoInvalidoError('password');
       }
       revisarBolsas(interior, cuenta);
+      nuevos[indice] = contenidoEnClaro(der);
     }
+
+    const authSafeNuevo = nodo(forge.asn1.Type.SEQUENCE, true, [
+      nodo(forge.asn1.Type.OID, false, forge.asn1.oidToDer(OID_DATA).getBytes()),
+      nodo(
+        0,
+        true,
+        [
+          nodo(
+            forge.asn1.Type.OCTETSTRING,
+            false,
+            forge.asn1.toDer(nodo(forge.asn1.Type.SEQUENCE, true, nuevos)).getBytes(),
+          ),
+        ],
+        forge.asn1.Class.CONTEXT_SPECIFIC,
+      ),
+    ]);
+    return nodo(forge.asn1.Type.SEQUENCE, true, [version!, authSafeNuevo]);
   } catch (err) {
     if (err instanceof CertificadoInvalidoError) throw err;
     throw new CertificadoInvalidoError('formato');
@@ -378,9 +477,9 @@ function abrir(contenido: Buffer, password: string): forge.pkcs12.Pkcs12Pfx {
   } catch {
     throw new CertificadoInvalidoError('formato');
   }
-  revisarTopesP12(asn1, password);
+  const preparado = prepararP12(asn1, password);
   try {
-    return forge.pkcs12.pkcs12FromAsn1(asn1, true, password);
+    return forge.pkcs12.pkcs12FromAsn1(preparado, true, password);
   } catch (err) {
     const msg = err instanceof Error ? err.message : '';
     if (/MAC could not be verified|Invalid password|decrypt/i.test(msg)) {

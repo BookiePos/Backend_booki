@@ -52,6 +52,8 @@ export interface OpcionesP12 {
   cadenaRota?: boolean;
   /** Copias extra del certificado de la ECD (para el tope de cert bags). */
   certsExtra?: number;
+  /** Iteraciones del MAC y de la llave cifrada (forge usa 2.048 por defecto). */
+  iteraciones?: number;
 }
 
 const SUJETO_ECD: forge.pki.CertificateField[] = [
@@ -116,7 +118,7 @@ export function p12DePrueba(op: OpcionesP12 = {}): Buffer {
     op.conLlave === false ? null : titular.privateKey,
     cadena,
     password,
-    { algorithm: '3des' },
+    { algorithm: '3des', count: op.iteraciones ?? 2048 },
   );
   return Buffer.from(forge.asn1.toDer(asn1).getBytes(), 'binary');
 }
@@ -197,13 +199,17 @@ export function conCertsCifrados(
   p12: Buffer,
   password: string,
   algoritmo: '3des' | 'aes128' = '3des',
+  iteraciones = 2048,
 ): Buffer {
   return editarContenidos(
     p12,
     (infos) =>
       infos.map((info) => {
         if (!esDeCerts(info)) return info;
-        const epki = forge.pki.encryptPrivateKeyInfo(safeContents(info), password, { algorithm: algoritmo });
+        const epki = forge.pki.encryptPrivateKeyInfo(safeContents(info), password, {
+          algorithm: algoritmo,
+          count: iteraciones,
+        });
         return infoCifrada(hijos(epki)[0]!, hijos(epki)[1]!.value as string);
       }),
     false,
@@ -253,4 +259,44 @@ export function conIteracionesContenido(p12Cifrado: Buffer, n: number): Buffer {
       }),
     false,
   );
+}
+
+/** Repite `veces` cada EncryptedData del archivo (sin MAC). */
+export function conContenidosRepetidos(p12Cifrado: Buffer, veces: number): Buffer {
+  return editarContenidos(
+    p12Cifrado,
+    (infos) =>
+      infos.flatMap((info) =>
+        oid(hijos(info)[0]) === OID_ENCRYPTED_DATA ? Array.from({ length: veces }, () => info) : [info],
+      ),
+    false,
+  );
+}
+
+/**
+ * Le pone (o rehace) el MAC con la contraseña, SHA-1 como OpenSSL. Así un
+ * archivo editado vuelve a ser un .p12 íntegro.
+ */
+export function conMac(p12: Buffer, password: string, iteraciones = 2048): Buffer {
+  const pfx = aNodo(p12);
+  const authSafe = hijos(pfx)[1]!;
+  const datos = hijos(hijos(authSafe)[1])[0]!.value as string;
+  const sal = forge.random.getBytesSync(8);
+  const llave = forge.pkcs12.generateKey(password, forge.util.createBuffer(sal), 3, iteraciones, 20);
+  const hmac = forge.hmac.create();
+  hmac.start(forge.md.sha1.create(), llave);
+  hmac.update(datos);
+  const macData = A.create(A.Class.UNIVERSAL, A.Type.SEQUENCE, true, [
+    A.create(A.Class.UNIVERSAL, A.Type.SEQUENCE, true, [
+      A.create(A.Class.UNIVERSAL, A.Type.SEQUENCE, true, [
+        A.create(A.Class.UNIVERSAL, A.Type.OID, false, A.oidToDer('1.3.14.3.2.26').getBytes()),
+        A.create(A.Class.UNIVERSAL, A.Type.NULL, false, ''),
+      ]),
+      A.create(A.Class.UNIVERSAL, A.Type.OCTETSTRING, false, hmac.digest().getBytes()),
+    ]),
+    A.create(A.Class.UNIVERSAL, A.Type.OCTETSTRING, false, sal),
+    entero(iteraciones),
+  ]);
+  pfx.value = [hijos(pfx)[0]!, authSafe, macData];
+  return aBuffer(pfx);
 }
