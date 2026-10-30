@@ -1,3 +1,5 @@
+// Primero: Sentry debe iniciarse antes de cargar http/Express (ver instrument.ts).
+import './instrument';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
