@@ -12,7 +12,7 @@ import * as forge from 'node-forge';
 
 export const LIMITES_P12 = Object.freeze({
   bytes: 64 * 1024,
-  iteraciones: 200_000,
+  iteraciones: 100_000,
   bolsasCertificado: 10,
 });
 
