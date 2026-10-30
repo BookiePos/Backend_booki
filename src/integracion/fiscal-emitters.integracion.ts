@@ -34,7 +34,7 @@ describe('fiscal_emitters · un emisor por NIT y secretos cifrados', () => {
     env = await levantarEntorno();
     emisores = env.modelo(FiscalEmitter.name, FiscalEmitterSchema);
     sedes = env.modelo(Sede.name, SedeSchema);
-    svc = new FiscalEmittersService(emisores, sedes);
+    svc = new FiscalEmittersService(emisores, sedes, {} as never, {} as never);
   });
   afterAll(async () => {
     await env?.cerrar();

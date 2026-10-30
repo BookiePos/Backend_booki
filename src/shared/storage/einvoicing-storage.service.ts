@@ -45,6 +45,11 @@ const NOMBRE_P12 = /^[A-Za-z0-9][A-Za-z0-9._-]{0,98}\.p12$/i;
 export class EinvoicingStorageService {
   constructor(private readonly storage: StorageService) {}
 
+  /** Lanza 503 si no hay almacenamiento: para fallar antes de validar nada. */
+  assertDisponible(): void {
+    this.storage.assertAvailable();
+  }
+
   /** Guarda (o reemplaza) el .p12 de un emisor. Devuelve la ruta guardada. */
   async guardarCertificado(
     emisorId: string,

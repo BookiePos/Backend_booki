@@ -46,6 +46,8 @@ describe('FiscalEmittersService', () => {
   let model: any;
   let sedeModel: any;
   let svc: FiscalEmittersService;
+  let storage: { leerCertificado: ReturnType<typeof vi.fn> };
+  let audit: { record: ReturnType<typeof vi.fn> };
 
   const nuevaSede = (campos: Record<string, any> = {}) => {
     const _id = new Types.ObjectId();
@@ -80,7 +82,9 @@ describe('FiscalEmittersService', () => {
         return chain({ acknowledged: true });
       }),
     };
-    svc = new FiscalEmittersService(model, sedeModel);
+    storage = { leerCertificado: vi.fn(async () => Buffer.from('p12')) };
+    audit = { record: vi.fn(async () => undefined) };
+    svc = new FiscalEmittersService(model, sedeModel, storage as never, audit as never);
   });
 
   afterEach(() => {

@@ -121,8 +121,8 @@ export class FiscalEmitter {
   @Prop({ type: String, trim: true })
   nominaTestSetId?: string;
 
-  // ── Certificado .p12: solo metadata; el archivo lo sube la Fase 3 ──────────
-  /** Ruta en el bucket privado. */
+  // ── Certificado .p12: metadata; el archivo va al bucket privado (Fase 3) ───
+  /** Ruta en el bucket privado (`einvoicing/<empresa>/<emisor>/cert/…`). */
   @Prop({ type: String, trim: true })
   certPath?: string;
 
@@ -134,6 +134,21 @@ export class FiscalEmitter {
 
   @Prop(campoSecreto())
   certPasswordCifrada?: SecretoCifrado;
+
+  /** SHA-256 del certificado en DER (hex). No es secreto: identifica la carga. */
+  @Prop({ type: String, trim: true })
+  certHuella?: string;
+
+  /**
+   * Aviso de vencimiento que marca el barrido de `/cron/diario`: 'por-vencer'
+   * (30 días o menos) o 'vencido'. Sin aviso, el campo no está.
+   */
+  @Prop({ type: String, enum: ['por-vencer', 'vencido'] })
+  certAviso?: string;
+
+  /** Cuándo se marcó `certAviso` por última vez. */
+  @Prop({ type: Date })
+  certAvisoAt?: Date;
 }
 
 export const FiscalEmitterSchema = SchemaFactory.createForClass(FiscalEmitter);

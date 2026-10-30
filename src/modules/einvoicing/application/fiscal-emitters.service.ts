@@ -20,6 +20,7 @@ import {
 import { normalizarNit } from '../domain/consecutivo-unico';
 import {
   CAMPOS_SECRETOS_EMISOR,
+  certificadoVigente,
   datosEmisorDeSede,
   estadoDeEmisor,
   type CampoSecretoEmisor,
@@ -30,6 +31,9 @@ import { StubDian } from '../domain/stub-dian';
 import type { TransmisorDian } from '../domain/transmisor-dian';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
+import { avisoCertificado, type AvisoCertificado } from '../domain/certificado-p12';
+import { EinvoicingStorageService } from '../../../shared/storage/einvoicing-storage.service';
+import { AuditService } from '../../core-audit/application/audit.service';
 
 /**
  * Credenciales DIAN que se guardan en el emisor. Los secretos llegan en claro
@@ -78,6 +82,12 @@ export interface EmisorVista {
   nominaSoftwareId?: string;
   certVenceAt?: Date;
   certTitular?: string;
+  /** SHA-256 del certificado (hex). Identifica la carga; no es secreto. */
+  certHuella?: string;
+  /** Hay archivo, contraseña y no ha vencido. */
+  certificadoVigente: boolean;
+  /** 'por-vencer' (≤ 30 días), 'vencido' o null. Se calcula al leer. */
+  certAviso: AvisoCertificado | null;
   tieneFacturaPin: boolean;
   tieneFacturaTestSetId: boolean;
   tieneNominaPin: boolean;
@@ -94,6 +104,26 @@ function isDuplicateKeyError(err: unknown): boolean {
 const idValido = (id: string) => Types.ObjectId.isValid(id);
 
 /**
+ * El .p12 y su contraseña, listos para firmar. Solo vive en el servidor:
+ * `toJSON` y `util.inspect` lo tapan, así que un `logger.log(cert)` o un
+ * `JSON.stringify` accidental no saca ni la llave ni la contraseña.
+ */
+export class CertificadoCargado {
+  constructor(
+    readonly p12: Buffer,
+    readonly password: string,
+  ) {}
+
+  toJSON(): string {
+    return '[certificado .p12 oculto]';
+  }
+
+  [Symbol.for('nodejs.util.inspect.custom')](): string {
+    return '[certificado .p12 oculto]';
+  }
+}
+
+/**
  * Emisores fiscales (uno por NIT) de la empresa activa. La emisión actual
  * todavía lee los datos fiscales de la sede (`EinvoicingService.buildEmisor`):
  * este servicio prepara el camino de las Fases 3-4 sin cambiar lo que sale hoy.
@@ -107,6 +137,8 @@ export class FiscalEmittersService {
     private readonly model: Model<FiscalEmitterDocument>,
     @InjectModel(Sede.name)
     private readonly sedes: Model<SedeDocument>,
+    private readonly storage: EinvoicingStorageService,
+    private readonly audit: AuditService,
   ) {}
 
   /**
@@ -258,6 +290,38 @@ export class FiscalEmittersService {
     return descifrar(valor ?? null, contextoSecreto(e.id as string, campo));
   }
 
+  /**
+   * Lee el .p12 del emisor y descifra su contraseña para firmar (Fase 3). Solo
+   * para el servidor: nunca lo devuelvas en una respuesta ni lo loguees.
+   * `null` si el emisor no tiene certificado o falta la llave de cifrado.
+   * Cada lectura queda en la auditoría con la huella, nunca con la contraseña.
+   */
+  async cargarCertificado(
+    emisorId: string,
+    motivo = 'firma',
+  ): Promise<CertificadoCargado | null> {
+    const e = await this.conSecretosOrFail(emisorId);
+    if (!e.certPath) return null;
+    const id = e.id as string;
+    const password = descifrar(
+      (e.get('certPasswordCifrada') as SecretoCifrado | undefined) ?? null,
+      contextoSecreto(id, 'certPasswordCifrada'),
+    );
+    if (password == null) return null;
+    // La ruta se rearma desde el nombre con la empresa del contexto: un
+    // `certPath` alterado no puede apuntar a la carpeta de otra empresa.
+    const nombre = e.certPath.split('/').pop() ?? '';
+    const p12 = await this.storage.leerCertificado(id, nombre);
+    await this.audit.record({
+      method: 'SERVER',
+      path: `/einvoicing/emisores/${id}/certificado`,
+      success: true,
+      action: 'einvoicing.certificado.usado',
+      detail: { emisorId: id, huella: e.certHuella ?? '', motivo: String(motivo).slice(0, 60) },
+    });
+    return new CertificadoCargado(p12, password);
+  }
+
   /** Emisor de la sede para la pantalla, con su estado. Sin secretos. */
   async vistaDeSede(
     sedeId: string,
@@ -274,7 +338,8 @@ export class FiscalEmittersService {
   }
 
   /** Proyección cerrada del emisor: solo campos públicos y booleanos. */
-  vista(e: FiscalEmitterDocument): EmisorVista {
+  vista(e: FiscalEmitterDocument, ahora: Date = new Date()): EmisorVista {
+    const tieneCertPassword = e.get('certPasswordCifrada') != null;
     return {
       id: e.id as string,
       razonSocial: e.razonSocial,
@@ -300,11 +365,17 @@ export class FiscalEmittersService {
       nominaSoftwareId: e.nominaSoftwareId,
       certVenceAt: e.certVenceAt,
       certTitular: e.certTitular,
+      certHuella: e.certHuella,
+      certificadoVigente: certificadoVigente(
+        { certPath: e.certPath, certVenceAt: e.certVenceAt, tieneCertPassword, tieneFacturaPin: false },
+        ahora,
+      ),
+      certAviso: e.certPath ? avisoCertificado(e.certVenceAt, ahora) : null,
       tieneFacturaPin: e.get('facturaPin') != null,
       tieneFacturaTestSetId: !!e.facturaTestSetId,
       tieneNominaPin: e.get('nominaPin') != null,
       tieneNominaTestSetId: !!e.nominaTestSetId,
-      tieneCertificado: !!e.certPath && e.get('certPasswordCifrada') != null,
+      tieneCertificado: !!e.certPath && tieneCertPassword,
     };
   }
 
