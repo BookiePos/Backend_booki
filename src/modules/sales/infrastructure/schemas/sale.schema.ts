@@ -26,6 +26,7 @@ import {
 } from '../../../core-tax/domain/sale-tax';
 
 import { PLATFORM_CODES, PlatformCode } from '../../domain/platform-orders';
+import { IVA_TYPES, IvaType } from '../../../catalog/domain/catalog.constants';
 
 export type SaleDocument = HydratedDocument<Sale>;
 
@@ -95,6 +96,14 @@ class SaleLine {
   /** Tarifa del impuesto de la línea, sea IVA o INC (19, 8, 0…). */
   @Prop({ default: 0, min: 0 })
   taxRate!: number;
+
+  /**
+   * Tratamiento de IVA del producto congelado al vender: `gravado`, `exento`
+   * (0 % con base reportable: tributo 01 al 0 % en la factura) o `excluido`
+   * (sin tributo). Solo en líneas con IVA. Las ventas anteriores no lo tienen.
+   */
+  @Prop({ enum: IVA_TYPES })
+  taxTreatment?: IvaType;
 
   /** Base gravable de la línea (neto sin impuesto), para la factura electrónica. */
   @Prop({ default: 0, min: 0 })
