@@ -6,7 +6,10 @@ import {
   DOC_TYPES,
   DocType,
 } from '../../domain/einvoicing.constants';
-import { INDICE_CONSECUTIVO_UNICO } from '../../domain/consecutivo-unico';
+import {
+  INDICE_CONSECUTIVO_UNICO,
+  INDICE_EXCLUSION_FISCAL,
+} from '../../domain/consecutivo-unico';
 
 /** Datos fiscales del emisor congelados al emitir. */
 @Schema({ _id: false })
@@ -105,6 +108,42 @@ export class DocResolucion {
   @Prop() vigenciaHasta?: Date;
 }
 const DocResolucionSchema = SchemaFactory.createForClass(DocResolucion);
+
+/** Caja del POS (`InformacionCajaVenta`, anexo DE §8.2.1), congelada al emitir. */
+@Schema({ _id: false })
+export class DocCajaVenta {
+  @Prop() placa?: string;
+  @Prop() ubicacion?: string;
+  @Prop() tipo?: string;
+  @Prop() cajero?: string;
+  @Prop() codigoVenta?: string;
+}
+const DocCajaVentaSchema = SchemaFactory.createForClass(DocCajaVenta);
+
+/** Fabricante del software (`InformacionDelFabricanteDelSoftware`), congelado al emitir. */
+@Schema({ _id: false })
+export class DocFabricante {
+  @Prop() nombreApellido?: string;
+  @Prop() razonSocial?: string;
+  @Prop() nit?: string;
+  @Prop() nombreSoftware?: string;
+}
+const DocFabricanteSchema = SchemaFactory.createForClass(DocFabricante);
+
+/**
+ * Una parte del pago del POS (`PaymentMeans` 1..N). Va el medio de BookiPos;
+ * el código DIAN lo pone el builder (ver `domain/emision-pos.ts`).
+ */
+@Schema({ _id: false })
+export class DocPago {
+  @Prop({ required: true }) metodo!: string;
+  @Prop({ required: true, min: 0 }) monto!: number;
+  @Prop({ required: true }) formaPago!: string;
+  @Prop() tipoTarjeta?: string;
+  @Prop() canal?: string;
+  @Prop() vence?: string;
+}
+const DocPagoSchema = SchemaFactory.createForClass(DocPago);
 
 export type ElectronicDocumentDocument = HydratedDocument<ElectronicDocument>;
 
@@ -218,6 +257,25 @@ export class ElectronicDocument {
   @Prop({ type: DocResolucionSchema })
   resolution?: DocResolucion;
 
+  // ── Documento equivalente POS (Fase 7). Ausentes en los demás tipos ────────
+  /**
+   * `saleId` de la venta en los documentos `pos` e `invoice` vigentes: llave de
+   * la exclusión POS/FEV por venta (`INDICE_EXCLUSION_FISCAL`). La nota de
+   * ajuste de anulación (Fase 6) lo quita para liberar la venta.
+   */
+  @Prop({ type: Types.ObjectId })
+  ventaFiscal?: Types.ObjectId;
+
+  @Prop({ type: DocCajaVentaSchema })
+  cajaVenta?: DocCajaVenta;
+
+  @Prop({ type: DocFabricanteSchema })
+  fabricante?: DocFabricante;
+
+  /** Reparto del pago, una parte por medio (pago mixto, D10). */
+  @Prop({ type: [DocPagoSchema], default: undefined })
+  pagos?: DocPago[];
+
   // ── Nota crédito ─────────────────────────────────────────────────────────────
   @Prop()
   reason?: string;
@@ -324,6 +382,17 @@ export const ElectronicDocumentSchema =
 ElectronicDocumentSchema.index(
   { saleId: 1, type: 1 },
   { unique: true, partialFilterExpression: { saleId: { $exists: true } } },
+);
+
+// Exclusión POS/FEV (D1, Fase 7): una venta tiene POS o FEV, nunca los dos.
+// Las facturas anteriores a la Fase 7 no tienen `ventaFiscal`: para ellas la
+// exclusión la hace el servicio antes de emitir (ver `documentoFiscalDeVenta`).
+ElectronicDocumentSchema.index(
+  { ...INDICE_EXCLUSION_FISCAL.keys },
+  {
+    ...INDICE_EXCLUSION_FISCAL.options,
+    partialFilterExpression: { ...INDICE_EXCLUSION_FISCAL.options.partialFilterExpression },
+  },
 );
 
 // Único (checklist 1, Fase 1): un solo documento por (emisor, prefijo, número).

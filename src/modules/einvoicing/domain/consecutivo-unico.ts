@@ -44,6 +44,31 @@ export const INDICE_CONSECUTIVO_UNICO = {
 } as const;
 
 /**
+ * Campo de la exclusión POS/FEV (D1, Fase 7): el `saleId` de la venta en los
+ * documentos `pos` e `invoice` vigentes. Un índice único sobre él impide que una
+ * misma venta tenga POS y FEV a la vez.
+ *
+ * Es un campo aparte, y no un parcial `{ type: { $in: [...] } }` sobre `saleId`,
+ * porque el filtro parcial con `$in`/`$ne` no lo admiten todas las versiones de
+ * Mongo, y porque así «anular» (nota de ajuste de anulación, Fase 6) es solo
+ * quitar el campo: el documento anulado deja de bloquear la FEV que lo
+ * reemplaza sin que haya que borrarlo.
+ */
+export const CAMPO_EXCLUSION_FISCAL = 'ventaFiscal';
+
+/** Tipos de documento que se excluyen entre sí por venta. */
+export const TIPOS_EXCLUYENTES_POR_VENTA = ['pos', 'invoice'] as const;
+
+export const INDICE_EXCLUSION_FISCAL = {
+  keys: { [CAMPO_EXCLUSION_FISCAL]: 1 },
+  options: {
+    name: 'documento_fiscal_por_venta',
+    unique: true,
+    partialFilterExpression: { [CAMPO_EXCLUSION_FISCAL]: { $exists: true } },
+  },
+} as const;
+
+/**
  * Expresión de agregación que calcula el NIT normalizado a partir de
  * `emisor.nit` (misma regla que `normalizarNit`), para cubrir los documentos
  * viejos que no tienen `nitNorm`. Devuelve null si no hay dígitos.
@@ -113,9 +138,13 @@ export function contarConsecutivosDuplicados(
  * Qué choque de E11000 es, para decidir qué hacer al emitir:
  * - 'consecutivo': el número ya existe para (NIT, prefijo) -> subir el contador.
  * - 'venta': ya hay un documento de esa venta y tipo (doble emisión) -> devolverlo.
+ * - 'exclusion': la venta ya tiene su documento fiscal (POS o FEV, D1 de la
+ *   Fase 7) -> el mismo tipo se devuelve; el otro es un 409.
  * - null: no es un duplicado de índice, o no se reconoce.
  */
-export function tipoDeChoque(err: unknown): 'consecutivo' | 'venta' | null {
+export function tipoDeChoque(
+  err: unknown,
+): 'consecutivo' | 'venta' | 'exclusion' | null {
   const e = err as {
     code?: number;
     keyPattern?: Record<string, unknown>;
@@ -124,9 +153,11 @@ export function tipoDeChoque(err: unknown): 'consecutivo' | 'venta' | null {
   if (!e || e.code !== 11000) return null;
   const claves = Object.keys(e.keyPattern ?? {});
   if (claves.includes('number') || claves.includes('emisor.nitNorm')) return 'consecutivo';
+  if (claves.includes(CAMPO_EXCLUSION_FISCAL)) return 'exclusion';
   if (claves.includes('saleId')) return 'venta';
   const msg = e.message ?? '';
   if (msg.includes('consecutivo_unico')) return 'consecutivo';
   if (msg.includes('saleId_1_type_1')) return 'venta';
+  if (msg.includes(INDICE_EXCLUSION_FISCAL.options.name)) return 'exclusion';
   return null;
 }

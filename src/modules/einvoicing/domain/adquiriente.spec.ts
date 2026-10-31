@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  adquirientePos,
   buildAdquiriente,
   validarAdquirienteParaFactura,
   type ClienteVenta,
@@ -119,5 +120,51 @@ describe('validarAdquirienteParaFactura', () => {
       'responsabilidades fiscales',
       'municipio (código DANE de 5 dígitos)',
     ]);
+  });
+});
+
+describe('adquirientePos', () => {
+  it('anónimo: consumidor final aunque la venta traiga datos del cliente', () => {
+    const r = adquirientePos(completo, 'anonimo');
+    expect(r.faltantes).toEqual([]);
+    expect(r.adquiriente).toMatchObject({
+      docType: '13',
+      docNumber: '222222222222',
+      name: 'Consumidor final',
+    });
+  });
+
+  it('identificado: basta nombre, tipo y número (y DV si es NIT); no pide la ficha fiscal completa', () => {
+    const r = adquirientePos(
+      { name: 'Ana Pérez', idNumber: '1.020.304.050', docType: '13' },
+      'identificado',
+    );
+    expect(r.faltantes).toEqual([]);
+    expect(r.adquiriente).toMatchObject({
+      docType: '13',
+      docNumber: '1020304050',
+      name: 'Ana Pérez',
+    });
+  });
+
+  it('identificado con NIT: exige el DV correcto', () => {
+    expect(
+      adquirientePos({ name: 'Bancolombia', idNumber: '890903938', docType: '31', nitDv: '8' }, 'identificado')
+        .adquiriente,
+    ).toMatchObject({ docType: '31', docNumber: '890903938', nitDv: '8' });
+    const malo = adquirientePos(
+      { name: 'Bancolombia', idNumber: '890903938', docType: '31', nitDv: '1' },
+      'identificado',
+    );
+    expect(malo.adquiriente).toBeUndefined();
+    expect(malo.faltantes.join(' ')).toMatch(/DV/);
+  });
+
+  it('identificado sin datos: dice qué falta y no inventa un consumidor final', () => {
+    const r = adquirientePos({ name: '  ' }, 'identificado');
+    expect(r.adquiriente).toBeUndefined();
+    expect(r.faltantes).toEqual(
+      expect.arrayContaining(['nombre o razón social', 'tipo de documento', 'número de documento']),
+    );
   });
 });

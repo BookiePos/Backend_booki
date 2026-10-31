@@ -65,6 +65,11 @@ describe('tipoDeChoque', () => {
     expect(tipoDeChoque({ code: 11000, message: 'index: consecutivo_unico dup key' })).toBe('consecutivo');
   });
 
+  it('reconoce el choque de la exclusión POS/FEV por venta', () => {
+    expect(tipoDeChoque({ code: 11000, keyPattern: { ventaFiscal: 1 } })).toBe('exclusion');
+    expect(tipoDeChoque({ code: 11000, message: 'index: documento_fiscal_por_venta dup key' })).toBe('exclusion');
+  });
+
   it('lo que no es E11000 no es un choque', () => {
     expect(tipoDeChoque(new Error('x'))).toBeNull();
     expect(tipoDeChoque({ code: 11000 })).toBeNull();
