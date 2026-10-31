@@ -333,7 +333,7 @@ function extraerApplicationResponse(crudo: unknown, cufe: string): string | unde
   if (Math.floor((b64.length * 3) / 4) > MAX_BYTES_APPLICATION_RESPONSE) return undefined;
   const bytes = Buffer.from(b64, 'base64');
   if (bytes.length > MAX_BYTES_APPLICATION_RESPONSE) return undefined;
-  const xml = bytes.toString('utf8').replace(/^﻿/, '');
+  const xml = bytes.toString('utf8').replace(/^\uFEFF/, '');
   if (xml.includes('�') || traeDoctype(xml) || /<!ENTITY/i.test(xml)) return undefined;
   if (XMLValidator.validate(xml) !== true) return undefined;
   let raiz: Nodo;
