@@ -28,6 +28,8 @@ export function accionDian(op: OperacionDian): string {
 
 export const NS_SOAP12 = 'http://www.w3.org/2003/05/soap-envelope';
 export const NS_WCF = 'http://wcf.dian.colombia';
+/** Namespace del DataContract `DianResponse` (donde vive `IsValid`). */
+export const NS_DIAN_RESPONSE = 'http://schemas.datacontract.org/2004/07/DianResponse';
 export const NS_WSA = 'http://www.w3.org/2005/08/addressing';
 export const NS_WSSE =
   'http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd';
@@ -58,6 +60,9 @@ export const VIDA_TIMESTAMP_MS = 60_000;
 
 /** Presupuesto de tiempo por llamada si no se configura otro. */
 export const PRESUPUESTO_POR_DEFECTO_MS = 8_000;
+
+/** Tope de un presupuesto configurado: el mayor que `setTimeout` respeta (más, lo trataría como 1 ms). */
+export const PRESUPUESTO_MAX_MS = 2_147_483_647;
 
 /** Tope de la respuesta que se acepta leer (una respuesta normal pesa unos KB). */
 export const MAX_BYTES_RESPUESTA = 5 * 1024 * 1024;

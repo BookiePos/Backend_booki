@@ -210,4 +210,82 @@ describe('EinvoicingStorageService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
   });
+
+  describe('leerArtefactoGuardado (ruta guardada en el documento)', () => {
+    const DOC = 'doc1';
+    const ruta = 'einvoicing/emp1/em1/docs/doc1/documento.xml';
+
+    function conEspia() {
+      const storage = new StorageService(
+        config({ SUPABASE_URL: 'https://x', SUPABASE_SERVICE_ROLE_KEY: 'k' }),
+      );
+      const descargas = vi.spyOn(storage, 'descargarPrivado');
+      return { svc: new EinvoicingStorageService(storage), descargas };
+    }
+
+    beforeEach(() => {
+      // Hay archivos en todas las rutas que se prueban: si se rechaza es por
+      // la validación, no porque el archivo no exista.
+      for (const p of [
+        ruta,
+        'einvoicing/emp2/em1/docs/doc1/documento.xml',
+        'einvoicing/emp1/em1/docs/doc2/documento.xml',
+        'einvoicing/emp1/em1/docs/doc1/documento.pdf',
+        'einvoicing/emp1/em1/cert/firma.p12',
+      ]) {
+        subidos.set(p, { body: Buffer.from(`contenido de ${p}`), opts: {} });
+      }
+    });
+
+    it('lee la ruta canónica de la empresa del contexto y del documento', async () => {
+      const { svc, descargas } = conEspia();
+      const b = await enEmpresa(() => svc.leerArtefactoGuardado(ruta, DOC, 'xml'));
+      expect(b.toString()).toBe(`contenido de ${ruta}`);
+      expect(descargas).toHaveBeenCalledWith(ruta);
+      // Otro emisor de la misma empresa también vale (la sede pudo cambiar de emisor).
+      subidos.set('einvoicing/emp1/emViejo/docs/doc1/documento.xml', { body: Buffer.from('viejo'), opts: {} });
+      const viejo = await enEmpresa(() =>
+        svc.leerArtefactoGuardado('einvoicing/emp1/emViejo/docs/doc1/documento.xml', DOC, 'xml'),
+      );
+      expect(viejo.toString()).toBe('viejo');
+    });
+
+    it.each([
+      ['otra empresa', 'einvoicing/emp2/em1/docs/doc1/documento.xml'],
+      ['otro documento', 'einvoicing/emp1/em1/docs/doc2/documento.xml'],
+      ['otro tipo', 'einvoicing/emp1/em1/docs/doc1/documento.pdf'],
+      ['el certificado', 'einvoicing/emp1/em1/cert/firma.p12'],
+      ['.. como emisor', 'einvoicing/emp1/../docs/doc1/documento.xml'],
+      ['.. dentro del documento', 'einvoicing/emp1/em1/docs/../documento.xml'],
+      ['segmento de más', 'einvoicing/emp1/em1/x/docs/doc1/documento.xml'],
+      ['segmento de más al final', 'einvoicing/emp1/em1/docs/doc1/documento.xml/x'],
+      ['segmento de menos', 'einvoicing/emp1/docs/doc1/documento.xml'],
+      ['barra inicial', '/einvoicing/emp1/em1/docs/doc1/documento.xml'],
+      ['barra invertida', 'einvoicing\\emp1\\em1\\docs\\doc1\\documento.xml'],
+      ['otra raíz', 'otra/emp1/em1/docs/doc1/documento.xml'],
+      ['emisor con caracteres raros', 'einvoicing/emp1/em 1/docs/doc1/documento.xml'],
+      ['vacía', ''],
+      ['ausente', undefined],
+    ])('rechaza %s sin tocar el bucket', async (_n, pathname) => {
+      const { svc, descargas } = conEspia();
+      await expect(
+        enEmpresa(() => svc.leerArtefactoGuardado(pathname, DOC, 'xml')),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(descargas).not.toHaveBeenCalled();
+    });
+
+    it('pedir otro tipo con la ruta del XML se rechaza', async () => {
+      const { svc, descargas } = conEspia();
+      await expect(
+        enEmpresa(() => svc.leerArtefactoGuardado(ruta, DOC, 'pdf')),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(descargas).not.toHaveBeenCalled();
+    });
+
+    it('sin TenantContext no lee nada', async () => {
+      const { svc, descargas } = conEspia();
+      await expect(svc.leerArtefactoGuardado(ruta, DOC, 'xml')).rejects.toThrow(/contexto de empresa/);
+      expect(descargas).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -268,7 +268,7 @@ describe('FiscalEmittersService', () => {
       const t = await svc.transmisorParaSede(s);
       expect(t).toBeInstanceOf(StubDian);
       expect((await t.enviar({ tipo: 'invoice', fullNumber: 'FE1' })).mensajes[0]).toContain(
-        'aún no implementada',
+        'ambiente decidido por el gate',
       );
     });
 

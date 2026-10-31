@@ -48,6 +48,13 @@ export const BLOQUEO_TRANSMISION_MS = 330_000;
 export const PRESUPUESTO_RED_MAX_MS = 25_000;
 
 /**
+ * Presupuesto mínimo para salir a la red. Con menos no se marca `sent` ni se
+ * suma el intento: la llamada no alcanzaría a terminar y el documento quedaría
+ * en vuelo sin haber salido.
+ */
+export const PRESUPUESTO_RED_MIN_MS = 1_000;
+
+/**
  * Margen entre el fin del presupuesto de red y el vencimiento del bloqueo: da
  * tiempo a guardar el veredicto y soltar el bloqueo antes de que otro lo tome.
  */
@@ -289,6 +296,15 @@ export class TransmisionDianService {
       xmlFirmado = (await this.storage.leerArtefactoGuardado(doc.xmlPath, docId, 'xml')).toString('utf8');
     }
 
+    // Sin presupuesto no se sale: ni `sent`, ni intento, ni «transmitido». El
+    // documento queda donde estaba (firmado, o en vuelo si ya lo estaba).
+    if (this.presupuestoRed(bloqueoHasta) < PRESUPUESTO_RED_MIN_MS) {
+      this.logger.warn(`Documento ${docId}: sin presupuesto de red antes de que venza el bloqueo; no se envía.`);
+      return this.resultado(doc, false, 'RED', [
+        'Se agotó el tiempo de la transmisión antes de enviar; inténtalo de nuevo.',
+      ]);
+    }
+
     // (4) `sent` antes de la red.
     assertTransicion(estado, 'sent');
     doc = await this.escribirOFallar(docId, estado, bloqueo, {
@@ -297,7 +313,7 @@ export class TransmisionDianService {
     });
 
     // (5) Red.
-    let r = await this.llamar(bloqueoHasta, (presupuesto) =>
+    const envio = await this.llamar(bloqueoHasta, (presupuesto) =>
       transmisor.enviar({
         tipo: doc.type,
         fullNumber: doc.fullNumber,
@@ -306,11 +322,16 @@ export class TransmisionDianService {
         ...presupuesto,
       }),
     );
+    // ¿Salió de verdad? (casi siempre; no si el presupuesto se agotó al escribir `sent`).
+    const transmitido = envio.salio;
+    let r = envio.respuesta;
     if (r.codigo === 'YA_PROCESADO_DIAN') {
       // Reenvío de algo que la DIAN ya procesó: su veredicto se consulta.
-      r = await this.llamar(bloqueoHasta, (presupuesto) =>
-        transmisor.consultar({ cufe: doc.cufe, ...presupuesto }),
-      );
+      r = (
+        await this.llamar(bloqueoHasta, (presupuesto) =>
+          transmisor.consultar({ cufe: doc.cufe, ...presupuesto }),
+        )
+      ).respuesta;
     }
 
     // (6) Veredicto.
@@ -331,9 +352,9 @@ export class TransmisionDianService {
       this.logger.error(
         `Documento ${docId}: no se pudo guardar el veredicto (${destino}); queda en vuelo.`,
       );
-      return this.resultado(doc, true, r.codigo, r.mensajes);
+      return this.resultado(doc, transmitido, r.codigo, r.mensajes);
     }
-    return this.resultado(final, true, r.codigo, r.mensajes);
+    return this.resultado(final, transmitido, r.codigo, r.mensajes);
   }
 
   // ── Persistencia condicionada ──────────────────────────────────────────────
@@ -459,35 +480,58 @@ export class TransmisionDianService {
 
   /**
    * Una excepción del adaptador es un fallo de red: nunca un veredicto. Sin
-   * presupuesto no se llama: el documento sigue en vuelo y otro intento lo
-   * retoma. La señal se aborta al agotarse el presupuesto.
+   * presupuesto no se llama (`salio: false`): el documento sigue en vuelo y
+   * otro intento lo retoma. El tope no depende de que el transmisor lo
+   * respete: la llamada compite con el temporizador (`Promise.race`) y, al
+   * vencer, se aborta la señal y se responde `RED` aunque la promesa siga viva.
    */
   private async llamar(
     bloqueoHasta: Date,
     fn: (p: { presupuestoMs: number; signal: AbortSignal }) => Promise<RespuestaDian>,
-  ): Promise<RespuestaDian> {
+  ): Promise<{ respuesta: RespuestaDian; salio: boolean }> {
     const presupuestoMs = this.presupuestoRed(bloqueoHasta);
     if (presupuestoMs <= 0) {
       this.logger.warn('Sin presupuesto de red antes de que venza el bloqueo: no se llama a la DIAN.');
       return {
-        ok: false,
-        codigo: 'RED',
-        origen: 'adapter',
-        mensajes: ['Se agotó el tiempo de la transmisión; el documento queda en vuelo.'],
+        salio: false,
+        respuesta: {
+          ok: false,
+          codigo: 'RED',
+          origen: 'adapter',
+          mensajes: ['Se agotó el tiempo de la transmisión; el documento queda en vuelo.'],
+        },
       };
     }
     const control = new AbortController();
-    const reloj = setTimeout(() => control.abort(), presupuestoMs);
+    let reloj: ReturnType<typeof setTimeout> | undefined;
+    const vencido = new Promise<RespuestaDian>((resolve) => {
+      reloj = setTimeout(() => {
+        control.abort();
+        resolve({
+          ok: false,
+          codigo: 'RED',
+          origen: 'adapter',
+          mensajes: ['La DIAN no respondió dentro del presupuesto; el documento queda en vuelo.'],
+        });
+      }, presupuestoMs);
+    });
     try {
-      return await fn({ presupuestoMs, signal: control.signal });
+      // `then` convierte también un throw síncrono del transmisor en rechazo.
+      const intento = Promise.resolve().then(() => fn({ presupuestoMs, signal: control.signal }));
+      // Si pierde la carrera, su rechazo tardío no queda sin manejar.
+      intento.catch(() => undefined);
+      return { salio: true, respuesta: await Promise.race([intento, vencido]) };
     } catch (err) {
       // Solo el nombre: el mensaje podría traer el XML o datos del adaptador.
       this.logger.warn(`Fallo del transmisor DIAN (${(err as Error)?.name ?? 'Error'}).`);
       return {
-        ok: false,
-        codigo: 'RED',
-        origen: 'adapter',
-        mensajes: ['No hubo respuesta de la DIAN; el documento queda en vuelo.'],
+        salio: true,
+        respuesta: {
+          ok: false,
+          codigo: 'RED',
+          origen: 'adapter',
+          mensajes: ['No hubo respuesta de la DIAN; el documento queda en vuelo.'],
+        },
       };
     } finally {
       clearTimeout(reloj);

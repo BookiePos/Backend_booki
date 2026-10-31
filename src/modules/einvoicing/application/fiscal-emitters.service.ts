@@ -239,8 +239,9 @@ export class FiscalEmittersService {
   }
 
   /**
-   * Transmisor de la sede según su emisor real. Hasta que exista `DirectoDian`
-   * (Fases 3-4) siempre es un stub; sin emisor, el stub lo dice.
+   * Transmisor de la sede SIN pasar por el gate de ambiente: siempre es un stub
+   * (dice qué falta o que el directo necesita el gate). El transmisor directo
+   * solo lo arma `ProveedorTransmisorPorEmisor`, con el ambiente ya decidido.
    */
   async transmisorParaSede(sedeId: string): Promise<TransmisorDian> {
     const emisor = await this.obtenerPorSede(sedeId);

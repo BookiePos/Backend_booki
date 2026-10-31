@@ -478,7 +478,7 @@ describe('TransmisionDianService', () => {
       }
     });
 
-    it('si el bloqueo está por vencer, no llama a la red: queda en sent', async () => {
+    it('si el bloqueo está por vencer, no marca sent ni suma intentos ni dice transmitido', async () => {
       const d = sembrar();
       let reloj: { mockRestore: () => void } | undefined;
       firmante.firmar.mockImplementation(async (xml: string) => {
@@ -494,7 +494,53 @@ describe('TransmisionDianService', () => {
         reloj?.mockRestore();
       }
       expect(transmisor.enviar).not.toHaveBeenCalled();
-      expect(r).toMatchObject({ dianStatus: 'sent', codigo: 'RED' });
+      // Nada salió: el documento queda firmado (no en vuelo) y el intento no cuenta.
+      expect(r).toMatchObject({ dianStatus: 'signed', codigo: 'RED', transmitido: false, intentos: 0 });
+      expect(fila(d)).toMatchObject({ dianStatus: 'signed', intentos: 0 });
+      expect(fila(d).enviadoAt).toBeUndefined();
+      expect(fila(d).bloqueoTransmision).toBeUndefined();
+    });
+
+    it('reintento de un sent sin presupuesto: no suma intentos ni dice transmitido', async () => {
+      const d = docBase({ dianStatus: 'sent', intentos: 2 });
+      d.xmlPath = rutaXml(d);
+      modelo.filas.set(String(d._id), d);
+      bucket.set(d.xmlPath, Buffer.from('<Invoice/>'));
+      const real = Date.now;
+      const reloj = vi.spyOn(Date, 'now');
+      // Tras tomar el bloqueo, el reloj salta: quedan 10 s, menos que el margen.
+      reloj.mockImplementation(() => (fila(d).bloqueoHasta ? (fila(d).bloqueoHasta as Date).getTime() - 10_000 : real()));
+      let r;
+      try {
+        r = await transmitir(d);
+      } finally {
+        reloj.mockRestore();
+      }
+      expect(transmisor.enviar).not.toHaveBeenCalled();
+      expect(r).toMatchObject({ dianStatus: 'sent', transmitido: false, intentos: 2 });
+      expect(fila(d).intentos).toBe(2);
+    });
+
+    it('un transmisor que ignora la señal no pasa del presupuesto: RED y queda en vuelo', async () => {
+      const d = sembrar();
+      let reloj: { mockRestore: () => void } | undefined;
+      firmante.firmar.mockImplementation(async (xml: string) => {
+        // Quedan ~1,5 s de presupuesto (por encima del mínimo para salir).
+        const tarde = Date.now() + BLOQUEO_TRANSMISION_MS - MARGEN_BLOQUEO_MS - 1_500;
+        reloj = vi.spyOn(Date, 'now').mockReturnValue(tarde);
+        return `${xml}<!--firma-->`;
+      });
+      transmisor.enviar.mockImplementation(() => new Promise(() => undefined));
+      const inicio = performance.now();
+      let r;
+      try {
+        r = await transmitir(d);
+      } finally {
+        reloj?.mockRestore();
+      }
+      expect(performance.now() - inicio).toBeLessThan(5_000);
+      expect(transmisor.enviar).toHaveBeenCalledTimes(1);
+      expect(r).toMatchObject({ dianStatus: 'sent', codigo: 'RED', transmitido: true, intentos: 1 });
     });
   });
 
@@ -531,12 +577,13 @@ describe('TransmisionDianService', () => {
   describe('ambiente del proveedor', () => {
     it('ProveedorTransmisorPorEmisor falla si el emisor no está en el ambiente del gate', async () => {
       const em = {
-        obtenerPorSede: vi.fn(async () => ({ tipoAmbiente: '1' })),
-        transmisorParaSede: vi.fn(async () => new StubDian()),
+        obtenerPorSede: vi.fn(async () => ({ id: 'e1', tipoAmbiente: '1' })),
+        estadoConfiguracion: vi.fn(async () => ({ faltaParaTransmitir: ['SoftwareID'] })),
+        cargarCertificado: vi.fn(),
       };
       const p = new ProveedorTransmisorPorEmisor(em as never);
       await expect(p.para('s1', '2')).rejects.toBeInstanceOf(AmbienteNoCoincideError);
-      expect(em.transmisorParaSede).not.toHaveBeenCalled();
+      expect(em.estadoConfiguracion).not.toHaveBeenCalled();
       await expect(p.para('s1', '1')).resolves.toBeInstanceOf(StubDian);
       em.obtenerPorSede.mockResolvedValue(null as never);
       await expect(p.para('s1', '1')).rejects.toBeInstanceOf(AmbienteNoCoincideError);

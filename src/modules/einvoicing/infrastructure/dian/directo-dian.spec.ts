@@ -28,7 +28,8 @@ function falso(status: number, cuerpo: string): { transporte: TransporteHttp; ll
     llamadas,
     transporte: async (url, init) => {
       llamadas.push({ url, init });
-      return { status, text: async () => cuerpo };
+      // Como `fetch`: cuerpo en streaming (el único que se acepta).
+      return new Response(cuerpo, { status });
     },
   };
 }
@@ -212,7 +213,14 @@ describe('DirectoDian', () => {
   });
 
   it('cuerpo que no se puede leer → RED', async () => {
-    const roto: TransporteHttp = async () => ({ status: 200, text: async () => Promise.reject(new Error('corte')) });
+    const roto: TransporteHttp = async () => ({
+      status: 200,
+      body: new ReadableStream<Uint8Array>({
+        pull(c) {
+          c.error(new Error('corte'));
+        },
+      }),
+    });
     expect(await directo(roto).consultar({ cufe: 'c' })).toMatchObject({ codigo: 'RED' });
   });
 
@@ -263,10 +271,16 @@ describe('DirectoDian', () => {
     const t: TransporteHttp = async () => ({
       status: 200,
       headers: new Headers({ 'content-length': String(MAX_BYTES_RESPUESTA + 1) }),
-      text: async () => {
-        leido = true;
-        return '';
-      },
+      // highWaterMark 0: el stream no pide datos hasta que alguien lee.
+      body: new ReadableStream<Uint8Array>(
+        {
+          pull(c) {
+            leido = true;
+            c.close();
+          },
+        },
+        { highWaterMark: 0 },
+      ),
     });
     expect(await directo(t).consultar({ cufe: 'c' })).toMatchObject({ codigo: 'RED' });
     expect(leido).toBe(false);
@@ -305,8 +319,6 @@ describe('DirectoDian', () => {
     // ~3 bytes por carácter: menos caracteres que el tope, más bytes.
     const grande = 'ñ€'.repeat(Math.ceil(MAX_BYTES_RESPUESTA / 4));
     expect(grande.length).toBeLessThan(MAX_BYTES_RESPUESTA);
-    const sinStream = falso(200, grande);
-    expect(await directo(sinStream.transporte).consultar({ cufe: 'c' })).toMatchObject({ codigo: 'RED' });
     const conStream: TransporteHttp = async () => new Response(grande, { status: 200 });
     expect(await directo(conStream).consultar({ cufe: 'c' })).toMatchObject({ codigo: 'RED' });
   });
@@ -375,6 +387,42 @@ describe('DirectoDian', () => {
         expect(init.body).not.toContain(llave.slice(0, 40));
         expect(init.body).not.toContain(PASSWORD);
       }
+    }
+  });
+  it('sin cuerpo en streaming no hay respaldo text(): RED sin leer nada', async () => {
+    // `text()` lee la respuesta entera antes de poder medirla: se descarta.
+    let leido = false;
+    const t: TransporteHttp = async () =>
+      ({
+        status: 200,
+        text: async () => {
+          leido = true;
+          return respuestaDocumento('GetStatus', { isValid: 'true', cufe: 'c' });
+        },
+      }) as never;
+    expect(await directo(t).consultar({ cufe: 'c' })).toMatchObject({ ok: false, codigo: 'RED', origen: 'adapter' });
+    expect(leido).toBe(false);
+    const nulo: TransporteHttp = async () => ({ status: 200, body: null });
+    expect(await directo(nulo).consultar({ cufe: 'c' })).toMatchObject({ codigo: 'RED' });
+  });
+
+  it('presupuestoMs y presupuestosMs del constructor: entero finito > 0, si no lanza', () => {
+    const t = falso(200, '').transporte;
+    for (const malo of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, '8000', null, 2 ** 31]) {
+      expect(() => directo(t, { presupuestoMs: malo as never })).toThrow(/presupuesto/i);
+      expect(() => directo(t, { presupuestosMs: { GetStatus: malo as never } })).toThrow(/presupuesto/i);
+    }
+    expect(() => directo(t, { presupuestosMs: { Inventada: 100 } as never })).toThrow(/presupuesto/i);
+    expect(() => directo(t, { presupuestosMs: null as never })).toThrow(/presupuesto/i);
+    expect(directo(t, { presupuestoMs: 1, presupuestosMs: { GetStatus: 5_000 } })).toBeInstanceOf(DirectoDian);
+  });
+
+  it('un presupuesto de llamada agotado (0 o negativo) no sale a la red', async () => {
+    for (const presupuestoMs of [0, -5]) {
+      const f = falso(200, respuestaDocumento('GetStatus', { isValid: 'true', cufe: 'c' }));
+      const r = await directo(f.transporte).consultar({ cufe: 'c', presupuestoMs });
+      expect(r).toMatchObject({ ok: false, codigo: 'RED', origen: 'adapter' });
+      expect(f.llamadas).toHaveLength(0);
     }
   });
 });
