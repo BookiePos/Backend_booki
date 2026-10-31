@@ -8,6 +8,7 @@ import {
 } from '../../domain/transmisor-dian';
 import {
   MAX_BYTES_RESPUESTA,
+  NS_DIAN_RESPONSE,
   OPERACION_RANGOS_OK,
   PATRON_EN_PROCESO,
   PATRON_NO_ENCONTRADO,
@@ -72,12 +73,82 @@ function raizEsSobreSoap12(cuerpo: string): boolean {
   return declaracion === NS_SOAP12;
 }
 
-/** Mensajes: sin saltos, cortos y sin bloques base64 largos (podrían ser el XML o un certificado). */
+/** Elementos hijos de `n` con ese nombre local (cualquier prefijo), aplanando repetidos. */
+function hijosLocales(n: Nodo, local: string): { clave: string; valor: unknown }[] {
+  const r: { clave: string; valor: unknown }[] = [];
+  for (const [clave, valor] of Object.entries(n)) {
+    if (clave.startsWith('@_') || clave.startsWith('#')) continue;
+    if (clave.split(':').pop() !== local) continue;
+    for (const v of Array.isArray(valor) ? valor : [valor]) r.push({ clave, valor: v });
+  }
+  return r;
+}
+
+/** Ámbito de namespaces del hijo: el del padre más lo que declare el propio elemento. */
+function ambitoDe(padre: Readonly<Record<string, string>>, valor: unknown): Record<string, string> {
+  const ambito = { ...padre };
+  const n = nodo(valor);
+  if (!n) return ambito;
+  for (const [k, v] of Object.entries(n)) {
+    if (typeof v !== 'string') continue;
+    if (k === '@_xmlns') ambito[''] = v;
+    else if (k.startsWith('@_xmlns:')) ambito[k.slice('@_xmlns:'.length)] = v;
+  }
+  return ambito;
+}
+
+function namespaceDe(clave: string, ambito: Readonly<Record<string, string>>): string | undefined {
+  const i = clave.indexOf(':');
+  return ambito[i >= 0 ? clave.slice(0, i) : ''];
+}
+
+/**
+ * Todo `IsValid` del resultado (o de cada `DianResponse` del lote) tiene que
+ * estar en el namespace del DataContract `DianResponse`. El parser principal
+ * quita los prefijos, así que esta revisión vuelve a leer con prefijos y
+ * resuelve las declaraciones `xmlns` desde la raíz.
+ */
+function isValidEnNamespace(cuerpo: string, op: OperacionDian): boolean {
+  let raiz: Nodo;
+  try {
+    raiz = parserRaiz.parse(cuerpo) as Nodo;
+  } catch {
+    return false;
+  }
+  let nivel: { valor: unknown; ambito: Record<string, string> }[] = [{ valor: raiz, ambito: {} }];
+  const camino = ['Envelope', 'Body', `${op}Response`, `${op}Result`, ...(op === 'GetStatusZip' ? ['DianResponse'] : [])];
+  for (const local of camino) {
+    const siguiente: typeof nivel = [];
+    for (const { valor, ambito } of nivel) {
+      const n = nodo(valor);
+      if (!n) continue;
+      for (const h of hijosLocales(n, local)) siguiente.push({ valor: h.valor, ambito: ambitoDe(ambito, h.valor) });
+    }
+    nivel = siguiente;
+  }
+  for (const { valor, ambito } of nivel) {
+    const n = nodo(valor);
+    if (!n) continue;
+    for (const h of hijosLocales(n, 'IsValid')) {
+      if (namespaceDe(h.clave, ambitoDe(ambito, h.valor)) !== NS_DIAN_RESPONSE) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Mensajes: sin saltos, cortos, sin bloques base64 largos (podrían ser el XML o
+ * un certificado) y sin claves en hex de 40 a 64 caracteres (la TechnicalKey).
+ * Un CUFE/CUDE (96 hex, SHA-384) no es secreto y se deja: ayuda a ubicar el
+ * documento en el mensaje.
+ */
 const MAX_MENSAJES = 50;
 const MAX_LARGO_MENSAJE = 500;
+const CLAVE_HEX = /(?<![0-9A-Fa-f])[0-9A-Fa-f]{40,64}(?![0-9A-Fa-f])/g;
 export function limpiarMensaje(m: string): string {
   const limpio = m
     .replace(/[A-Za-z0-9+/=]{100,}/g, '[omitido]')
+    .replace(CLAVE_HEX, '[omitido]')
     .replace(/\s+/g, ' ')
     .trim();
   return limpio.length > MAX_LARGO_MENSAJE ? `${limpio.slice(0, MAX_LARGO_MENSAJE)}…` : limpio;
@@ -171,6 +242,8 @@ export function mapearRespuestaDocumento(
   const resultado = (p as Extract<Parseo, { tipo: 'cuerpo' }>).resultado;
 
   if (op === 'SendTestSetAsync') return mapearAsincrono(resultado);
+  // Un IsValid de otro namespace no es el veredicto de la DIAN.
+  if (!isValidEnNamespace(cuerpo, op)) return respuestaRed('El IsValid de la respuesta no es el de la DIAN');
   if (op === 'GetStatusZip') {
     const items = lista(resultado.DianResponse).map(nodo);
     if (items.some((i) => !i)) return respuestaRed('Una respuesta del lote no se pudo leer');
@@ -254,6 +327,10 @@ function mapearDianResponse(r: Nodo, op: OperacionDian, esperado: EsperadoDian =
   const mensajes = [descripcion, ...errores].filter(Boolean);
 
   if (isValid === 'true') {
+    // Aceptar exige saber de qué documento habla: con CUFE esperado, la clave es obligatoria.
+    if (esperado.cufe?.trim() && !cufe) {
+      return respuestaRed('La DIAN aceptó sin decir qué documento (falta XmlDocumentKey)');
+    }
     return cerrar({ ...base, ok: true, isValid: true, codigo: statusCode, mensajes });
   }
   if (isValid !== 'false') return respuestaRed('La respuesta de la DIAN no trae IsValid');

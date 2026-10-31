@@ -52,7 +52,8 @@ import { ControlModule } from '../control/control.module';
     FiscalEmittersService,
     CertificadoEmisorService,
     TransmisionDianService,
-    // Fase 5 cambia el armador por el builder UBL; el PR de DirectoDian, el proveedor.
+    // Fase 5 cambia el armador por el builder UBL. El proveedor arma DirectoDian con el .p12
+    // del emisor; TRANSPORTE_HTTP_DIAN es opcional (sin él, fetch).
     { provide: ARMADOR_XML_DIAN, useClass: ArmadorUblPendiente },
     { provide: FIRMANTE_DIAN, useClass: FirmanteP12 },
     { provide: PROVEEDOR_TRANSMISOR_DIAN, useClass: ProveedorTransmisorPorEmisor },

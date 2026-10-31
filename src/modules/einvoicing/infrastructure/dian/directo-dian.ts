@@ -10,6 +10,8 @@ import {
 } from '../../domain/transmisor-dian';
 import {
   MAX_BYTES_RESPUESTA,
+  OPERACIONES_DIAN,
+  PRESUPUESTO_MAX_MS,
   PRESUPUESTO_POR_DEFECTO_MS,
   URL_DIAN_POR_AMBIENTE,
   type OperacionDian,
@@ -48,10 +50,12 @@ export interface CuerpoStreaming {
 export interface RespuestaHttp {
   status: number;
   headers?: { get(nombre: string): string | null };
-  /** Si viene, se lee en streaming contando bytes (preferido). */
+  /**
+   * Cuerpo en streaming: se lee contando bytes y se corta al pasar el tope. Es
+   * obligatorio: no hay respaldo con `text()`, que lee la respuesta entera antes
+   * de poder medirla (un transporte inyectado sin streaming responde `RED`).
+   */
   body?: CuerpoStreaming | null;
-  /** Respaldo para transportes sin streaming. */
-  text?(): Promise<string>;
 }
 
 export interface PeticionHttp {
@@ -81,9 +85,9 @@ export interface ConfigDirectoDian {
   /** Código del proveedor tecnológico en el nombre del archivo (`000` = propio). */
   codigoPt?: string;
   transporte?: TransporteHttp;
-  /** Presupuesto por llamada (ms). Vencido = `RED`. */
+  /** Presupuesto por llamada (ms, entero > 0). Vencido = `RED`. Inválido = lanza. */
   presupuestoMs?: number;
-  /** Presupuesto por operación, si alguna necesita otro. */
+  /** Presupuesto por operación (ms, entero > 0), si alguna necesita otro. Inválido = lanza. */
   presupuestosMs?: Partial<Record<OperacionDian, number>>;
   partesFirmadas?: readonly ParteFirmada[];
   reloj?: () => Date;
@@ -119,6 +123,39 @@ export function nitSinDv(v: unknown): string | null {
   return /^\d{1,10}$/.test(limpio) ? limpio : null;
 }
 
+/** Entero finito > 0 y que `setTimeout` respete (si no, lo trataría como 1 ms). */
+function presupuestoValido(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v > 0 && v <= PRESUPUESTO_MAX_MS;
+}
+
+/** Presupuestos del constructor: un valor inválido lanza, nunca cae a un tope implícito. */
+function validarPresupuestos(cfg: ConfigDirectoDian): {
+  general: number;
+  porOperacion: Partial<Record<OperacionDian, number>>;
+} {
+  const general: unknown = cfg.presupuestoMs === undefined ? PRESUPUESTO_POR_DEFECTO_MS : cfg.presupuestoMs;
+  if (!presupuestoValido(general)) {
+    throw new Error('presupuestoMs inválido: debe ser un entero de milisegundos mayor que 0');
+  }
+  const porOperacion: Partial<Record<OperacionDian, number>> = {};
+  const crudo: unknown = cfg.presupuestosMs;
+  if (crudo === undefined) return { general, porOperacion };
+  if (crudo === null || typeof crudo !== 'object' || Array.isArray(crudo)) {
+    throw new Error('presupuestosMs inválido: debe ser un objeto por operación');
+  }
+  for (const [op, ms] of Object.entries(crudo as Record<string, unknown>)) {
+    if (!(OPERACIONES_DIAN as readonly string[]).includes(op)) {
+      throw new Error('presupuestosMs inválido: operación DIAN desconocida');
+    }
+    if (ms === undefined) continue;
+    if (!presupuestoValido(ms)) {
+      throw new Error(`presupuestosMs inválido para ${op}: debe ser un entero de milisegundos mayor que 0`);
+    }
+    porOperacion[op as OperacionDian] = ms;
+  }
+  return { general, porOperacion };
+}
+
 /** Lee el cuerpo contando BYTES; corta al pasar el tope. */
 async function leerCuerpoLimitado(res: RespuestaHttp, max: number, control: AbortController): Promise<string> {
   const declarado = res.headers?.get('content-length');
@@ -126,29 +163,25 @@ async function leerCuerpoLimitado(res: RespuestaHttp, max: number, control: Abor
     control.abort();
     throw new TopeSuperado();
   }
-  if (res.body && typeof res.body.getReader === 'function') {
-    const lector = res.body.getReader();
-    const partes: Uint8Array[] = [];
-    let total = 0;
-    for (;;) {
-      const { done, value } = await lector.read();
-      if (done) break;
-      if (!value) continue;
-      total += value.byteLength;
-      if (total > max) {
-        control.abort();
-        await lector.cancel().catch(() => undefined);
-        throw new TopeSuperado();
-      }
-      partes.push(value);
+  // Sin streaming no se lee: `text()` cargaría todo antes de medir.
+  if (!res.body || typeof res.body.getReader !== 'function') throw new Error('respuesta sin cuerpo en streaming');
+  const lector = res.body.getReader();
+  const partes: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await lector.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > max) {
+      control.abort();
+      await lector.cancel().catch(() => undefined);
+      throw new TopeSuperado();
     }
-    // UTF-8 estricto: bytes inválidos = cuerpo ilegible.
-    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(partes));
+    partes.push(value);
   }
-  if (typeof res.text !== 'function') throw new Error('respuesta sin cuerpo');
-  const cuerpo = await res.text();
-  if (typeof cuerpo !== 'string' || Buffer.byteLength(cuerpo, 'utf8') > max) throw new TopeSuperado();
-  return cuerpo;
+  // UTF-8 estricto: bytes inválidos = cuerpo ilegible.
+  return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(partes));
 }
 
 export class DirectoDian implements TransmisorDian {
@@ -182,6 +215,7 @@ export class DirectoDian implements TransmisorDian {
       nitProveedor = n;
     }
     if (!cfg.material?.llavePem || !cfg.material.certificadoB64) throw new Error('Falta el certificado del emisor');
+    const presupuestos = validarPresupuestos(cfg);
 
     this.#credencial = { llavePem: cfg.material.llavePem, certificadoB64: cfg.material.certificadoB64 };
     this.#url = URL_DIAN_POR_AMBIENTE[amb as TipoAmbiente];
@@ -191,8 +225,8 @@ export class DirectoDian implements TransmisorDian {
     this.#nit = nit;
     this.#nitProveedor = nitProveedor;
     this.#codigoPt = cfg.codigoPt;
-    this.#presupuestoMs = cfg.presupuestoMs ?? PRESUPUESTO_POR_DEFECTO_MS;
-    this.#presupuestosMs = { ...cfg.presupuestosMs };
+    this.#presupuestoMs = presupuestos.general;
+    this.#presupuestosMs = presupuestos.porOperacion;
     this.#partes = cfg.partesFirmadas;
   }
 
@@ -315,7 +349,9 @@ export class DirectoDian implements TransmisorDian {
     const configurado = this.#presupuestosMs[op] ?? this.#presupuestoMs;
     const pedido = opc.presupuestoMs;
     const ms =
-      typeof pedido === 'number' && Number.isFinite(pedido) ? Math.max(0, Math.min(configurado, pedido)) : configurado;
+      typeof pedido === 'number' && !Number.isNaN(pedido) ? Math.min(configurado, Math.floor(pedido)) : configurado;
+    // Presupuesto agotado: ni sale a la red (un setTimeout(0) dejaría salir la petición igual).
+    if (!(ms > 0)) return { respuesta: respuestaRed('Se agotó el presupuesto antes de llamar a la DIAN') };
     const control = new AbortController();
     let temporizador: ReturnType<typeof setTimeout> | undefined;
     let alAbortar: (() => void) | undefined;
@@ -370,8 +406,9 @@ export class DirectoDian implements TransmisorDian {
 }
 
 /**
- * Fábrica para que `resolverTransmisor` la conecte (otro PR). `tipoAmbiente` es
- * obligatorio y sin valor por defecto: si falta o no es '1'/'2', lanza.
+ * Fábrica que usa `ProveedorTransmisorPorEmisor` (vía `resolverTransmisor`).
+ * `tipoAmbiente` es obligatorio y sin valor por defecto: si falta o no es
+ * '1'/'2', lanza; igual con presupuestos inválidos.
  */
 export function crearDirectoDian(cfg: ConfigDirectoDian): DirectoDian {
   return new DirectoDian(cfg);

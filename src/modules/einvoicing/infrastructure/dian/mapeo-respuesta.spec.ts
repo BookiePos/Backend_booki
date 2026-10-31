@@ -229,6 +229,62 @@ describe('mapeo fail-closed de la respuesta DIAN', () => {
     expect(limpiarMensaje(`Error\n en ${'A'.repeat(200)} fin`)).toBe('Error en [omitido] fin');
     expect(limpiarMensaje('ab '.repeat(300))).toHaveLength(501);
   });
+
+  it('limpia también las claves en hex (TechnicalKey de 40 a 64), pero no un CUFE de 96', () => {
+    const k64 = 'a1B2'.repeat(16);
+    expect(limpiarMensaje(`clave ${k64} fin`)).toBe('clave [omitido] fin');
+    expect(limpiarMensaje(`clave:${k64}.`)).toBe('clave:[omitido].');
+    expect(limpiarMensaje(`clave ${CLAVE_TECNICA_PRUEBA}`)).toBe('clave [omitido]');
+    const cufe = 'f'.repeat(96);
+    expect(limpiarMensaje(`CUFE ${cufe}`)).toBe(`CUFE ${cufe}`);
+    expect(limpiarMensaje('NIT 900123456')).toBe('NIT 900123456');
+  });
+
+  it('con CUFE esperado e IsValid=true, exige XmlDocumentKey; si falta → RED', () => {
+    for (const op of ['SendBillSync', 'GetStatus'] as const) {
+      const sinClave = respuestaDocumento(op, { isValid: 'true', cufe: null });
+      const r = mapearRespuestaDocumento(op, 200, sinClave, { cufe: 'cufe-1' });
+      expect(r).toMatchObject({ ok: false, codigo: 'RED', origen: 'adapter' });
+      expect(r.isValid).toBeUndefined();
+      // Sin CUFE esperado no hay con qué comparar: se acepta.
+      expect(mapearRespuestaDocumento(op, 200, sinClave)).toMatchObject({ ok: true });
+    }
+    const lote = respuestaStatusZip([{ isValid: 'true', cufe: null }]);
+    expect(mapearRespuestaDocumento('GetStatusZip', 200, lote, { cufe: 'cufe-1' })).toMatchObject({ codigo: 'RED' });
+    const vacia = respuestaDocumento('SendBillSync', { isValid: 'true', cufe: '' });
+    expect(mapearRespuestaDocumento('SendBillSync', 200, vacia, { cufe: 'cufe-1' })).toMatchObject({ codigo: 'RED' });
+  });
+
+  it('IsValid debe estar en el namespace DianResponse; otro namespace → RED', () => {
+    const NS = 'http://schemas.datacontract.org/2004/07/DianResponse';
+    const base = respuestaDocumento('SendBillSync', { isValid: 'true' });
+    // Mismo namespace con otro prefijo o como namespace por defecto: válido.
+    const otroPrefijo = base.replace('<b:IsValid>true</b:IsValid>', `<z:IsValid xmlns:z="${NS}">true</z:IsValid>`);
+    expect(mapearRespuestaDocumento('SendBillSync', 200, otroPrefijo)).toMatchObject({ ok: true });
+    const porDefecto = base.replace('<b:IsValid>true</b:IsValid>', `<IsValid xmlns="${NS}">true</IsValid>`);
+    expect(mapearRespuestaDocumento('SendBillSync', 200, porDefecto)).toMatchObject({ ok: true });
+    for (const malo of [
+      base.replace('<b:IsValid>true</b:IsValid>', '<z:IsValid xmlns:z="urn:otro">true</z:IsValid>'),
+      // Sin prefijo hereda el namespace por defecto (wcf.dian.colombia), no el de DianResponse.
+      base.replace('<b:IsValid>true</b:IsValid>', '<IsValid>true</IsValid>'),
+      base.replace('<b:IsValid>true</b:IsValid>', '<b:IsValid xmlns:b="urn:otro">true</b:IsValid>'),
+      base.replace('xmlns:b="http://schemas.datacontract.org/2004/07/DianResponse"', 'xmlns:b="urn:otro"'),
+    ]) {
+      const r = mapearRespuestaDocumento('SendBillSync', 200, malo);
+      expect(r).toMatchObject({ ok: false, codigo: 'RED' });
+      expect(r.isValid).toBeUndefined();
+    }
+    const loteMalo = respuestaStatusZip([{ isValid: 'true', cufe: 'c' }]).replace(
+      'xmlns:b="http://schemas.datacontract.org/2004/07/DianResponse"',
+      'xmlns:b="urn:otro"',
+    );
+    expect(mapearRespuestaDocumento('GetStatusZip', 200, loteMalo, { cufe: 'c' })).toMatchObject({ codigo: 'RED' });
+    const rechazoMalo = respuestaDocumento('SendBillSync', { isValid: 'false', statusCode: '99', errores: ['x'] }).replace(
+      '<b:IsValid>false</b:IsValid>',
+      '<z:IsValid xmlns:z="urn:otro">false</z:IsValid>',
+    );
+    expect(mapearRespuestaDocumento('SendBillSync', 200, rechazoMalo).isValid).toBeUndefined();
+  });
 });
 
 describe('mapeo de GetNumberingRange', () => {

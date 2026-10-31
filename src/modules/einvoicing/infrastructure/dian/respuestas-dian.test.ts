@@ -18,7 +18,8 @@ export interface DatosDianResponse {
   statusCode?: string;
   descripcion?: string;
   errores?: string[];
-  cufe?: string;
+  /** `null` = sin `XmlDocumentKey`. */
+  cufe?: string | null;
 }
 
 export function dianResponseInterno(d: DatosDianResponse, etiqueta = 'b'): string {
@@ -31,7 +32,7 @@ export function dianResponseInterno(d: DatosDianResponse, etiqueta = 'b'): strin
     `<${etiqueta}:StatusMessage>La Factura electrónica SETP990000001, ha sido autorizada.</${etiqueta}:StatusMessage>` +
     `<${etiqueta}:XmlBase64Bytes>PD94bWwgdmVyc2lvbj0iMS4wIj8+</${etiqueta}:XmlBase64Bytes>` +
     `<${etiqueta}:XmlBytes i:nil="true"/>` +
-    `<${etiqueta}:XmlDocumentKey>${d.cufe ?? 'cufe-de-prueba-123'}</${etiqueta}:XmlDocumentKey>` +
+    (d.cufe === null ? '' : `<${etiqueta}:XmlDocumentKey>${d.cufe ?? 'cufe-de-prueba-123'}</${etiqueta}:XmlDocumentKey>`) +
     `<${etiqueta}:XmlFileName>fv09001234560002600000001</${etiqueta}:XmlFileName>`
   );
 }
