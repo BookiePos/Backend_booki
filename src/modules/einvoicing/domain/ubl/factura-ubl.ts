@@ -46,11 +46,37 @@ export const NS_STS = 'dian:gov:co:facturaelectronica:Structures-2-1';
 export const NIT_DIAN = '800197268';
 export const DV_NIT_DIAN = '4';
 
-const PERFIL_FACTURA = 'DIAN 2.1: Factura Electrónica de Venta';
-/** 10 = factura estándar (tabla de tipos de operación). */
-const TIPO_OPERACION = '10';
-/** 01 = factura electrónica de venta. */
-const TIPO_FACTURA = '01';
+/**
+ * Constantes del encabezado que distinguen un `Invoice` de otro: la factura de
+ * venta (anexo FEV 1.9) y el documento equivalente POS (anexo DE v1.0) comparten
+ * todo lo demás.
+ */
+export interface PerfilInvoice {
+  /** Sujeto de los mensajes de error («La factura…», «El documento POS…»). */
+  documento: string;
+  customizationId: string;
+  profileId: string;
+  invoiceTypeCode: string;
+  /** `schemeName` del UUID. */
+  esquemaCodigoUnico: 'CUFE-SHA384' | 'CUDE-SHA384';
+}
+
+/** Factura de venta: operación estándar 10, tipo 01. */
+export const PERFIL_FACTURA: PerfilInvoice = {
+  documento: 'La factura',
+  customizationId: '10',
+  profileId: 'DIAN 2.1: Factura Electrónica de Venta',
+  invoiceTypeCode: '01',
+  esquemaCodigoUnico: 'CUFE-SHA384',
+};
+
+/** Un `cac:PaymentMeans`: forma (1 contado, 2 crédito), medio (tabla del anexo) y vencimiento. */
+export interface PagoUbl {
+  formaPago: '1' | '2';
+  medio: string;
+  /** YYYY-MM-DD. */
+  vence?: string;
+}
 
 const NOMBRE_TRIBUTO: Record<string, string> = {
   '01': 'IVA',
@@ -249,18 +275,24 @@ export function descuadresFactura(f: Pick<FacturaUbl, 'lineas' | 'cargos' | 'tot
 
 // ── Validación de entrada ─────────────────────────────────────────────────────
 
-function validar(f: FacturaUbl): void {
+function validar(f: FacturaUbl, perfil: PerfilInvoice, pagos: readonly PagoUbl[]): void {
   const fallas: string[] = [];
+  const codigo = perfil.esquemaCodigoUnico.slice(0, 4);
   if (!f.numero?.trim()) fallas.push('número');
-  if (!SHA384_HEX.test(f.cufe ?? '')) fallas.push('CUFE (SHA-384 en hexadecimal)');
+  if (!SHA384_HEX.test(f.cufe ?? '')) fallas.push(`${codigo} (SHA-384 en hexadecimal)`);
   if (f.tipoAmbiente !== '1' && f.tipoAmbiente !== '2') fallas.push('tipo de ambiente');
   if (!SHA384_HEX.test(f.codigoSeguridadSoftware ?? '')) fallas.push('código de seguridad del software');
   if (!f.softwareId?.trim()) fallas.push('SoftwareID');
-  if (f.formaPago !== '1' && f.formaPago !== '2') fallas.push('forma de pago');
-  if (!/^[0-9A-Z]{1,3}$/.test(f.medioPago ?? '')) fallas.push('medio de pago');
+  if (pagos.length === 0) fallas.push('medios de pago');
+  pagos.forEach((p, i) => {
+    const que = pagos.length > 1 ? ` del pago ${i + 1}` : '';
+    if (p.formaPago !== '1' && p.formaPago !== '2') fallas.push(`forma de pago${que}`);
+    if (!/^[0-9A-Z]{1,3}$/.test(p.medio ?? '')) fallas.push(`medio de pago${que}`);
+    if (p.vence !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(p.vence)) fallas.push(`vencimiento${que}`);
+  });
   if (f.lineas.length === 0) fallas.push('líneas');
   if (fallas.length > 0) {
-    throw new DocumentoUblInvalidoError(`La factura no se puede armar; revisa: ${fallas.join(', ')}`);
+    throw new DocumentoUblInvalidoError(`${perfil.documento} no se puede armar; revisa: ${fallas.join(', ')}`);
   }
   try {
     assertFechaHoraDian(f.fecha, f.hora);
@@ -335,10 +367,12 @@ function parte(
   rol: 'AccountingSupplierParty' | 'AccountingCustomerParty',
   p: ParteUbl,
   prefijo?: string,
+  identificacionSiempre = false,
 ): string {
-  // FAK: el adquiriente persona natural lleva además su documento en PartyIdentification.
+  // FAK: el adquiriente persona natural lleva además su documento en
+  // PartyIdentification. En el POS (DEAK61-62) lo lleva siempre.
   const partyId =
-    rol === 'AccountingCustomerParty' && p.tipoPersona === '2'
+    rol === 'AccountingCustomerParty' && (identificacionSiempre || p.tipoPersona === '2')
       ? `
       <cac:PartyIdentification>
         ${identificacion(p, 'ID')}
@@ -394,15 +428,14 @@ function parte(
   </cac:${rol}>`;
 }
 
-function medioDePago(f: FacturaUbl): string {
-  const vence =
-    f.formaPago === '2'
-      ? `
-    <cbc:PaymentDueDate>${esc(f.vencimiento ?? f.fecha)}</cbc:PaymentDueDate>`
-      : '';
+function medioDePago(p: PagoUbl): string {
+  const vence = p.vence
+    ? `
+    <cbc:PaymentDueDate>${esc(p.vence)}</cbc:PaymentDueDate>`
+    : '';
   return `<cac:PaymentMeans>
-    <cbc:ID>${f.formaPago}</cbc:ID>
-    <cbc:PaymentMeansCode>${f.medioPago}</cbc:PaymentMeansCode>${vence}
+    <cbc:ID>${p.formaPago}</cbc:ID>
+    <cbc:PaymentMeansCode>${p.medio}</cbc:PaymentMeansCode>${vence}
   </cac:PaymentMeans>`;
 }
 
@@ -583,15 +616,42 @@ function validarParte(p: ParteUbl, que: string): void {
   }
 }
 
-/** XML UBL 2.1 de la factura, SIN firmar. Lanza `DocumentoUblInvalidoError` si algo no cuadra. */
-export function armarFacturaUbl(f: FacturaUbl): string {
-  validar(f);
+/** Lo que cambia entre un `Invoice` y otro, además del perfil. */
+export interface VarianteInvoice {
+  perfil: PerfilInvoice;
+  /** `cac:PaymentMeans` en orden (1..N). */
+  pagos: readonly PagoUbl[];
+  /** Contenido de las `ext:UBLExtension` que van DESPUÉS de la ranura de la firma. */
+  extensionesExtra?: readonly string[];
+  /** `PartyIdentification` del adquiriente siempre, no solo a persona natural. */
+  identificacionAdquirienteSiempre?: boolean;
+}
+
+/**
+ * Esqueleto común del `Invoice` UBL 2.1 (factura de venta y documento
+ * equivalente POS): valida y arma encabezado, partes, pagos, tributos, totales
+ * y líneas. La firma va en la SEGUNDA `ext:UBLExtension` (política de firma v2
+ * §8, ver `extensionDeFirma`) y las extensiones propias del documento, después.
+ */
+export function armarInvoiceUbl(f: FacturaUbl, v: VarianteInvoice): string {
+  validar(f, v.perfil, v.pagos);
   validarParte(f.emisor, 'Emisor');
   validarParte(f.adquiriente, 'Adquiriente');
   if (f.emisor.tipoDocumento !== '31' || !f.emisor.dv) {
     throw new DocumentoUblInvalidoError('Emisor: el facturador se identifica con NIT y DV');
   }
   const t = totalesUbl(f.lineas, f.cargos);
+  const extra = (v.extensionesExtra ?? [])
+    .map(
+      (contenido) => `
+    <ext:UBLExtension>
+      <ext:ExtensionContent>
+        ${contenido}
+      </ext:ExtensionContent>
+    </ext:UBLExtension>`,
+    )
+    .join('');
+  const p = v.perfil;
   return `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2" xmlns:sts="${NS_STS}">
   <ext:UBLExtensions>
@@ -602,23 +662,38 @@ export function armarFacturaUbl(f: FacturaUbl): string {
     </ext:UBLExtension>
     <ext:UBLExtension>
       <ext:ExtensionContent></ext:ExtensionContent>
-    </ext:UBLExtension>
+    </ext:UBLExtension>${extra}
   </ext:UBLExtensions>
   <cbc:UBLVersionID>UBL 2.1</cbc:UBLVersionID>
-  <cbc:CustomizationID>${TIPO_OPERACION}</cbc:CustomizationID>
-  <cbc:ProfileID>${PERFIL_FACTURA}</cbc:ProfileID>
+  <cbc:CustomizationID>${p.customizationId}</cbc:CustomizationID>
+  <cbc:ProfileID>${p.profileId}</cbc:ProfileID>
   <cbc:ProfileExecutionID>${f.tipoAmbiente}</cbc:ProfileExecutionID>
   <cbc:ID>${esc(f.numero)}</cbc:ID>
-  <cbc:UUID schemeID="${f.tipoAmbiente}" schemeName="CUFE-SHA384">${f.cufe}</cbc:UUID>
+  <cbc:UUID schemeID="${f.tipoAmbiente}" schemeName="${p.esquemaCodigoUnico}">${f.cufe}</cbc:UUID>
   <cbc:IssueDate>${f.fecha}</cbc:IssueDate>
   <cbc:IssueTime>${f.hora}</cbc:IssueTime>
-  <cbc:InvoiceTypeCode>${TIPO_FACTURA}</cbc:InvoiceTypeCode>
+  <cbc:InvoiceTypeCode>${p.invoiceTypeCode}</cbc:InvoiceTypeCode>
   <cbc:DocumentCurrencyCode>COP</cbc:DocumentCurrencyCode>
   <cbc:LineCountNumeric>${f.lineas.length}</cbc:LineCountNumeric>
   ${parte('AccountingSupplierParty', f.emisor, f.prefijo)}
-  ${parte('AccountingCustomerParty', f.adquiriente)}
-  ${medioDePago(f)}${cargosXml(f.cargos, t.lineExtension)}${taxTotalesCabecera(f.lineas)}
+  ${parte('AccountingCustomerParty', f.adquiriente, undefined, v.identificacionAdquirienteSiempre)}
+  ${v.pagos.map(medioDePago).join('\n  ')}${cargosXml(f.cargos, t.lineExtension)}${taxTotalesCabecera(f.lineas)}
   ${legalMonetaryTotal(t, f.cargos.length > 0)}${f.lineas.map(lineaXml).join('')}
 </Invoice>
 `;
+}
+
+/** XML UBL 2.1 de la factura, SIN firmar. Lanza `DocumentoUblInvalidoError` si algo no cuadra. */
+export function armarFacturaUbl(f: FacturaUbl): string {
+  return armarInvoiceUbl(f, {
+    perfil: PERFIL_FACTURA,
+    // Un solo medio; a crédito, con su vencimiento o, si falta, la fecha de la factura.
+    pagos: [
+      {
+        formaPago: f.formaPago,
+        medio: f.medioPago,
+        vence: f.formaPago === '2' ? (f.vencimiento ?? f.fecha) : undefined,
+      },
+    ],
+  });
 }
