@@ -19,12 +19,12 @@ import { CertificadoEmisorService } from './application/certificado-emisor.servi
 import { TransmisionDianService } from './application/transmision-dian.service';
 import {
   ARMADOR_XML_DIAN,
-  ArmadorUblPendiente,
   FIRMANTE_DIAN,
   FirmanteP12,
   PROVEEDOR_TRANSMISOR_DIAN,
   ProveedorTransmisorPorEmisor,
 } from './application/transmision-dian.puertos';
+import { ArmadorUblFactura } from './application/armador-ubl';
 import { StorageModule } from '../../shared/storage/storage.module';
 import { CoreAuditModule } from '../core-audit/core-audit.module';
 import { EinvoicingController } from './infrastructure/einvoicing.controller';
@@ -52,9 +52,9 @@ import { ControlModule } from '../control/control.module';
     FiscalEmittersService,
     CertificadoEmisorService,
     TransmisionDianService,
-    // Fase 5 cambia el armador por el builder UBL. El proveedor arma DirectoDian con el .p12
-    // del emisor; TRANSPORTE_HTTP_DIAN es opcional (sin él, fetch).
-    { provide: ARMADOR_XML_DIAN, useClass: ArmadorUblPendiente },
+    // Fase 5A: el builder UBL arma la factura de venta; los demás tipos siguen en 501. El
+    // proveedor arma DirectoDian con el .p12 del emisor; TRANSPORTE_HTTP_DIAN es opcional (sin él, fetch).
+    { provide: ARMADOR_XML_DIAN, useClass: ArmadorUblFactura },
     { provide: FIRMANTE_DIAN, useClass: FirmanteP12 },
     { provide: PROVEEDOR_TRANSMISOR_DIAN, useClass: ProveedorTransmisorPorEmisor },
   ],

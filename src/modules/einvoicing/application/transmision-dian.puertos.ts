@@ -48,8 +48,10 @@ export interface ProveedorTransmisorDian {
 export const MENSAJE_BUILDER_PENDIENTE = 'Builder UBL pendiente (Fase 5)';
 
 /**
- * Hasta la Fase 5 no hay builder UBL: armar lanza y el documento se queda en
- * `draft` sin consumir nada más (ni firma, ni bucket, ni red).
+ * Armador sin builder: armar lanza 501 y el documento se queda en `draft` sin
+ * consumir nada más (ni firma, ni bucket, ni red). Desde la Fase 5A el módulo
+ * usa `ArmadorUblFactura` (factura de venta), que sigue en 501 para los demás
+ * tipos con este mismo mensaje.
  */
 @Injectable()
 export class ArmadorUblPendiente implements ArmadorXmlDian {

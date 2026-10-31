@@ -34,6 +34,7 @@ import {
   MENSAJE_BUILDER_PENDIENTE,
   ProveedorTransmisorPorEmisor,
 } from './transmision-dian.puertos';
+import { ArmadorUblFactura } from './armador-ubl';
 import { EinvoicingStorageService } from '../../../shared/storage/einvoicing-storage.service';
 import { StubDian } from '../domain/stub-dian';
 import type { RespuestaDian, TransmisorDian } from '../domain/transmisor-dian';
@@ -412,6 +413,26 @@ describe('TransmisionDianService', () => {
     expect(f.dianStatus).toBe('draft');
     expect(f.intentos).toBe(0);
     expect(f.bloqueoTransmision).toBeUndefined();
+    expect(firmante.firmar).not.toHaveBeenCalled();
+    expect(storage.guardarArtefacto).not.toHaveBeenCalled();
+    expect(transmisor.enviar).not.toHaveBeenCalled();
+  });
+
+  it('builder UBL real (Fase 5A): un documento que no se puede armar es 400 y queda en draft sin consumir nada', async () => {
+    const leerSecreto = vi.fn(async () => 'pin');
+    const emisoresArmador = {
+      obtenerPorSede: vi.fn(async () => ({ id: 'e1', municipioDane: '05001', facturaSoftwareId: 'soft-1' })),
+      leerSecreto,
+    };
+    svc = construir(new ArmadorUblFactura(emisoresArmador as never));
+    // El documento sembrado no trae los totales de la Fase 2: no cuadra para la DIAN.
+    const d = sembrar();
+    await expect(transmitir(d)).rejects.toThrow(BadRequestException);
+    const f = fila(d);
+    expect(f.dianStatus).toBe('draft');
+    expect(f.intentos).toBe(0);
+    expect(f.bloqueoTransmision).toBeUndefined();
+    expect(leerSecreto).not.toHaveBeenCalled();
     expect(firmante.firmar).not.toHaveBeenCalled();
     expect(storage.guardarArtefacto).not.toHaveBeenCalled();
     expect(transmisor.enviar).not.toHaveBeenCalled();
