@@ -10,8 +10,10 @@ import {
   MAX_BYTES_RESPUESTA,
   OPERACION_RANGOS_OK,
   PATRON_EN_PROCESO,
+  PATRON_NO_ENCONTRADO,
   PATRON_YA_PROCESADO,
   STATUS_CON_ERRORES,
+  NS_SOAP12,
   STATUS_NO_ENCONTRADO,
   type OperacionDian,
 } from './dian.constants';
@@ -25,6 +27,11 @@ import {
 
 type Nodo = Record<string, unknown>;
 
+/** Lo que se envió o consultó, para comprobar que la respuesta habla del mismo documento. */
+export interface EsperadoDian {
+  cufe?: string;
+}
+
 const parser = new XMLParser({
   removeNSPrefix: true,
   ignoreAttributes: false,
@@ -36,6 +43,34 @@ const parser = new XMLParser({
   isArray: (nombre) =>
     ['string', 'DianResponse', 'NumberRangeResponse', 'XmlParamsResponseTrackId', 'Text'].includes(nombre),
 });
+
+/** Segunda lectura, con prefijos, solo para revisar la raíz y su namespace. */
+const parserRaiz = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: '@_',
+  parseTagValue: false,
+  processEntities: false,
+  ignoreDeclaration: true,
+  ignorePiTags: true,
+});
+
+/** `Envelope` debe ser la única raíz y estar en el namespace de SOAP 1.2. */
+function raizEsSobreSoap12(cuerpo: string): boolean {
+  let raiz: Nodo;
+  try {
+    raiz = parserRaiz.parse(cuerpo) as Nodo;
+  } catch {
+    return false;
+  }
+  const claves = Object.keys(raiz).filter((k) => k !== '#text' && k !== '#comment');
+  if (claves.length !== 1 || (typeof raiz['#text'] === 'string' && raiz['#text'].trim() !== '')) return false;
+  const m = /^(?:([A-Za-z_][\w.-]*):)?Envelope$/.exec(claves[0]!);
+  if (!m) return false;
+  const sobre = nodo(raiz[claves[0]!]);
+  if (!sobre) return false;
+  const declaracion = m[1] ? sobre[`@_xmlns:${m[1]}`] : sobre['@_xmlns'];
+  return declaracion === NS_SOAP12;
+}
 
 /** Mensajes: sin saltos, cortos y sin bloques base64 largos (podrían ser el XML o un certificado). */
 const MAX_MENSAJES = 50;
@@ -89,6 +124,7 @@ export function parsearSobre(cuerpo: string, op: OperacionDian): Parseo {
   // Nada de DTD ni entidades: la respuesta viene de la red.
   if (traeDoctype(cuerpo) || /<!ENTITY/i.test(cuerpo)) return { tipo: 'ilegible' };
   if (XMLValidator.validate(cuerpo) !== true) return { tipo: 'ilegible' };
+  if (!raizEsSobreSoap12(cuerpo)) return { tipo: 'ilegible' };
   let raiz: Nodo;
   try {
     raiz = parser.parse(cuerpo) as Nodo;
@@ -127,6 +163,7 @@ export function mapearRespuestaDocumento(
   op: Exclude<OperacionDian, 'GetNumberingRange'>,
   status: number,
   cuerpo: string,
+  esperado: EsperadoDian = {},
 ): RespuestaDian {
   const p = parsearSobre(cuerpo, op);
   const previo = previoAlCuerpo(p, status);
@@ -135,12 +172,40 @@ export function mapearRespuestaDocumento(
 
   if (op === 'SendTestSetAsync') return mapearAsincrono(resultado);
   if (op === 'GetStatusZip') {
-    const primera = nodo(lista(resultado.DianResponse)[0]);
+    const items = lista(resultado.DianResponse).map(nodo);
+    if (items.some((i) => !i)) return respuestaRed('Una respuesta del lote no se pudo leer');
     // Lote aún sin respuestas: sigue en validación.
-    if (!primera) return cerrar({ ok: false, codigo: 'PENDIENTE_DIAN', origen: 'dian', mensajes: ['La DIAN aún valida el lote'] });
-    return mapearDianResponse(primera, op);
+    if (items.length === 0) {
+      return cerrar({ ok: false, codigo: 'PENDIENTE_DIAN', origen: 'dian', mensajes: ['La DIAN aún valida el lote'] });
+    }
+    const elegido = elegirDelLote(items as Nodo[], esperado);
+    if (!elegido) return respuestaRed('La respuesta del lote no corresponde al documento consultado');
+    return mapearDianResponse(elegido, op, esperado);
   }
-  return mapearDianResponse(resultado, op);
+  return mapearDianResponse(resultado, op, esperado);
+}
+
+function mismoCufe(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
+ * El `DianResponse` del documento: con CUFE esperado, el que lo trae; sin él,
+ * solo si el lote tiene una única respuesta (si no, no se sabe cuál es).
+ */
+function elegirDelLote(items: Nodo[], esperado: EsperadoDian): Nodo | undefined {
+  const cufe = esperado.cufe?.trim();
+  if (cufe) {
+    const delDoc = items.filter((i) => {
+      const k = texto(i.XmlDocumentKey);
+      return k !== undefined && mismoCufe(k, cufe);
+    });
+    if (delDoc.length === 1) return delDoc[0];
+    // Una sola respuesta sin clave: se acepta y la valida mapearDianResponse.
+    if (items.length === 1 && !texto(items[0]!.XmlDocumentKey)) return items[0];
+    return undefined;
+  }
+  return items.length === 1 ? items[0] : undefined;
 }
 
 /** Red/HTTP/Fault/ilegible, comunes a todas las operaciones. `null` = hay cuerpo que leer. */
@@ -173,12 +238,18 @@ function erroresDe(r: Nodo): string[] {
 }
 
 /** Un `DianResponse` (SendBillSync, GetStatus, cada ítem de GetStatusZip). */
-function mapearDianResponse(r: Nodo, op: OperacionDian): RespuestaDian {
-  const isValid = texto(r.IsValid)?.toLowerCase();
+function mapearDianResponse(r: Nodo, op: OperacionDian, esperado: EsperadoDian = {}): RespuestaDian {
+  // IsValid debe ser texto puro: ni repetido, ni con atributos, ni con contenido mixto.
+  if (typeof r.IsValid !== 'string') return respuestaRed('La respuesta de la DIAN no trae un IsValid legible');
+  const isValid = r.IsValid.trim().toLowerCase();
   const statusCode = texto(r.StatusCode);
   const descripcion = texto(r.StatusDescription) ?? '';
   const errores = erroresDe(r);
   const cufe = texto(r.XmlDocumentKey) || undefined;
+  // La respuesta tiene que hablar del documento que se envió o consultó.
+  if (cufe && esperado.cufe?.trim() && !mismoCufe(cufe, esperado.cufe)) {
+    return respuestaRed('La respuesta de la DIAN corresponde a otro documento');
+  }
   const base = { origen: 'dian' as const, ...(cufe ? { cufe } : {}) };
   const mensajes = [descripcion, ...errores].filter(Boolean);
 
@@ -193,7 +264,14 @@ function mapearDianResponse(r: Nodo, op: OperacionDian): RespuestaDian {
   if (PATRON_EN_PROCESO.test(descripcion) && errores.length === 0) {
     return cerrar({ ...base, ok: false, codigo: 'PENDIENTE_DIAN', mensajes });
   }
-  if (op === 'GetStatus' && statusCode && (STATUS_NO_ENCONTRADO as readonly string[]).includes(statusCode)) {
+  // GetStatus de un documento que la DIAN no tiene: nunca llegó, no es rechazo.
+  // Solo con el StatusCode de «no encontrado», o con la descripción y SIN errores:
+  // un rechazo real (p. ej. FAK24) puede decir «no encontrado» en un ErrorMessage.
+  if (
+    op === 'GetStatus' &&
+    ((statusCode !== undefined && (STATUS_NO_ENCONTRADO as readonly string[]).includes(statusCode)) ||
+      (errores.length === 0 && PATRON_NO_ENCONTRADO.test(descripcion)))
+  ) {
     return cerrar({ ...base, ok: false, codigo: 'NO_RECIBIDO_DIAN', mensajes });
   }
   // Rechazo solo con evidencia: errores listados o el código de «con errores».
@@ -255,7 +333,15 @@ export function mapearRespuestaRangos(status: number, cuerpo: string): Respuesta
   const descripcion = texto(r.OperationDescription) ?? '';
   if (!codigo) return { ...respuestaRed('La respuesta de rangos no trae OperationCode'), rangos: [] };
   if (codigo !== OPERACION_RANGOS_OK) {
-    return cerrar({ ok: false, isValid: false, codigo, origen: 'dian', mensajes: [descripcion], rangos: [] });
+    // No es un veredicto sobre ningún documento: casi siempre es software o NIT sin
+    // asociar en la DIAN. Sin isValid y con un código de la lista sin veredicto.
+    return cerrar({
+      ok: false,
+      codigo: 'CONFIG_FALTANTE',
+      origen: 'dian',
+      mensajes: [`OperationCode ${codigo}: ${descripcion}`],
+      rangos: [],
+    });
   }
 
   const rangos: RangoNumeracionDian[] = [];

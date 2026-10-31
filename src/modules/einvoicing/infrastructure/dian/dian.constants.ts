@@ -45,12 +45,13 @@ export const ALG_RSA_SHA256 = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256
 export const ALG_SHA256 = 'http://www.w3.org/2001/04/xmlenc#sha256';
 
 /**
- * Partes del encabezado que se firman. La práctica conocida de las librerías que
- * ya hablan con la DIAN firma solo `wsa:To`; aquí se firman `To` y `Action`
- * (más estricto y válido para WCF). POR CONFIRMAR en habilitación.
+ * Partes del encabezado que se firman: `To`, `Action` y `Timestamp` (el sello
+ * firmado impide reusar un mensaje capturado fuera de su ventana). La práctica
+ * conocida de las librerías que hablan con la DIAN firma solo `wsa:To`; si WCF
+ * rechaza alguna referencia en habilitación, se ajusta aquí. POR CONFIRMAR.
  */
-export const PARTES_FIRMADAS = ['To', 'Action'] as const;
-export type ParteFirmada = (typeof PARTES_FIRMADAS)[number] | 'Timestamp';
+export const PARTES_FIRMADAS = ['To', 'Action', 'Timestamp'] as const;
+export type ParteFirmada = (typeof PARTES_FIRMADAS)[number];
 
 /** Vida del `wsu:Timestamp` (Created → Expires). */
 export const VIDA_TIMESTAMP_MS = 60_000;
@@ -78,6 +79,9 @@ export const STATUS_CON_ERRORES = '99';
  * rechazo, es «no recibido». POR CONFIRMAR en habilitación.
  */
 export const STATUS_NO_ENCONTRADO = ['66'] as const;
+
+/** Texto de GetStatus para «documento no encontrado / no existe». POR CONFIRMAR. */
+export const PATRON_NO_ENCONTRADO = /no (fue )?encontrad[oa]|no existe|not found/i;
 
 /** OperationCode de GetNumberingRange cuando la consulta salió bien. */
 export const OPERACION_RANGOS_OK = '100';

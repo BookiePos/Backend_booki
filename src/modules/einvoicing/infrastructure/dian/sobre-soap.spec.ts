@@ -51,12 +51,14 @@ function idDe(doc: Document, ns: string, local: string): string {
 }
 
 describe('sobre SOAP con WS-Security', () => {
-  it('firma To y Action con RSA-SHA256, SHA-256 y exc-c14n, verificable con el token', () => {
+  it('firma To, Action y Timestamp con RSA-SHA256, SHA-256 y exc-c14n, verificable con el token', () => {
     const xml = sobreFirmado('GetStatus', URL_HAB, [['trackId', 'cufe-1']], material, { ahora: AHORA, uuid: 'u1' });
     const { valida, uris, firma } = verificar(xml);
     expect(valida).toBe(true);
     const doc = parsear(xml);
-    expect(uris.sort()).toEqual([`#${idDe(doc, NS_WSA, 'Action')}`, `#${idDe(doc, NS_WSA, 'To')}`].sort());
+    expect(uris.slice(0, 3).sort()).toEqual(
+      [`#${idDe(doc, NS_WSA, 'Action')}`, `#${idDe(doc, NS_WSA, 'To')}`, `#${idDe(doc, NS_WSU, 'Timestamp')}`].sort(),
+    );
     expect(firma.getElementsByTagNameNS(NS_DS_WSS, 'SignatureMethod')[0]!.getAttribute('Algorithm')).toBe(ALG_RSA_SHA256);
     expect(firma.getElementsByTagNameNS(NS_DS_WSS, 'CanonicalizationMethod')[0]!.getAttribute('Algorithm')).toBe(ALG_EXC_C14N);
     for (const d of Array.from(firma.getElementsByTagNameNS(NS_DS_WSS, 'DigestMethod'))) {
@@ -85,14 +87,24 @@ describe('sobre SOAP con WS-Security', () => {
     expect(verificar(xml.replace('/SendBillSync<', '/GetStatus<')).valida).toBe(false);
   });
 
-  it('puede firmar también el Timestamp', () => {
-    const xml = sobreFirmado('GetStatus', URL_HAB, [['trackId', 'x']], material, {
-      ahora: AHORA,
-      partes: ['To', 'Action', 'Timestamp'],
-    });
+  it('alterar el Timestamp rompe la firma', () => {
+    const xml = sobreFirmado('GetStatus', URL_HAB, [['trackId', 'x']], material, { ahora: AHORA });
+    expect(verificar(xml.replace('2026-10-30T15:01:00.000Z', '2026-10-30T23:59:00.000Z')).valida).toBe(false);
+  });
+
+  it('las partes firmadas se pueden reducir (p. ej. solo To) si habilitación lo pide', () => {
+    const xml = sobreFirmado('GetStatus', URL_HAB, [['trackId', 'x']], material, { ahora: AHORA, partes: ['To'] });
     const { valida, uris } = verificar(xml);
     expect(valida).toBe(true);
-    expect(uris).toContain(`#${idDe(parsear(xml), NS_WSU, 'Timestamp')}`);
+    expect(uris.filter((u) => u.startsWith('#id-'))).toEqual([`#${idDe(parsear(xml), NS_WSA, 'To')}`]);
+    expect(uris).toHaveLength(1);
+  });
+
+  it('rechaza valores con caracteres que XML 1.0 no permite', () => {
+    for (const malo of ['a\u0000b', 'a\u0008b', 'a￾b', 'a\uD800b']) {
+      expect(() => cuerpoOperacion('GetStatus', [['trackId', malo]])).toThrow(/XML 1.0/);
+    }
+    expect(cuerpoOperacion('GetStatus', [['trackId', 'tab\tok ñ \u{1F600}']])).toContain('ñ \u{1F600}');
   });
 
   it('Timestamp de 60 s, Action por operación y To con la URL', () => {

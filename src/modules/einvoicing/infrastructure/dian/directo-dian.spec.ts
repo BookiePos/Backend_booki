@@ -1,10 +1,11 @@
 import { DOMParser } from '@xmldom/xmldom';
+import { inspect } from 'util';
 import { inflateRawSync } from 'zlib';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { p12DePrueba } from '../../domain/p12-de-prueba.test';
 import { assertContratoRespuesta } from '../../domain/transmisor-dian';
 import { abrirP12, type MaterialFirma } from '../firma/material-p12';
-import { NS_WCF, URL_DIAN_POR_AMBIENTE } from './dian.constants';
+import { MAX_BYTES_RESPUESTA, NS_WCF, URL_DIAN_POR_AMBIENTE } from './dian.constants';
 import { crearDirectoDian, DirectoDian, type PeticionHttp, type TransporteHttp } from './directo-dian';
 import { CLAVE_TECNICA_PRUEBA, faultSoap, respuestaDocumento, respuestaRangos, respuestaTestSet } from './respuestas-dian.test';
 
@@ -156,6 +157,46 @@ describe('DirectoDian', () => {
     expect(Date.now() - inicio).toBeLessThan(2000);
   });
 
+  it('presupuestoMs de la llamada gana si es menor que el configurado', async () => {
+    const lento: TransporteHttp = () => new Promise(() => undefined);
+    const inicio = Date.now();
+    const r = await directo(lento, { presupuestoMs: 10_000 }).consultar({ cufe: 'c', presupuestoMs: 20 });
+    expect(r).toMatchObject({ codigo: 'RED', origen: 'adapter' });
+    expect(Date.now() - inicio).toBeLessThan(2000);
+  });
+
+  it('presupuestoMs de la llamada mayor que el configurado no lo alarga', async () => {
+    const lento: TransporteHttp = () => new Promise(() => undefined);
+    const r = await directo(lento, { presupuestoMs: 20 }).consultar({ cufe: 'c', presupuestoMs: 60_000 });
+    expect(r.codigo).toBe('RED');
+  });
+
+  it('signal del llamador: abortada antes no sale a la red; abortada durante corta con RED', async () => {
+    const f = falso(200, respuestaDocumento('GetStatus', { isValid: 'true' }));
+    const ya = new AbortController();
+    ya.abort();
+    expect(await directo(f.transporte).consultar({ cufe: 'c', signal: ya.signal })).toMatchObject({ codigo: 'RED' });
+    expect(f.llamadas).toHaveLength(0);
+
+    let interna: AbortSignal | undefined;
+    const lento: TransporteHttp = (_u, init) => {
+      interna = init.signal;
+      return new Promise(() => undefined);
+    };
+    const externo = new AbortController();
+    const p = directo(lento, { presupuestoMs: 10_000 }).enviar({
+      tipo: 'invoice',
+      fullNumber: 'SETP1',
+      xmlFirmado: XML_FIRMADO,
+      signal: externo.signal,
+    });
+    setTimeout(() => externo.abort(), 10);
+    const r = await p;
+    expect(r).toMatchObject({ codigo: 'RED', origen: 'adapter' });
+    expect(r.isValid).toBeUndefined();
+    expect(interna?.aborted).toBe(true);
+  });
+
   it('presupuesto por operación', async () => {
     const lento: TransporteHttp = () => new Promise(() => undefined);
     const r = await directo(lento, { presupuestoMs: 10_000, presupuestosMs: { GetStatus: 20 } }).consultar({ cufe: 'c' });
@@ -187,6 +228,121 @@ describe('DirectoDian', () => {
     const r = await d.consultar({ cufe: 'c' });
     expect(r.codigo).toBe('CONFIG_FALTANTE');
     expect(JSON.stringify(r)).not.toContain('no-es-una-llave-secreta-xyz');
+    expect(f.llamadas).toHaveLength(0);
+  });
+
+  it('la llave no sale al serializar ni al inspeccionar el transmisor', () => {
+    const d = directo(falso(200, '').transporte);
+    const llave = material.llavePem.split('\n').slice(1, -2).join('').slice(0, 40);
+    const vistas = [
+      JSON.stringify(d),
+      inspect(d, { showHidden: true, depth: 10, getters: true }),
+      JSON.stringify(Object.assign({}, d)),
+      Object.getOwnPropertyNames(d).join(','),
+      String(d),
+    ];
+    for (const v of vistas) {
+      expect(v).not.toContain(llave);
+      expect(v).not.toContain('PRIVATE KEY');
+      expect(v).not.toContain('soft-123');
+    }
+    expect(JSON.parse(JSON.stringify(d))).toEqual({ transmisor: 'DirectoDian', url: URL_DIAN_POR_AMBIENTE['2'] });
+  });
+
+  it('el transporte recibe redirect manual y todo 3xx es RED', async () => {
+    for (const status of [301, 302, 307, 308]) {
+      const f = falso(status, respuestaDocumento('GetStatus', { isValid: 'true' }));
+      const r = await directo(f.transporte).consultar({ cufe: 'c' });
+      expect(f.llamadas[0]!.init.redirect).toBe('manual');
+      expect(r).toMatchObject({ ok: false, codigo: 'RED', origen: 'adapter' });
+    }
+  });
+
+  it('Content-Length por encima del tope → RED sin leer el cuerpo', async () => {
+    let leido = false;
+    const t: TransporteHttp = async () => ({
+      status: 200,
+      headers: new Headers({ 'content-length': String(MAX_BYTES_RESPUESTA + 1) }),
+      text: async () => {
+        leido = true;
+        return '';
+      },
+    });
+    expect(await directo(t).consultar({ cufe: 'c' })).toMatchObject({ codigo: 'RED' });
+    expect(leido).toBe(false);
+  });
+
+  it('cuerpo en streaming: cuenta bytes y aborta al pasar el tope', async () => {
+    let entregados = 0;
+    let cancelado = false;
+    let senal: AbortSignal | undefined;
+    const trozo = new Uint8Array(1024 * 1024).fill(0x61);
+    const t: TransporteHttp = async (_u, init) => {
+      senal = init.signal;
+      return {
+        status: 200,
+        headers: new Headers(),
+        body: new ReadableStream<Uint8Array>({
+          pull(c) {
+            entregados++;
+            c.enqueue(trozo);
+          },
+          cancel() {
+            cancelado = true;
+          },
+        }),
+      };
+    };
+    const r = await directo(t).consultar({ cufe: 'c' });
+    expect(r).toMatchObject({ codigo: 'RED', origen: 'adapter' });
+    expect(cancelado).toBe(true);
+    expect(senal?.aborted).toBe(true);
+    // Corta en cuanto supera 5 MB: no sigue leyendo indefinidamente.
+    expect(entregados).toBeLessThanOrEqual(8);
+  });
+
+  it('el tope cuenta bytes, no caracteres (multibyte)', async () => {
+    // ~3 bytes por carácter: menos caracteres que el tope, más bytes.
+    const grande = 'ñ€'.repeat(Math.ceil(MAX_BYTES_RESPUESTA / 4));
+    expect(grande.length).toBeLessThan(MAX_BYTES_RESPUESTA);
+    const sinStream = falso(200, grande);
+    expect(await directo(sinStream.transporte).consultar({ cufe: 'c' })).toMatchObject({ codigo: 'RED' });
+    const conStream: TransporteHttp = async () => new Response(grande, { status: 200 });
+    expect(await directo(conStream).consultar({ cufe: 'c' })).toMatchObject({ codigo: 'RED' });
+  });
+
+  it('lee una respuesta normal por streaming (Response real de fetch)', async () => {
+    const t: TransporteHttp = async () =>
+      new Response(respuestaDocumento('GetStatus', { isValid: 'true', cufe: 'cufe-9' }), { status: 200 });
+    expect(await directo(t).consultar({ cufe: 'cufe-9' })).toMatchObject({ ok: true, isValid: true });
+  });
+
+  it('respuesta de otro CUFE → RED, nunca veredicto', async () => {
+    const f = falso(200, respuestaDocumento('SendBillSync', { isValid: 'false', statusCode: '99', errores: ['x'], cufe: 'ajeno' }));
+    const r = await directo(f.transporte).enviar({ tipo: 'invoice', fullNumber: 'SETP1', xmlFirmado: XML_FIRMADO, cufe: 'propio' });
+    expect(r).toMatchObject({ codigo: 'RED' });
+    expect(r.isValid).toBeUndefined();
+  });
+
+  it('tipoAmbiente solo con clave propia y de tipo string; NIT sin guion ni DV', async () => {
+    const t = falso(200, '').transporte;
+    for (const amb of ['toString', '__proto__', 'constructor', 2, '', null]) {
+      expect(() => directo(t, { tipoAmbiente: amb as never })).toThrow(/Ambiente/);
+    }
+    expect(() => directo(t, { nit: '900123456-7' })).toThrow(/NIT/);
+    expect(() => directo(t, { nit: '900 123 456 - 7' })).toThrow(/NIT/);
+    expect(() => directo(t, { nit: 900123456 as never })).toThrow(/NIT/);
+    expect(() => directo(t, { nitProveedor: '800111222-1' })).toThrow(/NIT/);
+    expect(directo(t, { nit: '900.123.456' }).urlServicio).toBe(URL_DIAN_POR_AMBIENTE['2']);
+    const f = falso(200, respuestaRangos());
+    expect(await directo(f.transporte).rangos('900123456-7')).toMatchObject({ codigo: 'CONFIG_FALTANTE', rangos: [] });
+    expect(f.llamadas).toHaveLength(0);
+  });
+
+  it('un valor con caracteres no permitidos en XML no sale a la red', async () => {
+    const f = falso(200, '');
+    const r = await directo(f.transporte).consultar({ cufe: 'abc\u0001' });
+    expect(r).toMatchObject({ codigo: 'CONFIG_FALTANTE' });
     expect(f.llamadas).toHaveLength(0);
   });
 

@@ -48,7 +48,11 @@ export interface OpcionesSobre {
 /** Parámetros del cuerpo, en el orden del contrato WSDL. */
 export type ParametrosOperacion = ReadonlyArray<readonly [nombre: string, valor: string]>;
 
+/** Caracteres que XML 1.0 no admite ni escapados (§2.2): controles, sustitutos sueltos, U+FFFE/FFFF. */
+const NO_PERMITIDO_XML = /[^\t\n\r -퟿-�\u{10000}-\u{10FFFF}]/u;
+
 export function escaparXml(v: string): string {
+  if (NO_PERMITIDO_XML.test(v)) throw new Error('El valor trae caracteres que XML 1.0 no permite');
   return v
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

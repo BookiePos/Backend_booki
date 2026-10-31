@@ -75,6 +75,88 @@ describe('mapeo fail-closed de la respuesta DIAN', () => {
     expect(r.isValid).toBeUndefined();
   });
 
+  it('GetStatus «documento no encontrado / no existe» en la descripción y sin errores → NO_RECIBIDO_DIAN', () => {
+    for (const descripcion of ['Documento no encontrado en los registros de la DIAN.', 'El documento no existe.']) {
+      const r = mapearRespuestaDocumento(
+        'GetStatus',
+        200,
+        respuestaDocumento('GetStatus', { isValid: 'false', statusCode: '99', descripcion }),
+      );
+      expect(r).toMatchObject({ ok: false, codigo: 'NO_RECIBIDO_DIAN', origen: 'dian' });
+      expect(r.isValid).toBeUndefined();
+      expect(esVeredictoDian(r)).toBe(false);
+      expect(estadoTrasRespuesta('sent', r)).toBe('sent');
+    }
+  });
+
+  it('GetStatus: un rechazo real que dice «no encontrado» en un ErrorMessage sigue siendo rechazo', () => {
+    const r = mapearRespuestaDocumento(
+      'GetStatus',
+      200,
+      respuestaDocumento('GetStatus', {
+        isValid: 'false',
+        statusCode: '99',
+        descripcion: 'Validación contiene errores en campos mandatorios.',
+        errores: ['Regla: FAK24, Rechazo: NIT del adquiriente no encontrado en el RUT.'],
+      }),
+    );
+    expect(r).toMatchObject({ ok: false, isValid: false, codigo: '99', origen: 'dian' });
+    expect(estadoTrasRespuesta('sent', r)).toBe('rejected');
+  });
+
+  it('el CUFE de la respuesta debe coincidir con el enviado o consultado', () => {
+    const cuerpo = respuestaDocumento('GetStatus', { isValid: 'true', cufe: 'ABC123' });
+    expect(mapearRespuestaDocumento('GetStatus', 200, cuerpo, { cufe: 'abc123' })).toMatchObject({ ok: true });
+    const otro = mapearRespuestaDocumento('GetStatus', 200, cuerpo, { cufe: 'otro-cufe' });
+    expect(otro).toMatchObject({ ok: false, codigo: 'RED', origen: 'adapter' });
+    expect(otro.isValid).toBeUndefined();
+    // Un rechazo de otro documento tampoco rechaza el nuestro.
+    const rechazoAjeno = respuestaDocumento('SendBillSync', { isValid: 'false', statusCode: '99', errores: ['x'], cufe: 'ajeno' });
+    expect(mapearRespuestaDocumento('SendBillSync', 200, rechazoAjeno, { cufe: 'propio' })).toMatchObject({ codigo: 'RED' });
+  });
+
+  it('GetStatusZip con varias respuestas elige la del documento, no la primera', () => {
+    const lote = respuestaStatusZip([
+      { isValid: 'false', statusCode: '99', errores: ['Regla: FAD06, Rechazo: otro doc'], cufe: 'cufe-a' },
+      { isValid: 'true', statusCode: '00', cufe: 'cufe-b' },
+    ]);
+    expect(mapearRespuestaDocumento('GetStatusZip', 200, lote, { cufe: 'cufe-b' })).toMatchObject({
+      ok: true,
+      isValid: true,
+      cufe: 'cufe-b',
+    });
+    expect(mapearRespuestaDocumento('GetStatusZip', 200, lote, { cufe: 'cufe-a' })).toMatchObject({ isValid: false });
+    // Sin CUFE no se sabe cuál es; ninguno coincide → RED.
+    expect(mapearRespuestaDocumento('GetStatusZip', 200, lote)).toMatchObject({ codigo: 'RED' });
+    expect(mapearRespuestaDocumento('GetStatusZip', 200, lote, { cufe: 'cufe-c' })).toMatchObject({ codigo: 'RED' });
+  });
+
+  it('exige Envelope SOAP 1.2 como única raíz', () => {
+    const bueno = respuestaDocumento('SendBillSync', { isValid: 'true' });
+    expect(mapearRespuestaDocumento('SendBillSync', 200, bueno)).toMatchObject({ ok: true });
+    // SOAP 1.1 u otro namespace.
+    const soap11 = bueno.replace('http://www.w3.org/2003/05/soap-envelope', 'http://schemas.xmlsoap.org/soap/envelope/');
+    expect(mapearRespuestaDocumento('SendBillSync', 200, soap11)).toMatchObject({ codigo: 'RED' });
+    // Envelope sin namespace.
+    const sinNs = bueno.replace(/<s:Envelope [^>]*>/, '<Envelope>').replace('</s:Envelope>', '</Envelope>').replace(/s:(Header|Body)/g, '$1');
+    expect(mapearRespuestaDocumento('SendBillSync', 200, sinNs)).toMatchObject({ codigo: 'RED' });
+    // Envuelto en otra raíz.
+    expect(mapearRespuestaDocumento('SendBillSync', 200, `<x>${bueno}</x>`)).toMatchObject({ codigo: 'RED' });
+  });
+
+  it('IsValid debe ser texto puro: contenido mixto, atributos o repetido → RED', () => {
+    const base = respuestaDocumento('SendBillSync', { isValid: 'true' });
+    for (const malo of [
+      base.replace('<b:IsValid>true</b:IsValid>', '<b:IsValid>true<b:x/></b:IsValid>'),
+      base.replace('<b:IsValid>true</b:IsValid>', '<b:IsValid b:a="1">true</b:IsValid>'),
+      base.replace('<b:IsValid>true</b:IsValid>', '<b:IsValid>true</b:IsValid><b:IsValid>false</b:IsValid>'),
+    ]) {
+      const r = mapearRespuestaDocumento('SendBillSync', 200, malo);
+      expect(r).toMatchObject({ ok: false, codigo: 'RED' });
+      expect(r.isValid).toBeUndefined();
+    }
+  });
+
   it('GetStatusZip en proceso de validación → PENDIENTE_DIAN', () => {
     const r = mapearRespuestaDocumento(
       'GetStatusZip',
@@ -162,10 +244,12 @@ describe('mapeo de GetNumberingRange', () => {
     expect(Object.keys(r.rangos[0]!)).not.toContain('claveTecnica');
   });
 
-  it('OperationCode distinto de 100 → sin rangos, con la descripción', () => {
+  it('OperationCode distinto de 100 → sin rangos y SIN veredicto', () => {
     const r = mapearRespuestaRangos(200, respuestaRangos('301', 0));
-    expect(r).toMatchObject({ ok: false, isValid: false, codigo: '301', rangos: [] });
-    expect(r.mensajes).toEqual(['No se encontró registro de software.']);
+    expect(r).toMatchObject({ ok: false, codigo: 'CONFIG_FALTANTE', origen: 'dian', rangos: [] });
+    expect(r.isValid).toBeUndefined();
+    expect(esVeredictoDian(r)).toBe(false);
+    expect(r.mensajes).toEqual(['OperationCode 301: No se encontró registro de software.']);
   });
 
   it('red y Fault → sin rangos', () => {
