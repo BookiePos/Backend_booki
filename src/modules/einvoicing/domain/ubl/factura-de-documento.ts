@@ -104,7 +104,7 @@ export type FacturaSinCodigo = Omit<FacturaUbl, 'codigoSeguridadSoftware'>;
 const fecha = (d: Date | undefined): string | undefined =>
   d instanceof Date && !Number.isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : undefined;
 
-function lineas(doc: DocumentoParaUbl): LineaDocumento[] {
+export function lineas(doc: DocumentoParaUbl): LineaDocumento[] {
   if (!Array.isArray(doc.lines) || doc.lines.length === 0) {
     throw new DocumentoUblInvalidoError('El documento no tiene líneas');
   }
@@ -134,7 +134,7 @@ function lineas(doc: DocumentoParaUbl): LineaDocumento[] {
   });
 }
 
-function totales(doc: DocumentoParaUbl): TotalesDocumento {
+export function totales(doc: DocumentoParaUbl): TotalesDocumento {
   // Un documento anterior a la Fase 2 no separa IVA de INC ni trae el PayableAmount.
   if (doc.payableAmount === undefined || doc.taxExclusiveAmount === undefined || doc.taxInclusiveAmount === undefined) {
     throw new DocumentoUblInvalidoError(
@@ -167,7 +167,7 @@ function responsabilidadesEmisor(doc: DocumentoParaUbl, e: EmisorParaUbl): strin
   return r.size ? [...r] : ['R-99-PN'];
 }
 
-function emisorUbl(doc: DocumentoParaUbl, e: EmisorParaUbl, lineasDoc: LineaDocumento[]): ParteUbl {
+export function emisorUbl(doc: DocumentoParaUbl, e: EmisorParaUbl, lineasDoc: LineaDocumento[]): ParteUbl {
   const d = doc.emisor ?? {};
   const nit = d.nitNorm ?? normalizarNit(d.nit) ?? '';
   const faltantes: string[] = [];
@@ -208,7 +208,7 @@ function emisorUbl(doc: DocumentoParaUbl, e: EmisorParaUbl, lineasDoc: LineaDocu
   };
 }
 
-const CONSUMIDOR_FINAL_UBL: ParteUbl = {
+export const CONSUMIDOR_FINAL_UBL: ParteUbl = {
   tipoPersona: '2',
   tipoDocumento: '13',
   numero: CONSUMIDOR_FINAL_NIT,
@@ -260,7 +260,7 @@ function adquirienteUbl(doc: DocumentoParaUbl): ParteUbl {
   };
 }
 
-function resolucion(doc: DocumentoParaUbl): FacturaUbl['resolucion'] {
+export function resolucion(doc: DocumentoParaUbl): FacturaUbl['resolucion'] {
   const r = doc.resolution;
   const desde = fecha(r?.vigenciaDesde);
   const hasta = fecha(r?.vigenciaHasta);
