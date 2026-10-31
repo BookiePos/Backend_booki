@@ -1,8 +1,8 @@
 import { deflateRawSync } from 'zlib';
 
 /**
- * ZIP mínimo en memoria con una sola entrada (deflate), que es lo que la DIAN
- * recibe en `contentFile`. Sin dependencias: cabecera local, directorio central y
+ * ZIP mínimo en memoria (deflate): una entrada para la DIAN (`contentFile`) o
+ * varias para la entrega al adquiriente. Sin dependencias: cabecera local, directorio central y
  * fin de directorio (APPNOTE 6.3.x §4.3), con nombres en UTF-8 (bit 11).
  */
 
@@ -36,53 +36,83 @@ const FLAG_UTF8 = 0x0800;
 const METODO_DEFLATE = 8;
 const VERSION = 20;
 
-/** Arma un ZIP con un único archivo. */
+export interface EntradaZip {
+  nombre: string;
+  contenido: Buffer | string;
+}
+
+function nombreValido(nombre: string): boolean {
+  return Boolean(nombre) && !nombre.includes('/') && !nombre.includes('\\');
+}
+
+/** Arma un ZIP con un único archivo (el `contentFile` que recibe la DIAN). */
 export function zipUnArchivo(nombre: string, contenido: Buffer | string, ahora = new Date()): Buffer {
-  if (!nombre || nombre.includes('/') || nombre.includes('\\')) {
-    throw new Error('Nombre de archivo inválido para el ZIP');
+  return zipArchivos([{ nombre, contenido }], ahora);
+}
+
+/**
+ * Arma un ZIP con varias entradas en la raíz (p. ej. la entrega al adquiriente:
+ * AttachedDocument + PDF). Nombres sin ruta y sin repetir.
+ */
+export function zipArchivos(entradas: readonly EntradaZip[], ahora = new Date()): Buffer {
+  if (entradas.length === 0 || entradas.length > 0xffff) throw new Error('El ZIP necesita al menos un archivo');
+  const vistos = new Set<string>();
+  for (const e of entradas) {
+    if (!nombreValido(e.nombre)) throw new Error('Nombre de archivo inválido para el ZIP');
+    if (vistos.has(e.nombre)) throw new Error('Nombre de archivo repetido en el ZIP');
+    vistos.add(e.nombre);
   }
-  const datos = typeof contenido === 'string' ? Buffer.from(contenido, 'utf8') : contenido;
-  const comprimido = deflateRawSync(datos);
-  const nombreB = Buffer.from(nombre, 'utf8');
-  const crc = crc32(datos);
   const { hora, fecha } = fechaDos(ahora);
+  const locales: Buffer[] = [];
+  const centrales: Buffer[] = [];
+  let desplazamiento = 0;
 
-  const local = Buffer.alloc(30);
-  local.writeUInt32LE(0x04034b50, 0);
-  local.writeUInt16LE(VERSION, 4);
-  local.writeUInt16LE(FLAG_UTF8, 6);
-  local.writeUInt16LE(METODO_DEFLATE, 8);
-  local.writeUInt16LE(hora, 10);
-  local.writeUInt16LE(fecha, 12);
-  local.writeUInt32LE(crc, 14);
-  local.writeUInt32LE(comprimido.length, 18);
-  local.writeUInt32LE(datos.length, 22);
-  local.writeUInt16LE(nombreB.length, 26);
-  local.writeUInt16LE(0, 28);
+  for (const e of entradas) {
+    const datos = typeof e.contenido === 'string' ? Buffer.from(e.contenido, 'utf8') : e.contenido;
+    const comprimido = deflateRawSync(datos);
+    const nombreB = Buffer.from(e.nombre, 'utf8');
+    const crc = crc32(datos);
 
-  const central = Buffer.alloc(46);
-  central.writeUInt32LE(0x02014b50, 0);
-  central.writeUInt16LE(VERSION, 4);
-  central.writeUInt16LE(VERSION, 6);
-  central.writeUInt16LE(FLAG_UTF8, 8);
-  central.writeUInt16LE(METODO_DEFLATE, 10);
-  central.writeUInt16LE(hora, 12);
-  central.writeUInt16LE(fecha, 14);
-  central.writeUInt32LE(crc, 16);
-  central.writeUInt32LE(comprimido.length, 20);
-  central.writeUInt32LE(datos.length, 24);
-  central.writeUInt16LE(nombreB.length, 28);
-  // extra, comentario, disco, atributos internos y externos: 0.
-  central.writeUInt32LE(0, 42); // desplazamiento de la cabecera local
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(VERSION, 4);
+    local.writeUInt16LE(FLAG_UTF8, 6);
+    local.writeUInt16LE(METODO_DEFLATE, 8);
+    local.writeUInt16LE(hora, 10);
+    local.writeUInt16LE(fecha, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(comprimido.length, 18);
+    local.writeUInt32LE(datos.length, 22);
+    local.writeUInt16LE(nombreB.length, 26);
+    local.writeUInt16LE(0, 28);
 
-  const tamLocal = local.length + nombreB.length + comprimido.length;
-  const tamCentral = central.length + nombreB.length;
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(VERSION, 4);
+    central.writeUInt16LE(VERSION, 6);
+    central.writeUInt16LE(FLAG_UTF8, 8);
+    central.writeUInt16LE(METODO_DEFLATE, 10);
+    central.writeUInt16LE(hora, 12);
+    central.writeUInt16LE(fecha, 14);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(comprimido.length, 20);
+    central.writeUInt32LE(datos.length, 24);
+    central.writeUInt16LE(nombreB.length, 28);
+    // extra, comentario, disco, atributos internos y externos: 0.
+    central.writeUInt32LE(desplazamiento, 42); // desplazamiento de la cabecera local
+
+    locales.push(local, nombreB, comprimido);
+    centrales.push(central, nombreB);
+    desplazamiento += local.length + nombreB.length + comprimido.length;
+  }
+
+  const tamCentral = centrales.reduce((n, b) => n + b.length, 0);
   const fin = Buffer.alloc(22);
   fin.writeUInt32LE(0x06054b50, 0);
-  fin.writeUInt16LE(1, 8);
-  fin.writeUInt16LE(1, 10);
+  fin.writeUInt16LE(entradas.length, 8);
+  fin.writeUInt16LE(entradas.length, 10);
   fin.writeUInt32LE(tamCentral, 12);
-  fin.writeUInt32LE(tamLocal, 16);
+  fin.writeUInt32LE(desplazamiento, 16);
 
-  return Buffer.concat([local, nombreB, comprimido, central, nombreB, fin]);
+  return Buffer.concat([...locales, ...centrales, fin]);
 }
