@@ -1,0 +1,224 @@
+import { DOMParser } from '@xmldom/xmldom';
+import { inflateRawSync } from 'zlib';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { p12DePrueba } from '../../domain/p12-de-prueba.test';
+import { assertContratoRespuesta } from '../../domain/transmisor-dian';
+import { abrirP12, type MaterialFirma } from '../firma/material-p12';
+import { NS_WCF, URL_DIAN_POR_AMBIENTE } from './dian.constants';
+import { crearDirectoDian, DirectoDian, type PeticionHttp, type TransporteHttp } from './directo-dian';
+import { CLAVE_TECNICA_PRUEBA, faultSoap, respuestaDocumento, respuestaRangos, respuestaTestSet } from './respuestas-dian.test';
+
+const PASSWORD = 'clave-de-prueba';
+let material: MaterialFirma;
+
+beforeAll(() => {
+  material = abrirP12(p12DePrueba({ password: PASSWORD }), PASSWORD);
+});
+
+interface Llamada {
+  url: string;
+  init: PeticionHttp;
+}
+
+/** Transporte falso: registra la llamada y responde lo que se le diga. */
+function falso(status: number, cuerpo: string): { transporte: TransporteHttp; llamadas: Llamada[] } {
+  const llamadas: Llamada[] = [];
+  return {
+    llamadas,
+    transporte: async (url, init) => {
+      llamadas.push({ url, init });
+      return { status, text: async () => cuerpo };
+    },
+  };
+}
+
+function directo(transporte: TransporteHttp, extra: Partial<Parameters<typeof crearDirectoDian>[0]> = {}): DirectoDian {
+  return crearDirectoDian({
+    material,
+    tipoAmbiente: '2',
+    softwareId: 'soft-123',
+    nit: '900123456',
+    transporte,
+    reloj: () => new Date('2026-10-30T15:00:00Z'),
+    ...extra,
+  });
+}
+
+function parametros(body: string, op: string): Record<string, string> {
+  const doc = new DOMParser().parseFromString(body, 'text/xml');
+  const nodo = doc.getElementsByTagNameNS(NS_WCF, op)[0]!;
+  const r: Record<string, string> = {};
+  for (const h of Array.from(nodo.childNodes)) {
+    if (h.nodeType === 1) r[(h as Element).localName] = h.textContent ?? '';
+  }
+  return r;
+}
+
+const XML_FIRMADO = '<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">firmado</Invoice>';
+
+describe('DirectoDian', () => {
+  it('elige la URL solo por el ambiente del emisor', async () => {
+    for (const amb of ['1', '2'] as const) {
+      const f = falso(200, respuestaDocumento('GetStatus', { isValid: 'true' }));
+      const d = directo(f.transporte, { tipoAmbiente: amb });
+      expect(d.urlServicio).toBe(URL_DIAN_POR_AMBIENTE[amb]);
+      await d.consultar({ cufe: 'c' });
+      expect(f.llamadas[0]!.url).toBe(URL_DIAN_POR_AMBIENTE[amb]);
+      expect(f.llamadas[0]!.init.body).toContain(`<wsa:To wsu:Id=`);
+      expect(f.llamadas[0]!.init.body).toContain(`>${URL_DIAN_POR_AMBIENTE[amb]}</wsa:To>`);
+    }
+    expect(() => directo(falso(200, '').transporte, { tipoAmbiente: '3' as never })).toThrow(/Ambiente/);
+    expect(() => directo(falso(200, '').transporte, { tipoAmbiente: undefined as never })).toThrow(/Ambiente/);
+    expect(() => directo(falso(200, '').transporte, { softwareId: ' ' })).toThrow();
+    expect(() => directo(falso(200, '').transporte, { nit: '' })).toThrow();
+  });
+
+  it('SendBillSync: ZIP base64 con el XML firmado y nombres de la convención', async () => {
+    const f = falso(200, respuestaDocumento('SendBillSync', { isValid: 'true', cufe: 'cufe-1' }));
+    const r = await directo(f.transporte).enviar({ tipo: 'invoice', fullNumber: 'SETP990000001', xmlFirmado: XML_FIRMADO });
+    expect(r).toMatchObject({ ok: true, isValid: true, cufe: 'cufe-1' });
+    const { init } = f.llamadas[0]!;
+    expect(init.method).toBe('POST');
+    expect(init.headers['Content-Type']).toContain('action="http://wcf.dian.colombia/IWcfDianCustomerServices/SendBillSync"');
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    const p = parametros(init.body, 'SendBillSync');
+    expect(p.fileName).toBe('z0900123456000263b023381.zip');
+    const zip = Buffer.from(p.contentFile!, 'base64');
+    const largoNombre = zip.readUInt16LE(26);
+    expect(zip.subarray(30, 30 + largoNombre).toString()).toBe('fv0900123456000263b023381.xml');
+    const comp = zip.readUInt32LE(18);
+    expect(inflateRawSync(zip.subarray(30 + largoNombre, 30 + largoNombre + comp)).toString()).toBe(XML_FIRMADO);
+  });
+
+  it('SendTestSetAsync lleva testSetId y deja el documento pendiente con zipKey', async () => {
+    const f = falso(200, respuestaTestSet('zk-1'));
+    const r = await directo(f.transporte).enviarSetPruebas({
+      tipo: 'invoice',
+      fullNumber: 'SETP990000002',
+      xmlFirmado: XML_FIRMADO,
+      testSetId: 'set-abc',
+    });
+    expect(r).toMatchObject({ codigo: 'PENDIENTE_DIAN', zipKey: 'zk-1', trackId: 'zk-1' });
+    const p = parametros(f.llamadas[0]!.init.body, 'SendTestSetAsync');
+    expect(Object.keys(p)).toEqual(['fileName', 'contentFile', 'testSetId']);
+    expect(p.testSetId).toBe('set-abc');
+  });
+
+  it('consultar: trackId → GetStatusZip, CUFE → GetStatus', async () => {
+    const f = falso(200, '<x/>');
+    const d = directo(f.transporte);
+    await d.consultar({ trackId: 'zk-1' });
+    await d.consultar({ cufe: 'cufe-9' });
+    expect(parametros(f.llamadas[0]!.init.body, 'GetStatusZip')).toEqual({ trackId: 'zk-1' });
+    expect(parametros(f.llamadas[1]!.init.body, 'GetStatus')).toEqual({ trackId: 'cufe-9' });
+  });
+
+  it('rangos: accountCode, accountCodeT y softwareCode', async () => {
+    const f = falso(200, respuestaRangos());
+    const r = await directo(f.transporte, { nitProveedor: '800111222' }).rangos('900.123.456');
+    expect(parametros(f.llamadas[0]!.init.body, 'GetNumberingRange')).toEqual({
+      accountCode: '900123456',
+      accountCodeT: '800111222',
+      softwareCode: 'soft-123',
+    });
+    expect(r.rangos[0]!.claveTecnica).toBe(CLAVE_TECNICA_PRUEBA);
+    expect(JSON.stringify(r)).not.toContain(CLAVE_TECNICA_PRUEBA);
+  });
+
+  it('sin XML, sin testSetId o sin identificador → CONFIG_FALTANTE y nada sale a la red', async () => {
+    const f = falso(200, '');
+    const d = directo(f.transporte);
+    expect(await d.enviar({ tipo: 'invoice', fullNumber: 'SETP1' })).toMatchObject({ codigo: 'CONFIG_FALTANTE' });
+    expect(await d.enviar({ tipo: 'invoice', fullNumber: 'SETP', xmlFirmado: XML_FIRMADO })).toMatchObject({ codigo: 'CONFIG_FALTANTE' });
+    expect(await d.enviarSetPruebas({ tipo: 'invoice', fullNumber: 'SETP1', xmlFirmado: XML_FIRMADO })).toMatchObject({
+      codigo: 'CONFIG_FALTANTE',
+    });
+    expect(await d.consultar({})).toMatchObject({ codigo: 'CONFIG_FALTANTE' });
+    expect(await d.rangos('')).toMatchObject({ codigo: 'CONFIG_FALTANTE', rangos: [] });
+    expect(f.llamadas).toHaveLength(0);
+  });
+
+  it('timeout: vence el presupuesto → RED y aborta la señal, aunque el transporte la ignore', async () => {
+    let senal: AbortSignal | undefined;
+    const colgado: TransporteHttp = (_url, init) => {
+      senal = init.signal;
+      return new Promise(() => undefined);
+    };
+    const inicio = Date.now();
+    const r = await directo(colgado, { presupuestoMs: 30 }).enviar({
+      tipo: 'invoice',
+      fullNumber: 'SETP1',
+      xmlFirmado: XML_FIRMADO,
+    });
+    expect(r).toMatchObject({ ok: false, codigo: 'RED', origen: 'adapter' });
+    expect(r.isValid).toBeUndefined();
+    expect(senal?.aborted).toBe(true);
+    expect(Date.now() - inicio).toBeLessThan(2000);
+  });
+
+  it('presupuesto por operación', async () => {
+    const lento: TransporteHttp = () => new Promise(() => undefined);
+    const r = await directo(lento, { presupuestoMs: 10_000, presupuestosMs: { GetStatus: 20 } }).consultar({ cufe: 'c' });
+    expect(r.codigo).toBe('RED');
+  });
+
+  it('error de red del transporte → RED sin filtrar el mensaje original', async () => {
+    const roto: TransporteHttp = async () => {
+      throw new Error(`ECONNRESET ${material.llavePem}`);
+    };
+    const r = await directo(roto).consultar({ cufe: 'c' });
+    expect(r).toMatchObject({ ok: false, codigo: 'RED', origen: 'adapter', mensajes: ['No se pudo conectar con la DIAN'] });
+  });
+
+  it('cuerpo que no se puede leer → RED', async () => {
+    const roto: TransporteHttp = async () => ({ status: 200, text: async () => Promise.reject(new Error('corte')) });
+    expect(await directo(roto).consultar({ cufe: 'c' })).toMatchObject({ codigo: 'RED' });
+  });
+
+  it('Fault de certificado no autorizado → NO_RECIBIDO_DIAN', async () => {
+    const f = falso(500, faultSoap('Sender', 'InvalidSecurity', 'Certificado no autorizado'));
+    const r = await directo(f.transporte).enviar({ tipo: 'invoice', fullNumber: 'SETP1', xmlFirmado: XML_FIRMADO });
+    expect(r).toMatchObject({ codigo: 'NO_RECIBIDO_DIAN' });
+  });
+
+  it('llave inservible → CONFIG_FALTANTE con mensaje fijo, sin la llave', async () => {
+    const f = falso(200, '');
+    const d = directo(f.transporte, { material: { llavePem: 'no-es-una-llave-secreta-xyz', certificadoB64: material.certificadoB64 } });
+    const r = await d.consultar({ cufe: 'c' });
+    expect(r.codigo).toBe('CONFIG_FALTANTE');
+    expect(JSON.stringify(r)).not.toContain('no-es-una-llave-secreta-xyz');
+    expect(f.llamadas).toHaveLength(0);
+  });
+
+  it('ninguna salida contiene secretos (llave, contraseña del .p12, clave técnica)', async () => {
+    const llave = material.llavePem.split('\n').slice(1, -2).join('');
+    const casos: Array<[number, string]> = [
+      [200, respuestaDocumento('SendBillSync', { isValid: 'true' })],
+      [200, respuestaDocumento('SendBillSync', { isValid: 'false', statusCode: '99', errores: ['Regla: X'] })],
+      [500, faultSoap('Sender', 'InvalidSecurity', 'x')],
+      [503, 'caído'],
+      [200, respuestaRangos()],
+    ];
+    for (const [status, cuerpo] of casos) {
+      const f = falso(status, cuerpo);
+      const d = directo(f.transporte);
+      const salidas = [
+        await d.enviar({ tipo: 'invoice', fullNumber: 'SETP1', xmlFirmado: XML_FIRMADO }),
+        await d.rangos('900123456'),
+      ];
+      for (const s of salidas) {
+        assertContratoRespuesta(s);
+        const texto = JSON.stringify(s);
+        expect(texto).not.toContain(llave.slice(0, 40));
+        expect(texto).not.toContain(PASSWORD);
+        expect(texto).not.toContain(CLAVE_TECNICA_PRUEBA);
+        expect(texto).not.toContain('PRIVATE KEY');
+      }
+      for (const { init } of f.llamadas) {
+        expect(init.body).not.toContain('PRIVATE KEY');
+        expect(init.body).not.toContain(llave.slice(0, 40));
+        expect(init.body).not.toContain(PASSWORD);
+      }
+    }
+  });
+});
