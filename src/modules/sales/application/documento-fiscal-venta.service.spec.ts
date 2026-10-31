@@ -70,7 +70,7 @@ describe('DocumentoFiscalVentaService.alCobrar', () => {
     expect(puerto.emitir).toHaveBeenCalledWith(sale._id.toString(), 'pos_anonimo', user);
     expect(r.documentoFiscal).toEqual({ solicitado: 'pos_anonimo', estado: 'emitido', ...emitido });
     expect(saleModel.updateOne).toHaveBeenCalledWith(
-      { _id: sale._id },
+      { _id: sale._id, 'documentoFiscal.estado': { $ne: 'emitido' } },
       { $set: { documentoFiscal: r.documentoFiscal } },
     );
     // La transmisión no la espera el cobro: queda en waitUntil.
@@ -119,6 +119,51 @@ describe('DocumentoFiscalVentaService.alCobrar', () => {
     const ultimo = saleModel.updateOne.mock.calls.at(-1);
     expect(ultimo[1].$set.documentoFiscal).toMatchObject({ estado: 'emitido', documentoId: 'd1' });
     expect(puerto.transmitir).toHaveBeenCalledWith('d1', user);
+  });
+
+  /** Modelo que aplica el filtro de `updateOne` como Mongo, sobre una sola venta. */
+  const ventaGuardada = (
+    inicial: Record<string, unknown> | undefined,
+    antesDeEscribir?: (estado: string) => Promise<void>,
+  ) => {
+    const db: { documentoFiscal?: any } = { documentoFiscal: inicial };
+    saleModel.updateOne = vi.fn((filtro: any, upd: any) => ({
+      exec: async () => {
+        await antesDeEscribir?.(upd.$set.documentoFiscal.estado);
+        const cond = filtro['documentoFiscal.estado'];
+        const pasa = !cond || db.documentoFiscal?.estado !== cond.$ne;
+        if (pasa) db.documentoFiscal = upd.$set.documentoFiscal;
+        return { matchedCount: pasa ? 1 : 0 };
+      },
+    }));
+    return db;
+  };
+
+  it('el «en_proceso» del plazo no pisa el «emitido» que la emisión tardía ya guardó', async () => {
+    let terminar!: (v: typeof emitido) => void;
+    puerto.emitir.mockReturnValue(new Promise((res) => (terminar = res)));
+    // Vence el plazo; la emisión termina y guarda `emitido` en segundo plano
+    // ANTES de que llegue a la base el `en_proceso` del cobro.
+    const db = ventaGuardada(undefined, async (estado) => {
+      if (estado !== 'en_proceso') return;
+      terminar(emitido);
+      await Promise.all(enSegundoPlano);
+    });
+    await svc.alCobrar(sale, 'pos_anonimo', user);
+    expect(saleModel.updateOne.mock.calls.map((c: any[]) => c[1].$set.documentoFiscal.estado)).toEqual(
+      expect.arrayContaining(['en_proceso', 'emitido']),
+    );
+    expect(db.documentoFiscal).toMatchObject({ estado: 'emitido', documentoId: 'd1' });
+  });
+
+  it('un reintento con el otro documento (409) no pisa el POS ya emitido de la venta', async () => {
+    const pos = { solicitado: 'pos_anonimo', estado: 'emitido', documentoId: 'd1', tipo: 'pos' };
+    const db = ventaGuardada(pos);
+    puerto.emitir.mockRejectedValue(new ConflictException('Esta venta ya tiene documento equivalente POS'));
+    const r: any = await svc.alCobrar(sale, 'fev', user);
+    // La respuesta dice por qué no salió la FEV; la venta conserva su POS.
+    expect(r.documentoFiscal).toMatchObject({ solicitado: 'fev', estado: 'error' });
+    expect(db.documentoFiscal).toEqual(pos);
   });
 
   it('venta offline: no emite y la marca pendiente de contingencia 07', async () => {

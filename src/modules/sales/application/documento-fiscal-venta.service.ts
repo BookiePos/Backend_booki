@@ -33,7 +33,7 @@ export const PLAZO_EMISION_FISCAL_MS = 'PLAZO_EMISION_FISCAL_MS';
 const PLAZO_POR_DEFECTO_MS = 4_000;
 
 const MENSAJE_ERROR_GENERICO =
-  'No se pudo emitir el documento electrónico. La venta quedó registrada; vuelve a intentarlo desde el detalle de la venta.';
+  'No se pudo emitir el documento electrónico. La venta quedó registrada sin él: avísale al administrador del negocio.';
 
 /**
  * Documento fiscal de la venta al cobrar (PR 7B, D1 y D5 del anexo POS).
@@ -193,7 +193,14 @@ export class DocumentoFiscalVentaService {
     else s.documentoFiscal = estado;
     try {
       await this.saleModel
-        .updateOne({ _id: sale._id }, { $set: { documentoFiscal: estado } })
+        // Un `emitido` ya guardado no se pisa nunca: ni con el `en_proceso`
+        // de esta misma petición si la emisión tardía terminó antes, ni con
+        // el `error` (409) de un reintento que pidió el otro documento. Si se
+        // pisara, la venta perdería la referencia a su documento fiscal.
+        .updateOne(
+          { _id: sale._id, 'documentoFiscal.estado': { $ne: 'emitido' } },
+          { $set: { documentoFiscal: estado } },
+        )
         .exec();
     } catch (err) {
       this.logger.error(
