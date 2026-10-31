@@ -203,11 +203,9 @@ export function construirAttachedDocument(d: DatosAttached): string {
  * La ApplicationResponse guardada en `respuestaDian.applicationResponse`
  * (base64 del `XmlBase64Bytes` de la DIAN), o `null` si no está.
  *
- * HUECO CONOCIDO (Fase 5B): hoy el adaptador de la DIAN (`mapeo-respuesta.ts`)
- * NO conserva el `XmlBase64Bytes` y `TransmisionDianService.limpiar` no lo
- * guarda, así que esto devuelve `null` en todos los documentos y la entrega se
- * queda en el PDF (`SIN_APPLICATION_RESPONSE`). Cuando el adaptador lo guarde
- * con esta clave, el AttachedDocument y el ZIP salen sin tocar nada más.
+ * El adaptador (`mapeo-respuesta.ts`) la guarda solo en una aceptación cuyo XML
+ * ya validó (ApplicationResponse del mismo CUFE) y `TransmisionDianService.limpiar`
+ * la conserva; si falta, la entrega queda en el PDF (`SIN_APPLICATION_RESPONSE`).
  */
 export function applicationResponseDe(respuestaDian: unknown): string | null {
   const b64 = (respuestaDian as { applicationResponse?: unknown } | null | undefined)?.applicationResponse;

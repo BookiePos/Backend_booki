@@ -20,6 +20,8 @@ export interface DatosDianResponse {
   errores?: string[];
   /** `null` = sin `XmlDocumentKey`. */
   cufe?: string | null;
+  /** Contenido de `XmlBase64Bytes`; por defecto un base64 que no es una ApplicationResponse. */
+  xmlBase64?: string;
 }
 
 export function dianResponseInterno(d: DatosDianResponse, etiqueta = 'b'): string {
@@ -30,7 +32,7 @@ export function dianResponseInterno(d: DatosDianResponse, etiqueta = 'b'): strin
     `<${etiqueta}:StatusCode>${d.statusCode ?? '00'}</${etiqueta}:StatusCode>` +
     `<${etiqueta}:StatusDescription>${d.descripcion ?? ''}</${etiqueta}:StatusDescription>` +
     `<${etiqueta}:StatusMessage>La Factura electrónica SETP990000001, ha sido autorizada.</${etiqueta}:StatusMessage>` +
-    `<${etiqueta}:XmlBase64Bytes>PD94bWwgdmVyc2lvbj0iMS4wIj8+</${etiqueta}:XmlBase64Bytes>` +
+    `<${etiqueta}:XmlBase64Bytes>${d.xmlBase64 ?? 'PD94bWwgdmVyc2lvbj0iMS4wIj8+'}</${etiqueta}:XmlBase64Bytes>` +
     `<${etiqueta}:XmlBytes i:nil="true"/>` +
     (d.cufe === null ? '' : `<${etiqueta}:XmlDocumentKey>${d.cufe ?? 'cufe-de-prueba-123'}</${etiqueta}:XmlDocumentKey>`) +
     `<${etiqueta}:XmlFileName>fv09001234560002600000001</${etiqueta}:XmlFileName>`
@@ -95,5 +97,17 @@ export function faultSoap(codigo: 'Sender' | 'Receiver', subcodigo: string, razo
   return sobre(
     `<s:Fault><s:Code><s:Value>s:${codigo}</s:Value><s:Subcode><s:Value xmlns:a="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">a:${subcodigo}</s:Value></s:Subcode></s:Code>` +
       `<s:Reason><s:Text xml:lang="es-CO">${razon}</s:Text></s:Reason></s:Fault>`,
+  );
+}
+
+/** ApplicationResponse mínima de la DIAN que referencia a `cufe` (código 02 = validado). */
+export function applicationResponseXml(cufe: string, extra = ''): string {
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?>${extra}<ApplicationResponse xmlns="urn:oasis:names:specification:ubl:schema:xsd:ApplicationResponse-2" ` +
+    'xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" ' +
+    'xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">' +
+    '<cac:DocumentResponse><cac:Response><cbc:ResponseCode>02</cbc:ResponseCode></cac:Response>' +
+    `<cac:DocumentReference><cbc:ID>SETP990000001</cbc:ID><cbc:UUID schemeName="CUFE-SHA384">${cufe}</cbc:UUID></cac:DocumentReference>` +
+    '</cac:DocumentResponse></ApplicationResponse>'
   );
 }

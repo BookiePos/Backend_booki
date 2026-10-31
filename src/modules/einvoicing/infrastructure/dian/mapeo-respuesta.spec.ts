@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { esVeredictoDian, estadoTrasRespuesta } from '../../domain/estado-dian';
-import { limpiarMensaje, mapearRespuestaDocumento, mapearRespuestaRangos } from './mapeo-respuesta';
 import {
+  limpiarMensaje,
+  MAX_BYTES_APPLICATION_RESPONSE,
+  mapearRespuestaDocumento,
+  mapearRespuestaRangos,
+} from './mapeo-respuesta';
+import {
+  applicationResponseXml,
   CLAVE_TECNICA_PRUEBA,
   faultSoap,
   respuestaDocumento,
@@ -316,5 +322,77 @@ describe('mapeo de GetNumberingRange', () => {
     });
     const malo = respuestaRangos().replace('<c:FromNumber>990000000', '<c:FromNumber>abc');
     expect(mapearRespuestaRangos(200, malo)).toMatchObject({ codigo: 'RED', rangos: [] });
+  });
+});
+
+describe('ApplicationResponse (XmlBase64Bytes) de una aceptación', () => {
+  const CUFE = 'a'.repeat(96);
+  const b64 = (xml: string) => Buffer.from(xml, 'utf8').toString('base64');
+  const aceptar = (xmlBase64: string, op: 'SendBillSync' | 'GetStatus' = 'SendBillSync', cufe = CUFE) =>
+    mapearRespuestaDocumento(op, 200, respuestaDocumento(op, { isValid: 'true', cufe, xmlBase64 }), { cufe: CUFE });
+
+  it('se conserva cuando es válida y referencia el CUFE (SendBillSync, GetStatus y GetStatusZip)', () => {
+    const ar = b64(applicationResponseXml(CUFE));
+    expect(aceptar(ar)).toMatchObject({ ok: true, isValid: true, applicationResponse: ar });
+    expect(aceptar(ar, 'GetStatus')).toMatchObject({ ok: true, applicationResponse: ar });
+    const zip = mapearRespuestaDocumento(
+      'GetStatusZip',
+      200,
+      respuestaStatusZip([{ isValid: 'true', cufe: CUFE, xmlBase64: ar }]),
+      { cufe: CUFE },
+    );
+    expect(zip).toMatchObject({ ok: true, applicationResponse: ar });
+  });
+
+  it('el CUFE se compara sin importar mayúsculas', () => {
+    const ar = b64(applicationResponseXml(CUFE.toUpperCase()));
+    expect(aceptar(ar).applicationResponse).toBe(ar);
+  });
+
+  it.each([
+    ['base64 mal formado', '@@@no-es-base64@@@'],
+    ['base64 con longitud inválida', 'QUJDRA'],
+    ['XML con DOCTYPE', b64(applicationResponseXml(CUFE, '<!DOCTYPE x [<!ENTITY e "v">]>'))],
+    ['raíz distinta de ApplicationResponse', b64(applicationResponseXml(CUFE).replace(/ApplicationResponse/g, 'Invoice'))],
+    ['CUFE distinto', b64(applicationResponseXml('b'.repeat(96)))],
+    ['sin referencia al documento', b64('<ApplicationResponse xmlns="x"></ApplicationResponse>')],
+    ['no es XML', b64('hola mundo')],
+    ['tamaño excesivo', b64(applicationResponseXml(CUFE, `<!--${'x'.repeat(MAX_BYTES_APPLICATION_RESPONSE)}-->`))],
+  ])('%s: no se guarda y el veredicto no cambia', (_nombre, xmlBase64) => {
+    const r = aceptar(xmlBase64);
+    expect(r).toMatchObject({ ok: true, isValid: true, origen: 'dian' });
+    expect(r.applicationResponse).toBeUndefined();
+    expect(estadoTrasRespuesta('sent', r)).toBe('accepted');
+  });
+
+  it('un rechazo nunca la conserva', () => {
+    const r = mapearRespuestaDocumento(
+      'SendBillSync',
+      200,
+      respuestaDocumento('SendBillSync', {
+        isValid: 'false',
+        statusCode: '99',
+        errores: ['Regla: FAD06, Rechazo: x'],
+        cufe: CUFE,
+        xmlBase64: b64(applicationResponseXml(CUFE)),
+      }),
+      { cufe: CUFE },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.applicationResponse).toBeUndefined();
+  });
+
+  it('sin CUFE esperado en la respuesta no se guarda', () => {
+    const r = mapearRespuestaDocumento(
+      'SendBillSync',
+      200,
+      respuestaDocumento('SendBillSync', { isValid: 'true', cufe: null, xmlBase64: b64(applicationResponseXml(CUFE)) }),
+    );
+    expect(r.applicationResponse).toBeUndefined();
+  });
+
+  it('no se vuelca a los mensajes', () => {
+    const r = aceptar(b64(applicationResponseXml(CUFE)));
+    expect(JSON.stringify(r.mensajes)).not.toContain(b64(applicationResponseXml(CUFE)).slice(0, 40));
   });
 });

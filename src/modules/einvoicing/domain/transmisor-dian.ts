@@ -28,6 +28,12 @@ export interface RespuestaDian {
   trackId?: string;
   zipKey?: string;
   cufe?: string;
+  /**
+   * ApplicationResponse de la DIAN (base64 del `XmlBase64Bytes`), SOLO en una
+   * aceptación cuyo XML se validó contra el CUFE. No es un mensaje: no se
+   * loguea ni se vuelca a `mensajes`.
+   */
+  applicationResponse?: string;
 }
 
 /**
