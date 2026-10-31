@@ -18,6 +18,9 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
 });
 
 import { EntregaDianService } from './entrega-dian.service';
+import { TransmisionDianService } from './transmision-dian.service';
+import { mapearRespuestaDocumento } from '../infrastructure/dian/mapeo-respuesta';
+import { applicationResponseXml, respuestaDocumento } from '../infrastructure/dian/respuestas-dian.test';
 import { FirmaNoDisponibleError } from './transmision-dian.puertos';
 import { EinvoicingStorageService } from '../../../shared/storage/einvoicing-storage.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
@@ -29,7 +32,7 @@ const FACTURA =
   '<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">' +
   `<UUID>${CUFE}</UUID></Invoice>`;
 const AR =
-  '<ApplicationResponse xmlns:cbc="c" xmlns:cac="a"><cac:DocumentResponse><cac:Response><cbc:ResponseCode>02</cbc:ResponseCode></cac:Response>' +
+  '<ApplicationResponse xmlns="urn:oasis:names:specification:ubl:schema:xsd:ApplicationResponse-2" xmlns:cbc="c" xmlns:cac="a"><cac:DocumentResponse><cac:Response><cbc:ResponseCode>02</cbc:ResponseCode></cac:Response>' +
   `<cac:DocumentReference><cbc:UUID>${CUFE}</cbc:UUID></cac:DocumentReference></cac:DocumentResponse></ApplicationResponse>`;
 
 type Fila = Record<string, any>;
@@ -247,6 +250,40 @@ describe('EntregaDianService (Fase 5B)', () => {
       await expect(enEmpresa(() => svc.regenerar(String(d._id), DUENO))).rejects.toBeInstanceOf(BadRequestException);
       await expect(enEmpresa(() => svc.regenerar('nada', DUENO))).rejects.toBeInstanceOf(NotFoundException);
       await expect(svc.regenerar(String(d._id), DUENO)).rejects.toThrow();
+    });
+  });
+
+  describe('de punta a punta: respuesta SOAP → mapeo → limpiar → entrega', () => {
+    const limpiar = (r: unknown): Fila =>
+      (TransmisionDianService.prototype as unknown as { limpiar(r: unknown): Fila }).limpiar.call({}, r);
+    const soap = (xml: string) =>
+      respuestaDocumento('SendBillSync', {
+        isValid: 'true',
+        cufe: CUFE,
+        xmlBase64: Buffer.from(xml, 'utf8').toString('base64'),
+      });
+
+    it('una aceptación con ApplicationResponse deja la entrega completa con ZIP', async () => {
+      const r = mapearRespuestaDocumento('SendBillSync', 200, soap(applicationResponseXml(CUFE)), { cufe: CUFE });
+      const guardada = limpiar(r);
+      expect(typeof guardada.applicationResponse).toBe('string');
+      const d = sembrar({ respuestaDian: guardada });
+      const res = await entregar(d);
+      expect(res).toMatchObject({ estado: 'completa', pdf: true, zip: true });
+      expect(fila(d).entregaDian).toMatchObject({ estado: 'completa' });
+      expect(fila(d).attachedPath).toBeTruthy();
+    });
+
+    it('una ApplicationResponse de otro documento no se guarda: la entrega queda incompleta', async () => {
+      const r = mapearRespuestaDocumento('SendBillSync', 200, soap(applicationResponseXml('b'.repeat(96))), { cufe: CUFE });
+      const guardada = limpiar(r);
+      expect(guardada.applicationResponse).toBeUndefined();
+      const d = sembrar({ respuestaDian: guardada });
+      expect(await entregar(d)).toMatchObject({ estado: 'incompleta', motivo: 'SIN_APPLICATION_RESPONSE' });
+    });
+
+    it('un rechazo no guarda la ApplicationResponse aunque el contrato la traiga', () => {
+      expect(limpiar({ ok: false, origen: 'dian', mensajes: [], applicationResponse: 'QUJD' }).applicationResponse).toBeUndefined();
     });
   });
 });

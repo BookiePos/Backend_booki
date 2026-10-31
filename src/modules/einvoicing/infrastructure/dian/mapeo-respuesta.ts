@@ -1,4 +1,5 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
+import { leerApplicationResponseXml } from '../../domain/entrega/lectura-application-response';
 import { traeDoctype } from '../../domain/firma/revision-xml';
 import {
   assertContratoRespuesta,
@@ -310,6 +311,29 @@ function erroresDe(r: Nodo): string[] {
     .filter((t): t is string => Boolean(t));
 }
 
+/** Tope de la ApplicationResponse decodificada (las reales pesan pocos KB). */
+export const MAX_BYTES_APPLICATION_RESPONSE = 1024 * 1024;
+
+/**
+ * `XmlBase64Bytes` → base64 saneado, o `undefined` si no sirve: base64 bien
+ * formado, dentro del tope, XML sin DOCTYPE ni entidades con raíz única
+ * `ApplicationResponse`, y cuyo `DocumentReference/UUID` es el CUFE esperado.
+ */
+function extraerApplicationResponse(crudo: unknown, cufe: string): string | undefined {
+  const b64 = typeof crudo === 'string' ? crudo.replace(/\s+/g, '') : '';
+  if (!b64 || b64.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return undefined;
+  if (Math.floor((b64.length * 3) / 4) > MAX_BYTES_APPLICATION_RESPONSE) return undefined;
+  const bytes = Buffer.from(b64, 'base64');
+  if (bytes.length > MAX_BYTES_APPLICATION_RESPONSE) return undefined;
+  const xml = bytes.toString('utf8').replace(/^\uFEFF/, '');
+  if (xml.includes('�') || traeDoctype(xml) || /<!ENTITY/i.test(xml)) return undefined;
+  if (XMLValidator.validate(xml) !== true) return undefined;
+  // Del árbol, no del texto: sin regex cuadráticas ni comentarios que engañen.
+  const leida = leerApplicationResponseXml(xml);
+  if (!leida || !mismoCufe(leida.cufe, cufe)) return undefined;
+  return b64;
+}
+
 /** Un `DianResponse` (SendBillSync, GetStatus, cada ítem de GetStatusZip). */
 function mapearDianResponse(r: Nodo, op: OperacionDian, esperado: EsperadoDian = {}): RespuestaDian {
   // IsValid debe ser texto puro: ni repetido, ni con atributos, ni con contenido mixto.
@@ -331,7 +355,17 @@ function mapearDianResponse(r: Nodo, op: OperacionDian, esperado: EsperadoDian =
     if (esperado.cufe?.trim() && !cufe) {
       return respuestaRed('La DIAN aceptó sin decir qué documento (falta XmlDocumentKey)');
     }
-    return cerrar({ ...base, ok: true, isValid: true, codigo: statusCode, mensajes });
+    // El XML de la ApplicationResponse solo se conserva si es válido y es de ESTE
+    // documento; si no, se descarta sin tocar el veredicto.
+    const applicationResponse = cufe ? extraerApplicationResponse(r.XmlBase64Bytes, cufe) : undefined;
+    return cerrar({
+      ...base,
+      ok: true,
+      isValid: true,
+      codigo: statusCode,
+      mensajes,
+      ...(applicationResponse ? { applicationResponse } : {}),
+    });
   }
   if (isValid !== 'false') return respuestaRed('La respuesta de la DIAN no trae IsValid');
 

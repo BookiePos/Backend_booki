@@ -16,6 +16,8 @@
  *
  * Basado en la referencia de AlíaCorp (`apps/erp/lib/dian/attached-document.ts`).
  */
+import { leerApplicationResponseXml } from './lectura-application-response';
+
 
 export const VALIDADOR_DIAN = 'Unidad Especial Dirección de Impuestos y Aduanas Nacionales';
 /** ResponseCode de la ApplicationResponse: «documento validado por la DIAN». */
@@ -120,14 +122,11 @@ function leerApplicationResponse(ar: string): { codigo: string; cufe: string } {
   if (!/<(?:\w+:)?ApplicationResponse[\s>]/.test(ar)) {
     throw new ErrorEntrega('AR_ILEGIBLE', 'La respuesta guardada de la DIAN no es una ApplicationResponse.');
   }
-  const respuesta = ar.match(/<(?:\w+:)?DocumentResponse[\s>][\s\S]*?<\/(?:\w+:)?DocumentResponse>/)?.[0] ?? '';
-  const codigo = respuesta.match(/<(?:\w+:)?ResponseCode[^>]*>\s*([^<]+?)\s*</)?.[1];
-  const referencia = respuesta.match(/<(?:\w+:)?DocumentReference[\s>][\s\S]*?<\/(?:\w+:)?DocumentReference>/)?.[0] ?? '';
-  const cufe = referencia.match(/<(?:\w+:)?UUID[^>]*>\s*([^<]+?)\s*</)?.[1];
-  if (!codigo || !cufe) {
+  const leida = leerApplicationResponseXml(ar);
+  if (!leida) {
     throw new ErrorEntrega('AR_ILEGIBLE', 'La ApplicationResponse no trae el código ni el documento validado.');
   }
-  return { codigo, cufe };
+  return leida;
 }
 
 /**
@@ -203,11 +202,9 @@ export function construirAttachedDocument(d: DatosAttached): string {
  * La ApplicationResponse guardada en `respuestaDian.applicationResponse`
  * (base64 del `XmlBase64Bytes` de la DIAN), o `null` si no está.
  *
- * HUECO CONOCIDO (Fase 5B): hoy el adaptador de la DIAN (`mapeo-respuesta.ts`)
- * NO conserva el `XmlBase64Bytes` y `TransmisionDianService.limpiar` no lo
- * guarda, así que esto devuelve `null` en todos los documentos y la entrega se
- * queda en el PDF (`SIN_APPLICATION_RESPONSE`). Cuando el adaptador lo guarde
- * con esta clave, el AttachedDocument y el ZIP salen sin tocar nada más.
+ * El adaptador (`mapeo-respuesta.ts`) la guarda solo en una aceptación cuyo XML
+ * ya validó (ApplicationResponse del mismo CUFE) y `TransmisionDianService.limpiar`
+ * la conserva; si falta, la entrega queda en el PDF (`SIN_APPLICATION_RESPONSE`).
  */
 export function applicationResponseDe(respuestaDian: unknown): string | null {
   const b64 = (respuestaDian as { applicationResponse?: unknown } | null | undefined)?.applicationResponse;

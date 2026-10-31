@@ -65,6 +65,8 @@ export const MARGEN_BLOQUEO_MS = 30_000;
 /** Tope de lo que se guarda de la respuesta (los mensajes de la DIAN). */
 const MAX_MENSAJES = 20;
 const MAX_LARGO_MENSAJE = 500;
+/** 1 MB decodificado en base64. */
+const MAX_B64_APPLICATION_RESPONSE = 1_400_000;
 
 /** Estados desde los que se puede (re)transmitir. */
 const ESTADOS_TRANSMITIBLES: readonly DianStatus[] = ['draft', 'signed', 'sent', 'rejected'];
@@ -585,6 +587,10 @@ export class TransmisionDianService {
     if (r.trackId) limpia.trackId = String(r.trackId).slice(0, 200);
     if (r.zipKey) limpia.zipKey = String(r.zipKey).slice(0, 200);
     if (r.cufe) limpia.cufe = String(r.cufe).slice(0, 200);
+    // Solo una aceptación la trae (el adaptador ya la validó); lo lee la entrega.
+    if (r.ok === true && typeof r.applicationResponse === 'string' && r.applicationResponse.length <= MAX_B64_APPLICATION_RESPONSE) {
+      limpia.applicationResponse = r.applicationResponse;
+    }
     return limpia;
   }
 

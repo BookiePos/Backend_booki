@@ -1,3 +1,4 @@
+import { leerApplicationResponseXml } from './lectura-application-response';
 import { describe, expect, it } from 'vitest';
 import { DOMParser } from '@xmldom/xmldom';
 import {
@@ -129,6 +130,24 @@ describe('AttachedDocument (anexo FEV 1.9)', () => {
       construirAttachedDocument(base({ applicationResponse: AR.replace('>02<', '>04<') })),
     ).toThrow(/aceptación/);
     expect(() => construirAttachedDocument(base({ applicationResponse: '<Nada/>' }))).toThrow(ErrorEntrega);
+  });
+
+  it('la lectura de la ApplicationResponse ignora comentarios, exige el namespace UBL y no es cuadrática', () => {
+    const otro = 'b'.repeat(96);
+    const real = (uuid: string, ns = 'urn:oasis:names:specification:ubl:schema:xsd:ApplicationResponse-2') =>
+      `<ApplicationResponse xmlns="${ns}" xmlns:cac="a" xmlns:cbc="c"><cac:DocumentResponse><cac:Response><cbc:ResponseCode>02</cbc:ResponseCode></cac:Response>` +
+      `<cac:DocumentReference><cbc:UUID>${uuid}</cbc:UUID></cac:DocumentReference></cac:DocumentResponse></ApplicationResponse>`;
+    expect(leerApplicationResponseXml(real(otro))).toEqual({ codigo: '02', cufe: otro });
+    const engano = real(otro).replace(
+      '<cac:DocumentResponse>',
+      `<!--<cac:DocumentResponse><cac:DocumentReference><cbc:UUID>${CUFE}</cbc:UUID></cac:DocumentReference></cac:DocumentResponse>--><cac:DocumentResponse>`,
+    );
+    expect(leerApplicationResponseXml(engano)?.cufe).toBe(otro);
+    expect(leerApplicationResponseXml(real(CUFE, 'urn:falso'))).toBeNull();
+    const pesado = real(CUFE).replace('<cac:DocumentResponse>', `<!--${'<DocumentResponse '.repeat(55_000)}--><cac:DocumentResponse>`);
+    const t0 = Date.now();
+    expect(leerApplicationResponseXml(pesado)?.cufe).toBe(CUFE);
+    expect(Date.now() - t0).toBeLessThan(1000);
   });
 
   it('applicationResponseDe: solo un XML de ApplicationResponse en base64; si no, null (el hueco)', () => {
