@@ -10,6 +10,13 @@ la misma copia que usa AlíaCorp en `apps/erp/lib/dian/__fixtures__/xsd/` (SHA-2
 - `ejemplos-dian/generica.xml`: ejemplo oficial de la caja (`Generica.xml`), para comprobar que el
   validador acepta lo que publica la propia DIAN.
 
+**Documento equivalente POS (Fase 7A):** la carpeta `XSD/` de la caja de herramientas del DE v1.3
+(<https://www.dian.gov.co/impuestos/factura-electronica/Documents/Caja-de-herramientas-Doc-Equivalentes-V1-3.zip>)
+trae `UBL-Invoice-2.1.xsd`, `DIAN_UBL_Structures.xsd` y `common/` con los **mismos SHA-256** de abajo
+(comprobado el 2026-10-31), así que el POS se valida con estos mismos archivos. No hay XSD de las
+extensiones del POS (`FabricanteSoftware`, `BeneficiosComprador`, `PuntoVenta`): van en
+`ext:ExtensionContent`, que es `lax`, y su forma la prueban los tests de `pos-ubl.spec.ts`.
+
 Los usa `../validar-xsd.test.ts` (devDependency `xmllint-wasm`, sin red). No entran al build
 (`tsconfig.build.json` solo compila `.ts`) ni a producción.
 
