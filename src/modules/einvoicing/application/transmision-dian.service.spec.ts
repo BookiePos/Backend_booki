@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ConflictException, ForbiddenException, NotImplementedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotImplementedException,
+} from '@nestjs/common';
 import { Types } from 'mongoose';
 
 // El servicio importa el esquema: se neutralizan los decoradores (patrón de
@@ -16,12 +21,20 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
   };
 });
 
-import { TransmisionDianService } from './transmision-dian.service';
 import {
+  BLOQUEO_TRANSMISION_MS,
+  MARGEN_BLOQUEO_MS,
+  PRESUPUESTO_RED_MAX_MS,
+  TransmisionDianService,
+} from './transmision-dian.service';
+import {
+  AmbienteNoCoincideError,
   ArmadorUblPendiente,
   FirmaNoDisponibleError,
   MENSAJE_BUILDER_PENDIENTE,
+  ProveedorTransmisorPorEmisor,
 } from './transmision-dian.puertos';
+import { EinvoicingStorageService } from '../../../shared/storage/einvoicing-storage.service';
 import { StubDian } from '../domain/stub-dian';
 import type { RespuestaDian, TransmisorDian } from '../domain/transmisor-dian';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
@@ -95,7 +108,8 @@ describe('TransmisionDianService', () => {
   let log: string[];
   let modelo: ReturnType<typeof modeloFalso>;
   let bucket: Map<string, Buffer>;
-  let storage: any;
+  let storage: EinvoicingStorageService;
+  let audit: { record: ReturnType<typeof vi.fn> };
   let emisores: any;
   let armador: { armar: ReturnType<typeof vi.fn> };
   let firmante: { firmar: ReturnType<typeof vi.fn<(xml: string, emisorId: string) => Promise<string>>> };
@@ -127,28 +141,35 @@ describe('TransmisionDianService', () => {
   const fila = (d: Fila) => modelo.filas.get(String(d._id))!;
   const enEmpresa = <T>(fn: () => Promise<T>) =>
     TenantContext.run({ businessId: 'b1', dbName: 'biz_b1' }, fn);
-  const transmitir = (d: Fila, user?: JwtUser) => enEmpresa(() => svc.transmitir(String(d._id), user));
+  const DUENO = { userId: 'u1', email: 'd@b.co', name: 'Dueña', role: 'owner', permissions: [], sedeIds: [] } as unknown as JwtUser;
+  const transmitir = (d: Fila, user: JwtUser = DUENO) => enEmpresa(() => svc.transmitir(String(d._id), user));
+  const rutaXml = (d: Fila, emisorId = 'e1', empresa = 'b1') =>
+    `einvoicing/${empresa}/${emisorId}/docs/${String(d._id)}/documento.xml`;
 
   const construir = (arm: { armar: any } = armador) =>
-    new TransmisionDianService(modelo as never, emisores, storage, arm, firmante, proveedor as never);
+    new TransmisionDianService(modelo as never, emisores, storage, arm, firmante, proveedor as never, audit as never);
 
   beforeEach(() => {
     log = [];
     modelo = modeloFalso(log);
     bucket = new Map();
-    storage = {
-      guardarArtefacto: vi.fn(async (emisorId: string, docId: string, tipo: string, contenido: Buffer) => {
-        const pathname = `einvoicing/b1/${emisorId}/docs/${docId}/documento.${tipo}`;
+    // El EinvoicingStorageService REAL (rutas y validaciones de verdad) sobre
+    // un bucket en memoria.
+    storage = new EinvoicingStorageService({
+      uploadPrivado: async (pathname: string, contenido: Buffer) => {
         bucket.set(pathname, contenido);
         log.push('bucket:guardar');
         return { pathname };
-      }),
-      leerArtefacto: vi.fn(async (emisorId: string, docId: string, tipo: string) => {
-        const b = bucket.get(`einvoicing/b1/${emisorId}/docs/${docId}/documento.${tipo}`);
-        if (!b) throw new Error('no existe');
-        return b;
-      }),
-    };
+      },
+      descargarPrivado: async (pathname: string) => {
+        const buffer = bucket.get(pathname);
+        if (!buffer) throw new Error('no existe');
+        log.push(`bucket:leer:${pathname}`);
+        return { buffer };
+      },
+    } as never);
+    vi.spyOn(storage, 'guardarArtefacto');
+    audit = { record: vi.fn(async () => undefined) };
     emisor = { id: 'e1', tipoAmbiente: '2', habilitado: false, nitNorm: NIT };
     emisores = {
       obtenerPorSede: vi.fn(async () => emisor),
@@ -190,6 +211,8 @@ describe('TransmisionDianService', () => {
       fullNumber: 'SETP990000001',
       cufe: 'cufe-1',
       xmlFirmado: '<Invoice/><!--firma-1-->',
+      presupuestoMs: PRESUPUESTO_RED_MAX_MS,
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -260,7 +283,7 @@ describe('TransmisionDianService', () => {
     transmisor.enviar.mockResolvedValue({ ok: false, isValid: false, origen: 'dian', codigo: 'YA_PROCESADO_DIAN', mensajes: [] });
     const d = sembrar();
     const r = await transmitir(d);
-    expect(transmisor.consultar).toHaveBeenCalledWith({ cufe: 'cufe-1' });
+    expect(transmisor.consultar).toHaveBeenCalledWith(expect.objectContaining({ cufe: 'cufe-1' }));
     expect(r.dianStatus).toBe('accepted');
   });
 
@@ -351,7 +374,8 @@ describe('TransmisionDianService', () => {
     expect(proveedor.para).not.toHaveBeenCalled();
     expect(armador.armar).not.toHaveBeenCalled();
     expect(transmisor.enviar).not.toHaveBeenCalled();
-    expect(fila(d).respuestaDian).toMatchObject({ codigo: 'CONFIG_FALTANTE', origen: 'adapter' });
+    expect(fila(d).ultimoIntentoSinRed).toMatchObject({ codigo: 'CONFIG_FALTANTE' });
+    expect(fila(d).respuestaDian).toBeUndefined();
   });
 
   it('gate: un documento de pruebas no va a producción', async () => {
@@ -412,7 +436,7 @@ describe('TransmisionDianService', () => {
 
   it('sin TenantContext no lee nada', async () => {
     const d = sembrar();
-    await expect(svc.transmitir(String(d._id))).rejects.toThrow(/contexto de empresa/);
+    await expect(svc.transmitir(String(d._id), DUENO)).rejects.toThrow(/contexto de empresa/);
   });
 
   it('usuario sin acceso a la sede del documento: 403', async () => {
@@ -420,5 +444,144 @@ describe('TransmisionDianService', () => {
     const user = { email: 'c@b.co', role: 'cashier', permissions: [], sedeIds: [new Types.ObjectId().toString()] } as unknown as JwtUser;
     await expect(transmitir(d, user)).rejects.toBeInstanceOf(ForbiddenException);
     expect(transmisor.enviar).not.toHaveBeenCalled();
+  });
+
+  // ── Revisión del PR #101 ──────────────────────────────────────────────────
+
+  describe('presupuesto de red frente al bloqueo', () => {
+    it('el bloqueo dura más que una función de Vercel (300 s) y el presupuesto cabe con margen', () => {
+      expect(BLOQUEO_TRANSMISION_MS).toBeGreaterThan(300_000);
+      expect(PRESUPUESTO_RED_MAX_MS * 2 + MARGEN_BLOQUEO_MS).toBeLessThan(BLOQUEO_TRANSMISION_MS);
+    });
+
+    it('presupuestoRed: tope fijo, y siempre el margen antes de que venza el bloqueo', () => {
+      const ahora = 1_000_000;
+      expect(svc.presupuestoRed(new Date(ahora + BLOQUEO_TRANSMISION_MS), ahora)).toBe(PRESUPUESTO_RED_MAX_MS);
+      expect(svc.presupuestoRed(new Date(ahora + 40_000), ahora)).toBe(10_000);
+      expect(svc.presupuestoRed(new Date(ahora + 20_000), ahora)).toBeLessThanOrEqual(0);
+    });
+
+    it('enviar y consultar reciben presupuestoMs y una señal, menores que bloqueoHasta − ahora', async () => {
+      transmisor.enviar.mockResolvedValue({ ok: false, isValid: false, origen: 'dian', codigo: 'YA_PROCESADO_DIAN', mensajes: [] });
+      let restanteEnLaRed = 0;
+      transmisor.consultar.mockImplementation(async () => {
+        restanteEnLaRed = (fila(d).bloqueoHasta as Date).getTime() - Date.now();
+        return ACEPTADA;
+      });
+      const d = sembrar();
+      await transmitir(d);
+      for (const llamada of [transmisor.enviar.mock.calls[0]![0], transmisor.consultar.mock.calls[0]![0]]) {
+        expect(llamada.presupuestoMs).toBeGreaterThan(0);
+        expect(llamada.presupuestoMs).toBeLessThanOrEqual(PRESUPUESTO_RED_MAX_MS);
+        expect(llamada.signal).toBeInstanceOf(AbortSignal);
+        expect(llamada.presupuestoMs).toBeLessThan(restanteEnLaRed - MARGEN_BLOQUEO_MS + 1_000);
+      }
+    });
+
+    it('si el bloqueo está por vencer, no llama a la red: queda en sent', async () => {
+      const d = sembrar();
+      let reloj: { mockRestore: () => void } | undefined;
+      firmante.firmar.mockImplementation(async (xml: string) => {
+        // Firmar (o el bucket) se comió el bloqueo: quedan 10 s, menos que el margen.
+        const tarde = Date.now() + BLOQUEO_TRANSMISION_MS - 10_000;
+        reloj = vi.spyOn(Date, 'now').mockReturnValue(tarde);
+        return `${xml}<!--firma-->`;
+      });
+      let r;
+      try {
+        r = await transmitir(d);
+      } finally {
+        reloj?.mockRestore();
+      }
+      expect(transmisor.enviar).not.toHaveBeenCalled();
+      expect(r).toMatchObject({ dianStatus: 'sent', codigo: 'RED' });
+    });
+  });
+
+  describe('reintento con la ruta guardada', () => {
+    it('lee el XML de doc.xmlPath aunque la sede ya tenga otro emisor', async () => {
+      const d = docBase({ dianStatus: 'sent' });
+      d.xmlPath = rutaXml(d, 'eViejo');
+      modelo.filas.set(String(d._id), d);
+      bucket.set(d.xmlPath, Buffer.from('<Invoice del="emisor viejo"/>'));
+      const r = await transmitir(d);
+      expect(r.dianStatus).toBe('accepted');
+      expect(transmisor.enviar.mock.calls[0]![0].xmlFirmado).toBe('<Invoice del="emisor viejo"/>');
+      expect(log).toContain(`bucket:leer:${d.xmlPath}`);
+    });
+
+    it.each([
+      ['otra empresa', (d: Fila) => rutaXml(d, 'e1', 'b2')],
+      ['otro documento', () => `einvoicing/b1/e1/docs/${new Types.ObjectId().toString()}/documento.xml`],
+      ['otro tipo', (d: Fila) => rutaXml(d).replace('.xml', '.pdf')],
+      ['path traversal', (d: Fila) => `einvoicing/b1/../docs/${String(d._id)}/documento.xml`],
+      ['segmento de más', (d: Fila) => `einvoicing/b1/e1/x/docs/${String(d._id)}/documento.xml`],
+    ])('rechaza una ruta de %s sin tocar el bucket ni la red', async (_n, ruta) => {
+      const d = docBase({ dianStatus: 'sent' });
+      d.xmlPath = ruta(d);
+      modelo.filas.set(String(d._id), d);
+      bucket.set(d.xmlPath, Buffer.from('<x/>'));
+      await expect(transmitir(d)).rejects.toBeInstanceOf(BadRequestException);
+      expect(log.filter((l) => l.startsWith('bucket:leer'))).toEqual([]);
+      expect(transmisor.enviar).not.toHaveBeenCalled();
+      expect(fila(d).bloqueoTransmision).toBeUndefined();
+    });
+  });
+
+  describe('ambiente del proveedor', () => {
+    it('ProveedorTransmisorPorEmisor falla si el emisor no está en el ambiente del gate', async () => {
+      const em = {
+        obtenerPorSede: vi.fn(async () => ({ tipoAmbiente: '1' })),
+        transmisorParaSede: vi.fn(async () => new StubDian()),
+      };
+      const p = new ProveedorTransmisorPorEmisor(em as never);
+      await expect(p.para('s1', '2')).rejects.toBeInstanceOf(AmbienteNoCoincideError);
+      expect(em.transmisorParaSede).not.toHaveBeenCalled();
+      await expect(p.para('s1', '1')).resolves.toBeInstanceOf(StubDian);
+      em.obtenerPorSede.mockResolvedValue(null as never);
+      await expect(p.para('s1', '1')).rejects.toBeInstanceOf(AmbienteNoCoincideError);
+    });
+
+    it('si el proveedor dice que el ambiente no coincide: CONFIG_FALTANTE sin firmar ni red', async () => {
+      proveedor.para.mockRejectedValue(new AmbienteNoCoincideError());
+      const d = sembrar();
+      const r = await transmitir(d);
+      expect(r).toMatchObject({ dianStatus: 'draft', codigo: 'CONFIG_FALTANTE', transmitido: false });
+      expect(armador.armar).not.toHaveBeenCalled();
+      expect(transmisor.enviar).not.toHaveBeenCalled();
+    });
+  });
+
+  it('sin red: el motivo va a ultimoIntentoSinRed y respuestaDian conserva la de la DIAN', async () => {
+    const previa = { ok: false, origen: 'adapter', codigo: 'RED', mensajes: ['timeout'] };
+    const d = sembrar({ dianStatus: 'sent', respuestaDian: previa, xmlPath: 'x' });
+    emisor = { ...emisor, tipoAmbiente: '1', habilitado: false };
+    const r = await transmitir(d);
+    expect(r.codigo).toBe('CONFIG_FALTANTE');
+    expect(fila(d).respuestaDian).toEqual(previa);
+    expect(fila(d).ultimoIntentoSinRed).toMatchObject({ codigo: 'CONFIG_FALTANTE' });
+    expect(fila(d).ultimoIntentoSinRed.motivos.length).toBeGreaterThan(0);
+    expect(fila(d).ultimoIntentoSinRed.at).toBeInstanceOf(Date);
+  });
+
+  it('auditoría: una fila por transmisión, con usuario, documento, intento y código, sin XML', async () => {
+    const d = sembrar();
+    await transmitir(d);
+    expect(audit.record).toHaveBeenCalledTimes(1);
+    const rec = audit.record.mock.calls[0]![0];
+    expect(rec).toMatchObject({
+      userId: 'u1',
+      userEmail: 'd@b.co',
+      success: true,
+      action: 'einvoicing.documento.transmitido',
+      path: `/einvoicing/documentos/${String(d._id)}/transmitir`,
+      detail: { documentoId: String(d._id), intento: '1', dianStatus: 'accepted', codigo: '00', transmitido: 'true' },
+    });
+    expect(JSON.stringify(rec)).not.toContain('<Invoice');
+
+    svc = construir(new ArmadorUblPendiente());
+    const otro = sembrar();
+    await expect(transmitir(otro)).rejects.toThrow(NotImplementedException);
+    expect(audit.record.mock.calls[1]![0]).toMatchObject({ success: false, detail: { codigo: 'NotImplementedException' } });
   });
 });

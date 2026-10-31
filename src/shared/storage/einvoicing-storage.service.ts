@@ -109,6 +109,37 @@ export class EinvoicingStorageService {
   }
 
   /**
+   * Lee un artefacto por la ruta que quedó guardada en el documento (el
+   * reintento reenvía ESE archivo, aunque la sede haya cambiado de emisor).
+   * La ruta tiene que ser exactamente
+   * `einvoicing/<empresa del contexto>/<emisor>/docs/<docId>/documento.<tipo>`:
+   * otra empresa, otro documento, otro tipo o cualquier segmento raro se
+   * rechazan antes de tocar el bucket.
+   */
+  async leerArtefactoGuardado(
+    pathname: string | undefined,
+    docId: string,
+    tipo: TipoArtefactoFe,
+  ): Promise<Buffer> {
+    const partes = typeof pathname === 'string' ? pathname.split('/') : [];
+    const [raiz, empresa, emisorId, docs, id, archivo] = partes;
+    const valida =
+      partes.length === 6 &&
+      raiz === 'einvoicing' &&
+      docs === 'docs' &&
+      empresa === TenantContext.currentOrThrow().businessId &&
+      typeof emisorId === 'string' &&
+      SEGMENTO.test(emisorId) &&
+      id === docId &&
+      archivo === `documento.${tipo}`;
+    if (!valida) {
+      throw new BadRequestException('Ruta de artefacto no válida para este documento.');
+    }
+    // Se rearma con las validaciones de siempre: la ruta leída es la canónica.
+    return this.leerArtefacto(emisorId, docId, tipo);
+  }
+
+  /**
    * URL firmada de vida corta para descargar el XML, PDF o ZIP. Solo acepta
    * `TipoArtefactoFe`: el certificado no puede pasar por aquí.
    */

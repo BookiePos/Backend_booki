@@ -294,6 +294,13 @@ export class ElectronicDocument {
   @Prop({ type: String })
   bloqueoTransmision?: string;
 
+  /**
+   * Por qué el último intento no salió a la red (gate de ambiente, stub,
+   * certificado). Aparte de `respuestaDian`, que es solo lo que dijo la red.
+   */
+  @Prop({ type: Object })
+  ultimoIntentoSinRed?: Record<string, unknown>;
+
   /** Vence el bloqueo: pasado este instante otro intento lo puede tomar. */
   @Prop({ type: Date })
   bloqueoHasta?: Date;

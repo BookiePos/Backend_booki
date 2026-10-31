@@ -43,14 +43,17 @@ describe('transmisión DIAN · bloqueo y orden contra Mongo real', () => {
           bucket.set(id, b);
           return { pathname: `einvoicing/${EMPRESA}/e1/docs/${id}/documento.xml` };
         },
-        leerArtefacto: async (_e: string, id: string) => bucket.get(id)!,
+        leerArtefactoGuardado: async (_ruta: string, id: string) => bucket.get(id)!,
       } as never,
       { armar: async () => '<Invoice/>' },
       firmante,
       { para: async () => transmisor } as never,
+      { record: async () => undefined } as never,
     );
     return { svc, transmisor, firmante };
   };
+
+  const DUENO = { userId: 'u1', email: 'd@b.co', role: 'owner', permissions: [], sedeIds: [] } as never;
 
   const crear = () =>
     docs.create({
@@ -75,7 +78,7 @@ describe('transmisión DIAN · bloqueo y orden contra Mongo real', () => {
       const ok: RespuestaDian = { ok: true, isValid: true, origen: 'dian', codigo: '00', mensajes: [] };
       const { svc, transmisor, firmante } = armar(async () => ok);
       const d = await crear();
-      const resultados = await Promise.all([1, 2, 3].map(() => svc.transmitir(d.id as string)));
+      const resultados = await Promise.all([1, 2, 3].map(() => svc.transmitir(d.id as string, DUENO)));
       expect(transmisor.enviar).toHaveBeenCalledTimes(1);
       expect(firmante.firmar).toHaveBeenCalledTimes(1);
       expect(resultados.filter((r) => r.codigo === 'EN_CURSO')).toHaveLength(2);
@@ -96,9 +99,9 @@ describe('transmisión DIAN · bloqueo y orden contra Mongo real', () => {
       });
       const d = await crear();
       ref.id = d.id as string;
-      await svc.transmitir(d.id as string);
+      await svc.transmitir(d.id as string, DUENO);
       expect(estadoEnLaRed).toBe('sent');
-      await svc.transmitir(d.id as string);
+      await svc.transmitir(d.id as string, DUENO);
       const [primero, segundo] = transmisor.enviar.mock.calls.map((c) => (c as unknown[])[0]) as Array<{ xmlFirmado: string }>;
       expect(segundo!.xmlFirmado).toBe(primero!.xmlFirmado);
       expect(await docs.findById(d.id).lean().exec()).toMatchObject({ dianStatus: 'sent', intentos: 2 });

@@ -67,15 +67,27 @@ export class FirmanteP12 implements FirmanteDian {
   }
 }
 
+/** El ambiente del emisor no es el que decidió el gate (cambió entre medias). */
+export class AmbienteNoCoincideError extends Error {
+  constructor() {
+    super('El ambiente DIAN del emisor no coincide con el decidido para esta transmisión');
+    this.name = 'AmbienteNoCoincideError';
+  }
+}
+
 /**
- * Transmisor según el emisor real de la sede. Hoy `resolverTransmisor` siempre
- * devuelve el stub; `DirectoDian` (por ambiente) se conecta en un PR aparte.
+ * Transmisor según el emisor real de la sede, para el ambiente que decidió el
+ * gate. Si el emisor ya no está en ese ambiente, falla: nunca se transmite a
+ * un ambiente distinto del decidido. Hoy `resolverTransmisor` siempre devuelve
+ * el stub; `DirectoDian` (por ambiente) se conecta en un PR aparte.
  */
 @Injectable()
 export class ProveedorTransmisorPorEmisor implements ProveedorTransmisorDian {
   constructor(private readonly emisores: FiscalEmittersService) {}
 
-  para(sedeId: string, _ambiente: TipoAmbiente): Promise<TransmisorDian> {
+  async para(sedeId: string, ambiente: TipoAmbiente): Promise<TransmisorDian> {
+    const emisor = await this.emisores.obtenerPorSede(sedeId);
+    if (!emisor || emisor.tipoAmbiente !== ambiente) throw new AmbienteNoCoincideError();
     return this.emisores.transmisorParaSede(sedeId);
   }
 }

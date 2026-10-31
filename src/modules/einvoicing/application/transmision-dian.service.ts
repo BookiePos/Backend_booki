@@ -25,7 +25,9 @@ import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import { FiscalEmittersService } from './fiscal-emitters.service';
+import { AuditService } from '../../core-audit/application/audit.service';
 import {
+  AmbienteNoCoincideError,
   ARMADOR_XML_DIAN,
   FIRMANTE_DIAN,
   FirmaNoDisponibleError,
@@ -36,11 +38,20 @@ import {
 } from './transmision-dian.puertos';
 
 /**
- * Vida del bloqueo de transmisión. Mayor que el `maxDuration` de la función en
- * Vercel (60 s, `vercel.json`): si la función muere a mitad, el bloqueo vence
- * cuando ya no puede quedar nadie trabajando con él.
+ * Vida del bloqueo de transmisión. Mayor que la duración máxima de una función
+ * en Vercel (300 s con Fluid compute): si la función muere a mitad, el bloqueo
+ * vence cuando ya no puede quedar nadie trabajando con él.
  */
-export const BLOQUEO_TRANSMISION_MS = 120_000;
+export const BLOQUEO_TRANSMISION_MS = 330_000;
+
+/** Tope de cada llamada a la DIAN (enviar o consultar). */
+export const PRESUPUESTO_RED_MAX_MS = 25_000;
+
+/**
+ * Margen entre el fin del presupuesto de red y el vencimiento del bloqueo: da
+ * tiempo a guardar el veredicto y soltar el bloqueo antes de que otro lo tome.
+ */
+export const MARGEN_BLOQUEO_MS = 30_000;
 
 /** Tope de lo que se guarda de la respuesta (los mensajes de la DIAN). */
 const MAX_MENSAJES = 20;
@@ -90,14 +101,59 @@ export class TransmisionDianService {
     @Inject(FIRMANTE_DIAN) private readonly firmante: FirmanteDian,
     @Inject(PROVEEDOR_TRANSMISOR_DIAN)
     private readonly transmisores: ProveedorTransmisorDian,
+    private readonly audit: AuditService,
   ) {}
 
-  async transmitir(docId: string, user?: JwtUser): Promise<ResultadoTransmision> {
+  /**
+   * Camino HTTP: el usuario es obligatorio (acceso a la sede del documento y
+   * auditoría). Un camino de sistema (cron) tendrá su propio método explícito.
+   */
+  async transmitir(docId: string, user: JwtUser): Promise<ResultadoTransmision> {
     // Sin empresa no hay base ni carpeta del bucket: falla antes de leer nada.
     TenantContext.currentOrThrow();
+    try {
+      const r = await this.ejecutar(docId, user);
+      await this.auditar(docId, user, true, r.codigo ?? r.dianStatus, r);
+      return r;
+    } catch (err) {
+      await this.auditar(docId, user, false, (err as Error)?.name ?? 'Error');
+      throw err;
+    }
+  }
+
+  /** Una fila por transmisión: quién, qué documento, qué intento, qué resultó. Sin secretos. */
+  private async auditar(
+    docId: string,
+    user: JwtUser,
+    success: boolean,
+    codigo: string,
+    r?: ResultadoTransmision,
+  ): Promise<void> {
+    const documentoId = String(docId).slice(0, 64);
+    const detail: Record<string, string> = { documentoId, codigo: String(codigo).slice(0, 60) };
+    if (r) {
+      detail.fullNumber = r.fullNumber;
+      detail.intento = String(r.intentos);
+      detail.dianStatus = r.dianStatus;
+      detail.transmitido = String(r.transmitido);
+    }
+    await this.audit.record({
+      userId: user.userId,
+      userEmail: user.email,
+      userName: user.name,
+      role: user.role,
+      method: 'POST',
+      path: `/einvoicing/documentos/${documentoId}/transmitir`,
+      success,
+      action: 'einvoicing.documento.transmitido',
+      detail,
+    });
+  }
+
+  private async ejecutar(docId: string, user: JwtUser): Promise<ResultadoTransmision> {
     const doc = await this.cargar(docId);
     const sedeId = doc.sedeId.toString();
-    if (user) assertSedeAccess(user, sedeId);
+    assertSedeAccess(user, sedeId);
 
     if (doc.dianStatus === 'accepted') {
       return this.resultado(doc, false, undefined, ['El documento ya fue aceptado por la DIAN.']);
@@ -144,7 +200,13 @@ export class TransmisionDianService {
 
     // El stub nunca sale a la red: si es lo que hay, ni se firma ni se marca
     // `sent` (un `sent` que nunca salió dejaría el documento en vuelo para siempre).
-    const transmisor = await this.transmisores.para(sedeId, decision.ambiente);
+    let transmisor: TransmisorDian;
+    try {
+      transmisor = await this.transmisores.para(sedeId, decision.ambiente);
+    } catch (err) {
+      if (err instanceof AmbienteNoCoincideError) return this.sinRed(doc, [err.message]);
+      throw err;
+    }
     if (transmisor instanceof StubDian) {
       const r = await transmisor.enviar({ tipo: doc.type, fullNumber: doc.fullNumber });
       return this.sinRed(doc, r.mensajes);
@@ -158,7 +220,8 @@ export class TransmisionDianService {
       ]);
     }
     try {
-      return await this.transmitirConBloqueo(bloqueo.doc, bloqueo.id, emisorId, transmisor);
+      const hasta = bloqueo.doc.bloqueoHasta ?? new Date(Date.now() + BLOQUEO_TRANSMISION_MS);
+      return await this.transmitirConBloqueo(bloqueo.doc, bloqueo.id, hasta, emisorId, transmisor);
     } finally {
       await this.soltarBloqueo(docId, bloqueo.id);
     }
@@ -180,6 +243,7 @@ export class TransmisionDianService {
   private async transmitirConBloqueo(
     inicial: ElectronicDocumentDocument,
     bloqueo: string,
+    bloqueoHasta: Date,
     emisorId: string,
     transmisor: TransmisorDian,
   ): Promise<ResultadoTransmision> {
@@ -219,7 +283,10 @@ export class TransmisionDianService {
           'El documento está en vuelo sin XML guardado: no se rearma ni se renumera. Revisión manual.',
         );
       }
-      xmlFirmado = (await this.storage.leerArtefacto(emisorId, docId, 'xml')).toString('utf8');
+      // La ruta guardada, no una rearmada con el emisor de hoy (la sede pudo
+      // cambiar de emisor). El storage exige que esté en la carpeta de la
+      // empresa del contexto y que sea el XML de ESTE documento.
+      xmlFirmado = (await this.storage.leerArtefactoGuardado(doc.xmlPath, docId, 'xml')).toString('utf8');
     }
 
     // (4) `sent` antes de la red.
@@ -230,17 +297,20 @@ export class TransmisionDianService {
     });
 
     // (5) Red.
-    let r = await this.llamar(() =>
+    let r = await this.llamar(bloqueoHasta, (presupuesto) =>
       transmisor.enviar({
         tipo: doc.type,
         fullNumber: doc.fullNumber,
         cufe: doc.cufe,
         xmlFirmado,
+        ...presupuesto,
       }),
     );
     if (r.codigo === 'YA_PROCESADO_DIAN') {
       // Reenvío de algo que la DIAN ya procesó: su veredicto se consulta.
-      r = await this.llamar(() => transmisor.consultar({ cufe: doc.cufe }));
+      r = await this.llamar(bloqueoHasta, (presupuesto) =>
+        transmisor.consultar({ cufe: doc.cufe, ...presupuesto }),
+      );
     }
 
     // (6) Veredicto.
@@ -354,11 +424,12 @@ export class TransmisionDianService {
     motivos: string[],
     bloqueo?: string,
   ): Promise<ResultadoTransmision> {
-    const r: RespuestaDian = {
-      ok: false,
+    // `respuestaDian` es la última respuesta de la red: no se pisa con el
+    // motivo local de no haber salido.
+    const ultimoIntentoSinRed = {
       codigo: 'CONFIG_FALTANTE',
-      origen: 'adapter',
-      mensajes: motivos,
+      motivos: motivos.slice(0, MAX_MENSAJES).map((m) => String(m).slice(0, MAX_LARGO_MENSAJE)),
+      at: new Date(),
     };
     await this.model
       .updateOne(
@@ -369,7 +440,7 @@ export class TransmisionDianService {
             ? { bloqueoTransmision: bloqueo }
             : { $or: [{ bloqueoTransmision: null }, { bloqueoHasta: { $lte: new Date() } }] }),
         },
-        { $set: { respuestaDian: this.limpiar(r) } },
+        { $set: { ultimoIntentoSinRed } },
       )
       .exec();
     return this.resultado(doc, false, 'CONFIG_FALTANTE', motivos);
@@ -377,10 +448,38 @@ export class TransmisionDianService {
 
   // ── Respuesta ──────────────────────────────────────────────────────────────
 
-  /** Una excepción del adaptador es un fallo de red: nunca un veredicto. */
-  private async llamar(fn: () => Promise<RespuestaDian>): Promise<RespuestaDian> {
+  /**
+   * Presupuesto de una llamada de red: nunca más que `PRESUPUESTO_RED_MAX_MS`
+   * y siempre `MARGEN_BLOQUEO_MS` antes de que venza el bloqueo, para que otra
+   * petición no lo tome mientras esta llamada sigue viva.
+   */
+  presupuestoRed(bloqueoHasta: Date, ahora: number = Date.now()): number {
+    return Math.min(PRESUPUESTO_RED_MAX_MS, bloqueoHasta.getTime() - ahora - MARGEN_BLOQUEO_MS);
+  }
+
+  /**
+   * Una excepción del adaptador es un fallo de red: nunca un veredicto. Sin
+   * presupuesto no se llama: el documento sigue en vuelo y otro intento lo
+   * retoma. La señal se aborta al agotarse el presupuesto.
+   */
+  private async llamar(
+    bloqueoHasta: Date,
+    fn: (p: { presupuestoMs: number; signal: AbortSignal }) => Promise<RespuestaDian>,
+  ): Promise<RespuestaDian> {
+    const presupuestoMs = this.presupuestoRed(bloqueoHasta);
+    if (presupuestoMs <= 0) {
+      this.logger.warn('Sin presupuesto de red antes de que venza el bloqueo: no se llama a la DIAN.');
+      return {
+        ok: false,
+        codigo: 'RED',
+        origen: 'adapter',
+        mensajes: ['Se agotó el tiempo de la transmisión; el documento queda en vuelo.'],
+      };
+    }
+    const control = new AbortController();
+    const reloj = setTimeout(() => control.abort(), presupuestoMs);
     try {
-      return await fn();
+      return await fn({ presupuestoMs, signal: control.signal });
     } catch (err) {
       // Solo el nombre: el mensaje podría traer el XML o datos del adaptador.
       this.logger.warn(`Fallo del transmisor DIAN (${(err as Error)?.name ?? 'Error'}).`);
@@ -390,6 +489,8 @@ export class TransmisionDianService {
         origen: 'adapter',
         mensajes: ['No hubo respuesta de la DIAN; el documento queda en vuelo.'],
       };
+    } finally {
+      clearTimeout(reloj);
     }
   }
 
