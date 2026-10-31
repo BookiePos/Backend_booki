@@ -139,7 +139,14 @@ const VARIANTES: Record<string, DocumentoParaUbl> = {
   'venta a crédito en producción': documento(
     { lines: [IVA_19], total: 119_000 },
     { cliente: CLIENTE_NIT, formaPago: '2', ambiente: '1' },
-  ),
+  ),  // Venta anterior al desglose por línea que cobró bolsas: la bolsa solo trae el tributo 22.
+  'venta sin desglose con línea de solo bolsa': documento({
+    lines: [
+      { name: 'Pan', qty: 1, unitPrice: 3_000, lineTotal: 3_000 },
+      { name: 'Bolsa', qty: 2, unitPrice: 50, lineTotal: 100, bagTaxUnit: 73, bagTax: 146 },
+    ],
+    total: 3_246,
+  }),
 };
 
 describe('factura UBL 2.1 · variantes contra el XSD oficial, firmadas', () => {
@@ -286,8 +293,39 @@ describe('factura UBL 2.1 · contenido', () => {
   });
 });
 
+describe('factura UBL 2.1 · línea con solo el tributo 22 (FAU04)', () => {
+  const xml = armar(VARIANTES['venta sin desglose con línea de solo bolsa']!);
+  const lineas = xml.match(/<cac:InvoiceLine>[\s\S]*?<\/cac:InvoiceLine>/g) ?? [];
+
+  it('su único TaxSubtotal es el 22 con TaxableAmount 0.00, y TaxExclusiveAmount es la suma de esos 0', () => {
+    expect(lineas[0]).not.toContain('<cac:TaxTotal>');
+    expect(lineas[1]!.match(/<cac:TaxSubtotal>/g)).toHaveLength(1);
+    expect(lineas[1]).toMatch(/<cbc:TaxableAmount currencyID="COP">0.00<\/cbc:TaxableAmount>[\s\S]*<cbc:ID>22<\/cbc:ID>/);
+    expect(xml).toContain('<cbc:TaxExclusiveAmount currencyID="COP">0.00</cbc:TaxExclusiveAmount>');
+    expect(xml).toContain('<cbc:LineExtensionAmount currencyID="COP">3100.00</cbc:LineExtensionAmount>');
+    expect(xml).toContain('<cbc:TaxInclusiveAmount currencyID="COP">3246.00</cbc:TaxInclusiveAmount>');
+    expect(xml).toContain('<cbc:PayableAmount currencyID="COP">3246.00</cbc:PayableAmount>');
+  });
+
+  it('un documento guardado que sumó la base de esa línea al TaxExclusiveAmount no cuadra', () => {
+    const doc = VARIANTES['venta sin desglose con línea de solo bolsa']!;
+    expect(() => armar({ ...doc, taxExclusiveAmount: 100 })).toThrow(/TaxExclusiveAmount/);
+  });
+});
+
 describe('factura UBL 2.1 · se rechaza antes de firmar', () => {
   const base = VARIANTES['adquiriente con NIT']!;
+
+  it('un carácter de control que XML 1.0 no admite, diciendo dónde', () => {
+    const lines = base.lines.map((l, i) => (i === 0 ? { ...l, description: 'Camisa\u0007azul' } : l));
+    expect(() => armar({ ...base, lines })).toThrow(DocumentoUblInvalidoError);
+    expect(() => armar({ ...base, lines })).toThrow(/carácter de control/);
+    const adquiriente = { ...base.adquiriente!, name: 'Ópticas\u001b' };
+    expect(() => armar({ ...base, adquiriente })).toThrow(/carácter de control/);
+    // Tab y salto de línea sí son XML válido.
+    const conTab = base.lines.map((l, i) => (i === 0 ? { ...l, description: 'Camisa\tazul' } : l));
+    expect(armar({ ...base, lines: conTab })).toContain('Camisa\tazul');
+  });
 
   it('un total que no es la suma de las líneas', () => {
     expect(() => armar({ ...base, payableAmount: (base.payableAmount ?? 0) + 1 })).toThrow(DocumentoUblInvalidoError);

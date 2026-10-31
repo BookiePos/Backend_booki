@@ -446,7 +446,8 @@ ${s}</cac:TaxSubtotal>`;
 /**
  * Tributo nominal (22, INC de bolsas): sin Percent; unidades en
  * BaseUnitMeasure y valor por unidad en PerUnitAmount. TaxableAmount 0.00:
- * no hay base ad valorem (ver «Confirmar en habilitación»).
+ * no hay base en pesos. Es el mismo 0 que `primerTributo` suma al
+ * TaxExclusiveAmount (FAU04) por una línea que solo trae el 22.
  */
 function subtotalBolsa(unidades: number, porUnidad: Centavos, impuesto: Centavos, s: string): string {
   return `<cac:TaxSubtotal>

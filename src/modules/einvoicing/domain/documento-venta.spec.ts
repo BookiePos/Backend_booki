@@ -22,4 +22,17 @@ describe('primerTributo (FAU04)', () => {
   it('TaxExclusiveAmount es exactamente la suma de esos TaxableAmount', () => {
     expect(doc.totales.taxExclusiveAmount).toBe(9259 + 168);
   });
+
+  it('una línea con SOLO el tributo 22 (venta sin desglose) aporta 0: el 22 es nominal', () => {
+    const sinDesglose = documentoDeVenta({
+      total: 3246,
+      lines: [
+        { name: 'Pan', qty: 1, unitPrice: 3000, lineTotal: 3000 },
+        { name: 'Bolsa', qty: 2, unitPrice: 50, lineTotal: 100, bagTaxUnit: 73, bagTax: 146 },
+      ],
+    });
+    expect(sinDesglose.lines.map(primerTributo)).toEqual([undefined, { codigo: '22', taxableAmount: 0 }]);
+    expect(sinDesglose.totales.taxExclusiveAmount).toBe(0);
+    expect(sinDesglose.totales).toMatchObject({ taxableBase: 3100, bagTaxTotal: 146, payableAmount: 3246 });
+  });
 });

@@ -14,10 +14,44 @@ export class DocumentoUblInvalidoError extends Error {
 }
 
 /**
+ * Caracteres que XML 1.0 no admite ni escapados (§2.2): controles C0 salvo
+ * tab, salto de línea y retorno de carro, y U+FFFE/U+FFFF. Un texto así no se
+ * limpia en silencio (el XML firmado diría otra cosa que el documento): se
+ * rechaza antes de firmar.
+ */
+const NO_XML = /[\x00-\x08\x0B\x0C\x0E-\x1F￾￿]/;
+
+/**
+ * Recorre los textos de un valor y lanza si alguno trae un carácter que XML
+ * no admite. `ruta` dice dónde (p. ej. `lineas[0].description`); el texto no
+ * se cita.
+ */
+export function assertTextoXml(valor: unknown, ruta: string): void {
+  if (typeof valor === 'string') {
+    if (NO_XML.test(valor)) {
+      throw new DocumentoUblInvalidoError(
+        `${ruta} trae un carácter de control que la factura electrónica no admite: corrígelo en el dato de origen.`,
+      );
+    }
+    return;
+  }
+  if (Array.isArray(valor)) {
+    valor.forEach((v, i) => assertTextoXml(v, `${ruta}[${i}]`));
+    return;
+  }
+  if (valor && typeof valor === 'object' && !(valor instanceof Date)) {
+    for (const [k, v] of Object.entries(valor)) assertTextoXml(v, ruta ? `${ruta}.${k}` : k);
+  }
+}
+
+/**
  * Escape de CONTENIDO de texto: solo `& < >`. Comillas y apóstrofos son válidos
- * en contenido y escaparlos cambia el texto canónico que firma la XAdES.
+ * en contenido y escaparlos cambia el texto canónico que firma la XAdES. Un
+ * carácter que XML no admite lanza (defensa: `prepararFacturaUbl` ya lo
+ * rechazó diciendo en qué campo).
  */
 export function esc(s: string): string {
+  assertTextoXml(s, 'Un texto del documento');
   return s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!);
 }
 

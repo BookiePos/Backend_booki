@@ -5,7 +5,7 @@ import type { CargoDocumento, LineaDocumento, TotalesDocumento, TributoLinea } f
 import { CONSUMIDOR_FINAL_NIT } from '../einvoicing.constants';
 import type { TipoAmbiente } from '../emisor-fiscal';
 import { descuadresFactura, type FacturaUbl, type ParteUbl, type TributoParte } from './factura-ubl';
-import { DocumentoUblInvalidoError, municipioDaneValido } from './xml-ubl';
+import { assertTextoXml, DocumentoUblInvalidoError, municipioDaneValido } from './xml-ubl';
 
 /**
  * Del documento electrónico guardado (Fase 2) a la entrada del builder UBL.
@@ -313,6 +313,8 @@ export function prepararFacturaUbl(doc: DocumentoParaUbl, emisor: EmisorParaUbl)
     cargos: doc.charges ?? [],
     totales: totalesDoc,
   };
+  // Antes del PIN y de la firma: un texto que XML no admite es un 400 que dice el campo.
+  assertTextoXml(f, '');
   const fallas = descuadresFactura(f);
   if (fallas.length > 0) throw new DocumentoUblInvalidoError(`El documento no cuadra: ${fallas.join('; ')}`);
   return f;

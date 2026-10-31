@@ -96,6 +96,17 @@ describe('ArmadorUblFactura', () => {
     expect(emisores.leerSecreto).not.toHaveBeenCalled();
   });
 
+  it('un carácter de control en una descripción es 400, dice el campo y no lee el PIN', async () => {
+    const d = doc();
+    const lines = (d.lines as Array<Record<string, unknown>>).map((l) => ({ ...l, description: 'Camisa\u0000' }));
+    const err = await armador
+      .armar({ ...d, lines } as unknown as ElectronicDocumentDocument)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BadRequestException);
+    expect((err as Error).message).toMatch(/lineas\[0\]\.description/);
+    expect(emisores.leerSecreto).not.toHaveBeenCalled();
+  });
+
   it('sin emisor fiscal o sin PIN es 400 «Falta configurar»', async () => {
     emisores.obtenerPorSede.mockResolvedValueOnce(null);
     await expect(armador.armar(doc())).rejects.toThrow(BadRequestException);
