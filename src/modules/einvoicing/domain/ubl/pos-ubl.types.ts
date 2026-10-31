@@ -58,16 +58,36 @@ export interface PosUbl extends FacturaUbl {
 }
 
 /**
- * Lo que el documento `type: 'pos'` guardado debe traer, además de lo que ya
- * guarda la factura (`DocumentoParaUbl`), para que `prepararPosUbl` lo arme.
- * Es una copia congelada al emitir, como el emisor y el adquiriente: si la
- * caja o el fabricante cambian después, el XML que se reenvía no cambia.
+ * Una parte del pago tal como la guarda la emisión del POS (PR 7B,
+ * `PagoPos` de `emision-pos.ts`): el medio de BookiPos, no el código DIAN. El
+ * código (10, 47, 48, 49…) lo pone el builder con `pagoPosDian`.
+ */
+export interface PagoPosDocumento {
+  /** `cash`, `card`, `transfer`, `credit`, `platform`. */
+  metodo?: string;
+  monto?: number;
+  /** '1' contado, '2' crédito (fiado). */
+  formaPago?: string;
+  /** `debit` | `credit` (solo tarjeta). */
+  tipoTarjeta?: string;
+  /** `datafono`, `nequi`, `daviplata`, `qr`. */
+  canal?: string;
+  /** YYYY-MM-DD del fiado, si se conoce. Sin ella se usa la fecha de emisión. */
+  vence?: string;
+}
+
+/**
+ * Lo que el documento `type: 'pos'` guardado trae, además de lo que ya guarda
+ * la factura (`DocumentoParaUbl`), para que `prepararPosUbl` lo arme. Es la
+ * forma que escribe el PR 7B: una copia congelada al emitir, como el emisor y
+ * el adquiriente.
  *
  * - `cufe` del documento: el CUDE.
- * - `pagos[].vence` (YYYY-MM-DD) es obligatorio con `formaPago` 2 (DEAN04).
+ * - `fabricante.nit` se acepta pero no va al XML: el anexo no lo pide en la
+ *   extensión (DEAB37-46); lo usa el tiquete impreso.
  */
 export interface CamposPosDocumento {
   cajaVenta?: Partial<CajaVentaUbl>;
-  fabricante?: Partial<FabricanteSoftwareUbl>;
-  pagos?: Array<{ formaPago?: string; medio?: string; vence?: string }>;
+  fabricante?: Partial<FabricanteSoftwareUbl> & { nit?: string };
+  pagos?: PagoPosDocumento[];
 }

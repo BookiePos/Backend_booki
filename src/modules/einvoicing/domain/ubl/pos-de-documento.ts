@@ -1,5 +1,5 @@
 import { DIAN_DOC_TYPES, dvNitValido } from '../../../customers/domain/datos-fiscales';
-import { CONSUMIDOR_FINAL_NIT } from '../einvoicing.constants';
+import { CONSUMIDOR_FINAL_NIT, pagoPosDian } from '../einvoicing.constants';
 import type { TipoAmbiente } from '../emisor-fiscal';
 import { descuadresFactura, type ParteUbl } from './factura-ubl';
 import {
@@ -76,24 +76,33 @@ function adquirientePos(doc: DocumentoPosParaUbl): ParteUbl {
   };
 }
 
-/** Los pagos guardados, normalizados; lo que no es válido lo rechaza `faltantesPos` o el esqueleto. */
+/**
+ * Los pagos guardados por la emisión (medio de BookiPos) → `PaymentMeans` del
+ * XML. El código DIAN sale de `pagoPosDian`, que es la tabla del builder.
+ *
+ * Fiado sin vencimiento: se usa la fecha de emisión, como la FEV (DEAN04 exige
+ * `PaymentDueDate` con forma 2). A confirmar en habilitación; lo correcto es
+ * que la emisión guarde el vencimiento real cuando exista.
+ */
 function pagos(doc: DocumentoPosParaUbl): PagoPosUbl[] {
   if (!Array.isArray(doc.pagos)) return [];
   return doc.pagos.map((p, i) => {
-    const forma = p?.formaPago?.trim();
-    const medio = p?.medio?.trim() ?? '';
     const que = `pago ${i + 1}`;
+    const metodo = p?.metodo?.trim();
+    if (!metodo) {
+      throw new DocumentoUblInvalidoError(`No se puede armar el documento POS: falta el medio de pago en el ${que}.`);
+    }
+    const dian = pagoPosDian({ method: metodo, cardType: p.tipoTarjeta, channel: p.canal });
+    // La forma guardada manda; sin ella, la del medio (el fiado es crédito).
+    const forma = p.formaPago?.trim() || dian.formaPago;
     if (forma !== '1' && forma !== '2') {
       throw new DocumentoUblInvalidoError(`No se puede armar el documento POS: forma de pago inválida en el ${que}.`);
     }
-    if (!/^[0-9A-Z]{1,3}$/.test(medio)) {
-      throw new DocumentoUblInvalidoError(`No se puede armar el documento POS: medio de pago inválido en el ${que}.`);
-    }
-    const vence = p.vence?.trim() || undefined;
+    const vence = p.vence?.trim() || (forma === '2' ? doc.issueDate : undefined);
     if (vence !== undefined && !FECHA.test(vence)) {
       throw new DocumentoUblInvalidoError(`No se puede armar el documento POS: vencimiento inválido en el ${que}.`);
     }
-    return { formaPago: forma, medio, vence };
+    return { formaPago: forma, medio: dian.medio, vence };
   });
 }
 
@@ -145,6 +154,7 @@ export function prepararPosUbl(doc: DocumentoPosParaUbl, emisor: EmisorParaUbl):
       cajero: caja.cajero?.trim() ?? '',
       codigoVenta: caja.codigoVenta?.trim() ?? '',
     },
+    // `fab.nit` no va al XML: la extensión del anexo no lo tiene.
     fabricante: {
       nombreApellido: fab.nombreApellido?.trim() ?? '',
       razonSocial: fab.razonSocial?.trim() || undefined,

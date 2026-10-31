@@ -147,10 +147,10 @@ const VARIANTES: Record<string, DocumentoPosParaUbl> = {
     { lines: [IVA_19], total: 119_000 },
     {
       pagos: [
-        { formaPago: '1', medio: '10' },
-        { formaPago: '1', medio: '49' },
-        { formaPago: '1', medio: '48' },
-        { formaPago: '1', medio: '47' },
+        { metodo: 'cash', monto: 19_000, formaPago: '1' },
+        { metodo: 'card', monto: 40_000, formaPago: '1', tipoTarjeta: 'debit', canal: 'datafono' },
+        { metodo: 'card', monto: 40_000, formaPago: '1', tipoTarjeta: 'credit' },
+        { metodo: 'transfer', monto: 20_000, formaPago: '1', canal: 'nequi' },
       ],
     },
   ),
@@ -158,7 +158,7 @@ const VARIANTES: Record<string, DocumentoPosParaUbl> = {
   'con datos del cliente: NIT con DV': documentoPos({ lines: [IVA_19], total: 119_000 }, { cliente: CLIENTE_NIT }),
   'fiado (crédito) en producción': documentoPos(
     { lines: [IVA_19], total: 119_000 },
-    { cliente: CLIENTE_CC, ambiente: '1', pagos: [{ formaPago: '2', medio: '1', vence: '2026-11-29' }] },
+    { cliente: CLIENTE_CC, ambiente: '1', pagos: [{ metodo: 'credit', monto: 119_000, formaPago: '2', vence: '2026-11-29' }] },
   ),
 };
 
@@ -395,11 +395,19 @@ describe('POS UBL 2.1 · se rechaza antes de leer el PIN', () => {
     expect(preparar({ ...base, fabricante: { ...FABRICANTE, nombreSoftware: ' ' } })).toThrow(/nombre del software/);
   });
 
-  it('sin pagos, un medio desconocido o un fiado sin vencimiento', () => {
+  it('sin pagos, sin medio, con una forma inválida o un vencimiento mal escrito', () => {
     expect(preparar({ ...base, pagos: [] })).toThrow(/pago/);
-    expect(preparar({ ...base, pagos: [{ formaPago: '1', medio: 'efectivo' }] })).toThrow(/medio/);
-    expect(preparar({ ...base, pagos: [{ formaPago: '3', medio: '10' }] })).toThrow(/forma/);
-    expect(preparar({ ...base, pagos: [{ formaPago: '2', medio: '1' }] })).toThrow(/vencimiento/);
+    expect(preparar({ ...base, pagos: [{ monto: 1, formaPago: '1' }] })).toThrow(/medio/);
+    expect(preparar({ ...base, pagos: [{ metodo: 'cash', formaPago: '3' }] })).toThrow(/forma/);
+    expect(preparar({ ...base, pagos: [{ metodo: 'credit', formaPago: '2', vence: '29/11/2026' }] })).toThrow(/vencimiento/);
+  });
+
+  it('el código DIAN lo pone el builder: un pago guardado con «medio» no lo cambia', () => {
+    const p = prepararPosUbl(
+      { ...base, pagos: [{ metodo: 'transfer', formaPago: '1', canal: 'qr', medio: '42' } as never] },
+      EMISOR_FISCAL,
+    );
+    expect(p.pagos).toEqual([{ formaPago: '1', medio: '47', vence: undefined }]);
   });
 
   it('un cliente con NIT cuyo DV no cuadra, o sin nombre', () => {
@@ -419,4 +427,58 @@ describe('POS UBL 2.1 · se rechaza antes de leer el PIN', () => {
       armarPosUbl({ ...p, codigoSeguridadSoftware: codigo, emisor: { ...p.emisor, email: undefined } }),
     ).toThrow(/correo/);
   });
+});
+
+/**
+ * El documento EXACTAMENTE como lo guarda la emisión del PR 7B
+ * (`einvoicing.service.ts` → `pagosPos`, `cajaVentaPos`, `fabricanteDesdeEntorno`
+ * de `emision-pos.ts`): pagos con el medio de BookiPos, fiado sin `vence`,
+ * fabricante con `nit` y los `formaPago`/`medioPago` de cabecera de la FEV.
+ */
+describe('POS UBL 2.1 · el documento con la forma que guarda la emisión (7B)', () => {
+  const comoLoGuarda7B = (): DocumentoPosParaUbl => {
+    const d = documentoPos({ lines: [IVA_19], total: 119_000 }, { cliente: CLIENTE_CC });
+    return {
+      ...d,
+      formaPago: '2',
+      medioPago: '10',
+      pagos: [
+        { metodo: 'cash', monto: 10_000, formaPago: '1' },
+        { metodo: 'transfer', monto: 5_000, formaPago: '1', canal: 'nequi' },
+        { metodo: 'card', monto: 4_000, formaPago: '1', tipoTarjeta: 'debit' },
+        { metodo: 'credit', monto: 100_000, formaPago: '2' },
+      ],
+      cajaVenta: { placa: 'SEDE-1', ubicacion: 'Calle 10 # 43-12', tipo: 'Caja principal', cajero: 'cajero@crunchy.co', codigoVenta: '000123' },
+      fabricante: { nombreApellido: 'BookiPos', nombreSoftware: 'BookiPos', nit: '901234567' },
+    };
+  };
+
+  it('prepararPosUbl → armarPosUbl → firma → XSD → CUDE, con pago mixto y fiado sin vencimiento', async () => {
+    const doc = comoLoGuarda7B();
+    const xml = armar(doc);
+    const medios = [
+      ...xml.matchAll(
+        /<cac:PaymentMeans>\s*<cbc:ID>(\d)<\/cbc:ID>\s*<cbc:PaymentMeansCode>(\w+)<\/cbc:PaymentMeansCode>(?:\s*<cbc:PaymentDueDate>([\d-]+)<\/cbc:PaymentDueDate>)?/g,
+      ),
+    ].map((m) => [m[1], m[2], m[3]]);
+    // Fiado sin vencimiento guardado: la fecha de emisión (como la FEV; a confirmar en habilitación).
+    expect(medios).toEqual([
+      ['1', '10', undefined],
+      ['1', '47', undefined],
+      ['1', '49', undefined],
+      ['2', '1', doc.issueDate],
+    ]);
+    // El NIT del fabricante no va al XML: la extensión no lo tiene.
+    expect(pares(xml, 'FabricanteSoftware', 'InformacionDelFabricanteDelSoftware')).toEqual([
+      ['NombreApellido', 'BookiPos'],
+      ['NombreSoftware', 'BookiPos'],
+    ]);
+    expect(xml).not.toContain('901234567');
+    const firmado = firmarXml(xml, CERT);
+    expect(verificarFirma(firmado)).toEqual({ valida: true });
+    expect((await validarXsdDian(firmado, 'pos-forma-7b.xml')).errores).toEqual([]);
+    const { uuid, recalculado } = cudeDelXml(firmado, PIN);
+    expect(uuid).toBe(doc.cufe);
+    expect(recalculado).toBe(doc.cufe);
+  }, 60_000);
 });

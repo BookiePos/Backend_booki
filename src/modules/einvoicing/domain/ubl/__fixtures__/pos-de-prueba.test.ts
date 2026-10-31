@@ -68,7 +68,7 @@ export function documentoPos(
     },
     cajaVenta: o.caja ?? { ...CAJA },
     fabricante: o.fabricante ?? { ...FABRICANTE },
-    pagos: o.pagos ?? [{ formaPago: '1', medio: '10' }],
+    pagos: o.pagos ?? [{ metodo: 'cash', monto: d.totales.payableAmount, formaPago: '1' }],
   };
 }
 
