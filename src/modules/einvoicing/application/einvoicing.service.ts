@@ -127,6 +127,9 @@ const startOfDay = (d: Date) =>
 const endOfDay = (d: Date) =>
   new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
 
+/** El XML de la DIAN (base64, hasta ~1 MB) lo lee la entrega; la API no lo devuelve. */
+const SIN_APPLICATION_RESPONSE = '-respuestaDian.applicationResponse';
+
 @Injectable()
 export class EinvoicingService {
   constructor(
@@ -337,13 +340,17 @@ export class EinvoicingService {
     assertSedeAccess(user, sedeId);
     return this.model
       .find({ sedeId: new Types.ObjectId(sedeId) })
+      .select(SIN_APPLICATION_RESPONSE)
       .sort({ createdAt: -1 })
       .limit(200)
       .exec();
   }
 
   async get(id: string, user: JwtUser): Promise<ElectronicDocumentDocument> {
-    const doc = await this.getOrFail(id);
+    const doc = Types.ObjectId.isValid(id)
+      ? await this.model.findById(id).select(SIN_APPLICATION_RESPONSE).exec()
+      : null;
+    if (!doc) throw new NotFoundException('Documento no encontrado');
     assertSedeAccess(user, doc.sedeId.toString());
     return doc;
   }

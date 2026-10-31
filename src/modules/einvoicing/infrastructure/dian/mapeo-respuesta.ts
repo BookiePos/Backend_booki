@@ -1,4 +1,5 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
+import { leerApplicationResponseXml } from '../../domain/entrega/lectura-application-response';
 import { traeDoctype } from '../../domain/firma/revision-xml';
 import {
   assertContratoRespuesta,
@@ -313,15 +314,6 @@ function erroresDe(r: Nodo): string[] {
 /** Tope de la ApplicationResponse decodificada (las reales pesan pocos KB). */
 export const MAX_BYTES_APPLICATION_RESPONSE = 1024 * 1024;
 
-const parserAr = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: '@_',
-  parseTagValue: false,
-  processEntities: false,
-  ignoreDeclaration: true,
-  ignorePiTags: true,
-});
-
 /**
  * `XmlBase64Bytes` → base64 saneado, o `undefined` si no sirve: base64 bien
  * formado, dentro del tope, XML sin DOCTYPE ni entidades con raíz única
@@ -336,18 +328,9 @@ function extraerApplicationResponse(crudo: unknown, cufe: string): string | unde
   const xml = bytes.toString('utf8').replace(/^\uFEFF/, '');
   if (xml.includes('�') || traeDoctype(xml) || /<!ENTITY/i.test(xml)) return undefined;
   if (XMLValidator.validate(xml) !== true) return undefined;
-  let raiz: Nodo;
-  try {
-    raiz = parserAr.parse(xml) as Nodo;
-  } catch {
-    return undefined;
-  }
-  const claves = Object.keys(raiz).filter((k) => k !== '#text' && k !== '#comment');
-  if (claves.length !== 1 || claves[0]!.split(':').pop() !== 'ApplicationResponse') return undefined;
-  const respuesta = xml.match(/<(?:\w+:)?DocumentResponse[\s>][\s\S]*?<\/(?:\w+:)?DocumentResponse>/)?.[0] ?? '';
-  const referencia = respuesta.match(/<(?:\w+:)?DocumentReference[\s>][\s\S]*?<\/(?:\w+:)?DocumentReference>/)?.[0] ?? '';
-  const uuid = referencia.match(/<(?:\w+:)?UUID[^>]*>\s*([^<]+?)\s*</)?.[1];
-  if (!uuid || !mismoCufe(uuid, cufe)) return undefined;
+  // Del árbol, no del texto: sin regex cuadráticas ni comentarios que engañen.
+  const leida = leerApplicationResponseXml(xml);
+  if (!leida || !mismoCufe(leida.cufe, cufe)) return undefined;
   return b64;
 }
 

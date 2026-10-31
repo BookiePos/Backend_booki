@@ -32,7 +32,7 @@ const FACTURA =
   '<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2">' +
   `<UUID>${CUFE}</UUID></Invoice>`;
 const AR =
-  '<ApplicationResponse xmlns:cbc="c" xmlns:cac="a"><cac:DocumentResponse><cac:Response><cbc:ResponseCode>02</cbc:ResponseCode></cac:Response>' +
+  '<ApplicationResponse xmlns="urn:oasis:names:specification:ubl:schema:xsd:ApplicationResponse-2" xmlns:cbc="c" xmlns:cac="a"><cac:DocumentResponse><cac:Response><cbc:ResponseCode>02</cbc:ResponseCode></cac:Response>' +
   `<cac:DocumentReference><cbc:UUID>${CUFE}</cbc:UUID></cac:DocumentReference></cac:DocumentResponse></ApplicationResponse>`;
 
 type Fila = Record<string, any>;

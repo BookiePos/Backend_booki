@@ -357,12 +357,34 @@ describe('ApplicationResponse (XmlBase64Bytes) de una aceptación', () => {
     ['CUFE distinto', b64(applicationResponseXml('b'.repeat(96)))],
     ['sin referencia al documento', b64('<ApplicationResponse xmlns="x"></ApplicationResponse>')],
     ['no es XML', b64('hola mundo')],
+    [
+      'comentario con un DocumentResponse falso del CUFE esperado',
+      b64(
+        applicationResponseXml('b'.repeat(96)).replace(
+          '<cac:DocumentResponse>',
+          `<!--<cac:DocumentResponse><cac:DocumentReference><cbc:UUID>${CUFE}</cbc:UUID></cac:DocumentReference></cac:DocumentResponse>--><cac:DocumentResponse>`,
+        ),
+      ),
+    ],
+    [
+      'namespace de la raíz falso',
+      b64(applicationResponseXml(CUFE).replace('urn:oasis:names:specification:ubl:schema:xsd:ApplicationResponse-2', 'urn:falso')),
+    ],
     ['tamaño excesivo', b64(applicationResponseXml(CUFE, `<!--${'x'.repeat(MAX_BYTES_APPLICATION_RESPONSE)}-->`))],
   ])('%s: no se guarda y el veredicto no cambia', (_nombre, xmlBase64) => {
     const r = aceptar(xmlBase64);
     expect(r).toMatchObject({ ok: true, isValid: true, origen: 'dian' });
     expect(r.applicationResponse).toBeUndefined();
     expect(estadoTrasRespuesta('sent', r)).toBe('accepted');
+  });
+
+  it('rendimiento: ~1 MB de `<DocumentResponse ` en un comentario se resuelve en menos de 1 s', () => {
+    const relleno = '<DocumentResponse '.repeat(55_000);
+    const ar = b64(applicationResponseXml(CUFE, `<!--${relleno}-->`));
+    const t0 = Date.now();
+    const r = aceptar(ar);
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(r.ok).toBe(true);
   });
 
   it('un rechazo nunca la conserva', () => {
