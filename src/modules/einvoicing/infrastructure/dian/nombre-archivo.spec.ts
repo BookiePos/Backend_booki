@@ -17,6 +17,12 @@ describe('nombre de archivo DIAN', () => {
     expect(nombresArchivo({ tipo: 'payroll', nit: '1', consecutivo: 1, anio: 2026 }).xml.startsWith('nie')).toBe(true);
   });
 
+  it('el documento equivalente POS usa «ds» (anexo DE v1.0 §8.13.5), con el mismo ZIP «z»', () => {
+    const n = nombresArchivo({ tipo: 'pos', nit: '900123456', consecutivo: 1, anio: 2026 });
+    expect(n.xml).toBe('ds09001234560002600000001.xml');
+    expect(n.zip).toBe('z09001234560002600000001.zip');
+  });
+
   it('valida NIT, consecutivo, año y código PT', () => {
     expect(() => nombresArchivo({ tipo: 'invoice', nit: '', consecutivo: 1, anio: 2026 })).toThrow();
     expect(() => nombresArchivo({ tipo: 'invoice', nit: '12345678901', consecutivo: 1, anio: 2026 })).toThrow();

@@ -30,6 +30,7 @@ import {
   PIN,
   SOFTWARE_ID,
 } from '../domain/ubl/__fixtures__/factura-de-prueba.test';
+import { documentoPos } from '../domain/ubl/__fixtures__/pos-de-prueba.test';
 
 /**
  * El armador real de la Fase 5A en el puerto `ArmadorXmlDian`: arma la factura
@@ -67,7 +68,37 @@ describe('ArmadorUblFactura', () => {
     expect(verificarFirma(firmado)).toEqual({ valida: true });
   });
 
-  it.each(['pos', 'credit_note', 'debit_note', 'payroll'])('%s sigue en 501 sin tocar el emisor', async (type) => {
+  describe('documento equivalente POS (Fase 7A)', () => {
+    const pos = () =>
+      ({
+        ...documentoPos({ lines: [linea({ name: 'Camisa', precio: 119_000, impuesto: 19_000, rate: 19 })], total: 119_000 }),
+        sedeId: { toString: () => 'sede-1' },
+      }) as unknown as ElectronicDocumentDocument;
+
+    it('arma el POS con el CUDE, el SoftwareID y el PIN de factura del emisor; firma y verifica', async () => {
+      const d = pos();
+      const xml = await armador.armar(d);
+      expect(emisores.leerSecreto).toHaveBeenCalledWith('emisor-1', 'facturaPin');
+      expect(xml).toContain('<cbc:InvoiceTypeCode>20</cbc:InvoiceTypeCode>');
+      expect(xml).toContain(`<cbc:UUID schemeID="2" schemeName="CUDE-SHA384">${d.cufe}</cbc:UUID>`);
+      expect(xml).toContain(`>${codigoSeguridadSoftware(SOFTWARE_ID, PIN, d.fullNumber)}</sts:SoftwareSecurityCode>`);
+      expect(xml).toContain('<PuntoVenta>');
+      expect(xml).not.toContain(PIN);
+      const firmado = firmarXml(xml, { p12: p12DePrueba(), password: 'clave-de-prueba' });
+      expect(verificarFirma(firmado)).toEqual({ valida: true });
+    });
+
+    it('sin caja, sin fabricante o sin correo del emisor es 400 y no lee el PIN', async () => {
+      const d = pos();
+      for (const cambio of [{ cajaVenta: undefined }, { fabricante: undefined }, { emisor: { ...(d.emisor as object), email: undefined } }]) {
+        const err = await armador.armar({ ...d, ...cambio } as unknown as ElectronicDocumentDocument).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(BadRequestException);
+      }
+      expect(emisores.leerSecreto).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each(['credit_note', 'debit_note', 'payroll'])('%s sigue en 501 sin tocar el emisor', async (type) => {
     await expect(armador.armar({ ...doc(), type } as unknown as ElectronicDocumentDocument)).rejects.toThrow(
       NotImplementedException,
     );
