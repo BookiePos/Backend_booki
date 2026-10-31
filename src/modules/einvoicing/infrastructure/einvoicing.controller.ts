@@ -13,6 +13,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { EinvoicingService } from '../application/einvoicing.service';
 import { FiscalEmittersService } from '../application/fiscal-emitters.service';
+import { TransmisionDianService } from '../application/transmision-dian.service';
 import {
   CERT_MAX_BYTES,
   CertificadoEmisorService,
@@ -34,6 +35,7 @@ export class EinvoicingController {
     private readonly einvoicing: EinvoicingService,
     private readonly emisores: FiscalEmittersService,
     private readonly certificados: CertificadoEmisorService,
+    private readonly transmision: TransmisionDianService,
   ) {}
 
   /**
@@ -110,6 +112,17 @@ export class EinvoicingController {
   @Post('from-sale')
   fromSale(@Body() dto: CreateInvoiceDto, @CurrentUser() user: JwtUser) {
     return this.einvoicing.createFromSale(dto.saleId, user);
+  }
+
+  /**
+   * Transmite (o reintenta) el documento a la DIAN. Mismo permiso que la
+   * emisión: transmitir es la segunda mitad de emitir. El servicio comprueba el
+   * acceso a la sede del documento, el gate de ambiente y el bloqueo.
+   */
+  @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
+  @Post('documentos/:id/transmitir')
+  transmitir(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.transmision.transmitir(id, user);
   }
 
   /** Genera la nota crédito que anula/corrige una factura. */
