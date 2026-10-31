@@ -5,9 +5,11 @@ import {
   HttpException,
   Injectable,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import { DocumentoFiscalVentaService } from './documento-fiscal-venta.service';
 import {
   Counter,
   CounterDocument,
@@ -117,6 +119,9 @@ export class OfflineSalesService {
     private readonly conflictModel: Model<OfflineConflictDocument>,
     private readonly stock: StockService,
     private readonly ledgerPosting: LedgerPostingService,
+    /** Documento fiscal (Fase 7): al final porque las pruebas construyen por posición. */
+    @Optional()
+    private readonly documentoFiscal?: DocumentoFiscalVentaService,
   ) {}
 
   /**
@@ -666,6 +671,13 @@ export class OfflineSalesService {
         .catch((e: Error) =>
           this.logger.warn(`No se pudo anotar el turno de ${dto.offlineId}: ${e.message}`),
         );
+    }
+    // Venta sin conexión: el navegador no tenía el PIN, así que no hay CUDE.
+    // No se emite aquí; queda pendiente de contingencia 07 (Fase 9).
+    if (this.documentoFiscal && dto.sale.documentoFiscal) {
+      await this.documentoFiscal.alCobrar(sale, dto.sale.documentoFiscal, user, {
+        offline: true,
+      });
     }
     return { status: 'creada', sale };
   }

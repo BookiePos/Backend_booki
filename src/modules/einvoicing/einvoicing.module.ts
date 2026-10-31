@@ -26,6 +26,8 @@ import {
 } from './application/transmision-dian.puertos';
 import { ArmadorUblFactura } from './application/armador-ubl';
 import { EntregaDianService } from './application/entrega-dian.service';
+import { EmisionDocumentoFiscalDian } from './application/emision-documento-fiscal.adaptador';
+import { EMISION_DOCUMENTO_FISCAL } from '../sales/application/emision-documento-fiscal.puerto';
 import { ENTREGA_DIAN } from './application/entrega-dian.puerto';
 import { StorageModule } from '../../shared/storage/storage.module';
 import { CoreAuditModule } from '../core-audit/core-audit.module';
@@ -62,6 +64,9 @@ import { ControlModule } from '../control/control.module';
     // Fase 5B: entrega al adquiriente (PDF + AttachedDocument/ZIP) tras `accepted`.
     EntregaDianService,
     { provide: ENTREGA_DIAN, useExisting: EntregaDianService },
+    // Fase 7 (PR 7B): el cobro pide el documento fiscal por este puerto. Ventas
+    // lo resuelve con ModuleRef (este módulo ya importa SalesModule).
+    { provide: EMISION_DOCUMENTO_FISCAL, useClass: EmisionDocumentoFiscalDian },
   ],
   exports: [
     EinvoicingService,

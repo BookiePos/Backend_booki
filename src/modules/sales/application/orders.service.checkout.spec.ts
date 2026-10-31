@@ -146,3 +146,72 @@ describe('OrdersService.checkout (guarda de concurrencia)', () => {
     expect(update.$unset).toHaveProperty('closedAt');
   });
 });
+
+/**
+ * Documento fiscal al liquidar la cuenta (PR 7B): se pide DESPUÉS de crear y
+ * enlazar la venta, y nunca revierte el cobro.
+ */
+describe('OrdersService.checkout · documento fiscal', () => {
+  const sedeId = new Types.ObjectId();
+  const orderObjId = new Types.ObjectId();
+  const user = { userId: 'u1', email: 'c@x.co', sedeIds: [sedeId.toString()], permissions: ['pos.sell'] } as unknown as JwtUser;
+  const order = () => ({
+    _id: orderObjId,
+    id: orderObjId.toString(),
+    status: 'open',
+    sedeId: { _id: sedeId, code: 'S1', name: 'Sede 1' },
+    lines: [{ productId: new Types.ObjectId(), qty: 1 }],
+  });
+
+  let orderModel: any;
+  let sales: any;
+  let documentoFiscal: any;
+  let orden: string[];
+  let service: OrdersService;
+
+  beforeEach(() => {
+    orden = [];
+    orderModel = {
+      findById: vi.fn().mockReturnValue({ populate: () => ({ exec: () => Promise.resolve(order()) }) }),
+      findOneAndUpdate: vi.fn().mockReturnValue({ exec: () => Promise.resolve(order()) }),
+      updateOne: vi.fn(() => ({
+        exec: () => {
+          orden.push('enlazar');
+          return Promise.resolve({});
+        },
+      })),
+    };
+    sales = { create: vi.fn(async () => (orden.push('venta'), { _id: new Types.ObjectId() })) };
+    documentoFiscal = {
+      alCobrar: vi.fn(async (sale: any) => {
+        orden.push('documento');
+        return Object.assign(sale, { documentoFiscal: { estado: 'emitido' } });
+      }),
+    };
+    service = new OrdersService(orderModel, {} as any, {} as any, {} as any, {} as any, sales, {} as any, documentoFiscal);
+  });
+
+  it('pide el documento después de crear y enlazar la venta, y lo devuelve en la respuesta', async () => {
+    const r: any = await service.checkout(
+      orderObjId.toString(),
+      { payment: { method: 'cash' }, documentoFiscal: 'pos_anonimo' } as any,
+      user,
+    );
+    expect(orden).toEqual(['venta', 'enlazar', 'documento']);
+    expect(documentoFiscal.alCobrar).toHaveBeenCalledWith(expect.anything(), 'pos_anonimo', user);
+    expect(r.documentoFiscal).toEqual({ estado: 'emitido' });
+  });
+
+  it('sin documentoFiscal en el DTO no se pide nada (compatible con el Frontend actual)', async () => {
+    await service.checkout(orderObjId.toString(), { payment: { method: 'cash' } } as any, user);
+    expect(documentoFiscal.alCobrar).toHaveBeenCalledWith(expect.anything(), undefined, user);
+  });
+
+  it('si la venta falla no se pide documento', async () => {
+    sales.create.mockRejectedValue(new Error('sin stock'));
+    await expect(
+      service.checkout(orderObjId.toString(), { payment: { method: 'cash' }, documentoFiscal: 'fev' } as any, user),
+    ).rejects.toThrow('sin stock');
+    expect(documentoFiscal.alCobrar).not.toHaveBeenCalled();
+  });
+});

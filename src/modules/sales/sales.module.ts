@@ -42,6 +42,7 @@ import {
 } from './infrastructure/schemas/offline-sale-claim.schema';
 import { SaleReturnsService } from './application/sale-returns.service';
 import { OrdersService } from './application/orders.service';
+import { DocumentoFiscalVentaService } from './application/documento-fiscal-venta.service';
 import { PackagingService } from './application/packaging.service';
 import { SalesController } from './infrastructure/sales.controller';
 import { PlatformOrdersController } from './infrastructure/platform-orders.controller';
@@ -116,6 +117,7 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
     PackagingService,
     OfflineSalesService,
     PlatformOrdersService,
+    DocumentoFiscalVentaService,
     PlatformSettlementsService,
   ],
   exports: [SalesService, OrdersService, SaleReturnsService],

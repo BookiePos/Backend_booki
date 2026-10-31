@@ -125,6 +125,18 @@ describe('OfflineSalesService.sync', () => {
     );
   });
 
+  it('con documento fiscal pedido: no lo emite y marca la venta pendiente de contingencia 07', async () => {
+    const documentoFiscal = { alCobrar: vi.fn(async (s: any) => s) };
+    (service as any).documentoFiscal = documentoFiscal;
+    const d = dto();
+    d.sale.documentoFiscal = 'pos_anonimo';
+    const r = await service.sync(d, user);
+    expect(r.status).toBe('creada');
+    expect(documentoFiscal.alCobrar).toHaveBeenCalledWith(expect.anything(), 'pos_anonimo', user, {
+      offline: true,
+    });
+  });
+
   it('un reenvío de una venta ya registrada la devuelve sin volver a vender', async () => {
     saleModel.findOne = vi.fn(() => exec({ _id: new Types.ObjectId(), sedeId }));
     const r = await service.sync(dto(), user);

@@ -1512,7 +1512,7 @@ export class SalesService {
     ficha?: CustomerDocument,
   ) {
     const entries: Array<readonly [string, unknown]> = (
-      ['name', 'idNumber', 'phone', 'email'] as const
+      ['name', 'idNumber', 'phone', 'email', 'docType', 'nitDv'] as const
     )
       .map((k) => [k, customer?.[k]?.trim()] as const)
       .filter(([, v]) => v);
