@@ -275,6 +275,14 @@ export class ElectronicDocument {
   @Prop()
   attachedPath?: string;
 
+  /**
+   * Estado de la entrega al adquiriente (Fase 5B): `completa` (PDF + ZIP),
+   * `incompleta` (solo PDF, con `motivo`) o `fallida` (nombre del error). Nunca
+   * afecta `dianStatus`. Ver `EntregaDianService`.
+   */
+  @Prop({ type: Object })
+  entregaDian?: Record<string, unknown>;
+
   /** Motivo del rechazo, solo si la DIAN respondió IsValid=false. */
   @Prop()
   rechazoMotivo?: string;
