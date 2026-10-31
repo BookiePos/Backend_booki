@@ -19,7 +19,13 @@ export class DocumentoUblInvalidoError extends Error {
  * limpia en silencio (el XML firmado diría otra cosa que el documento): se
  * rechaza antes de firmar.
  */
-const NO_XML = /[\x00-\x08\x0B\x0C\x0E-\x1F￾￿]/;
+function tieneCaracterNoXml(s: string): boolean {
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s.charCodeAt(i);
+    if ((c < 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d) || c === 0xfffe || c === 0xffff) return true;
+  }
+  return false;
+}
 
 /**
  * Recorre los textos de un valor y lanza si alguno trae un carácter que XML
@@ -28,7 +34,7 @@ const NO_XML = /[\x00-\x08\x0B\x0C\x0E-\x1F￾￿]/;
  */
 export function assertTextoXml(valor: unknown, ruta: string): void {
   if (typeof valor === 'string') {
-    if (NO_XML.test(valor)) {
+    if (tieneCaracterNoXml(valor)) {
       throw new DocumentoUblInvalidoError(
         `${ruta} trae un carácter de control que la factura electrónica no admite: corrígelo en el dato de origen.`,
       );

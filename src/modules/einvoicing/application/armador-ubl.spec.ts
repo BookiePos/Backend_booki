@@ -98,7 +98,7 @@ describe('ArmadorUblFactura', () => {
 
   it('un carácter de control en una descripción es 400, dice el campo y no lee el PIN', async () => {
     const d = doc();
-    const lines = (d.lines as Array<Record<string, unknown>>).map((l) => ({ ...l, description: 'Camisa\u0000' }));
+    const lines = (d.lines as unknown as Array<Record<string, unknown>>).map((l) => ({ ...l, description: 'Camisa\u0000' }));
     const err = await armador
       .armar({ ...d, lines } as unknown as ElectronicDocumentDocument)
       .catch((e: unknown) => e);
