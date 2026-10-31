@@ -3,7 +3,7 @@ import * as Sentry from '@sentry/node';
 import { waitUntil } from '@vercel/functions';
 import type { Request, Response } from 'express';
 import { Observable, tap } from 'rxjs';
-import { diagSentry } from './diagnostico-sentry';
+import { vaciarSentry } from './sentry';
 
 /** Bandera W3C de traza muestreada: solo esas se envían a Sentry. */
 const MUESTREADA = 1;
@@ -13,11 +13,12 @@ const MUESTREADA = 1;
  * el tablero de salud (ítem 2.13). Se usa la plantilla y no la URL real para no
  * multiplicar nombres con los ids.
  *
- * En local, `@sentry/node` abre la transacción HTTP y aquí solo se le pone el
- * nombre (él la deja como `GET`). En Vercel las peticiones no pasan por el
- * servidor http que instrumenta Sentry (solo `/_vercel/ping` lo hace), así que no
- * hay transacción activa: se abre una propia alrededor del handler y se envía
- * con `waitUntil`, porque la función se congela al responder.
+ * Normalmente `@sentry/node` ya abrió la transacción HTTP: aquí se le pone el
+ * nombre y, si salió en el muestreo, se programa el envío para cuando termine la
+ * respuesta. En Vercel ese envío es obligatorio: la transacción se cierra al
+ * responder y la función se congela antes de que Sentry vacíe su cola (lo
+ * mostró el diagnóstico de #99: transacciones muestreadas que nunca llegaban).
+ * Si no hay transacción activa, se abre una propia alrededor del handler.
  */
 @Injectable()
 export class SentryTransaccionInterceptor implements NestInterceptor {
@@ -29,24 +30,13 @@ export class SentryTransaccionInterceptor implements NestInterceptor {
       const req = context.switchToHttp().getRequest<Request>();
       res = context.switchToHttp().getResponse<Response>();
       const ruta = (req.route as { path?: string } | undefined)?.path;
-      if (!ruta) {
-        diagSentry('peticion-sin-ruta', { metodo: req.method });
-        return next.handle();
-      }
+      if (!ruta) return next.handle();
       const nombre = `${req.method} ${ruta}`;
       const activo = Sentry.getActiveSpan();
       if (activo) {
         const raiz = Sentry.getRootSpan(activo);
-        const json = Sentry.spanToJSON(raiz) as { description?: string; name?: string; op?: string };
-        diagSentry('peticion-con-span', {
-          nombre,
-          inicializado: Sentry.isInitialized(),
-          raiz: json.description ?? json.name ?? null,
-          raizOp: json.op ?? null,
-          grabando: raiz.isRecording(),
-          flags: raiz.spanContext().traceFlags,
-        });
         Sentry.updateSpanName(raiz, nombre);
+        if (raiz.spanContext().traceFlags === MUESTREADA) enviarAlTerminar(res);
         return next.handle();
       }
       span = Sentry.startInactiveSpan({
@@ -55,15 +45,8 @@ export class SentryTransaccionInterceptor implements NestInterceptor {
         forceTransaction: true,
         attributes: { 'http.request.method': req.method, 'http.route': ruta },
       });
-      diagSentry('peticion-sin-span', {
-        nombre,
-        inicializado: Sentry.isInitialized(),
-        grabando: span.isRecording(),
-        flags: span.spanContext().traceFlags,
-      });
-    } catch (e) {
+    } catch {
       // El monitoreo jamás debe romper la respuesta.
-      diagSentry('interceptor-fallo', { error: String(e) });
       return next.handle();
     }
     const cerrar = (status: number): void => {
@@ -73,14 +56,7 @@ export class SentryTransaccionInterceptor implements NestInterceptor {
         const enviar = span.spanContext().traceFlags === MUESTREADA;
         span.end();
         span = undefined;
-        if (enviar) {
-          waitUntil(
-            Sentry.flush(2000).then(
-              (ok) => diagSentry('envio', { ok }),
-              (e: unknown) => diagSentry('envio-fallo', { error: String(e) }),
-            ),
-          );
-        }
+        if (enviar) waitUntil(vaciarSentry());
       } catch {
         // Ídem.
       }
@@ -93,4 +69,22 @@ export class SentryTransaccionInterceptor implements NestInterceptor {
       }),
     );
   }
+}
+
+/**
+ * Vacía Sentry cuando la respuesta ya salió (la transacción HTTP se cierra en
+ * ese momento). `setImmediate` deja que Sentry encole la transacción antes de
+ * vaciar; `close` cubre la conexión cortada, en la que `finish` no llega.
+ */
+function enviarAlTerminar(res: Response): void {
+  const terminada = new Promise<void>((listo) => {
+    if (res.writableFinished) return listo();
+    res.once('finish', () => listo());
+    res.once('close', () => listo());
+  });
+  waitUntil(
+    terminada
+      .then(() => new Promise<void>((listo) => setImmediate(listo)))
+      .then(() => vaciarSentry()),
+  );
 }
