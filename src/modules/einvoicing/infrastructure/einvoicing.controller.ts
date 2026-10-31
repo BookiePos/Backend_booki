@@ -14,6 +14,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { EinvoicingService } from '../application/einvoicing.service';
 import { FiscalEmittersService } from '../application/fiscal-emitters.service';
 import { TransmisionDianService } from '../application/transmision-dian.service';
+import { EntregaDianService } from '../application/entrega-dian.service';
 import {
   CERT_MAX_BYTES,
   CertificadoEmisorService,
@@ -36,6 +37,7 @@ export class EinvoicingController {
     private readonly emisores: FiscalEmittersService,
     private readonly certificados: CertificadoEmisorService,
     private readonly transmision: TransmisionDianService,
+    private readonly entrega: EntregaDianService,
   ) {}
 
   /**
@@ -123,6 +125,18 @@ export class EinvoicingController {
   @Post('documentos/:id/transmitir')
   transmitir(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.transmision.transmitir(id, user);
+  }
+
+  /**
+   * Regenera la entrega al adquiriente de un documento ACEPTADO: PDF y
+   * AttachedDocument firmado + ZIP en el bucket privado (sin correo). Mismo
+   * permiso que transmitir; el servicio comprueba el acceso a la sede, que
+   * esté aceptado y lo deja en la auditoría. Idempotente: mismas rutas.
+   */
+  @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
+  @Post('documentos/:id/entrega')
+  regenerarEntrega(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.entrega.regenerar(id, user);
   }
 
   /** Genera la nota crédito que anula/corrige una factura. */

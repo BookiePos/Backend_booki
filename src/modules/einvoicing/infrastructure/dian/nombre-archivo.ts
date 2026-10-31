@@ -58,6 +58,19 @@ export function nombresArchivo(d: DatosNombreArchivo): NombresArchivo {
   return { xml: `${PREFIJO_ARCHIVO[d.tipo]}${c}.xml`, zip: `z${c}.zip` };
 }
 
+export interface NombresEntrega extends NombresArchivo {
+  pdf: string;
+}
+
+/**
+ * Nombres de la entrega al adquiriente (anexo FEV 1.9): el AttachedDocument
+ * `ad….xml` y su representación gráfica `ad….pdf`, dentro de `z….zip`.
+ */
+export function nombresEntrega(d: Omit<DatosNombreArchivo, 'tipo'>): NombresEntrega {
+  const c = cuerpo({ ...d, tipo: 'invoice' });
+  return { xml: `ad${c}.xml`, pdf: `ad${c}.pdf`, zip: `z${c}.zip` };
+}
+
 /**
  * Consecutivo del archivo sacado del número completo del documento
  * (`SETP990000001` → 990000001). Si no trae dígitos, lanza.

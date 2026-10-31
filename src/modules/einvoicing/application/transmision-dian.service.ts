@@ -6,6 +6,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types, type UpdateQuery } from 'mongoose';
@@ -36,6 +37,7 @@ import {
   type FirmanteDian,
   type ProveedorTransmisorDian,
 } from './transmision-dian.puertos';
+import { ENTREGA_DIAN, type EntregaDian } from './entrega-dian.puerto';
 
 /**
  * Vida del bloqueo de transmisión. Mayor que la duración máxima de una función
@@ -109,6 +111,7 @@ export class TransmisionDianService {
     @Inject(PROVEEDOR_TRANSMISOR_DIAN)
     private readonly transmisores: ProveedorTransmisorDian,
     private readonly audit: AuditService,
+    @Optional() @Inject(ENTREGA_DIAN) private readonly entrega?: EntregaDian,
   ) {}
 
   /**
@@ -245,7 +248,9 @@ export class TransmisionDianService {
    *     si la función muere durante la llamada, el documento queda en vuelo y
    *     el reintento reenvía el mismo XML en vez de volver a numerar;
    *  5. transmitir (y si la DIAN dice YA_PROCESADO, consultar por CUFE);
-   *  6. aplicar el veredicto con la máquina de estados.
+   *  6. aplicar el veredicto con la máquina de estados;
+   *  7. si quedó `accepted`, la entrega al adquiriente (puerto `EntregaDian`),
+   *     que nunca mueve el estado.
    */
   private async transmitirConBloqueo(
     inicial: ElectronicDocumentDocument,
@@ -354,7 +359,23 @@ export class TransmisionDianService {
       );
       return this.resultado(doc, transmitido, r.codigo, r.mensajes);
     }
+    // (7) Entrega al adquiriente (PDF + AttachedDocument). Después del veredicto
+    // y fuera de su camino: si falla, el documento sigue aceptado.
+    if (final.dianStatus === 'accepted') await this.entregarSinRomper(final);
     return this.resultado(final, transmitido, r.codigo, r.mensajes);
+  }
+
+  /** Un fallo de la entrega se registra y se reintenta luego; nunca cambia el estado DIAN. */
+  private async entregarSinRomper(doc: ElectronicDocumentDocument): Promise<void> {
+    if (!this.entrega) return;
+    try {
+      await this.entrega.entregar(doc);
+    } catch (err) {
+      // Solo el nombre: el mensaje podría citar el XML o rutas del bucket.
+      this.logger.warn(
+        `Documento ${String(doc._id)}: la entrega al adquiriente falló (${(err as Error)?.name ?? 'Error'}); se puede regenerar.`,
+      );
+    }
   }
 
   // ── Persistencia condicionada ──────────────────────────────────────────────

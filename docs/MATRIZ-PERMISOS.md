@@ -119,6 +119,7 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `GET /einvoicing/:id` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /einvoicing/from-sale` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /einvoicing/documentos/:id/transmitir` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
+| `POST /einvoicing/documentos/:id/entrega` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /einvoicing/:id/credit-note` | `einvoicing.void` | ✓ | ✓ | ✓ | · | · |
 | `GET /employees` | `employees.view` | ✓ | ✓ | ✓ | · | · |
 | `GET /employees/lookup` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
