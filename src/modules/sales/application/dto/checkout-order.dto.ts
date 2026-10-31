@@ -5,6 +5,7 @@ import {
   IsArray,
   IsDefined,
   IsBoolean,
+  IsIn,
   IsMongoId,
   IsNumber,
   IsOptional,
@@ -13,7 +14,9 @@ import {
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
+import type { DocumentoFiscalSolicitado } from '../../domain/documento-fiscal';
 import {
+  DOCUMENTO_FISCAL_VALIDACION,
   SaleCustomerDto,
   SaleDiscountDto,
   SalePackagingDto,
@@ -99,4 +102,9 @@ export class CheckoutOrderDto {
   @ValidateNested()
   @Type(() => SaleSellerDto)
   seller?: SaleSellerDto;
+
+  /** Documento fiscal de la venta (Fase 7). Ver `CreateSaleDto.documentoFiscal`. */
+  @IsOptional()
+  @IsIn(DOCUMENTO_FISCAL_VALIDACION)
+  documentoFiscal?: DocumentoFiscalSolicitado;
 }

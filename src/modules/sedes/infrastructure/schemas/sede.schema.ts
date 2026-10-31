@@ -80,6 +80,20 @@ export class CobroDigital {
 }
 const CobroDigitalSchema = SchemaFactory.createForClass(CobroDigital);
 
+/** Una caja (punto de venta) de la sede. */
+@Schema({ _id: false })
+export class PuntoVenta {
+  @Prop({ required: true, trim: true, maxlength: 40 })
+  placa!: string;
+
+  @Prop({ trim: true, maxlength: 120 })
+  ubicacion?: string;
+
+  @Prop({ trim: true, maxlength: 60 })
+  tipo?: string;
+}
+const PuntoVentaSchema = SchemaFactory.createForClass(PuntoVenta);
+
 @Schema({ timestamps: true, collection: 'sedes' })
 export class Sede {
   @Prop({ required: true, unique: true, trim: true })
@@ -171,6 +185,14 @@ export class Sede {
    */
   @Prop({ type: [ResolucionFeSchema], default: [] })
   resolucionesFe?: ResolucionFe[];
+
+  /**
+   * Cajas de la sede para el documento equivalente POS (extensión
+   * `PuntoVenta`: placa, ubicación y tipo). Sin ninguna, el POS sale con la
+   * caja por defecto (ver `einvoicing/domain/emision-pos.ts`).
+   */
+  @Prop({ type: [PuntoVentaSchema], default: undefined })
+  puntosVenta?: PuntoVenta[];
 
   /** QR / llave Bre-B para cobrar por transferencia (ítem 6.4). */
   @Prop({ type: CobroDigitalSchema })

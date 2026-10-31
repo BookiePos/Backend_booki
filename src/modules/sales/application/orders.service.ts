@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -27,6 +28,7 @@ import { CheckoutOrderDto } from './dto/checkout-order.dto';
 import { PaymentPlan, paidByProduct, planPayment } from '../domain/split-bill';
 import { cop } from '../../finance/domain/money.util';
 import { SalesService } from './sales.service';
+import { DocumentoFiscalVentaService } from './documento-fiscal-venta.service';
 
 @Injectable()
 export class OrdersService {
@@ -50,6 +52,12 @@ export class OrdersService {
      */
     @InjectModel(Sede.name)
     private readonly sedeModel: Model<unknown>,
+    /**
+     * Documento fiscal de la venta (Fase 7). Opcional y al final por la misma
+     * razón que `sedeModel`: las pruebas construyen el servicio por posición.
+     */
+    @Optional()
+    private readonly documentoFiscal?: DocumentoFiscalVentaService,
   ) {}
 
   /** El cajero solo opera sedes asignadas a su usuario (JWT). */
@@ -322,7 +330,12 @@ export class OrdersService {
         },
       )
       .exec();
-    return sale;
+
+    // Documento fiscal (POS o FEV), con la venta ya confirmada y enlazada. No
+    // lanza nunca: si falla, la venta queda cobrada y el motivo viaja en
+    // `sale.documentoFiscal`. Ver `DocumentoFiscalVentaService`.
+    if (!this.documentoFiscal) return sale;
+    return this.documentoFiscal.alCobrar(sale, dto.documentoFiscal, user);
   }
 
   /** Cierra la cuenta sin cobrar (no toca inventario: nunca se descontó). */

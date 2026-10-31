@@ -26,6 +26,12 @@ import {
 } from '../../../core-tax/domain/sale-tax';
 
 import { PLATFORM_CODES, PlatformCode } from '../../domain/platform-orders';
+import {
+  DOCUMENTOS_FISCALES,
+  DocumentoFiscalSolicitado,
+  ESTADOS_DOCUMENTO_FISCAL,
+  EstadoDocumentoFiscal,
+} from '../../domain/documento-fiscal';
 import { IVA_TYPES, IvaType } from '../../../catalog/domain/catalog.constants';
 
 export type SaleDocument = HydratedDocument<Sale>;
@@ -401,6 +407,25 @@ class SalePlatform {
 }
 const SalePlatformSchema = SchemaFactory.createForClass(SalePlatform);
 
+/** Documento fiscal de la venta (Fase 7). */
+@Schema({ _id: false })
+class SaleDocumentoFiscal {
+  @Prop({ required: true, enum: DOCUMENTOS_FISCALES })
+  solicitado!: DocumentoFiscalSolicitado;
+
+  @Prop({ required: true, enum: ESTADOS_DOCUMENTO_FISCAL })
+  estado!: EstadoDocumentoFiscal;
+
+  @Prop() documentoId?: string;
+  @Prop() tipo?: string;
+  @Prop() fullNumber?: string;
+  @Prop() cude?: string;
+  @Prop() qrUrl?: string;
+  @Prop() dianStatus?: string;
+  @Prop({ maxlength: 500 }) error?: string;
+}
+const SaleDocumentoFiscalSchema = SchemaFactory.createForClass(SaleDocumentoFiscal);
+
 /** Venta del POS. Documento único y atómico (Mongo standalone). */
 @Schema({ timestamps: true, collection: 'sales' })
 export class Sale {
@@ -648,6 +673,15 @@ export class Sale {
    */
   @Prop({ type: SalePlatformSchema })
   platform?: SalePlatform;
+
+  /**
+   * Documento fiscal pedido al cobrar (POS anónimo, POS con datos o FEV) y cómo
+   * quedó. Vacío en las ventas que no lo pidieron (todas las de antes de la
+   * Fase 7). El estado DIAN real vive en `electronic_documents`. Ver
+   * `domain/documento-fiscal.ts`.
+   */
+  @Prop({ type: SaleDocumentoFiscalSchema })
+  documentoFiscal?: SaleDocumentoFiscal;
 }
 
 export const SaleSchema = SchemaFactory.createForClass(Sale);

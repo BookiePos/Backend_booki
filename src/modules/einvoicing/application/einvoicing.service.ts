@@ -29,15 +29,23 @@ import {
   assertSedeAccess,
 } from '../../core-auth/domain/sede-access';
 import {
+  adquirientePos,
   buildAdquiriente,
   validarAdquirienteParaFactura,
 } from '../domain/adquiriente';
+import {
+  cajaVentaPos,
+  fabricanteDesdeEntorno,
+  pagosPos,
+  type ModoPos,
+} from '../domain/emision-pos';
 import {
   CONSUMIDOR_FINAL_NIT,
   MEDIO_PAGO_BY_METHOD,
 } from '../domain/einvoicing.constants';
 import {
   calcularCude,
+  calcularCudePos,
   calcularCufe,
   dianVerificationUrl,
 } from '../domain/cufe';
@@ -55,7 +63,11 @@ import {
   type TipoAmbiente,
 } from '../domain/emisor-fiscal';
 import { FiscalEmittersService } from './fiscal-emitters.service';
-import { normalizarNit, tipoDeChoque } from '../domain/consecutivo-unico';
+import {
+  normalizarNit,
+  tipoDeChoque,
+  TIPOS_EXCLUYENTES_POR_VENTA,
+} from '../domain/consecutivo-unico';
 import {
   computeResolutionStatus,
   type ResolutionStatus,
@@ -71,6 +83,17 @@ import {
 /** Rechazo de la nota cuando el emisor no tiene PIN: sin él no hay CUDE. */
 export const MENSAJE_NOTA_SIN_PIN =
   'Carga el PIN del software DIAN del emisor antes de emitir notas.';
+
+/** Rechazo del POS cuando el emisor no tiene PIN: sin él no hay CUDE (§14.1.3). */
+export const MENSAJE_POS_SIN_PIN =
+  'No se puede emitir el documento POS: carga el PIN del software DIAN del emisor.';
+
+/** La venta ya tiene el otro documento fiscal (D1: POS o FEV, nunca los dos). */
+export const MENSAJE_EXCLUSION_POS_FEV: Record<'pos' | 'invoice', string> = {
+  pos: 'Esta venta ya tiene factura electrónica: no se le puede emitir también el documento POS.',
+  invoice:
+    'Esta venta ya tiene documento equivalente POS. Para facturarla, anula primero el POS con una nota de ajuste.',
+};
 
 /** Lo de una resolución que viaja a la pantalla (la clave técnica NO viaja). */
 export interface ResolucionVista {
@@ -254,6 +277,8 @@ export class EinvoicingService {
     nit: string | undefined;
     construir: (number: number) => Record<string, unknown>;
     existente: () => Promise<ElectronicDocumentDocument | null>;
+    /** Mensaje del 409 si choca la exclusión POS/FEV con el otro tipo. */
+    exclusion?: string;
   }): Promise<ElectronicDocumentDocument> {
     const MAX_INTENTOS = 3;
     for (let intento = 1; ; intento++) {
@@ -269,9 +294,14 @@ export class EinvoicingService {
         if (number !== undefined && choque !== 'consecutivo') {
           await this.devolverFolio(o.counterId, number - o.desde + 1);
         }
-        if (choque === 'venta') {
+        if (choque === 'venta' || choque === 'exclusion') {
           const existente = await o.existente();
           if (existente) return existente;
+        }
+        // Otra emisión de la misma venta ganó con el OTRO tipo (POS frente a
+        // FEV): cupo y folio ya volvieron; se responde 409, nunca los dos.
+        if (choque === 'exclusion' && o.exclusion) {
+          throw new ConflictException(o.exclusion);
         }
         if (choque === 'consecutivo' && intento < MAX_INTENTOS) {
           await this.subirContador(o);
@@ -369,9 +399,8 @@ export class EinvoicingService {
       );
     }
 
-    const existing = await this.model
-      .findOne({ saleId: sale._id, type: 'invoice' })
-      .exec();
+    // Idempotente por venta+tipo, y excluyente con el POS (D1).
+    const existing = await this.documentoFiscalDeVenta(sale._id, 'invoice');
     if (existing) return existing;
 
     const sede = await this.sedes.findOrFail(sedeId);
@@ -421,6 +450,7 @@ export class EinvoicingService {
       nit: emisor.nit,
       existente: () =>
         this.model.findOne({ saleId: sale._id, type: 'invoice' }).exec(),
+      exclusion: MENSAJE_EXCLUSION_POS_FEV.invoice,
       construir: (number) => {
         const fullNumber = `${prefix}${number}`;
         const { issueDate, issueTime } = this.now();
@@ -438,6 +468,7 @@ export class EinvoicingService {
         return {
           type: 'invoice',
           saleId: sale._id,
+          ventaFiscal: sale._id,
           sedeId: new Types.ObjectId(sedeId),
           prefix: prefix || undefined,
           number,
@@ -464,6 +495,147 @@ export class EinvoicingService {
         };
       },
     });
+  }
+
+  /**
+   * Documento equivalente electrónico POS de una venta (PR 7B; anexo DE v1.0).
+   *
+   * Mismo orden de garantías que la factura: todo lo que puede fallar se
+   * valida ANTES de cobrar el cupo y reservar el folio (resolución `pos`
+   * vigente, PIN del software, adquiriente del modo identificado, cuadre del
+   * documento, NIT). Cupo y folio los toma `emitir`, que los devuelve si la
+   * inserción falla.
+   *
+   * - Idempotente por venta+tipo: un doble clic devuelve el POS ya emitido.
+   * - Excluyente con la FEV (D1): si la venta ya tiene factura, 409.
+   * - El CUDE (§14.1.3) va con el PIN, no con la clave técnica, y no incluye
+   *   el `InvoiceTypeCode`: si el documento termina en contingencia 08 se
+   *   refirma con el mismo número y el mismo CUDE (D5).
+   * - Fecha y hora se toman UNA vez, antes del folio: un reintento por choque
+   *   de número no cambia la fecha del documento.
+   * - Solo crea el documento en `draft`; la transmisión es aparte.
+   */
+  async createPosFromSale(
+    saleId: string,
+    modo: ModoPos,
+    user: JwtUser,
+  ): Promise<ElectronicDocumentDocument> {
+    const sale = await this.sales.getOrFail(saleId);
+    const sedeId = this.saleSedeId(sale);
+    assertSedeAccess(user, sedeId);
+    if (sale.status === 'void') {
+      throw new BadRequestException(
+        'No se puede emitir el documento POS de una venta anulada.',
+      );
+    }
+
+    const existing = await this.documentoFiscalDeVenta(sale._id, 'pos');
+    if (existing) return existing;
+
+    const sede = await this.sedes.findOrFail(sedeId);
+    const resolucion = resolucionDeTipo(sede, 'pos');
+    if (!resolucion) {
+      throw new BadRequestException(
+        'No se puede emitir el documento POS: la sede no tiene resolución de numeración del documento equivalente POS.',
+      );
+    }
+    this.assertResolucionVigente(resolucion, 'pos');
+
+    const { adquiriente, faltantes } = adquirientePos(sale.customer, modo);
+    if (!adquiriente) {
+      throw new BadRequestException(
+        `No se puede emitir el POS con datos del cliente: falta ${faltantes.join(', ')}.`,
+      );
+    }
+
+    const doc = await this.armarDocumento(sale, sede);
+    const nitOfe = this.nitParaCodigo(sede.nit);
+    const emisorFiscal = await this.emisores.obtenerPorSede(sedeId);
+    const tipoAmbiente = this.ambienteDe(emisorFiscal);
+    // El PIN se descifra en cada emisión (no se guarda un secreto en memoria
+    // de una función serverless): una lectura y un AES-GCM, acotado.
+    const pin = emisorFiscal
+      ? await this.emisores.leerSecreto(emisorFiscal.id as string, 'facturaPin')
+      : null;
+    if (!pin) throw new BadRequestException(MENSAJE_POS_SIN_PIN);
+
+    const prefix = resolucion.prefijo ?? '';
+    const emisor = this.buildEmisor(sede);
+    const cajaVenta = cajaVentaPos(sede, sale);
+    const fabricante = fabricanteDesdeEntorno(process.env);
+    const pagos = pagosPos(sale);
+    const { issueDate, issueTime } = this.now();
+
+    return this.emitir({
+      counterId: contadorDeResolucion('pos', sedeId, prefix),
+      desde: resolucion.rangoDesde ?? 1,
+      hasta: resolucion.rangoHasta,
+      prefix,
+      nit: emisor.nit,
+      existente: () => this.model.findOne({ saleId: sale._id, type: 'pos' }).exec(),
+      exclusion: MENSAJE_EXCLUSION_POS_FEV.pos,
+      construir: (number) => {
+        const fullNumber = `${prefix}${number}`;
+        const cude = calcularCudePos({
+          numero: fullNumber,
+          fecha: issueDate,
+          hora: issueTime,
+          ...doc.codigoUnico,
+          nitEmisor: nitOfe,
+          numAdquiriente: this.numeroAdquiriente(adquiriente),
+          softwarePin: pin,
+          tipoAmbiente,
+        });
+        return {
+          type: 'pos',
+          saleId: sale._id,
+          ventaFiscal: sale._id,
+          sedeId: new Types.ObjectId(sedeId),
+          prefix: prefix || undefined,
+          number,
+          fullNumber,
+          issueDate,
+          issueTime,
+          emisor,
+          adquiriente,
+          lines: doc.lines,
+          charges: doc.charges.length ? doc.charges : undefined,
+          ...doc.totales,
+          discountTotal: sale.discountTotal ?? 0,
+          total: doc.totales.payableAmount,
+          formaPago: hasCreditPart(sale) ? '2' : '1',
+          medioPago: MEDIO_PAGO_BY_METHOD[sale.payment.method] ?? '10',
+          pagos,
+          cajaVenta,
+          fabricante,
+          resolution: this.buildResolution(resolucion),
+          tipoAmbiente,
+          aviso: doc.aviso,
+          cufe: cude,
+          qrUrl: dianVerificationUrl(cude, tipoAmbiente),
+          dianStatus: 'draft',
+          createdByEmail: user.email,
+        };
+      },
+    });
+  }
+
+  /**
+   * El documento fiscal (POS o FEV) que ya tiene la venta. Si es del tipo
+   * pedido se devuelve (idempotencia); si es del otro, 409 (D1). Cubre también
+   * las facturas anteriores a la Fase 7, que no tienen `ventaFiscal` y por eso
+   * no entran al índice de exclusión.
+   */
+  private async documentoFiscalDeVenta(
+    saleId: Types.ObjectId,
+    tipo: 'pos' | 'invoice',
+  ): Promise<ElectronicDocumentDocument | null> {
+    const previo = await this.model
+      .findOne({ saleId, type: { $in: [...TIPOS_EXCLUYENTES_POR_VENTA] } })
+      .exec();
+    if (!previo) return null;
+    if (previo.type === tipo) return previo;
+    throw new ConflictException(MENSAJE_EXCLUSION_POS_FEV[tipo]);
   }
 
   /** Genera la nota crédito que anula/corrige una factura ya emitida. */

@@ -151,3 +151,52 @@ export function validarAdquirienteParaFactura(
   }
   return { esConsumidorFinal: false, faltantes };
 }
+
+/** Adquiriente del POS, o lo que falta para el modo identificado. */
+export interface AdquirientePos {
+  adquiriente?: Adquiriente;
+  faltantes: string[];
+}
+
+/**
+ * Adquiriente del documento equivalente POS (D1 y D3 del anexo de la Fase 7).
+ *
+ * - `anonimo`: consumidor final (222222222222, tipo 13, R-99-PN) siempre, aunque
+ *   la venta traiga datos del cliente: es la salida por defecto de la caja.
+ * - `identificado`: el cliente pidió el POS con sus datos para soportar costos
+ *   (art. 19 par. 1 Res. 165/2023). Bastan nombre, tipo y número de documento,
+ *   y el DV si es NIT; NO se exige la ficha fiscal completa de la FEV
+ *   (`validarAdquirienteParaFactura` no aplica). Si algo falta, no se inventa
+ *   un consumidor final: se devuelve qué falta.
+ */
+export function adquirientePos(
+  c: ClienteVenta | undefined,
+  modo: 'anonimo' | 'identificado',
+): AdquirientePos {
+  if (modo === 'anonimo') return { adquiriente: { ...CONSUMIDOR_FINAL }, faltantes: [] };
+
+  const faltantes: string[] = [];
+  const name = c?.name?.trim();
+  if (!name) faltantes.push('nombre o razón social');
+  const tipoValido = Boolean(c?.docType && c.docType in DIAN_DOC_TYPES);
+  if (!tipoValido) faltantes.push('tipo de documento');
+  const numero = c?.idNumber?.replace(/\s/g, '');
+  if (!numero) {
+    faltantes.push('número de documento');
+  } else if (
+    c?.docType &&
+    DOC_TYPES_NUMERICOS.includes(c.docType) &&
+    !normalizarNumeroDocumento(c.docType, numero)
+  ) {
+    faltantes.push('número de documento (solo dígitos, sin ceros a la izquierda)');
+  }
+  if (c?.docType === '31' && numero) {
+    const dvMsg = errorDvCliente({ dianDocType: '31', docNumber: numero, nitDv: c.nitDv });
+    if (dvMsg) faltantes.push(dvMsg);
+  }
+  if (faltantes.length > 0 || !c) return { faltantes };
+
+  // Con los datos mínimos completos, `buildAdquiriente` normaliza el número y
+  // el DV igual que en la FEV; del resto de la ficha solo viaja lo que haya.
+  return { adquiriente: buildAdquiriente(c), faltantes: [] };
+}

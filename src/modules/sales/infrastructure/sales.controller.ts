@@ -18,6 +18,7 @@ import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-u
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { OfflineSalesService } from '../application/offline-sales.service';
+import { DocumentoFiscalVentaService } from '../application/documento-fiscal-venta.service';
 import {
   ReserveOfflineNumbersDto,
   SyncOfflineSaleDto,
@@ -31,6 +32,7 @@ export class SalesController {
     private readonly returns: SaleReturnsService,
     private readonly packaging: PackagingService,
     private readonly offline: OfflineSalesService,
+    private readonly documentoFiscal: DocumentoFiscalVentaService,
   ) {}
 
   /**
@@ -161,8 +163,13 @@ export class SalesController {
 
   @RequirePermissions(PERMISSIONS.POS_SELL)
   @Post()
-  create(@Body() dto: CreateSaleDto, @CurrentUser() user: JwtUser) {
-    return this.sales.create(dto, user);
+  async create(@Body() dto: CreateSaleDto, @CurrentUser() user: JwtUser) {
+    const sale = await this.sales.create(dto, user);
+    // Venta directa: el documento fiscal se pide con la venta ya confirmada.
+    // Emitirlo va implícito en `pos.sell` (no pide `einvoicing.issue`): es el
+    // documento obligatorio de ESTA venta (art. 16 Res. 165/2023), no una
+    // emisión libre. Nunca lanza; el resultado viaja en `sale.documentoFiscal`.
+    return this.documentoFiscal.alCobrar(sale, dto.documentoFiscal, user);
   }
 
   /** Anula una venta y devuelve su consumo al inventario. */

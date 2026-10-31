@@ -36,6 +36,11 @@ import {
   ORDER_TYPES,
   OrderType,
 } from '../../../delivery/domain/delivery.constants';
+import {
+  DOCUMENTOS_FISCALES,
+  DocumentoFiscalSolicitado,
+} from '../../domain/documento-fiscal';
+import { DIAN_DOC_TYPE_CODES } from '../../../customers/domain/datos-fiscales';
 
 export class SaleDiscountDto {
   @IsIn(DISCOUNT_TYPES as readonly string[])
@@ -193,7 +198,27 @@ export class SaleCustomerDto {
   @IsString()
   @MaxLength(120)
   email?: string;
+
+  /**
+   * Tipo de documento DIAN (13 CC, 31 NIT, 22 CE…). Lo necesita el POS con
+   * datos del cliente (`documentoFiscal: 'pos_identificado'`) cuando el cliente
+   * no está registrado: sin tipo, un número suelto no se interpreta.
+   */
+  @IsOptional()
+  @IsIn(DIAN_DOC_TYPE_CODES as readonly string[])
+  docType?: string;
+
+  /** DV del NIT (solo con `docType: '31'`). */
+  @IsOptional()
+  @Matches(/^\d$/, { message: 'nitDv debe ser un dígito' })
+  nitDv?: string;
 }
+
+/**
+ * Documento fiscal que se pide al cobrar (Fase 7). Opcional: sin él no se
+ * emite nada, como antes. Ver `domain/documento-fiscal.ts`.
+ */
+export const DOCUMENTO_FISCAL_VALIDACION = DOCUMENTOS_FISCALES as readonly string[];
 
 /**
  * Quién vendió. No siempre es quien cobra: en el mostrador uno atiende y otro
@@ -436,4 +461,14 @@ export class CreateSaleDto {
   @IsOptional()
   @IsUUID('4')
   idempotencyKey?: string;
+
+  /**
+   * Documento fiscal de la venta: `pos_anonimo`, `pos_identificado` o `fev`.
+   * Sin él no se emite ninguno (comportamiento anterior). La venta no espera a
+   * la DIAN ni se revierte si la emisión falla: el resultado viaja en
+   * `documentoFiscal` de la respuesta.
+   */
+  @IsOptional()
+  @IsIn(DOCUMENTO_FISCAL_VALIDACION)
+  documentoFiscal?: DocumentoFiscalSolicitado;
 }
