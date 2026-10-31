@@ -25,6 +25,8 @@ import {
   ProveedorTransmisorPorEmisor,
 } from './application/transmision-dian.puertos';
 import { ArmadorUblFactura } from './application/armador-ubl';
+import { EntregaDianService } from './application/entrega-dian.service';
+import { ENTREGA_DIAN } from './application/entrega-dian.puerto';
 import { StorageModule } from '../../shared/storage/storage.module';
 import { CoreAuditModule } from '../core-audit/core-audit.module';
 import { EinvoicingController } from './infrastructure/einvoicing.controller';
@@ -57,6 +59,9 @@ import { ControlModule } from '../control/control.module';
     { provide: ARMADOR_XML_DIAN, useClass: ArmadorUblFactura },
     { provide: FIRMANTE_DIAN, useClass: FirmanteP12 },
     { provide: PROVEEDOR_TRANSMISOR_DIAN, useClass: ProveedorTransmisorPorEmisor },
+    // Fase 5B: entrega al adquiriente (PDF + AttachedDocument/ZIP) tras `accepted`.
+    EntregaDianService,
+    { provide: ENTREGA_DIAN, useExisting: EntregaDianService },
   ],
   exports: [
     EinvoicingService,

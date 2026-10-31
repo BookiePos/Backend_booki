@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { anioColombia, consecutivoDeNumero, nombresArchivo } from './nombre-archivo';
+import { anioColombia, consecutivoDeNumero, nombresArchivo, nombresEntrega } from './nombre-archivo';
 
 describe('nombre de archivo DIAN', () => {
   it('arma prefijo + NIT 10 + PT 3 + año 2 + consecutivo hex 8', () => {
@@ -36,5 +36,12 @@ describe('nombre de archivo DIAN', () => {
   it('el año es el de Colombia (UTC-5)', () => {
     expect(anioColombia(new Date('2027-01-01T03:00:00Z'))).toBe(2026);
     expect(anioColombia(new Date('2027-01-01T06:00:00Z'))).toBe(2027);
+  });
+
+  it('entrega al adquiriente: ad…xml y ad…pdf dentro de z…zip, con el mismo cuerpo', () => {
+    const n = nombresEntrega({ nit: '900.123.456', consecutivo: 990000001, anio: 2026 });
+    expect(n.xml).toBe('ad0900123456000263b023381.xml');
+    expect(n.pdf).toBe('ad0900123456000263b023381.pdf');
+    expect(n.zip).toBe('z0900123456000263b023381.zip');
   });
 });

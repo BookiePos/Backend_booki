@@ -1,6 +1,6 @@
 import { crc32 as crc32Node, inflateRawSync } from 'zlib';
 import { describe, expect, it } from 'vitest';
-import { crc32, zipUnArchivo } from './zip-memoria';
+import { crc32, zipArchivos, zipUnArchivo } from './zip-memoria';
 
 /** Lector mínimo e independiente: va por el directorio central, como un unzip real. */
 function leerZip(zip: Buffer): { nombre: string; datos: Buffer; crc: number; metodo: number } {
@@ -44,5 +44,44 @@ describe('zip en memoria', () => {
   it('rechaza nombres con ruta', () => {
     expect(() => zipUnArchivo('../x.xml', 'a')).toThrow();
     expect(() => zipUnArchivo('', 'a')).toThrow();
+  });
+
+  it('varias entradas: cada una se lee por el directorio central con su desplazamiento', () => {
+    const xml = Buffer.from('<AttachedDocument>ñ</AttachedDocument>', 'utf8');
+    const pdf = Buffer.concat([Buffer.from('%PDF-1.3 '), Buffer.alloc(3000, 7)]);
+    const zip = zipArchivos(
+      [
+        { nombre: 'ad0900123456000260000002a.xml', contenido: xml },
+        { nombre: 'ad0900123456000260000002a.pdf', contenido: pdf },
+      ],
+      new Date('2026-10-30T15:04:06Z'),
+    );
+    const fin = zip.length - 22;
+    expect(zip.readUInt32LE(fin)).toBe(0x06054b50);
+    expect(zip.readUInt16LE(fin + 8)).toBe(2);
+    expect(zip.readUInt16LE(fin + 10)).toBe(2);
+    let cd = zip.readUInt32LE(fin + 16);
+    const leidas: Record<string, Buffer> = {};
+    for (let i = 0; i < 2; i += 1) {
+      expect(zip.readUInt32LE(cd)).toBe(0x02014b50);
+      const comp = zip.readUInt32LE(cd + 20);
+      const largo = zip.readUInt16LE(cd + 28);
+      const nombre = zip.subarray(cd + 46, cd + 46 + largo).toString('utf8');
+      const local = zip.readUInt32LE(cd + 42);
+      expect(zip.readUInt32LE(local)).toBe(0x04034b50);
+      const ini = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+      const datos = inflateRawSync(zip.subarray(ini, ini + comp));
+      expect(zip.readUInt32LE(cd + 16)).toBe(crc32Node(datos));
+      leidas[nombre] = datos;
+      cd += 46 + largo;
+    }
+    expect(leidas['ad0900123456000260000002a.xml']!.equals(xml)).toBe(true);
+    expect(leidas['ad0900123456000260000002a.pdf']!.equals(pdf)).toBe(true);
+  });
+
+  it('varias entradas: rechaza lista vacía, nombres repetidos o con ruta', () => {
+    expect(() => zipArchivos([])).toThrow();
+    expect(() => zipArchivos([{ nombre: 'a.xml', contenido: 'x' }, { nombre: 'a.xml', contenido: 'y' }])).toThrow();
+    expect(() => zipArchivos([{ nombre: 'dir/a.xml', contenido: 'x' }])).toThrow();
   });
 });

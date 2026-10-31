@@ -652,4 +652,51 @@ describe('TransmisionDianService', () => {
     await expect(transmitir(otro)).rejects.toThrow(NotImplementedException);
     expect(audit.record.mock.calls[1]![0]).toMatchObject({ success: false, detail: { codigo: 'NotImplementedException' } });
   });
+
+  describe('entrega al adquiriente (Fase 5B)', () => {
+    let entrega: { entregar: ReturnType<typeof vi.fn> };
+    beforeEach(() => {
+      entrega = {
+        entregar: vi.fn(async (doc: Fila) => {
+          log.push(`entrega:${doc.dianStatus}`);
+          return { documentoId: String(doc._id), estado: 'completa', pdf: true, zip: true };
+        }),
+      };
+      svc = new TransmisionDianService(
+        modelo as never,
+        emisores,
+        storage,
+        armador as never,
+        firmante,
+        proveedor as never,
+        audit as never,
+        entrega as never,
+      );
+    });
+
+    it('tras guardar accepted se pide la entrega, con el documento ya aceptado', async () => {
+      const d = sembrar();
+      const r = await transmitir(d);
+      expect(r.dianStatus).toBe('accepted');
+      expect(entrega.entregar).toHaveBeenCalledTimes(1);
+      expect(log.slice(-2)).toEqual(['escribe:accepted', 'entrega:accepted']);
+    });
+
+    it('un fallo de la entrega NO cambia el estado DIAN ni el resultado', async () => {
+      entrega.entregar.mockRejectedValue(new Error('bucket caído con datos sensibles'));
+      const d = sembrar();
+      const r = await transmitir(d);
+      expect(r).toMatchObject({ dianStatus: 'accepted', transmitido: true });
+      expect(fila(d).dianStatus).toBe('accepted');
+      expect(fila(d).bloqueoTransmision).toBeUndefined();
+    });
+
+    it('rechazado o en vuelo: no hay entrega', async () => {
+      transmisor.enviar.mockResolvedValue(RECHAZADA);
+      await transmitir(sembrar());
+      transmisor.enviar.mockResolvedValue(sinVeredicto('RED'));
+      await transmitir(sembrar());
+      expect(entrega.entregar).not.toHaveBeenCalled();
+    });
+  });
 });
