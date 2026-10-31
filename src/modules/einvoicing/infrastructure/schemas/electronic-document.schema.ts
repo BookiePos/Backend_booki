@@ -285,6 +285,26 @@ export class ElectronicDocument {
   @Prop()
   enviadoAt?: Date;
 
+  /**
+   * Bloqueo de la transmisión en curso (Fase 4B): id aleatorio de quien lo
+   * tomó. Solo el dueño del bloqueo puede mover el estado; así dos llamadas
+   * concurrentes no firman ni transmiten dos veces. Ver
+   * `TransmisionDianService`.
+   */
+  @Prop({ type: String })
+  bloqueoTransmision?: string;
+
+  /**
+   * Por qué el último intento no salió a la red (gate de ambiente, stub,
+   * certificado). Aparte de `respuestaDian`, que es solo lo que dijo la red.
+   */
+  @Prop({ type: Object })
+  ultimoIntentoSinRed?: Record<string, unknown>;
+
+  /** Vence el bloqueo: pasado este instante otro intento lo puede tomar. */
+  @Prop({ type: Date })
+  bloqueoHasta?: Date;
+
   @Prop({ required: true })
   createdByEmail!: string;
 }

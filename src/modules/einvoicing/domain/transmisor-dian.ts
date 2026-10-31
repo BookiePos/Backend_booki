@@ -43,8 +43,19 @@ export function assertContratoRespuesta(r: RespuestaDian): void {
   }
 }
 
+/**
+ * Presupuesto de tiempo de una llamada de red. El orquestador lo calcula para
+ * que la llamada termine antes de que venza su bloqueo del documento; la
+ * implementación DEBE respetarlo (timeout del SOAP ≤ `presupuestoMs` y abortar
+ * con `signal`). Opcional para no romper a quien no lo use todavía.
+ */
+export interface PresupuestoRed {
+  presupuestoMs?: number;
+  signal?: AbortSignal;
+}
+
 /** Documento ya firmado, listo para transmitir. */
-export interface EnvioDian {
+export interface EnvioDian extends PresupuestoRed {
   tipo: DocType;
   fullNumber: string;
   cufe?: string;
@@ -56,7 +67,7 @@ export interface EnvioSetPruebasDian extends EnvioDian {
   testSetId?: string;
 }
 
-export interface ConsultaDian {
+export interface ConsultaDian extends PresupuestoRed {
   trackId?: string;
   cufe?: string;
 }
