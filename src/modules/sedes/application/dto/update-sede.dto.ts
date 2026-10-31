@@ -1,5 +1,7 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsIn,
   IsOptional,
@@ -40,6 +42,23 @@ export class CobroDigitalDto {
   @IsString()
   @MaxLength(120)
   qrTitular?: string;
+}
+
+/** Una caja (punto de venta) de la sede: extensión `PuntoVenta` del POS electrónico. */
+export class PuntoVentaDto {
+  @IsString()
+  @MaxLength(40)
+  placa!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  ubicacion?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  tipo?: string;
 }
 
 export class UpdateSedeDto {
@@ -136,6 +155,17 @@ export class UpdateSedeDto {
   @ValidateNested()
   @Type(() => CobroDigitalDto)
   cobroDigital?: CobroDigitalDto;
+
+  /**
+   * Cajas de la sede para el documento POS (placa, ubicación, tipo). Reemplaza
+   * la lista entera; vacía = sin cajas (se emite con la caja por defecto).
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => PuntoVentaDto)
+  puntosVenta?: PuntoVentaDto[];
 
   @IsOptional()
   @IsBoolean()

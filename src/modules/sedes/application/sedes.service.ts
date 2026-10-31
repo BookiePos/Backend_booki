@@ -144,6 +144,20 @@ export class SedesService {
       sede.set('cobroDigital', next.qrLlave || next.qrImagen || next.qrTitular ? next : undefined);
     }
 
+    if (dto.puntosVenta !== undefined) {
+      // La placa identifica la caja en el XML del POS: sin placa no es caja.
+      sede.set(
+        'puntosVenta',
+        dto.puntosVenta
+          .map((p) => ({
+            placa: p.placa?.trim().toUpperCase(),
+            ubicacion: p.ubicacion?.trim() || undefined,
+            tipo: p.tipo?.trim() || undefined,
+          }))
+          .filter((p) => p.placa),
+      );
+    }
+
     if (dto.active !== undefined) sede.active = dto.active;
 
     try {
