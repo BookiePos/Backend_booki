@@ -168,6 +168,9 @@ importers:
       vitest:
         specifier: ^4.1.12
         version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@26.6.5)(@vitest/coverage-v8@4.1.12)(vite@8.2.1(@types/node@26.6.5)(terser@5.49.0))
+      xmllint-wasm:
+        specifier: 5.3.0
+        version: 5.3.0(@types/node@26.6.5)
 
 packages:
 
@@ -3442,6 +3445,12 @@ packages:
     resolution: {integrity: sha512-ghig2TBE/H11aOVgmahA3MhimvkBr6JIYknH/Dhdk10nXwdbIqBJsbfMxpvFPG8bAw77gN29aQWvKpmVoPlvPQ==}
     engines: {node: '>=16.0.0'}
 
+  xmllint-wasm@5.3.0:
+    resolution: {integrity: sha512-sEgRXdf2t13eYCFCURmCE6h2hwleEOIS9VL/jOh9JJJnez2YXIooi2Ghm05/JZEPXyPawN8sMASPVZlmh8Sd6A==}
+    engines: {node: '>=16'}
+    peerDependencies:
+      '@types/node': '>=16'
+
   xpath@0.0.33:
     resolution: {integrity: sha512-NNXnzrkDrAzalLhIUc01jO2mOzXGXh1JwPgkihcLLzw98c0WgYDmmjSh1Kl3wzaxSVWMuA+fe0WTWOBDWCBmNA==}
     engines: {node: '>=0.6.0'}
@@ -6647,6 +6656,10 @@ snapshots:
       xpath: 0.0.33
 
   xml-naming@0.3.0: {}
+
+  xmllint-wasm@5.3.0(@types/node@26.6.5):
+    dependencies:
+      '@types/node': 26.6.5
 
   xpath@0.0.33: {}
 

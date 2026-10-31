@@ -180,13 +180,16 @@ export interface PrimerTributo {
  * `TaxableAmount` del primer TaxTotal de cada línea) y el armado del XML de
  * la Fase 5, que debe usar este mismo helper para cada línea.
  *
- * Una línea con solo el tributo 22 toma su base como TaxableAmount. En la
- * práctica no ocurre (el INC de bolsas solo lo cobra el responsable de IVA, así
- * que la bolsa siempre trae su 01): confirmar con el anexo al armar el XML.
+ * El tributo 22 (INC de bolsas, art. 512-15 ET) es NOMINAL: se liquida por
+ * unidad (`BaseUnitMeasure` × `PerUnitAmount`), no sobre una base en pesos, así
+ * que su TaxableAmount es 0.00 en el XML (Fase 5A, `factura-ubl.ts`). Una línea
+ * con SOLO el tributo 22 (una venta sin desglose que cobró bolsas) aporta 0 al
+ * `TaxExclusiveAmount`: su precio no es base gravable de ningún tributo ad
+ * valorem, igual que una línea excluida.
  */
 export function primerTributo(l: LineaDocumento): PrimerTributo | undefined {
   if (l.taxScheme) return { codigo: l.taxScheme, taxableAmount: l.base };
-  if (l.perUnitTax) return { codigo: '22', taxableAmount: l.base };
+  if (l.perUnitTax) return { codigo: '22', taxableAmount: 0 };
   return undefined;
 }
 
