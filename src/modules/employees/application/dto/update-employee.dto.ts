@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
   IsEmail,
   IsIn,
   IsMongoId,
@@ -17,6 +18,12 @@ import {
   ACCOUNT_TYPES,
   ARL_RISK_LEVELS,
   CONTRACT_TYPES,
+  DANE_MUNICIPIO,
+  DIAN_DOC_TYPES,
+  DIAN_MEDIOS_PAGO,
+  DIAN_SUBTIPOS_TRABAJADOR,
+  DIAN_TIPOS_CONTRATO,
+  DIAN_TIPOS_TRABAJADOR,
   EMP_DOC_TYPES,
   EMPLOYEE_STATUS,
   GENDERS,
@@ -179,4 +186,46 @@ export class UpdateEmployeeDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  // Nómina electrónica DIAN (todo opcional)
+  @IsOptional()
+  @IsString()
+  secondLastName?: string;
+
+  @IsOptional()
+  @IsString()
+  otherNames?: string;
+
+  @IsOptional()
+  @IsIn(DIAN_DOC_TYPES as readonly string[], { message: 'docTypeDian no es un código DIAN válido' })
+  docTypeDian?: string;
+
+  @IsOptional()
+  @IsIn(DIAN_TIPOS_TRABAJADOR as readonly string[], { message: 'tipoTrabajador no es un código DIAN válido' })
+  tipoTrabajador?: string;
+
+  @IsOptional()
+  @IsIn(DIAN_SUBTIPOS_TRABAJADOR as readonly string[], { message: 'subTipoTrabajador debe ser 00 o 01' })
+  subTipoTrabajador?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  altoRiesgoPension?: boolean;
+
+  @IsOptional()
+  @IsIn(DIAN_TIPOS_CONTRATO as readonly string[], { message: 'tipoContratoDian debe ser 1 a 5' })
+  tipoContratoDian?: string;
+
+  @IsOptional()
+  @ValidateIf((_, v) => v !== '')
+  @Matches(DANE_MUNICIPIO, { message: 'municipioDaneTrabajo debe tener 5 dígitos (código DANE)' })
+  municipioDaneTrabajo?: string;
+
+  @IsOptional()
+  @IsString()
+  direccionTrabajo?: string;
+
+  @IsOptional()
+  @IsIn(DIAN_MEDIOS_PAGO as readonly string[], { message: 'medioPago no es un código DIAN válido' })
+  medioPago?: string;
 }

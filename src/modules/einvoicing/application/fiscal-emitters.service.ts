@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -15,8 +16,11 @@ import {
   cifrar,
   contextoSecreto,
   descifrar,
+  leerLlave,
+  VARIABLE_LLAVE,
   type SecretoCifrado,
 } from '../../../shared/crypto/secretos';
+import type { ConfigurarNominaDto } from './dto/configurar-nomina.dto';
 import { normalizarNit } from '../domain/consecutivo-unico';
 import {
   CAMPOS_SECRETOS_EMISOR,
@@ -88,6 +92,8 @@ export interface EmisorVista {
   tieneFacturaTestSetId: boolean;
   tieneNominaPin: boolean;
   tieneNominaTestSetId: boolean;
+  /** SoftwareID + PIN de nómina guardados. */
+  nominaConfigurada: boolean;
   tieneCertificado: boolean;
 }
 
@@ -280,6 +286,60 @@ export class FiscalEmittersService {
   }
 
   /**
+   * Guarda las credenciales de nómina electrónica del emisor de la sede
+   * (SoftwareID, PIN cifrado, TestSetId). Sin llave de cifrado responde 503 y no
+   * escribe nada. Devuelve la vista del emisor: el PIN no sale, solo
+   * `tieneNominaPin`.
+   */
+  async configurarNomina(
+    sedeId: string,
+    dto: ConfigurarNominaDto,
+    user: JwtUser,
+    ip?: string,
+  ): Promise<{ emisor: EmisorVista | null; estado: EstadoConfiguracion | null }> {
+    assertSedeAccess(user, sedeId);
+    let llave: Buffer | null;
+    try {
+      llave = leerLlave();
+    } catch {
+      llave = null;
+    }
+    if (!llave) {
+      throw new ServiceUnavailableException(
+        `Falta la llave de cifrado (${VARIABLE_LLAVE}) o está mal formada: no se puede guardar el PIN de nómina. Avisa a soporte.`,
+      );
+    }
+    const emisor = await this.obtenerPorSede(sedeId);
+    if (!emisor) {
+      throw new BadRequestException(
+        'La sede no tiene emisor fiscal: configura primero los datos fiscales de la sede.',
+      );
+    }
+    const antes = await this.conSecretosOrFail(emisor.id as string);
+    const teniaPin = antes.get('nominaPin') != null;
+    await this.guardarCredenciales(emisor.id as string, {
+      nominaSoftwareId: dto.softwareId,
+      nominaPin: dto.pin,
+      ...(dto.testSetId !== undefined ? { nominaTestSetId: dto.testSetId } : {}),
+    });
+    // Sin PIN, SoftwareID ni TestSetId en el detalle: solo qué pasó.
+    await this.audit.record({
+      userId: user.userId,
+      userEmail: user.email,
+      userName: user.name,
+      role: user.role,
+      method: 'PUT',
+      path: `/einvoicing/sedes/${sedeId}/emisor/nomina`,
+      statusCode: 200,
+      success: true,
+      ip,
+      action: teniaPin ? 'einvoicing.nomina.actualizada' : 'einvoicing.nomina.configurada',
+      detail: { emisorId: emisor.id as string, conTestSetId: String(dto.testSetId !== undefined) },
+    });
+    return this.vistaDeSede(sedeId, user);
+  }
+
+  /**
    * Descifra un secreto del emisor para usarlo en el servidor (firmar, CUDE).
    * `null` si no está guardado o falta la llave. Nunca lo loguees ni lo
    * devuelvas en una respuesta.
@@ -380,6 +440,7 @@ export class FiscalEmittersService {
       tieneFacturaTestSetId: !!e.facturaTestSetId,
       tieneNominaPin: e.get('nominaPin') != null,
       tieneNominaTestSetId: !!e.nominaTestSetId,
+      nominaConfigurada: !!e.nominaSoftwareId && e.get('nominaPin') != null,
       tieneCertificado: !!e.certPath && tieneCertPassword,
     };
   }

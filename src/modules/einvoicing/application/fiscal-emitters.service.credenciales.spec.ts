@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 import { Types } from 'mongoose';
 
 // Patrón de `orders.service.checkout.spec.ts`: el servicio importa esquemas.
@@ -24,6 +26,7 @@ import {
   SecretoIlegibleError,
   VARIABLE_LLAVE,
 } from '../../../shared/crypto/secretos';
+import { ConfigurarNominaDto } from './dto/configurar-nomina.dto';
 import { StubDian } from '../domain/stub-dian';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 
@@ -299,6 +302,81 @@ describe('FiscalEmittersService', () => {
 
       const cajero = { role: 'cashier', permissions: [], sedeIds: [otraSede] } as unknown as JwtUser;
       await expect(svc.vistaDeSede(s, cajero)).rejects.toThrow('No tienes acceso');
+    });
+  });
+
+  describe('configurarNomina', () => {
+    const UUID_SW = '3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b';
+    const UUID_TS = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+    const dueno = (s: string, role = 'owner') => ({ userId: 'u1', role, permissions: [], sedeIds: [s] }) as unknown as JwtUser;
+
+    it('cifra el PIN con <emisorId>:nominaPin, audita sin secretos y no lo devuelve', async () => {
+      const s = nuevaSede();
+      const e = await svc.asegurarParaSede(s);
+      const r = await svc.configurarNomina(s, { softwareId: UUID_SW, pin: 'pin-ne-123', testSetId: UUID_TS }, dueno(s), '1.2.3.4');
+      const guardado = emisores.get(e.id);
+      expect(guardado.nominaSoftwareId).toBe(UUID_SW);
+      expect(guardado.nominaTestSetId).toBe(UUID_TS);
+      expect(descifrar(guardado.nominaPin, contextoSecreto(e.id, 'nominaPin'))).toBe('pin-ne-123');
+      expect(r.emisor).toMatchObject({ nominaConfigurada: true, tieneNominaPin: true, nominaSoftwareId: UUID_SW });
+      expect(JSON.stringify(r)).not.toMatch(/pin-ne-123|"iv"|"tag"/);
+      expect(Object.keys(r.emisor!)).not.toContain('nominaPin');
+      const llamada = JSON.stringify(audit.record.mock.calls);
+      expect(llamada).toContain('einvoicing.nomina.configurada');
+      expect(llamada).not.toMatch(/pin-ne-123/);
+    });
+
+    it('sin llave de cifrado: 503 y no escribe nada', async () => {
+      const s = nuevaSede();
+      const e = await svc.asegurarParaSede(s);
+      delete process.env[VARIABLE_LLAVE];
+      await expect(
+        svc.configurarNomina(s, { softwareId: UUID_SW, pin: 'pin-ne' }, dueno(s)),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(model.updateOne).not.toHaveBeenCalled();
+      expect(emisores.get(e.id).nominaSoftwareId).toBeUndefined();
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+
+    it('sede ajena: 403 sin tocar el emisor', async () => {
+      const s = nuevaSede();
+      await svc.asegurarParaSede(s);
+      const otra = nuevaSede();
+      await expect(
+        svc.configurarNomina(s, { softwareId: UUID_SW, pin: 'pin-ne' }, dueno(otra, 'cashier')),
+      ).rejects.toThrow('No tienes acceso');
+      expect(model.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('sede sin emisor: 400', async () => {
+      const s = nuevaSede();
+      await expect(
+        svc.configurarNomina(s, { softwareId: UUID_SW, pin: 'pin-ne' }, dueno(s)),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('sin testSetId no pisa el que ya había', async () => {
+      const s = nuevaSede();
+      const e = await svc.asegurarParaSede(s);
+      await svc.configurarNomina(s, { softwareId: UUID_SW, pin: 'a', testSetId: UUID_TS }, dueno(s));
+      await svc.configurarNomina(s, { softwareId: UUID_SW, pin: 'b' }, dueno(s));
+      expect(emisores.get(e.id).nominaTestSetId).toBe(UUID_TS);
+      expect(JSON.stringify(audit.record.mock.calls)).toContain('einvoicing.nomina.actualizada');
+    });
+  });
+
+  describe('ConfigurarNominaDto', () => {
+    const validar = async (o: object) =>
+      (await validate(plainToInstance(ConfigurarNominaDto, o))).flatMap((x) => Object.keys(x.constraints ?? {}));
+
+    it('acepta UUID + PIN y rechaza lo demás', async () => {
+      const uuid = '3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b';
+      expect(await validar({ softwareId: uuid, pin: 'x' })).toEqual([]);
+      expect(await validar({ softwareId: uuid, pin: 'x', testSetId: uuid })).toEqual([]);
+      expect((await validar({ softwareId: 'no-uuid', pin: 'x' })).length).toBeGreaterThan(0);
+      expect((await validar({ softwareId: uuid, pin: '' })).length).toBeGreaterThan(0);
+      expect((await validar({ softwareId: uuid })).length).toBeGreaterThan(0);
+      expect((await validar({ softwareId: uuid, pin: 'x', testSetId: 'abc' })).length).toBeGreaterThan(0);
     });
   });
 });

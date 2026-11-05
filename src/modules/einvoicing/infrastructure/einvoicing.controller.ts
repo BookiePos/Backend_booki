@@ -6,6 +6,7 @@ import {
   Ip,
   Param,
   Post,
+  Put,
   Query,
   UploadedFile,
   UseInterceptors,
@@ -20,6 +21,7 @@ import {
   CertificadoEmisorService,
   type ArchivoCertificado,
 } from '../application/certificado-emisor.service';
+import { ConfigurarNominaDto } from '../application/dto/configurar-nomina.dto';
 import { CargarCertificadoDto } from '../application/dto/cargar-certificado.dto';
 import { LlaveCifradoInterceptor } from './llave-cifrado.interceptor';
 import { CreateInvoiceDto } from '../application/dto/create-invoice.dto';
@@ -94,6 +96,22 @@ export class EinvoicingController {
     @Ip() ip: string,
   ) {
     return this.certificados.cargar(sedeId, file, dto.password, user, ip);
+  }
+
+  /**
+   * Guarda SoftwareID, PIN (cifrado) y TestSetId de la nómina electrónica del
+   * emisor. Solo el Dueño (`einvoicing.certificate`, como el .p12): el PIN es un
+   * secreto. Sin llave de cifrado responde 503 y no escribe nada.
+   */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CERTIFICATE)
+  @Put('sedes/:sedeId/emisor/nomina')
+  configurarNomina(
+    @Param('sedeId') sedeId: string,
+    @Body() dto: ConfigurarNominaDto,
+    @CurrentUser() user: JwtUser,
+    @Ip() ip: string,
+  ) {
+    return this.emisores.configurarNomina(sedeId, dto, user, ip);
   }
 
   @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)

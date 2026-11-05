@@ -250,5 +250,20 @@ export class EmployeesService {
       emp.terminationReason = orUndef(dto.terminationReason);
     if (dto.userId !== undefined) emp.userId = orUndef(dto.userId);
     if (dto.notes !== undefined) emp.notes = orUndef(dto.notes);
+
+    // Nómina electrónica DIAN
+    if (dto.secondLastName !== undefined) emp.secondLastName = orUndef(dto.secondLastName);
+    if (dto.otherNames !== undefined) emp.otherNames = orUndef(dto.otherNames);
+    if (dto.docTypeDian !== undefined) emp.docTypeDian = orUndef(dto.docTypeDian);
+    if (dto.tipoTrabajador !== undefined) emp.tipoTrabajador = orUndef(dto.tipoTrabajador);
+    if (dto.subTipoTrabajador !== undefined)
+      emp.subTipoTrabajador = orUndef(dto.subTipoTrabajador);
+    if (dto.altoRiesgoPension !== undefined) emp.altoRiesgoPension = dto.altoRiesgoPension;
+    if (dto.tipoContratoDian !== undefined) emp.tipoContratoDian = orUndef(dto.tipoContratoDian);
+    if (dto.municipioDaneTrabajo !== undefined)
+      emp.municipioDaneTrabajo = orUndef(dto.municipioDaneTrabajo);
+    if (dto.direccionTrabajo !== undefined)
+      emp.direccionTrabajo = orUndef(dto.direccionTrabajo);
+    if (dto.medioPago !== undefined) emp.medioPago = orUndef(dto.medioPago);
   }
 }
