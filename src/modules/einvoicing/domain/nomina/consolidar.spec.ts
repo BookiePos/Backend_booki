@@ -8,6 +8,7 @@ import {
   type DeduccionConsolidar,
   type EntradaConsolidar,
   type EmpleadoConsolidar,
+  type ResultadoConsolidar,
 } from './consolidar';
 import type { ContextoNomina, DocumentoNe, EmisionNe } from './modelo';
 import { armarNominaIndividual } from './xml-nomina';
@@ -133,7 +134,7 @@ const entrada = (o: Partial<EntradaConsolidar> = {}): EntradaConsolidar => ({
   ...o,
 });
 
-function ok(e: EntradaConsolidar): { modelo: DocumentoNe; advertencias: string[] } {
+function ok(e: EntradaConsolidar): Extract<ResultadoConsolidar, { ok: true }> {
   const r = consolidarNominaMes(e);
   if (!r.ok) throw new Error(`bloqueado: ${r.bloqueos.join(' | ')}`);
   return r;
