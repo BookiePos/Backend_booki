@@ -38,6 +38,7 @@ import { MailService } from '../../core-auth/application/mail.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { effectiveEntitlements } from '../../control/domain/plans';
 import { PlanUpgradeRequiredException } from '../../control/domain/plan-upgrade.exception';
+import { normalizarNit } from '../../einvoicing/domain/consecutivo-unico';
 import {
   PayrollEDocument,
   PayrollEDocumentDocument,
@@ -191,7 +192,7 @@ export class PayrollService {
       period: run.period,
       periodLabel: run.label,
       breakdown: slip.breakdown,
-      nominaElectronica: await this.nominaAceptada(employeeId, run.period),
+      nominaElectronica: await this.nominaAceptada(employeeId, run.period, normalizarNit(employerNit)),
     });
 
     const slug = (slip.docNumber || employeeId).replace(/[^a-zA-Z0-9]/g, '');
@@ -211,29 +212,45 @@ export class PayrollService {
   }
 
   /**
-   * Consulta acotada: el 102/103 aceptado y vigente del trabajador en el período
-   * (un Eliminar aceptado no cuenta: no deja documento vigente). No importa el
-   * servicio de nómina electrónica, solo su esquema (modelo por proxy de tenancy).
+   * Consulta acotada: el documento soporte de nómina electrónica aceptado que
+   * cuenta hoy para el trabajador, el período y el emisor (NIT de la sede).
+   * Excluye lo `superado`, descarta las cadenas con un Eliminar aceptado (aunque
+   * su cierre esté pendiente) y prefiere el 103 sobre el 102, desempatando por
+   * `_id` descendente. No importa el servicio de nómina electrónica, solo su
+   * esquema (modelo por proxy de tenancy).
    */
   private async nominaAceptada(
     employeeId: string,
     periodo: string,
+    nitNorm?: string,
   ): Promise<PayslipNominaElectronica | undefined> {
-    if (!Types.ObjectId.isValid(employeeId)) return undefined;
-    const doc = await this.nominaElectronica
-      .findOne({
+    if (!nitNorm || !Types.ObjectId.isValid(employeeId)) return undefined;
+    const docs = await this.nominaElectronica
+      .find({
         'empleado.employeeId': new Types.ObjectId(employeeId),
+        'emisor.nitNorm': nitNorm,
         periodo,
         tipoXml: { $in: ['102', '103'] },
-        tipoNota: { $ne: 2 },
         dianStatus: 'accepted',
-        vigente: true,
       })
-      .sort({ createdAt: -1 })
-      .select('fullNumber cune')
+      .select('_id tipoXml tipoNota fullNumber cune superado raizId predecesor')
       .lean()
       .exec();
-    return doc ? { numero: doc.fullNumber, cune: doc.cune } : undefined;
+    const raizDe = (d: (typeof docs)[number]) => String(d.raizId ?? d._id);
+    const eliminadas = new Set(
+      docs
+        .filter((d) => d.tipoXml === '103' && d.tipoNota === 2)
+        .map((d) => String(d.raizId ?? d.predecesor?.documentId ?? d._id)),
+    );
+    const [elegido] = docs
+      .filter((d) => d.superado !== true && !(d.tipoXml === '103' && d.tipoNota === 2))
+      .filter((d) => !eliminadas.has(raizDe(d)))
+      .sort((x, y) =>
+        x.tipoXml !== y.tipoXml
+          ? x.tipoXml === '103' ? -1 : 1
+          : String(y._id).localeCompare(String(x._id)),
+      );
+    return elegido ? { numero: elegido.fullNumber, cune: elegido.cune } : undefined;
   }
 
   /** Novedades (horas extra/recargos) sugeridas desde Turnos para un período. */
