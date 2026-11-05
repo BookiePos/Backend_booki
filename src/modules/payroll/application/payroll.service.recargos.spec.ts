@@ -98,6 +98,7 @@ function armar(opts: {
     {} as any,
     params as any,
     ledgerPosting as any,
+    {} as any,
   );
   return { service, created, attendance, ledgerPosting };
 }

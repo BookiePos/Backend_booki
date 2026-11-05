@@ -51,6 +51,7 @@ describe('PayrollService.cancelSaleDeduction', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
   }
 
@@ -127,6 +128,7 @@ describe('PayrollService.applyDeductionsToRun', () => {
       {} as any,
       {} as any,
       deductions as any,
+      {} as any,
       {} as any,
       {} as any,
       {} as any,

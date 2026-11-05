@@ -24,6 +24,10 @@ import {
   Sede,
   SedeSchema,
 } from '../sedes/infrastructure/schemas/sede.schema';
+import {
+  PayrollEDocument,
+  PayrollEDocumentSchema,
+} from '../einvoicing/infrastructure/schemas/payroll-e-document.schema';
 import { CoreAuthModule } from '../core-auth/core-auth.module';
 import { CoreParamsModule } from '../core-params/core-params.module';
 import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
@@ -42,6 +46,7 @@ import { PayrollController } from './infrastructure/payroll.controller';
       { name: Employee.name, schema: EmployeeSchema },
       { name: AttendanceRecord.name, schema: AttendanceRecordSchema },
       { name: Sede.name, schema: SedeSchema },
+      { name: PayrollEDocument.name, schema: PayrollEDocumentSchema },
     ]),
   ],
   controllers: [PayrollController],

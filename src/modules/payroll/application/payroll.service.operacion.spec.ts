@@ -66,6 +66,7 @@ function armar(o: {
   aprobadas?: { _id: Types.ObjectId; employeeId: string; amount: number; concept: string }[];
   matched?: number[];
   deduccion?: Record<string, any> | null;
+  nominaEl?: Record<string, any>[];
   aplicadaVenta?: (Record<string, unknown> | null)[];
   settingsDoc?: Record<string, any> | null;
 } = {}) {
@@ -101,6 +102,21 @@ function armar(o: {
     create: vi.fn(async (d: unknown) => d),
     updateMany: vi.fn(() => exec({ matchedCount: matched.length ? matched.shift() : (o.aprobadas?.length ?? 0) })),
   };
+  // Falso del modelo: aplica los filtros de igualdad que usa la consulta.
+  const nominaElectronica = {
+    find: vi.fn((f: Record<string, any>) => {
+      const rows = (o.nominaEl ?? []).filter(
+        (d) =>
+          String(d.empleado?.employeeId) === String(f['empleado.employeeId']) &&
+          d.emisor?.nitNorm === f['emisor.nitNorm'] &&
+          d.periodo === f.periodo &&
+          f.tipoXml.$in.includes(d.tipoXml) &&
+          d.dianStatus === f.dianStatus,
+      );
+      const q: any = { select: () => q, lean: () => q, exec: () => Promise.resolve(rows) };
+      return q;
+    }),
+  };
   const mail = { sendPayslip: vi.fn(async () => ({ sent: true, id: 'm1' })) };
   const params = {
     number: async (_k: string, fb: number) => fb,
@@ -119,8 +135,9 @@ function armar(o: {
     mail as any,
     params as any,
     ledgerPosting as any,
+    nominaElectronica as any,
   );
-  return { service, settings, runs, deductions, mail, ledgerPosting, settingsDoc };
+  return { service, settings, runs, deductions, mail, ledgerPosting, settingsDoc, nominaElectronica };
 }
 
 function corrida(over: Record<string, unknown> = {}) {
@@ -308,6 +325,79 @@ describe('PayrollService · colilla por correo', () => {
     const msg = (mail.sendPayslip.mock.calls[0] as any)[0];
     expect(msg).toMatchObject({ employerName: 'Panadería SAS', filename: 'comprobante-nomina-2026-09-1020.pdf' });
     expect(msg.pdf.subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  describe('nómina electrónica del desprendible', () => {
+    const eid = new Types.ObjectId();
+    const NIT = '900';
+    const doc = (o: Record<string, any>) => ({
+      _id: new Types.ObjectId(),
+      empleado: { employeeId: eid },
+      emisor: { nitNorm: NIT },
+      periodo: '2026-09',
+      dianStatus: 'accepted',
+      tipoXml: '102',
+      ...o,
+    });
+    const cune = (nominaEl: Record<string, any>[]) =>
+      (armar({ nominaEl }).service as any).nominaAceptada(eid.toHexString(), '2026-09', NIT);
+
+    it('un 102 aceptado se cita', async () => {
+      expect(await cune([doc({ fullNumber: 'NE1', cune: 'c102' })])).toEqual({ numero: 'NE1', cune: 'c102' });
+    });
+
+    it('cadena 102→103: devuelve el 103 y no el 102 superado', async () => {
+      const d102 = doc({ fullNumber: 'NE1', cune: 'c102', superado: true });
+      const d103 = doc({ tipoXml: '103', tipoNota: 1, raizId: d102._id, fullNumber: 'NE2', cune: 'c103' });
+      expect(await cune([d102, d103])).toEqual({ numero: 'NE2', cune: 'c103' });
+    });
+
+    it('con cierre pendiente (102 aún sin superar) también devuelve el 103', async () => {
+      const d102 = doc({ fullNumber: 'NE1', cune: 'c102' });
+      const d103 = doc({ tipoXml: '103', tipoNota: 1, raizId: d102._id, fullNumber: 'NE2', cune: 'c103', pendienteCierrePredecesor: true });
+      expect(await cune([d102, d103])).toEqual({ numero: 'NE2', cune: 'c103' });
+      expect(await cune([d103, d102])).toEqual({ numero: 'NE2', cune: 'c103' });
+    });
+
+    it('tras un Eliminar aceptado (aunque el cierre esté pendiente) no cita nada', async () => {
+      const d102 = doc({ fullNumber: 'NE1', cune: 'c102' });
+      const del = doc({ tipoXml: '103', tipoNota: 2, raizId: d102._id, fullNumber: 'NE2', cune: 'c103', pendienteCierrePredecesor: true });
+      expect(await cune([d102, del])).toBeUndefined();
+    });
+
+    it('un 102 nuevo tras eliminar la cadena anterior sí se cita', async () => {
+      const viejo = doc({ fullNumber: 'NE1', cune: 'c1', superado: true });
+      const del = doc({ tipoXml: '103', tipoNota: 2, raizId: viejo._id, fullNumber: 'NE2', cune: 'c2' });
+      const nuevo = doc({ fullNumber: 'NE3', cune: 'c3' });
+      expect(await cune([viejo, del, nuevo])).toEqual({ numero: 'NE3', cune: 'c3' });
+    });
+
+    it('filtra por el NIT del emisor: no ve el CUNE de otro NIT', async () => {
+      const otro = doc({ emisor: { nitNorm: '800999888' }, fullNumber: 'NX1', cune: 'cx' });
+      const mio = doc({ fullNumber: 'NE1', cune: 'c102' });
+      expect(await cune([otro, mio])).toEqual({ numero: 'NE1', cune: 'c102' });
+      expect(await cune([otro])).toBeUndefined();
+    });
+
+    it('con varios candidatos elige de forma determinista por _id descendente', async () => {
+      const a = doc({ _id: new Types.ObjectId('000000000000000000000001'), tipoXml: '103', tipoNota: 1, fullNumber: 'A', cune: 'a' });
+      const b = doc({ _id: new Types.ObjectId('000000000000000000000002'), tipoXml: '103', tipoNota: 1, fullNumber: 'B', cune: 'b' });
+      expect(await cune([a, b])).toEqual({ numero: 'B', cune: 'b' });
+      expect(await cune([b, a])).toEqual({ numero: 'B', cune: 'b' });
+    });
+
+    it('sendSlip consulta con el NIT normalizado de la sede', async () => {
+      const { service: s0 } = armar();
+      const { breakdown } = await s0.preview({ salarioBase: 2_000_000 } as never);
+      const run = corrida();
+      run.slips[0]!.employeeId = eid.toHexString();
+      run.slips[0]!.breakdown = breakdown;
+      const { service, nominaElectronica } = armar({ run, nominaEl: [] });
+      await service.sendSlip(id, eid.toHexString());
+      expect(nominaElectronica.find).toHaveBeenCalledWith(
+        expect.objectContaining({ 'emisor.nitNorm': NIT, periodo: '2026-09' }),
+      );
+    });
   });
 });
 
