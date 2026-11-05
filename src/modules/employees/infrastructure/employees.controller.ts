@@ -21,8 +21,8 @@ export class EmployeesController {
 
   @RequirePermissions(PERMISSIONS.EMPLOYEES_VIEW)
   @Get()
-  list(@CurrentUser() user: JwtUser) {
-    return this.employees.list(user);
+  async list(@CurrentUser() user: JwtUser) {
+    return (await this.employees.list(user)).map((e) => this.employees.aVista(e));
   }
 
   // Selector liviano para el POS (fiado/consumo de empleado). Gated pos.sell.
@@ -34,24 +34,24 @@ export class EmployeesController {
 
   @RequirePermissions(PERMISSIONS.EMPLOYEES_VIEW)
   @Get(':id')
-  get(@Param('id') id: string, @CurrentUser() user: JwtUser) {
-    return this.employees.getOrFail(id, user);
+  async get(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.employees.aVista(await this.employees.getOrFail(id, user));
   }
 
   @RequirePermissions(PERMISSIONS.EMPLOYEES_MANAGE)
   @Post()
-  create(@Body() dto: CreateEmployeeDto, @CurrentUser() user: JwtUser) {
-    return this.employees.create(dto, user);
+  async create(@Body() dto: CreateEmployeeDto, @CurrentUser() user: JwtUser) {
+    return this.employees.aVista(await this.employees.create(dto, user));
   }
 
   @RequirePermissions(PERMISSIONS.EMPLOYEES_MANAGE)
   @Patch(':id')
-  update(
+  async update(
     @Param('id') id: string,
     @Body() dto: UpdateEmployeeDto,
     @CurrentUser() user: JwtUser,
   ) {
-    return this.employees.update(id, dto, user);
+    return this.employees.aVista(await this.employees.update(id, dto, user));
   }
 
   @RequirePermissions(PERMISSIONS.EMPLOYEES_MANAGE)

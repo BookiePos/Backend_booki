@@ -49,4 +49,38 @@ describe('DTO de empleado: datos de nómina electrónica DIAN', () => {
     expect(await campos(CreateEmployeeDto, { ...base, [campo]: valor })).toContain(campo);
     expect(await campos(UpdateEmployeeDto, { [campo]: valor })).toContain(campo);
   });
+
+  it("'' en los enum DIAN es válido (limpia en update, ausente en create)", async () => {
+    const vacios = { docTypeDian: '', tipoTrabajador: '', subTipoTrabajador: '', tipoContratoDian: '', medioPago: '' };
+    expect(await campos(UpdateEmployeeDto, vacios)).toEqual([]);
+    expect(await campos(CreateEmployeeDto, { ...base, ...vacios })).toEqual([]);
+  });
+
+  it('limita la longitud de secondLastName, otherNames y direccionTrabajo', async () => {
+    const largo = {
+      secondLastName: 'x'.repeat(61),
+      otherNames: 'x'.repeat(61),
+      direccionTrabajo: 'x'.repeat(201),
+    };
+    const esperado = ['direccionTrabajo', 'otherNames', 'secondLastName'];
+    expect((await campos(CreateEmployeeDto, { ...base, ...largo })).sort()).toEqual(esperado);
+    expect((await campos(UpdateEmployeeDto, largo)).sort()).toEqual(esperado);
+    expect(
+      await campos(UpdateEmployeeDto, {
+        secondLastName: 'x'.repeat(60),
+        otherNames: 'x'.repeat(60),
+        direccionTrabajo: 'x'.repeat(200),
+      }),
+    ).toEqual([]);
+  });
+
+  it('accountNumber: recorta, limita a 34 y solo admite alfanumérico/guion o la máscara', async () => {
+    const dto = plainToInstance(UpdateEmployeeDto, { accountNumber: ' 123-abc ' });
+    expect(await validate(dto)).toEqual([]);
+    expect(dto.accountNumber).toBe('123-abc');
+    expect(await campos(UpdateEmployeeDto, { accountNumber: '••••5601' })).toEqual([]);
+    expect(await campos(UpdateEmployeeDto, { accountNumber: '' })).toEqual([]);
+    expect(await campos(UpdateEmployeeDto, { accountNumber: '1'.repeat(35) })).toEqual(['accountNumber']);
+    expect(await campos(CreateEmployeeDto, { ...base, accountNumber: '12 34' })).toEqual(['accountNumber']);
+  });
 });

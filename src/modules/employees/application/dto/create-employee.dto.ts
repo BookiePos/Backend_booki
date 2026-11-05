@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
@@ -10,6 +10,7 @@ import {
   IsString,
   Matches,
   Min,
+  MaxLength,
   MinLength,
   ValidateIf,
   ValidateNested,
@@ -186,7 +187,12 @@ export class CreateEmployeeDto {
   accountType?: string;
 
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
+  @MaxLength(34)
+  @Matches(/^(••••.*|[0-9A-Za-z-]*)$/, {
+    message: 'accountNumber solo admite letras, números y guiones',
+  })
   accountNumber?: string;
 
   // Documentos / certificados
@@ -221,21 +227,26 @@ export class CreateEmployeeDto {
   // Nómina electrónica DIAN (todo opcional)
   @IsOptional()
   @IsString()
+  @MaxLength(60)
   secondLastName?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(60)
   otherNames?: string;
 
   @IsOptional()
+  @ValidateIf((_, v) => v !== '')
   @IsIn(DIAN_DOC_TYPES as readonly string[], { message: 'docTypeDian no es un código DIAN válido' })
   docTypeDian?: string;
 
   @IsOptional()
+  @ValidateIf((_, v) => v !== '')
   @IsIn(DIAN_TIPOS_TRABAJADOR as readonly string[], { message: 'tipoTrabajador no es un código DIAN válido' })
   tipoTrabajador?: string;
 
   @IsOptional()
+  @ValidateIf((_, v) => v !== '')
   @IsIn(DIAN_SUBTIPOS_TRABAJADOR as readonly string[], { message: 'subTipoTrabajador debe ser 00 o 01' })
   subTipoTrabajador?: string;
 
@@ -244,6 +255,7 @@ export class CreateEmployeeDto {
   altoRiesgoPension?: boolean;
 
   @IsOptional()
+  @ValidateIf((_, v) => v !== '')
   @IsIn(DIAN_TIPOS_CONTRATO as readonly string[], { message: 'tipoContratoDian debe ser 1 a 5' })
   tipoContratoDian?: string;
 
@@ -254,9 +266,11 @@ export class CreateEmployeeDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   direccionTrabajo?: string;
 
   @IsOptional()
+  @ValidateIf((_, v) => v !== '')
   @IsIn(DIAN_MEDIOS_PAGO as readonly string[], { message: 'medioPago no es un código DIAN válido' })
   medioPago?: string;
 }

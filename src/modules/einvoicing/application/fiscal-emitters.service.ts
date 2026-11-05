@@ -49,7 +49,8 @@ export interface CredencialesEmisorInput {
   facturaTestSetId?: string;
   nominaSoftwareId?: string;
   nominaPin?: string;
-  nominaTestSetId?: string;
+  /** `null` borra el TestSetId guardado (al pasar a producción, por ejemplo). */
+  nominaTestSetId?: string | null;
 }
 
 /**
@@ -278,11 +279,16 @@ export class FiscalEmittersService {
     if (input.facturaSoftwareId !== undefined) set.facturaSoftwareId = input.facturaSoftwareId;
     if (input.facturaTestSetId !== undefined) set.facturaTestSetId = input.facturaTestSetId;
     if (input.nominaSoftwareId !== undefined) set.nominaSoftwareId = input.nominaSoftwareId;
-    if (input.nominaTestSetId !== undefined) set.nominaTestSetId = input.nominaTestSetId;
+    const unset: Record<string, ''> = {};
+    if (input.nominaTestSetId === null) unset.nominaTestSetId = '';
+    else if (input.nominaTestSetId !== undefined) set.nominaTestSetId = input.nominaTestSetId;
     if (input.facturaPin) set.facturaPin = secreto(input.facturaPin, 'facturaPin');
     if (input.nominaPin) set.nominaPin = secreto(input.nominaPin, 'nominaPin');
-    if (Object.keys(set).length === 0) return;
-    await this.model.updateOne({ _id: emisor._id }, { $set: set }).exec();
+    if (Object.keys(set).length === 0 && Object.keys(unset).length === 0) return;
+    const cambios: Record<string, unknown> = {};
+    if (Object.keys(set).length > 0) cambios.$set = set;
+    if (Object.keys(unset).length > 0) cambios.$unset = unset;
+    await this.model.updateOne({ _id: emisor._id }, cambios).exec();
   }
 
   /**
@@ -320,6 +326,7 @@ export class FiscalEmittersService {
     await this.guardarCredenciales(emisor.id as string, {
       nominaSoftwareId: dto.softwareId,
       nominaPin: dto.pin,
+      // Ausente no toca el que había; `null` lo borra.
       ...(dto.testSetId !== undefined ? { nominaTestSetId: dto.testSetId } : {}),
     });
     // Sin PIN, SoftwareID ni TestSetId en el detalle: solo qué pasó.
@@ -334,7 +341,7 @@ export class FiscalEmittersService {
       success: true,
       ip,
       action: teniaPin ? 'einvoicing.nomina.actualizada' : 'einvoicing.nomina.configurada',
-      detail: { emisorId: emisor.id as string, conTestSetId: String(dto.testSetId !== undefined) },
+      detail: { emisorId: emisor.id as string, conTestSetId: String(!!dto.testSetId), testSetIdBorrado: String(dto.testSetId === null) },
     });
     return this.vistaDeSede(sedeId, user);
   }

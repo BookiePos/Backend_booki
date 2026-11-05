@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { Types } from 'mongoose';
 
 // SWC emite `Object` como metadata para los @Prop() con uniones de literales y
@@ -17,7 +17,7 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
   };
 });
 
-import { EmployeesService } from './employees.service';
+import { EmployeesService, enmascararCuenta } from './employees.service';
 
 /**
  * Expediente del empleado.
@@ -212,6 +212,151 @@ describe('EmployeesService', () => {
       } as never);
 
       expect(emp.positionName).toBeUndefined();
+    });
+  });
+
+  describe('campos DIAN de nómina electrónica', () => {
+    const dian = {
+      secondLastName: 'Gómez',
+      otherNames: 'María',
+      docTypeDian: '13',
+      tipoTrabajador: '01',
+      subTipoTrabajador: '00',
+      altoRiesgoPension: true,
+      tipoContratoDian: '2',
+      municipioDaneTrabajo: '05001',
+      direccionTrabajo: 'Calle 1 # 2-3',
+      medioPago: '47',
+    };
+
+    it('un update parcial no borra los demás campos DIAN', async () => {
+      const emp = empleado({ ...dian });
+      build(emp);
+
+      await service.update(emp._id.toString(), { tipoTrabajador: '02' } as never);
+
+      expect(emp).toMatchObject({ ...dian, tipoTrabajador: '02' });
+    });
+
+    it('altoRiesgoPension: false se guarda (no se confunde con ausente)', async () => {
+      const emp: any = empleado({ altoRiesgoPension: true });
+      build(emp);
+
+      await service.update(emp._id.toString(), { altoRiesgoPension: false } as never);
+
+      expect(emp.altoRiesgoPension).toBe(false);
+    });
+
+    it("'' limpia cada campo DIAN en el update", async () => {
+      const emp: any = empleado({ ...dian });
+      build(emp);
+
+      await service.update(emp._id.toString(), {
+        docTypeDian: '',
+        tipoTrabajador: '',
+        subTipoTrabajador: '',
+        tipoContratoDian: '',
+        medioPago: '',
+        municipioDaneTrabajo: '',
+        direccionTrabajo: '',
+        secondLastName: '',
+        otherNames: '',
+      } as never);
+
+      for (const k of Object.keys(dian).filter((k) => k !== 'altoRiesgoPension')) {
+        expect(emp[k]).toBeUndefined();
+      }
+      expect(emp.altoRiesgoPension).toBe(true);
+    });
+
+    it("en el alta, '' se trata como ausente", async () => {
+      const emp: any = build();
+
+      await service.create({
+        docNumber: '1',
+        firstName: 'A',
+        lastName: 'B',
+        docTypeDian: '',
+        medioPago: '',
+      } as never);
+
+      expect(emp.save).toHaveBeenCalledOnce();
+      expect(emp.docTypeDian).toBeUndefined();
+      expect(emp.medioPago).toBeUndefined();
+    });
+  });
+
+  describe('número de cuenta', () => {
+    it('enmascara a los últimos 4 dígitos', () => {
+      expect(enmascararCuenta('10012345601')).toBe('••••5601');
+      expect(enmascararCuenta('')).toBeUndefined();
+      expect(enmascararCuenta(undefined)).toBeUndefined();
+      // Una cuenta corta nunca sale entera.
+      expect(enmascararCuenta('1234')).toBe('••••34');
+      expect(enmascararCuenta('123')).toBe('••••23');
+      expect(enmascararCuenta('12')).toBe('••••');
+      expect(enmascararCuenta('1')).toBe('••••');
+    });
+
+    it('aVista no expone el número completo y marca tieneCuenta', () => {
+      const emp = empleado({ accountNumber: '10012345601' });
+      build(emp);
+
+      const v = service.aVista(emp as never);
+
+      expect(v.accountNumber).toBe('••••5601');
+      expect(v.tieneCuenta).toBe(true);
+      expect(JSON.stringify(v)).not.toContain('10012345601');
+      expect(v.salary).toBe(2_000_000);
+    });
+
+    it('sin cuenta: tieneCuenta false', () => {
+      const emp = empleado();
+      build(emp);
+      expect(service.aVista(emp as never)).toMatchObject({ tieneCuenta: false });
+    });
+
+    it('el servicio sigue entregando el número completo para la nómina', async () => {
+      const emp = empleado({ accountNumber: '10012345601' });
+      build(emp);
+      expect(((await service.getOrFail(emp._id.toString())) as any).accountNumber).toBe('10012345601');
+    });
+
+    it('un update que reenvía el valor enmascarado NO pisa el número real', async () => {
+      const emp: any = empleado({ accountNumber: '10012345601' });
+      build(emp);
+
+      await service.update(emp._id.toString(), { accountNumber: '••••5601', phone: '1' } as never);
+
+      expect(emp.accountNumber).toBe('10012345601');
+      expect(emp.phone).toBe('1');
+    });
+
+    it('un valor que empieza por la máscara pero no es la actual da 400 y no escribe', async () => {
+      const emp: any = empleado({ accountNumber: '10012345601' });
+      build(emp);
+
+      await expect(
+        service.update(emp._id.toString(), { accountNumber: '••••56019' } as never),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(emp.accountNumber).toBe('10012345601');
+      expect(emp.save).not.toHaveBeenCalled();
+    });
+
+    it('la máscara se reconoce tras recortar espacios', async () => {
+      const emp: any = empleado({ accountNumber: '10012345601' });
+      build(emp);
+      await service.update(emp._id.toString(), { accountNumber: ' ••••5601 ' } as never);
+      expect(emp.accountNumber).toBe('10012345601');
+    });
+
+    it('un número nuevo lo reemplaza y "" lo limpia', async () => {
+      const emp: any = empleado({ accountNumber: '10012345601' });
+      build(emp);
+      await service.update(emp._id.toString(), { accountNumber: '999' } as never);
+      expect(emp.accountNumber).toBe('999');
+      await service.update(emp._id.toString(), { accountNumber: '' } as never);
+      expect(emp.accountNumber).toBeUndefined();
     });
   });
 });

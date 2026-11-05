@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -47,6 +48,24 @@ function orUndef(v?: string): string | undefined {
   return v ? v : undefined;
 }
 
+/** Prefijo con el que la API devuelve el número de cuenta enmascarado. */
+export const MASCARA_CUENTA = '••••';
+
+/** `••••1234` (últimos 4 dígitos); vacío si no hay cuenta. */
+export function enmascararCuenta(cuenta?: string | null): string | undefined {
+  if (!cuenta) return undefined;
+  // Una cuenta corta nunca sale entera: con ≤4 caracteres solo los últimos 2
+  // (o ninguno si tiene ≤2).
+  const visibles = cuenta.length > 4 ? 4 : cuenta.length > 2 ? 2 : 0;
+  return `${MASCARA_CUENTA}${visibles ? cuenta.slice(-visibles) : ''}`;
+}
+
+/** Empleado como lo ve la API: sin el número de cuenta completo. */
+export type EmpleadoVista = Record<string, unknown> & {
+  accountNumber?: string;
+  tieneCuenta: boolean;
+};
+
 @Injectable()
 export class EmployeesService {
   constructor(
@@ -55,6 +74,24 @@ export class EmployeesService {
     @InjectModel(Position.name)
     private readonly positions: Model<PositionDocument>,
   ) {}
+
+  /**
+   * Vista PÚBLICA del empleado para las respuestas de la API: el número de
+   * cuenta sale enmascarado (`••••1234`) y se añade `tieneCuenta`. El número
+   * completo sigue guardado; el consolidador de nómina lo lee con
+   * `list()` / `getOrFail()` / `create()` / `update()`, que devuelven el
+   * documento crudo (uso interno: NO los serialices tal cual en un controlador).
+   */
+  aVista(emp: EmployeeDocument): EmpleadoVista {
+    const plano = (
+      typeof emp.toObject === 'function' ? emp.toObject() : { ...emp }
+    ) as unknown as Record<string, unknown> & { accountNumber?: string };
+    return {
+      ...plano,
+      accountNumber: enmascararCuenta(plano.accountNumber),
+      tieneCuenta: !!plano.accountNumber,
+    };
+  }
 
   /**
    * Alcance por sede (ítem 3.9). Sin `user` (seeds, nómina) no se filtra.
@@ -224,8 +261,19 @@ export class EmployeesService {
     if (dto.bank !== undefined) emp.bank = orUndef(dto.bank);
     if (dto.accountType !== undefined)
       emp.accountType = orUndef(dto.accountType) as AccountType;
-    if (dto.accountNumber !== undefined)
-      emp.accountNumber = orUndef(dto.accountNumber);
+    // Un formulario que reenvía EXACTAMENTE el valor enmascarado actual no debe
+    // pisar el número real: se ignora. Cualquier otro valor que empiece por la
+    // máscara es un intento de edición a medias: 400. `''` limpia.
+    if (dto.accountNumber !== undefined) {
+      const cuenta = dto.accountNumber.trim();
+      if (!cuenta.startsWith(MASCARA_CUENTA)) {
+        emp.accountNumber = orUndef(cuenta);
+      } else if (cuenta !== enmascararCuenta(emp.accountNumber)) {
+        throw new BadRequestException(
+          'Para cambiar la cuenta borra el campo y escribe el número completo',
+        );
+      }
+    }
 
     // Documentos / certificados
     if (dto.documents !== undefined) {
