@@ -115,6 +115,7 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `POST /einvoicing/resolutions/:sedeId` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /einvoicing/sedes/:sedeId/emisor` | `einvoicing.configure` | ✓ | ✓ | · | · | · |
 | `POST /einvoicing/sedes/:sedeId/emisor/certificado` | `einvoicing.certificate` | ✓ | · | · | · | · |
+| `PUT /einvoicing/sedes/:sedeId/emisor/nomina` | `einvoicing.certificate` | ✓ | · | · | · | · |
 | `GET /einvoicing` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /einvoicing/:id` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /einvoicing/from-sale` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |

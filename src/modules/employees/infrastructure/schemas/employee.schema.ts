@@ -7,6 +7,11 @@ import {
   ArlRiskLevel,
   CONTRACT_TYPES,
   ContractType,
+  DIAN_DOC_TYPES,
+  DIAN_MEDIOS_PAGO,
+  DIAN_SUBTIPOS_TRABAJADOR,
+  DIAN_TIPOS_CONTRATO,
+  DIAN_TIPOS_TRABAJADOR,
   DOC_STATUS,
   DocStatus,
   EMP_DOC_TYPES,
@@ -184,6 +189,43 @@ export class Employee {
 
   @Prop({ trim: true })
   notes?: string;
+
+  // ── Nómina electrónica DIAN (XSD 1.0.6), todo opcional ───────────────────────
+  // `lastName` es el primer apellido; `firstName`, el primer nombre.
+  @Prop({ trim: true })
+  secondLastName?: string;
+
+  /** Otros nombres (segundo nombre y siguientes). */
+  @Prop({ trim: true })
+  otherNames?: string;
+
+  /** Tipo de documento en código DIAN (13 CC, 22 CE, 41 pasaporte, 47 PEP...). */
+  @Prop({ enum: DIAN_DOC_TYPES })
+  docTypeDian?: string;
+
+  /** 01 dependiente, etc. (códigos PILA admitidos por la DIAN). */
+  @Prop({ enum: DIAN_TIPOS_TRABAJADOR })
+  tipoTrabajador?: string;
+
+  @Prop({ enum: DIAN_SUBTIPOS_TRABAJADOR })
+  subTipoTrabajador?: string;
+
+  @Prop()
+  altoRiesgoPension?: boolean;
+
+  /** 1 fijo, 2 indefinido, 3 obra o labor, 4 aprendizaje, 5 prácticas. */
+  @Prop({ enum: DIAN_TIPOS_CONTRATO })
+  tipoContratoDian?: string;
+
+  /** Código DANE (5 dígitos) del municipio del lugar de trabajo. */
+  @Prop({ trim: true })
+  municipioDaneTrabajo?: string;
+
+  @Prop({ trim: true })
+  direccionTrabajo?: string;
+
+  @Prop({ enum: DIAN_MEDIOS_PAGO })
+  medioPago?: string;
 }
 
 export const EmployeeSchema = SchemaFactory.createForClass(Employee);
