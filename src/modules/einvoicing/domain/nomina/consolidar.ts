@@ -45,11 +45,9 @@ export interface CorridaColilla {
   corridaId: string;
   /** YYYY-MM */
   periodo: string;
-  /** 'all' | 'sede' */
-  cobertura: string;
+  cobertura: 'all' | 'sede';
   sedeId?: string;
-  /** 'borrador' | 'cerrada' */
-  estado: string;
+  estado: 'borrador' | 'cerrada';
   /** Tramo del mes que cubre la corrida (quincena o corrida parcial); sin él se asume el mes entero. */
   rango?: { desde: string; hasta: string };
   colilla: ColillaConsolidar;
@@ -115,8 +113,15 @@ export interface EntradaConsolidar {
   pago: PagoConsolidar;
 }
 
+/** Lo que se dejó de reportar por neto negativo (pesos): la parte de cada colilla que `crearArrastres` lleva al mes siguiente. */
+export interface RecorteNeto {
+  otras: number;
+  deuda: number;
+  total: number;
+}
+
 export type ResultadoConsolidar =
-  | { ok: true; modelo: DocumentoNe; advertencias: string[] }
+  | { ok: true; modelo: DocumentoNe; advertencias: string[]; recorte: RecorteNeto }
   | { ok: false; bloqueos: string[] };
 
 // ── Catálogos ────────────────────────────────────────────────────────────────
@@ -179,8 +184,9 @@ function ultimoDiaDelMes(periodo: string): string {
 export function tiempoLaborado360(desde: string, hasta: string): number {
   const [y1, m1, d1] = desde.split('-').map(Number) as [number, number, number];
   const [y2, m2, d2] = hasta.split('-').map(Number) as [number, number, number];
-  const fin = hasta === ultimoDiaDelMes(hasta.slice(0, 7)) ? 30 : Math.min(d2, 30);
-  return Math.max(1, (y2 - y1) * 360 + (m2 - m1) * 30 + (fin - Math.min(d1, 30)) + 1);
+  // El último día de cualquier mes (también febrero) cuenta como 30.
+  const dia360 = (fecha: string, d: number) => (fecha === ultimoDiaDelMes(fecha.slice(0, 7)) ? 30 : Math.min(d, 30));
+  return Math.max(1, (y2 - y1) * 360 + (m2 - m1) * 30 + (dia360(hasta, d2) - dia360(desde, d1)) + 1);
 }
 
 const enteroPositivo = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
@@ -322,6 +328,29 @@ function revisarColilla(c: CorridaColilla, quien: string, bloqueos: string[]): b
       `${donde}: el detalle de otras deducciones (${detalle}) no suma lo descontado (${ded.otras}). Revisa o recalcula la corrida.`,
     );
   }
+  const importes: [string, number][] = [
+    ['salario', dev.salario],
+    ['auxilio de transporte', dev.auxilioTransporte],
+    ['recargos', dev.recargos],
+    ['horas extra', dev.horasExtra],
+    ['bonificación salarial', dev.bonificacionSalarial],
+    ['bonificación no salarial', dev.bonificacionNoSalarial],
+    ['comisiones', dev.comisiones],
+    ['total devengado', dev.total],
+    ['IBC', b.ibc],
+    ['salud', ded.salud],
+    ['pensión', ded.pension],
+    ['FSP', ded.fsp],
+    ['retención en la fuente', ded.retencionFuente],
+    ['otras deducciones', ded.otras],
+    ['total deducciones', ded.total],
+    ...(dev.recargoDetalle ?? []).map((l): [string, number] => [`horas ${l.key}`, l.valor]),
+    ...(c.colilla.otrasDeduccionesDetalle ?? []).map((d): [string, number] => [`deducción «${d.concept}»`, d.amount]),
+  ];
+  const malos = importes.filter(([, v]) => !Number.isInteger(v) || v < 0).map(([k, v]) => `${k} (${String(v)})`);
+  if (malos.length > 0) {
+    bloqueos.push(`${donde}: importes que no son pesos enteros no negativos: ${malos.join(', ')}. Revisa o recalcula la corrida.`);
+  }
   if (!Number.isInteger(c.colilla.diasTrabajados) || c.colilla.diasTrabajados < 0) {
     bloqueos.push(`${donde}: los días trabajados (${c.colilla.diasTrabajados}) deben ser un entero no negativo.`);
   }
@@ -332,6 +361,7 @@ function revisarColilla(c: CorridaColilla, quien: string, bloqueos: string[]): b
 function clasificarDeducciones(
   c: CorridaColilla,
   deducciones: DeduccionConsolidar[],
+  advertir: (m: string) => void,
 ): { deuda: number; otras: number[]; arrastre: number } {
   const propias = deducciones.filter(
     (d) => d.appliedRunId === c.corridaId && d.employeeId === c.colilla.employeeId && d.status !== 'cancelled',
@@ -341,8 +371,15 @@ function clasificarDeducciones(
   let arrastre = 0;
   const otras: number[] = [];
   for (const det of c.colilla.otrasDeduccionesDetalle ?? []) {
-    const par = propias.find((d) => !usadas.has(d) && d.concept === det.concept && d.amount === det.amount);
+    // Mismo concepto y monto; entre los candidatos manda el que tiene el mismo origen que dice la colilla.
+    const candidatos = propias.filter((d) => !usadas.has(d) && d.concept === det.concept && d.amount === det.amount);
+    const par = candidatos.find((d) => det.source && d.source === det.source) ?? candidatos[0];
     if (par) usadas.add(par);
+    else if (!det.source) {
+      advertir(
+        `Corrida ${c.corridaId}: la deducción «${det.concept}» (${det.amount}) no se pudo vincular a ninguna deducción aplicada; se reporta como OtraDeduccion. Si era un consumo o fiado, debería ir como Deuda: revísala.`,
+      );
+    }
     const fuente = par?.source ?? det.source ?? 'manual';
     if (fuente === 'sale') deuda += det.amount;
     else if (fuente === 'arrastre') {
@@ -360,12 +397,11 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
   const bloqueos: string[] = [];
   const advertencias: string[] = [];
   const quien = nombreDe(e);
-  const primero = `${periodo}-01`;
-  const ultimo = ultimoDiaDelMes(periodo);
-
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(periodo)) {
     return { ok: false, bloqueos: [`El periodo «${periodo}» no es un mes YYYY-MM.`] };
   }
+  const primero = `${periodo}-01`;
+  const ultimo = ultimoDiaDelMes(periodo);
 
   revisarTrabajador(e, periodo, bloqueos);
 
@@ -383,6 +419,19 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     return { ok: false, bloqueos };
   }
   const mes = { desde: primero, hasta: ultimo };
+  const vistos = new Set<string>();
+  for (const c of delMes) {
+    if (vistos.has(c.corridaId)) {
+      bloqueos.push(
+        `${quien}: la colilla de la corrida ${c.corridaId} viene repetida en ${periodo}; sumarla dos veces duplicaría el pago. Revisa los datos de entrada.`,
+      );
+    }
+    vistos.add(c.corridaId);
+    const r = c.rango;
+    if (r && !(YYYYMMDD.test(r.desde) && YYYYMMDD.test(r.hasta) && r.desde <= r.hasta && r.desde >= primero && r.hasta <= ultimo)) {
+      bloqueos.push(`${quien}: el rango de la corrida ${c.corridaId} (${r.desde} a ${r.hasta}) no está dentro de ${periodo}.`);
+    }
+  }
   for (let i = 0; i < cerradas.length; i++) {
     for (let j = i + 1; j < cerradas.length; j++) {
       if (corridasSolapadas(cerradas[i]!, cerradas[j]!, mes)) {
@@ -456,6 +505,15 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     );
   }
 
+  if (e.subTipoTrabajador === '01' && fsp > 0) {
+    bloqueos.push(
+      `${quien}: es pensionado por vejez activo (subtipo 01) y la nómina le descontó fondo de solidaridad pensional (${fsp}). Corrige la colilla o el subtipo en su expediente.`,
+    );
+  }
+  if (fsp > 0 && ibc <= 0) {
+    bloqueos.push(`${quien}: la nómina descontó FSP (${fsp}) con IBC en 0; no se puede derivar su porcentaje. Revisa la corrida.`);
+  }
+
   // FSP: solidaridad 0,5 % del IBC y subsistencia el resto, colilla por colilla.
   let fspSol = 0;
   let fspSub = 0;
@@ -467,50 +525,51 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
   }
   const porcentajeSalud = ibc > 0 ? pct2((salud / ibc) * 100) : 4;
   const porcentajePension = e.subTipoTrabajador === '01' ? 0 : ibc > 0 ? pct2((pension / ibc) * 100) : 4;
+  // Pendiente: en corridas parciales la tarifa sale mezclada (Σ FSP / Σ IBC); lo exacto sería la tarifa de cada
+  // colilla. Hoy no bloquea porque BookiPos liquida una corrida por mes.
   const tarifaFsp = ibc > 0 ? pct2((fsp / ibc) * 100) : 0;
+  if (fspSub > 0 && pct2(tarifaFsp - FSP_SOLIDARIDAD_PCT) <= 0) {
+    bloqueos.push(`${quien}: el FSP descontado (${fsp}) no alcanza para partirlo en solidaridad y subsistencia. Revisa la corrida.`);
+  }
 
-  const deudas = colillas.map((_, i) => clasificarDeducciones(cerradas[i]!, entrada.deducciones));
-  let deuda = sumCop(deudas.map((d) => d.deuda));
-  let otras = deudas.flatMap((d) => d.otras);
+  const clasificadas = cerradas.map((c) => clasificarDeducciones(c, entrada.deducciones, (m) => advertencias.push(m)));
 
-  // Neto negativo (estudio §2): se reporta solo lo que se descontó de verdad.
-  // Se recortan primero las deducciones de menor prelación (otras, luego Deuda);
-  // el saldo ya sale en el mes siguiente como Deuda (arrastre). Si aun así
-  // quedara negativo (salud, pensión, FSP o retención superan lo devengado),
-  // no hay recorte posible.
-  const totalDev = sumCop([
-    sum((b) => b.devengados.salario),
-    auxilio,
-    sum((b) => b.devengados.recargos),
-    sum((b) => b.devengados.horasExtra),
-    bonS,
-    bonNS,
-    comisiones,
-  ]);
-  const fijas = sumCop([salud, pension, fsp, retencion]);
-  let exceso = fijas + sumCop(otras) + deuda - totalDev;
-  if (exceso > 0) {
-    const recortables = sumCop(otras) + deuda;
-    if (exceso > recortables) {
+  // Neto negativo (estudio §2): lo reportado es lo que de verdad se descontó. `crearArrastres` lleva a la nómina
+  // siguiente el saldo de CADA colilla con neto negativo (−netoPagar, sin importar el origen de la deducción,
+  // también lo manual); allí sale como Deuda. Por eso el exceso se calcula por colilla y no con el mes sumado.
+  // Se recortan primero las otras deducciones y luego la Deuda; salud, pensión, FSP y retención no se tocan.
+  let deuda = 0;
+  let otras: number[] = [];
+  const recorte: RecorteNeto = { otras: 0, deuda: 0, total: 0 };
+  cerradas.forEach((c, i) => {
+    const bd = c.colilla.breakdown;
+    const cl = clasificadas[i]!;
+    let exceso = Math.max(0, cop(bd.deducciones.total) - cop(bd.devengados.total));
+    const antes = sumCop(cl.otras) + cl.deuda;
+    if (exceso > antes) {
       bloqueos.push(
-        `${quien}: salud, pensión, FSP y retención (${fijas}) superan lo devengado (${totalDev}); el comprobante de nómina no puede ser negativo y no hay deducciones de nómina que recortar. Revisa la corrida.`,
+        `${quien}: en la corrida ${c.corridaId} salud, pensión, FSP y retención superan lo devengado (${bd.devengados.total}); el comprobante no puede ser negativo y no hay deducciones de nómina que recortar. Revisa la corrida.`,
       );
-    } else {
-      const antes = sumCop(otras) + deuda;
-      otras = otras.map((v) => {
-        const r = Math.min(v, exceso);
-        exceso -= r;
-        return v - r;
-      });
-      if (exceso > 0) {
-        deuda -= exceso;
-        exceso = 0;
-      }
+      return;
+    }
+    const saldo = exceso;
+    const otrasC = cl.otras.map((v) => {
+      const r = Math.min(v, exceso);
+      exceso -= r;
+      return v - r;
+    });
+    const recOtras = sumCop(cl.otras) - sumCop(otrasC);
+    otras = otras.concat(otrasC);
+    deuda += cl.deuda - exceso;
+    recorte.otras += recOtras;
+    recorte.deuda += exceso;
+    recorte.total += saldo;
+    if (saldo > 0) {
       advertencias.push(
-        `${quien}: el neto de ${periodo} era negativo; se reportan ${sumCop(otras) + deuda} de ${antes} en deducciones de nómina (el saldo sale el mes siguiente como Deuda por el arrastre).`,
+        `${quien}: la colilla de la corrida ${c.corridaId} tiene neto negativo (−${saldo}). Se reporta ${antes - saldo} de ${antes} en deducciones de nómina; el saldo de ${saldo} (otras deducciones: ${recOtras}, Deuda: ${saldo - recOtras}) lo lleva el sistema como arrastre al mes siguiente, donde sale como Deuda.`,
       );
     }
-  }
+  });
   if (bloqueos.length > 0) return { ok: false, bloqueos };
 
   const deducciones: DeduccionesNe = {
@@ -522,7 +581,7 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
             porcentaje: FSP_SOLIDARIDAD_PCT,
             valor: centavosDeCop(fspSol),
             ...(fspSub > 0
-              ? { porcentajeSub: Math.max(pct2(tarifaFsp - FSP_SOLIDARIDAD_PCT), 0.01), valorSub: centavosDeCop(fspSub) }
+              ? { porcentajeSub: pct2(tarifaFsp - FSP_SOLIDARIDAD_PCT), valorSub: centavosDeCop(fspSub) }
               : {}),
           },
         }
@@ -577,11 +636,21 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
 
   const medio = e.medioPago!;
   const conCuenta = medio === MEDIO_TRANSFERENCIA || (medio === MEDIO_CONSIGNACION && !!e.accountNumber?.trim());
-  const fechasPagos = entrada.pago.fechasPagos.filter((f) => YYYYMMDD.test(f));
+  const fechasPagos = [...entrada.pago.fechasPagos];
+  const malas = fechasPagos.filter((f) => !YYYYMMDD.test(f));
+  const finMesSiguiente = ultimoDiaDelMes(new Date(Date.UTC(Number(periodo.slice(0, 4)), Number(periodo.slice(5, 7)), 1)).toISOString().slice(0, 7));
+  if (malas.length > 0) {
+    bloqueos.push(`${quien}: fechas de pago inválidas (${malas.join(', ')}); deben ser YYYY-MM-DD.`);
+  } else if (fechasPagos.some((f) => f < primero)) {
+    bloqueos.push(`${quien}: hay una fecha de pago anterior al inicio de ${periodo} (${primero}). Corrígela en la corrida.`);
+  } else if (fechasPagos.some((f) => f > finMesSiguiente)) {
+    advertencias.push(`${quien}: hay una fecha de pago posterior al mes siguiente a ${periodo}; confírmala.`);
+  }
   if (fechasPagos.length === 0) {
     fechasPagos.push(ultimo);
     advertencias.push(`${quien}: no hay fecha de pago registrada; se usó el último día del mes (${ultimo}).`);
   }
+  if (bloqueos.length > 0) return { ok: false, bloqueos };
 
   const desdeLiq = e.hireDate! > primero ? e.hireDate! : primero;
   const unaCorrida = cerradas.length === 1;
@@ -627,7 +696,7 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     devengados,
     deducciones,
   };
-  return { ok: true, modelo, advertencias };
+  return { ok: true, modelo, advertencias, recorte };
 }
 
 /** Suma en centavos de los valores que el armador escribiría; sirve para verificar el cuadre con las colillas. */

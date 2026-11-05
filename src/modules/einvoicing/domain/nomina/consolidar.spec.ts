@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { PayrollBreakdown } from '../../../payroll/domain/payroll-calc';
 import {
   consolidarNominaMes,
+  tiempoLaborado360,
   totalesDeModelo,
   type CorridaColilla,
   type DeduccionConsolidar,
@@ -423,5 +424,112 @@ describe('consolidarNominaMes: bloqueos por trabajador', () => {
   it('ignora corridas de otros meses', () => {
     const otro = corrida({ corridaId: 'x', periodo: '2026-09', estado: 'borrador' });
     expect(consolidarNominaMes(entrada({ slips: [otro, corrida()] })).ok).toBe(true);
+  });
+});
+
+describe('consolidarNominaMes: correcciones de revisión', () => {
+  it('colilla repetida (mismo corridaId) bloquea', () => {
+    expect(bloqueos(entrada({ slips: [corrida(), corrida()] })).join()).toMatch(/viene repetida/);
+  });
+
+  it('importes fraccionarios o negativos bloquean', () => {
+    const bd = breakdown({});
+    bd.deducciones.salud = 60_000.5;
+    expect(bloqueos(entrada({ slips: [corrida({ bd })] })).join()).toMatch(/pesos enteros no negativos: salud/);
+    const bd2 = breakdown({});
+    bd2.devengados.comisiones = -1;
+    expect(bloqueos(entrada({ slips: [corrida({ bd: bd2 })] })).join()).toMatch(/comisiones/);
+    const bd3 = breakdown({ otras: 10_000 });
+    expect(bloqueos(entrada({ slips: [corrida({ bd: bd3, detalleOtras: [{ concept: 'X', amount: 10_000.5 }] })] })).join()).toMatch(
+      /deducción «X»/,
+    );
+  });
+
+  it('el neto negativo se recorta por colilla y devuelve el recorte', () => {
+    // Colilla 1: devenga 100.000, deduce 158.000 (exceso 58.000). Colilla 2: sana. El mes sumado no tendría exceso.
+    const neg = breakdown({ salario: 100_000, otras: 150_000, ibc: 100_000, salud: 4_000, pension: 4_000 });
+    const sana = breakdown({ salario: 1_000_000 });
+    const r = ok(
+      entrada({
+        slips: [
+          corrida({
+            corridaId: 'q1',
+            bd: neg,
+            dias: 10,
+            rango: { desde: '2026-10-01', hasta: '2026-10-10' },
+            detalleOtras: [
+              { concept: 'Préstamo', amount: 100_000 },
+              { concept: 'Consumo', amount: 50_000 },
+            ],
+          }),
+          corrida({ corridaId: 'q2', bd: sana, dias: 15, rango: { desde: '2026-10-16', hasta: '2026-10-31' } }),
+        ],
+        deducciones: [
+          { employeeId: 'emp1', concept: 'Consumo', amount: 50_000, source: 'sale', appliedRunId: 'q1' },
+          { employeeId: 'emp1', concept: 'Préstamo', amount: 100_000, source: 'manual', appliedRunId: 'q1' },
+        ],
+      }),
+    );
+    expect(r.recorte).toEqual({ otras: 58_000, deuda: 0, total: 58_000 });
+    expect(r.modelo.deducciones.otras).toEqual([4_200_000]);
+    expect(r.modelo.deducciones.deuda).toBe(5_000_000);
+    expect(r.advertencias.join(' ')).toMatch(/arrastre/);
+  });
+
+  it('sin neto negativo el recorte es cero', () => {
+    expect(ok(entrada()).recorte).toEqual({ otras: 0, deuda: 0, total: 0 });
+  });
+
+  it('el cruce prioriza el mismo origen; sin par avisa explícitamente', () => {
+    const bd = breakdown({ otras: 20_000 });
+    const dets = [
+      { concept: 'Consumo', amount: 10_000, source: 'arrastre' },
+      { concept: 'Consumo', amount: 10_000 },
+    ];
+    const deducciones: DeduccionConsolidar[] = [
+      { employeeId: 'emp1', concept: 'Consumo', amount: 10_000, source: 'sale', appliedRunId: 'run1' },
+      { employeeId: 'emp1', concept: 'Consumo', amount: 10_000, source: 'arrastre', appliedRunId: 'run1' },
+    ];
+    const r = ok(entrada({ slips: [corrida({ bd, detalleOtras: dets })], deducciones }));
+    expect(r.modelo.deducciones.deuda).toBe(2_000_000);
+    expect(r.advertencias).toEqual([]);
+    const sinPar = ok(entrada({ slips: [corrida({ bd: breakdown({ otras: 5_000 }), detalleOtras: [{ concept: 'Raro', amount: 5_000 }] })] }));
+    expect(sinPar.modelo.deducciones.otras).toEqual([500_000]);
+    expect(sinPar.advertencias.join(' ')).toMatch(/no se pudo vincular/);
+  });
+
+  it('FSP con IBC 0 bloquea', () => {
+    const bd = breakdown({ salario: 1_000_000, ibc: 0, salud: 0, pension: 0, fsp: 5_000 });
+    expect(bloqueos(entrada({ slips: [corrida({ bd })] })).join()).toMatch(/FSP.*IBC en 0/);
+  });
+
+  it('pensionado por vejez con FSP bloquea', () => {
+    const bd = breakdown({ pension: 0, fsp: 5_000 });
+    expect(bloqueos(entrada({ slips: [corrida({ bd })], empleado: empleado({ subTipoTrabajador: '01' }) })).join()).toMatch(
+      /solidaridad pensional/,
+    );
+  });
+
+  it('tiempoLaborado360: el último día de febrero cuenta como 30', () => {
+    expect(tiempoLaborado360('2026-02-28', '2026-02-28')).toBe(1);
+    expect(tiempoLaborado360('2026-02-01', '2026-02-28')).toBe(30);
+    expect(tiempoLaborado360('2026-10-16', '2026-10-31')).toBe(15);
+  });
+
+  it('el rango debe estar dentro del periodo', () => {
+    const r = bloqueos(entrada({ slips: [corrida({ rango: { desde: '2026-09-20', hasta: '2026-10-10' } })] }));
+    expect(r.join()).toMatch(/no está dentro de 2026-10/);
+  });
+
+  it('el periodo inválido se rechaza antes de calcular fechas', () => {
+    expect(bloqueos(entrada({ periodo: '2026-13' })).join()).toMatch(/no es un mes YYYY-MM/);
+    expect(bloqueos(entrada({ periodo: 'abc' })).join()).toMatch(/no es un mes/);
+  });
+
+  it('fecha de pago anterior al periodo bloquea; muy posterior avisa', () => {
+    expect(bloqueos(entrada({ pago: { fechasPagos: ['2026-09-30'] } })).join()).toMatch(/anterior al inicio/);
+    const r = ok(entrada({ pago: { fechasPagos: ['2026-12-15'] } }));
+    expect(r.advertencias.join()).toMatch(/posterior al mes siguiente/);
+    expect(ok(entrada({ pago: { fechasPagos: ['2026-11-05'] } })).advertencias).toEqual([]);
   });
 });
