@@ -73,4 +73,14 @@ describe('DTO de empleado: datos de nómina electrónica DIAN', () => {
       }),
     ).toEqual([]);
   });
+
+  it('accountNumber: recorta, limita a 34 y solo admite alfanumérico/guion o la máscara', async () => {
+    const dto = plainToInstance(UpdateEmployeeDto, { accountNumber: ' 123-abc ' });
+    expect(await validate(dto)).toEqual([]);
+    expect(dto.accountNumber).toBe('123-abc');
+    expect(await campos(UpdateEmployeeDto, { accountNumber: '••••5601' })).toEqual([]);
+    expect(await campos(UpdateEmployeeDto, { accountNumber: '' })).toEqual([]);
+    expect(await campos(UpdateEmployeeDto, { accountNumber: '1'.repeat(35) })).toEqual(['accountNumber']);
+    expect(await campos(CreateEmployeeDto, { ...base, accountNumber: '12 34' })).toEqual(['accountNumber']);
+  });
 });

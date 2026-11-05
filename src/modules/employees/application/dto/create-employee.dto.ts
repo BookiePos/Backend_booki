@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
@@ -187,7 +187,12 @@ export class CreateEmployeeDto {
   accountType?: string;
 
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
+  @MaxLength(34)
+  @Matches(/^(••••.*|[0-9A-Za-z-]*)$/, {
+    message: 'accountNumber solo admite letras, números y guiones',
+  })
   accountNumber?: string;
 
   // Documentos / certificados

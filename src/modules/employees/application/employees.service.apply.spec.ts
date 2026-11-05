@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { Types } from 'mongoose';
 
 // SWC emite `Object` como metadata para los @Prop() con uniones de literales y
@@ -291,6 +291,11 @@ describe('EmployeesService', () => {
       expect(enmascararCuenta('10012345601')).toBe('••••5601');
       expect(enmascararCuenta('')).toBeUndefined();
       expect(enmascararCuenta(undefined)).toBeUndefined();
+      // Una cuenta corta nunca sale entera.
+      expect(enmascararCuenta('1234')).toBe('••••34');
+      expect(enmascararCuenta('123')).toBe('••••23');
+      expect(enmascararCuenta('12')).toBe('••••');
+      expect(enmascararCuenta('1')).toBe('••••');
     });
 
     it('aVista no expone el número completo y marca tieneCuenta', () => {
@@ -325,6 +330,24 @@ describe('EmployeesService', () => {
 
       expect(emp.accountNumber).toBe('10012345601');
       expect(emp.phone).toBe('1');
+    });
+
+    it('un valor que empieza por la máscara pero no es la actual da 400 y no escribe', async () => {
+      const emp: any = empleado({ accountNumber: '10012345601' });
+      build(emp);
+
+      await expect(
+        service.update(emp._id.toString(), { accountNumber: '••••56019' } as never),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(emp.accountNumber).toBe('10012345601');
+      expect(emp.save).not.toHaveBeenCalled();
+    });
+
+    it('la máscara se reconoce tras recortar espacios', async () => {
+      const emp: any = empleado({ accountNumber: '10012345601' });
+      build(emp);
+      await service.update(emp._id.toString(), { accountNumber: ' ••••5601 ' } as never);
+      expect(emp.accountNumber).toBe('10012345601');
     });
 
     it('un número nuevo lo reemplaza y "" lo limpia', async () => {

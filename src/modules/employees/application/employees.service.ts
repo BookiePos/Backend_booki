@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -53,7 +54,10 @@ export const MASCARA_CUENTA = '••••';
 /** `••••1234` (últimos 4 dígitos); vacío si no hay cuenta. */
 export function enmascararCuenta(cuenta?: string | null): string | undefined {
   if (!cuenta) return undefined;
-  return `${MASCARA_CUENTA}${cuenta.slice(-4)}`;
+  // Una cuenta corta nunca sale entera: con ≤4 caracteres solo los últimos 2
+  // (o ninguno si tiene ≤2).
+  const visibles = cuenta.length > 4 ? 4 : cuenta.length > 2 ? 2 : 0;
+  return `${MASCARA_CUENTA}${visibles ? cuenta.slice(-visibles) : ''}`;
 }
 
 /** Empleado como lo ve la API: sin el número de cuenta completo. */
@@ -257,13 +261,19 @@ export class EmployeesService {
     if (dto.bank !== undefined) emp.bank = orUndef(dto.bank);
     if (dto.accountType !== undefined)
       emp.accountType = orUndef(dto.accountType) as AccountType;
-    // Un formulario que reenvía el valor enmascarado (`••••1234`) no debe pisar
-    // el número real: se ignora. `''` sí lo limpia.
-    if (
-      dto.accountNumber !== undefined &&
-      !dto.accountNumber.startsWith(MASCARA_CUENTA)
-    )
-      emp.accountNumber = orUndef(dto.accountNumber);
+    // Un formulario que reenvía EXACTAMENTE el valor enmascarado actual no debe
+    // pisar el número real: se ignora. Cualquier otro valor que empiece por la
+    // máscara es un intento de edición a medias: 400. `''` limpia.
+    if (dto.accountNumber !== undefined) {
+      const cuenta = dto.accountNumber.trim();
+      if (!cuenta.startsWith(MASCARA_CUENTA)) {
+        emp.accountNumber = orUndef(cuenta);
+      } else if (cuenta !== enmascararCuenta(emp.accountNumber)) {
+        throw new BadRequestException(
+          'Para cambiar la cuenta borra el campo y escribe el número completo',
+        );
+      }
+    }
 
     // Documentos / certificados
     if (dto.documents !== undefined) {
