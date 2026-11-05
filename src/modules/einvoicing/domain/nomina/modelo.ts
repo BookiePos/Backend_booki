@@ -23,7 +23,13 @@ export type TipoHoraNe = (typeof TIPOS_HORA_NE)[number];
 export interface HoraNe {
   tipo: TipoHoraNe;
   cantidad: number;
-  /** Porcentaje legal vigente (125.00, 175.00…), no el literal de la tabla. */
+  /**
+   * RECARGO de la tabla 5.5.7, NO el factor total: el consolidador entrega el
+   * porcentaje que se suma a la hora ordinaria. HED 25.00, HEN 75.00, HRN 35.00;
+   * HEDDF, HRDDF, HENDF y HRNDF con el porcentaje vigente en la fecha de las
+   * horas (Ley 2466 de 2025, Oficio 13840/2025: p. ej. HRDDF 80.00 desde
+   * 1-jul-2025 y 90.00 desde 1-jul-2026). El armador lo escribe tal cual.
+   */
   porcentaje: number;
   pago: Centavos;
 }
@@ -123,7 +129,7 @@ export interface DocumentoNe {
     /** Días con años de 360 y meses de 30 (anexo §8.3.1). */
     tiempoLaborado: number;
   };
-  /** Tabla 5.5.1 (1 semanal, 4 mensual…). */
+  /** Tabla 5.5.1: 1 semanal, 2 decenal, 3 catorcenal, 4 quincenal, 5 mensual. */
   periodoNomina: string;
   trabajador: TrabajadorNe;
   pago: { forma: string; metodo: string; banco?: string; tipoCuenta?: string; numeroCuenta?: string };
@@ -172,8 +178,8 @@ export type TipoNota = (typeof TipoNota)[keyof typeof TipoNota];
 
 /** NominaIndividualDeAjuste (TipoXML 103). Reemplazar lleva el documento completo corregido; Eliminar solo el predecesor. */
 export type ModeloNominaAjuste =
-  | { tipoNota: 1; emision: EmisionNe; predecesor: PredecesorNe; documento: DocumentoNe }
-  | { tipoNota: 2; emision: EmisionNe; predecesor: PredecesorNe };
+  | { tipoNota: typeof TipoNota.Reemplazar; emision: EmisionNe; predecesor: PredecesorNe; documento: DocumentoNe }
+  | { tipoNota: typeof TipoNota.Eliminar; emision: EmisionNe; predecesor: PredecesorNe };
 
 /** Lo que no es del documento sino del entorno: ambiente y software de NÓMINA (no el de la factura). */
 export interface ContextoNomina {

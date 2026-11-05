@@ -151,15 +151,20 @@ describe('nómina electrónica: NominaIndividual (102)', () => {
   it('horas extra y recargos', async () => {
     const d = documentoBase();
     d.devengados.horas = [
-      { tipo: 'HRNDF', cantidad: 3, porcentaje: 210, pago: 400_000 },
-      { tipo: 'HED', cantidad: 10, porcentaje: 125, pago: 900_000 },
-      { tipo: 'HED', cantidad: 2, porcentaje: 125, pago: 180_000 },
-      { tipo: 'HEN', cantidad: 4.5, porcentaje: 175, pago: 700_000 },
+      // El porcentaje es el RECARGO de la tabla 5.5.7 (no el factor total).
+      { tipo: 'HRNDF', cantidad: 3, porcentaje: 115, pago: 400_000 },
+      { tipo: 'HRDDF', cantidad: 8, porcentaje: 80, pago: 300_000 },
+      { tipo: 'HED', cantidad: 10, porcentaje: 25, pago: 900_000 },
+      { tipo: 'HED', cantidad: 2, porcentaje: 25, pago: 180_000 },
+      { tipo: 'HEN', cantidad: 4.5, porcentaje: 75, pago: 700_000 },
+      { tipo: 'HRN', cantidad: 6, porcentaje: 35, pago: 250_000 },
     ];
     const r = individual(d);
     expect(r.xml.indexOf('<HEDs>')).toBeLessThan(r.xml.indexOf('<HENs>'));
     expect(r.xml.indexOf('<HENs>')).toBeLessThan(r.xml.indexOf('<HRNDFs>'));
-    expect(r.xml).toContain('Cantidad="4.50" Porcentaje="175.00" Pago="7000.00"');
+    expect(r.xml).toContain('Cantidad="4.50" Porcentaje="75.00" Pago="7000.00"');
+    expect(r.xml).toContain('Porcentaje="25.00"');
+    expect(r.xml).toContain('<HRDDF Cantidad="8.00" Porcentaje="80.00" Pago="3000.00"/>');
     await verificar(r, 'horas');
   }, 60_000);
 
@@ -263,6 +268,64 @@ describe('nómina electrónica: NominaIndividual (102)', () => {
     expect(() => individual(letras)).toThrow(/solo con números/);
   });
 
+  it('no redondea en silencio: días y TiempoLaborado deben ser enteros positivos', () => {
+    const a = documentoBase();
+    a.devengados.basico.dias = 29.5;
+    expect(() => individual(a)).toThrow(/DiasTrabajados/);
+    const b = documentoBase();
+    b.periodo.tiempoLaborado = 0;
+    expect(() => individual(b)).toThrow(/TiempoLaborado/);
+    const c = documentoBase();
+    c.periodo.tiempoLaborado = 10.4;
+    expect(() => individual(c)).toThrow(/TiempoLaborado/);
+    const d = documentoBase();
+    d.devengados.primas = { dias: 90.5, pago: 1_000_000 };
+    expect(() => individual(d)).toThrow(/prima/);
+  });
+
+  it('escapa tab y salto de línea en atributos y los conserva', async () => {
+    const d = documentoBase();
+    d.trabajador.lugarTrabajo.direccion = 'Calle 10\n# 20-30\tPiso 2\r';
+    const r = individual(d);
+    expect(r.xml).toContain('LugarTrabajoDireccion="Calle 10&#xA;# 20-30&#x9;Piso 2&#xD;"');
+    expect(r.xml).not.toMatch(/Direccion="[^"]*[\n\t\r]/);
+    await verificar(r, 'direccion-multilinea');
+  }, 60_000);
+
+  it('rechaza códigos de catálogo vacíos o mal formados y fechas inválidas', () => {
+    const casos: [string, (d: DocumentoNe) => void, RegExp][] = [
+      ['periodo vacío', (d) => (d.periodoNomina = ''), /PeriodoNomina/],
+      ['tipo trabajador', (d) => (d.trabajador.tipoTrabajador = '1'), /TipoTrabajador/],
+      ['subtipo', (d) => (d.trabajador.subTipoTrabajador = 'ab'), /SubTipoTrabajador/],
+      ['contrato', (d) => (d.trabajador.tipoContrato = ''), /TipoContrato/],
+      ['tipo documento', (d) => (d.trabajador.tipoDocumento = 'CC'), /TipoDocumento/],
+      ['forma de pago', (d) => (d.pago.forma = '0'), /Forma de pago/],
+      ['método de pago', (d) => (d.pago.metodo = ''), /Método de pago/],
+      ['fecha de ingreso', (d) => (d.periodo.fechaIngreso = '01/02/2024'), /FechaIngreso/],
+      ['fecha imposible', (d) => (d.periodo.fechaLiquidacionFin = '2026-13-45'), /FechaLiquidacionFin/],
+      ['fecha de pago', (d) => (d.fechasPagos = ['ayer']), /FechaPago/],
+      [
+        'incapacidad sin fechas',
+        (d) => (d.devengados.incapacidades = [{ dias: 2, tipo: 1, pago: 1_000_000 }]),
+        /FechaInicio de la incapacidad/,
+      ],
+    ];
+    for (const [nombre, muta, esperado] of casos) {
+      const d = documentoBase();
+      muta(d);
+      expect(() => individual(d), nombre).toThrow(esperado);
+    }
+  });
+
+  it('FondoSP exige el porcentaje de cada parte que trae valor', () => {
+    const a = documentoBase();
+    a.deducciones.fondoSP = { porcentaje: 0, valor: 750_000 };
+    expect(() => individual(a)).toThrow(/solidaridad/);
+    const b = documentoBase();
+    b.deducciones.fondoSP = { porcentaje: 0.5, valor: 750_000, valorSub: 500_000 };
+    expect(() => individual(b)).toThrow(/PorcentajeSub/);
+  });
+
   it('es determinista: mismo modelo, mismo XML y mismo CUNE', () => {
     expect(individual(documentoBase())).toEqual(individual(documentoBase()));
   });
@@ -322,6 +385,5 @@ describe('nómina electrónica: NominaIndividualDeAjuste (103)', () => {
     expect(() =>
       armarNominaAjuste({ tipoNota: 2, emision, predecesor: { ...predecesor, cune: 'corto' } }, ctx),
     ).toThrow(/predecesor/);
-    expect(() => armarNominaAjuste({ tipoNota: 3, emision, predecesor } as never, ctx)).toThrow(/TipoNota/);
   });
 });

@@ -1,11 +1,11 @@
 import { calcularCune, calcularCuneEliminar } from '../cune';
 import { assertFechaHoraDian, dianVerificationUrl } from '../cufe';
-import { cop } from '../../../finance/domain/money.util';
 import { aCentavos, formatearMontoDian, type Centavos } from '../redondeo';
 import { codigoSeguridadSoftware } from '../ubl/factura-ubl';
 import { DocumentoUblInvalidoError, esc } from '../ubl/xml-ubl';
 import {
   TIPOS_HORA_NE,
+  TipoNota,
   type ContextoNomina,
   type DeduccionesNe,
   type DevengadosNe,
@@ -70,7 +70,13 @@ function abrirRaiz(tipo: '102' | '103'): string {
 type Attrs = Record<string, string | number | boolean | undefined>;
 
 /** Escape de un valor de atributo: el de contenido más las comillas dobles. */
-const escAttr = (s: string) => esc(s).replace(/"/g, '&quot;');
+const escAttr = (s: string) =>
+  esc(s)
+    .replace(/"/g, '&quot;')
+    // Un tab o salto de línea crudo en un atributo se normaliza a espacio al parsear: se escapa para conservarlo.
+    .replace(/\t/g, '&#x9;')
+    .replace(/\n/g, '&#xA;')
+    .replace(/\r/g, '&#xD;');
 
 function el(nombre: string, attrs: Attrs = {}, hijos = ''): string {
   const a = Object.entries(attrs)
@@ -91,10 +97,25 @@ const cant = (n: number) => {
   if (!Number.isFinite(n) || n < 0) throw new DocumentoUblInvalidoError(`Cantidad inválida en la nómina: ${n}`);
   return formatearMontoDian(aCentavos(n));
 };
-const entero = (n: number) => {
-  if (!Number.isFinite(n) || n < 0) throw new DocumentoUblInvalidoError(`Cantidad inválida en la nómina: ${n}`);
-  return cop(n);
+/** Días o cantidad entera: no se redondea en silencio, un decimal es un error del consolidador. */
+const entero = (n: number, que: string) => {
+  if (!Number.isSafeInteger(n) || n < 0) {
+    throw new DocumentoUblInvalidoError(`${que} debe ser un entero no negativo y llegó ${String(n)}`);
+  }
+  return n;
 };
+
+const FECHA = /^\d{4}-\d{2}-\d{2}$/;
+function assertFecha(f: string | undefined, que: string): void {
+  if (f === undefined || !FECHA.test(f) || Number.isNaN(Date.parse(`${f}T00:00:00Z`))) {
+    throw new DocumentoUblInvalidoError(`${que} debe ser una fecha YYYY-MM-DD y llegó «${String(f)}»`);
+  }
+}
+function assertCodigo(v: string, formato: RegExp, que: string): void {
+  if (typeof v !== 'string' || !formato.test(v)) {
+    throw new DocumentoUblInvalidoError(`${que} no es un código válido de la tabla del anexo: «${String(v)}»`);
+  }
+}
 
 function assertMonto(c: Centavos): void {
   if (!Number.isSafeInteger(c) || c < 0) {
@@ -156,17 +177,21 @@ function devengadosXml(d: DevengadosNe, dev: Sumador): string {
   const diasPago = (nombre: string, items: DiasPagoNe[], conFechas: boolean) =>
     items
       .filter((v) => positivo(v.pago))
-      .map((v) =>
-        el(nombre, {
+      .map((v) => {
+        if (conFechas) {
+          assertFecha(v.fechaInicio, `FechaInicio de ${nombre}`);
+          assertFecha(v.fechaFin, `FechaFin de ${nombre}`);
+        }
+        return el(nombre, {
           ...(conFechas ? { FechaInicio: v.fechaInicio, FechaFin: v.fechaFin } : {}),
-          Cantidad: entero(v.dias),
+          Cantidad: entero(v.dias, `Días de ${nombre}`),
           Pago: dev.m(v.pago),
-        }),
-      );
+        });
+      });
   const p = d.primas;
   const c = d.cesantias;
   return [
-    el('Basico', { DiasTrabajados: entero(d.basico.dias), SueldoTrabajado: dev.m(d.basico.sueldo) }),
+    el('Basico', { DiasTrabajados: entero(d.basico.dias, 'DiasTrabajados'), SueldoTrabajado: dev.m(d.basico.sueldo) }),
     t && (positivo(t.auxilio) || positivo(t.viaticoS) || positivo(t.viaticoNS))
       ? el('Transporte', {
           AuxilioTransporte: dev.o(t.auxilio),
@@ -180,7 +205,7 @@ function devengadosXml(d: DevengadosNe, dev: Sumador): string {
       ...diasPago('VacacionesCompensadas', d.vacacionesCompensadas, false),
     ]),
     p && (positivo(p.pago) || positivo(p.pagoNS))
-      ? el('Primas', { Cantidad: entero(p.dias), Pago: dev.m(p.pago), PagoNS: dev.o(p.pagoNS) })
+      ? el('Primas', { Cantidad: entero(p.dias, 'Días de la prima'), Pago: dev.m(p.pago), PagoNS: dev.o(p.pagoNS) })
       : '',
     c && (positivo(c.pago) || positivo(c.intereses))
       ? el('Cesantias', { Pago: dev.m(c.pago), Porcentaje: pct(c.porcentaje), PagoIntereses: dev.m(c.intereses) })
@@ -189,15 +214,17 @@ function devengadosXml(d: DevengadosNe, dev: Sumador): string {
       'Incapacidades',
       d.incapacidades
         .filter((i) => positivo(i.pago))
-        .map((i) =>
-          el('Incapacidad', {
+        .map((i) => {
+          assertFecha(i.fechaInicio, 'FechaInicio de la incapacidad');
+          assertFecha(i.fechaFin, 'FechaFin de la incapacidad');
+          return el('Incapacidad', {
             FechaInicio: i.fechaInicio,
             FechaFin: i.fechaFin,
-            Cantidad: entero(i.dias),
+            Cantidad: entero(i.dias, 'Días de la incapacidad'),
             Tipo: i.tipo,
             Pago: dev.m(i.pago),
-          }),
-        ),
+          });
+        }),
     ),
     grupo('Licencias', diasPago('LicenciaMP', d.licenciasMP, true)),
     grupo('Bonificaciones', salariales('Bonificacion', 'BonificacionS', 'BonificacionNS', d.bonificaciones, dev)),
@@ -220,6 +247,12 @@ function devengadosXml(d: DevengadosNe, dev: Sumador): string {
 
 function deduccionesXml(d: DeduccionesNe, ded: Sumador): string {
   const fsp = d.fondoSP;
+  if (fsp && positivo(fsp.valor) && !(fsp.porcentaje > 0)) {
+    throw new DocumentoUblInvalidoError('FondoSP: la deducción de solidaridad necesita su porcentaje.');
+  }
+  if (fsp && positivo(fsp.valorSub) && !(fsp.porcentajeSub !== undefined && fsp.porcentajeSub > 0)) {
+    throw new DocumentoUblInvalidoError('FondoSP: la deducción de subsistencia necesita su porcentaje (PorcentajeSub).');
+  }
   return [
     el('Salud', { Porcentaje: pct(d.salud.porcentaje), Deduccion: ded.m(d.salud.valor) }),
     el('FondoPension', { Porcentaje: pct(d.fondoPension.porcentaje), Deduccion: ded.m(d.fondoPension.valor) }),
@@ -348,7 +381,31 @@ const informacionGeneral = (
     TipoMoneda: periodoNomina === undefined ? undefined : 'COP',
   });
 
+/** Códigos de catálogo con formato y fechas YYYY-MM-DD: los valores de la tabla los confirma la DIAN. */
+function validarCatalogosYFechas(doc: DocumentoNe): void {
+  const t = doc.trabajador;
+  assertCodigo(doc.periodoNomina, /^[1-9]\d?$/, 'PeriodoNomina');
+  assertCodigo(t.tipoTrabajador, /^\d{2}$/, 'TipoTrabajador');
+  assertCodigo(t.subTipoTrabajador, /^\d{2}$/, 'SubTipoTrabajador');
+  assertCodigo(t.tipoContrato, /^[1-9]$/, 'TipoContrato');
+  assertCodigo(t.tipoDocumento, /^\d{2}$/, 'TipoDocumento');
+  assertCodigo(doc.pago.forma, /^[1-9]$/, 'Forma de pago');
+  assertCodigo(doc.pago.metodo, /^\d{1,3}$/, 'Método de pago');
+  const p = doc.periodo;
+  assertFecha(p.fechaIngreso, 'FechaIngreso');
+  if (p.fechaRetiro !== undefined) assertFecha(p.fechaRetiro, 'FechaRetiro');
+  assertFecha(p.fechaLiquidacionInicio, 'FechaLiquidacionInicio');
+  assertFecha(p.fechaLiquidacionFin, 'FechaLiquidacionFin');
+  doc.fechasPagos.forEach((f, i) => assertFecha(f, `FechaPago[${i}]`));
+}
+
 // ── Documento completo (102 y cuerpo del Reemplazar) ───────────────────────
+
+function tiempoLaborado(n: number): number {
+  const v = entero(n, 'TiempoLaborado');
+  if (v < 1) throw new DocumentoUblInvalidoError('TiempoLaborado debe ser de al menos 1 día.');
+  return v;
+}
 
 function cuerpoCompleto(doc: DocumentoNe, em: EmisionNe, ctx: ContextoNomina, tipoXml: '102' | '103'): ResultadoNomina {
   const numero = validarEmision(em, ctx);
@@ -361,6 +418,7 @@ function cuerpoCompleto(doc: DocumentoNe, em: EmisionNe, ctx: ContextoNomina, ti
   if (doc.fechasPagos.length === 0) {
     throw new DocumentoUblInvalidoError('El documento necesita al menos una fecha de pago.');
   }
+  validarCatalogosYFechas(doc);
   assertMonto(t.sueldo);
 
   const dev = sumador();
@@ -395,7 +453,7 @@ function cuerpoCompleto(doc: DocumentoNe, em: EmisionNe, ctx: ContextoNomina, ti
       FechaRetiro: p.fechaRetiro,
       FechaLiquidacionInicio: p.fechaLiquidacionInicio,
       FechaLiquidacionFin: p.fechaLiquidacionFin,
-      TiempoLaborado: Math.max(1, entero(p.tiempoLaborado)),
+      TiempoLaborado: tiempoLaborado(p.tiempoLaborado),
       FechaGen: em.fecha,
     }),
     numeroSecuencia(em, numero),
@@ -463,15 +521,12 @@ function assertPredecesor(p: PredecesorNe): void {
 export function armarNominaAjuste(modelo: ModeloNominaAjuste, ctx: ContextoNomina): ResultadoNomina {
   assertPredecesor(modelo.predecesor);
   const em = modelo.emision;
-  if (modelo.tipoNota === 1) {
+  if (modelo.tipoNota === TipoNota.Reemplazar) {
     const c = cuerpoCompleto(modelo.documento, em, ctx, '103');
     const xml =
-      `${DECLARACION}${abrirRaiz('103')}<TipoNota>1</TipoNota><Reemplazar>` +
+      `${DECLARACION}${abrirRaiz('103')}<TipoNota>${TipoNota.Reemplazar}</TipoNota><Reemplazar>` +
       `${el('ReemplazandoPredecesor', predecesorAttrs(modelo.predecesor))}${c.xml}</Reemplazar></NominaIndividualDeAjuste>`;
     return { ...c, xml };
-  }
-  if (modelo.tipoNota !== 2) {
-    throw new DocumentoUblInvalidoError(`TipoNota inválido: «${String((modelo as { tipoNota: unknown }).tipoNota)}»`);
   }
   const numero = validarEmision(em, ctx);
   const cune = calcularCuneEliminar({
@@ -483,7 +538,7 @@ export function armarNominaAjuste(modelo: ModeloNominaAjuste, ctx: ContextoNomin
     tipoAmbiente: ctx.tipoAmbiente,
   });
   const xml =
-    `${DECLARACION}${abrirRaiz('103')}<TipoNota>2</TipoNota><Eliminar>` +
+    `${DECLARACION}${abrirRaiz('103')}<TipoNota>${TipoNota.Eliminar}</TipoNota><Eliminar>` +
     el('EliminandoPredecesor', predecesorAttrs(modelo.predecesor)) +
     numeroSecuencia(em, numero) +
     lugarGeneracion(em) +
