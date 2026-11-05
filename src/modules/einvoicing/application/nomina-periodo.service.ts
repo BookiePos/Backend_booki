@@ -28,7 +28,9 @@ import { AuditService } from '../../core-audit/application/audit.service';
  * tiempo: se emite de a pocos con cursor y el cliente repite hasta agotarlo.
  */
 export const LOTE_EMISION_POR_DEFECTO = 3;
-export const LOTE_EMISION_MAX = 5;
+export const LOTE_EMISION_MAX = 3;
+/** Tope de tiempo por llamada: pasado esto no se empieza otro trabajador (cada uno puede tardar ~30 s). */
+export const PRESUPUESTO_EMISION_MS = 40_000;
 
 const PERIODO = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -73,6 +75,10 @@ interface ContextoPeriodo {
   empleador: Extract<ResultadoEmpleador, { ok: true }>['empleador'];
   /** Sedes del emisor a las que el usuario puede llegar. */
   sedes: string[];
+  /** TODAS las sedes del emisor (mismo NIT), vea o no el usuario. */
+  sedesEmisor: string[];
+  /** ¿El usuario ve todas las sedes del NIT? Si no, no puede emitir a quien tenga liquidación fuera de su alcance. */
+  veTodas: boolean;
   empleados: Map<string, EmpleadoConsolidar & { sedeId?: string }>;
   corridas: LeanRun[];
 }
@@ -90,6 +96,8 @@ interface LeanRun {
     diasTrabajados: number;
     salaryType?: string;
     breakdown: never;
+    /** Sede efectiva ya resuelta (colilla, corrida o expediente). */
+    sedeEfectiva?: string;
     otrasDeduccionesDetalle?: { concept: string; amount: number; source?: string }[];
   }[];
 }
@@ -151,7 +159,7 @@ export class NominaPeriodoService {
     periodo: string,
     sedeId: string,
     user: JwtUser,
-    opciones: { cursor?: string; limite?: number } = {},
+    opciones: { cursor?: string; limite?: number; presupuestoMs?: number } = {},
   ): Promise<ResultadoEmisionPeriodo> {
     TenantContext.currentOrThrow();
     const ctx = await this.contexto(periodo, sedeId, user);
@@ -161,21 +169,27 @@ export class NominaPeriodoService {
     const lote = restantes.slice(0, limite);
     const existentes = await this.existentes(ctx, lote);
     const resultados: ResultadoTrabajadorEmision[] = [];
+    const inicio = Date.now();
+    const presupuesto = opciones.presupuestoMs ?? PRESUPUESTO_EMISION_MS;
+    const procesados: string[] = [];
     for (const id of lote) {
+      // Presupuesto global: pasado el tope no se empieza otro; el cursor queda donde se llegó.
+      if (procesados.length > 0 && Date.now() - inicio >= presupuesto) break;
       resultados.push(await this.emitirUno(ctx, id, existentes.get(id), user));
+      procesados.push(id);
     }
-    const pendientes = restantes.length - lote.length;
+    const pendientes = restantes.length - procesados.length;
     await this.auditar('einvoicing.nomina.periodo.emitida', user, `/einvoicing/nomina/periodos/${periodo}/emitir`, {
       periodo,
       sedeId,
-      lote: String(lote.length),
+      lote: String(procesados.length),
       pendientes: String(pendientes),
     });
     return {
       periodo,
       resultados,
       pendientes,
-      ...(pendientes > 0 ? { siguienteCursor: lote[lote.length - 1] } : {}),
+      ...(pendientes > 0 ? { siguienteCursor: procesados[procesados.length - 1] } : {}),
     };
   }
 
@@ -219,6 +233,7 @@ export class NominaPeriodoService {
       })
       .sort({ 'empleado.docNumber': 1, createdAt: 1 })
       .exec();
+    await this.auditar('einvoicing.nomina.periodo.listada', user, '/einvoicing/nomina', { periodo, sedeId, documentos: String(filas.length) }, true, 'GET');
     return filas.map((d) => ({
       id: String(d._id),
       fullNumber: d.fullNumber,
@@ -300,7 +315,14 @@ export class NominaPeriodoService {
     // Recalcula desde las corridas actuales (p. ej. se reabrió una y se volvió a cerrar).
     const r = await this.consolidar(ctx, empleadoId);
     if (!r.ok) {
-      throw new ConflictException(`No se puede reemplazar: ${r.bloqueos.join(' ')}`);
+      throw new ConflictException(
+        `No se puede reemplazar: ${r.bloqueos.join(' ')} Si la corrida ya no existe, usa Eliminar y emite el documento de nuevo.`,
+      );
+    }
+    const docNuevo = String(r.modelo.trabajador.numeroDocumento ?? '').replace(/\D/g, '');
+    const docViejo = String(cabeza.empleado?.docNumber ?? '').replace(/\D/g, '');
+    if (docNuevo !== docViejo || cabeza.emisor?.nitNorm !== ctx.emisor.nitNorm) {
+      throw new ConflictException('Cambió la identidad del trabajador: elimina el documento y emite uno nuevo.');
     }
     return this.nomina.emitir(
       { tipoNota: TipoNota.Reemplazar, emision: this.emision(ctx), predecesor: this.predecesor(cabeza), documento: r.modelo },
@@ -335,21 +357,29 @@ export class NominaPeriodoService {
     const limitadas = allowedSedeIds(user);
     const sedes = delEmisor.map((s) => String(s._id)).filter((id) => limitadas === null || limitadas.includes(id));
     if (!sedes.includes(sedeId)) sedes.push(sedeId);
-    return { emisor, sedes };
+    return { emisor, sedes, sedesEmisor: delEmisor.map((s) => String(s._id)), veTodas: sedes.length === delEmisor.length };
   }
 
   private async contexto(periodo: string, sedeId: string, user: JwtUser): Promise<ContextoPeriodo> {
-    const { emisor, sedes } = await this.alcance(periodo, sedeId, user);
+    const { emisor, sedes, sedesEmisor, veTodas } = await this.alcance(periodo, sedeId, user);
     const empleador = empleadorDeEmisor(emisor);
     if (!empleador.ok) throw new ConflictException(`Falta configurar: ${empleador.motivos.join('; ')}.`);
-    const corridas = (await this.runs.find({ period: periodo }).lean().exec()) as unknown as LeanRun[];
+    const todas = (await this.runs.find({ period: periodo }).lean().exec()) as unknown as LeanRun[];
     const lista = await this.empleados.list();
     const empleados = new Map<string, EmpleadoConsolidar & { sedeId?: string }>();
     for (const e of lista) {
       const plano = (typeof e.toObject === 'function' ? e.toObject() : e) as unknown as EmpleadoConsolidar & { sedeId?: Types.ObjectId };
       empleados.set(String(e._id), { ...plano, id: String(e._id), sedeId: plano.sedeId ? String(plano.sedeId) : undefined });
     }
-    return { periodo, sedeId, emisor, empleador: empleador.empleador, sedes, empleados, corridas };
+    // Solo cuentan las colillas de sedes de ESTE emisor: las de otro NIT ni se suman ni bloquean.
+    const corridas: LeanRun[] = [];
+    for (const run of todas) {
+      const slips = run.slips
+        .map((sl) => ({ ...sl, sedeEfectiva: this.sedeDe(empleados, run, sl) }))
+        .filter((sl) => sl.sedeEfectiva !== undefined && sedesEmisor.includes(sl.sedeEfectiva));
+      if (slips.length > 0) corridas.push({ ...run, slips });
+    }
+    return { periodo, sedeId, emisor, empleador: empleador.empleador, sedes, sedesEmisor, veTodas, empleados, corridas };
   }
 
   /** Contexto para ajustar un documento ya emitido: el de su mes. */
@@ -358,9 +388,13 @@ export class NominaPeriodoService {
   }
 
   /** Sede efectiva de una colilla: la suya, la de la corrida o la del expediente. */
-  private sedeDe(ctx: ContextoPeriodo, run: LeanRun, slip: LeanRun['slips'][number], empleadoId: string): string | undefined {
+  private sedeDe(
+    empleados: Map<string, EmpleadoConsolidar & { sedeId?: string }>,
+    run: LeanRun,
+    slip: LeanRun['slips'][number],
+  ): string | undefined {
     const s = slip.sedeId ?? run.sedeId;
-    return s ? String(s) : ctx.empleados.get(empleadoId)?.sedeId;
+    return s ? String(s) : empleados.get(slip.employeeId)?.sedeId;
   }
 
   /** Trabajadores con colilla en una corrida CERRADA del mes, dentro de las sedes del emisor al alcance. Orden estable (el cursor). */
@@ -369,8 +403,7 @@ export class NominaPeriodoService {
     for (const run of ctx.corridas) {
       if (run.status !== 'cerrada') continue;
       for (const slip of run.slips) {
-        const sede = this.sedeDe(ctx, run, slip, slip.employeeId);
-        if (sede && ctx.sedes.includes(sede)) ids.add(slip.employeeId);
+        if (slip.sedeEfectiva && ctx.sedes.includes(slip.sedeEfectiva)) ids.add(slip.employeeId);
       }
     }
     return [...ids].sort();
@@ -390,6 +423,17 @@ export class NominaPeriodoService {
     const nombre = this.nombre(ctx, id);
     if (!empleado) {
       return { ok: false as const, bloqueos: [`${nombre}: ya no está en el expediente de empleados.`] };
+    }
+    if (!ctx.veTodas) {
+      const fuera = ctx.corridas.some((r) =>
+        r.slips.some((sl) => sl.employeeId === id && sl.sedeEfectiva && !ctx.sedes.includes(sl.sedeEfectiva)),
+      );
+      if (fuera) {
+        return {
+          ok: false as const,
+          bloqueos: [`${nombre}: tiene liquidación en sedes que no puedes ver; emítelo un usuario con acceso a todas las sedes del NIT.`],
+        };
+      }
     }
     // Se pasan las corridas cerradas Y las borradores del trabajador: un borrador del mes lo bloquea.
     const slips: CorridaColilla[] = [];
@@ -452,7 +496,7 @@ export class NominaPeriodoService {
     const salida = new Map<string, PayrollEDocumentDocument>();
     if (porDoc.size === 0) return salida;
     const filas = await this.docs
-      .find({ 'emisor.nitNorm': ctx.emisor.nitNorm, periodo: ctx.periodo, tipoXml: '102', vigente: true, 'empleado.docNumber': { $in: [...porDoc.keys()] } })
+      .find({ 'emisor.nitNorm': ctx.emisor.nitNorm, periodo: ctx.periodo, tipoXml: '102', vigente: true, sedeId: { $in: ctx.sedesEmisor.map((x) => new Types.ObjectId(x)) }, 'empleado.docNumber': { $in: [...porDoc.keys()] } })
       .exec();
     for (const f of filas) {
       const id = porDoc.get(f.empleado?.docNumber ?? '');
@@ -492,13 +536,14 @@ export class NominaPeriodoService {
     path: string,
     detail: Record<string, string>,
     success = true,
+    metodo: 'GET' | 'POST' = 'POST',
   ): Promise<void> {
     await this.audit.record({
       userId: user.userId,
       userEmail: user.email,
       userName: user.name,
       role: user.role,
-      method: 'POST',
+      method: metodo,
       path,
       success,
       action,

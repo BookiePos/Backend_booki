@@ -21,29 +21,44 @@ const owner = { userId: 'u', email: 'o@x.co', name: 'O', role: 'owner', permissi
 const otra = { ...owner, role: 'cashier', sedeIds: [new Types.ObjectId().toString()] } as unknown as JwtUser;
 const EMISOR = { id: new Types.ObjectId().toString(), nitNorm: '900123456', nit: '900123456', nitDv: '7', razonSocial: 'X SAS', direccion: 'Cl 1', municipioDane: '05001' };
 
-function armar(opts: { ambiente?: string; testSetId?: string } = {}) {
+function armar(opts: { ambiente?: string; testSetId?: string; consulta?: any; alEnviar?: () => Promise<void> } = {}) {
   const filas: any[] = [];
+  const copia = <T>(v: T): T => JSON.parse(JSON.stringify(v));
   const modelo = {
-    findOne: () => ({ exec: async () => filas[0] ?? null }),
+    findOne: () => ({ exec: async () => (filas[0] ? { ...filas[0], conjunto: copia(filas[0].conjunto) } : null) }),
     create: async (d: any) => {
       const f = { _id: new Types.ObjectId(), ...d };
       filas.push(f);
-      return f;
+      return { ...f };
     },
-    findOneAndUpdate: () => ({ exec: async () => filas[0] ?? null }),
-    updateOne: (_f: any, u: any) => ({
+    // Bloqueo real: solo lo toma quien lo encuentra libre o vencido.
+    findOneAndUpdate: (_f: any, u: any) => ({
       exec: async () => {
-        Object.assign(filas[0], u.$set);
+        const f = filas[0];
+        if (!f || (f.bloqueoHasta && f.bloqueoHasta > new Date())) return null;
+        Object.assign(f, u.$set);
+        return { ...f, conjunto: copia(f.conjunto) };
+      },
+    }),
+    updateOne: (filtro: any, u: any) => ({
+      exec: async () => {
+        if (filtro.bloqueo && filas[0].bloqueo !== filtro.bloqueo) return;
+        Object.assign(filas[0], copia(u.$set ?? {}));
+        for (const k of Object.keys(u.$unset ?? {})) delete filas[0][k];
       },
     }),
   };
   const envios: any[] = [];
+  const grabados: number[] = [];
   const transmisor = {
     enviarSetPruebas: async (e: any) => {
       envios.push(e);
+      // Al salir a la red el set ya debe estar grabado como «enviando».
+      grabados.push(filas[0].conjunto.documentos.filter((d: any) => d.estado === 'enviando').length);
+      if (opts.alEnviar) await opts.alEnviar();
       return { ok: true, isValid: true, origen: 'dian', codigo: '00', mensajes: [], trackId: `T${envios.length}` };
     },
-    consultar: async () => ({ ok: true, isValid: true, origen: 'dian', codigo: '00', mensajes: [] }),
+    consultar: async () => opts.consulta ?? { ok: true, isValid: true, origen: 'dian', codigo: '00', mensajes: [] },
     enviar: async () => {
       throw new Error('el set de pruebas no usa el envío sincrónico');
     },
@@ -70,7 +85,7 @@ function armar(opts: { ambiente?: string; testSetId?: string } = {}) {
     { para: async () => transmisor } as any,
     audit as any,
   );
-  return { s, filas, envios };
+  return { s, filas, envios, grabados };
 }
 
 const dentro = <T>(f: () => Promise<T>) => TenantContext.run({ businessId: 'b1' } as any, f);
@@ -122,5 +137,57 @@ describe('HabilitacionNominaService', () => {
     expect(v.estado).toBe('sin_iniciar');
     expect(filas).toHaveLength(0);
     expect(envios).toHaveLength(0);
+  });
+
+  it('graba «enviando» con número y CUNE ANTES de cada envío', async () => {
+    const { s, grabados } = armar();
+    await dentro(() => s.iniciar(SEDE, owner));
+    expect(grabados).toEqual([1, 1, 1, 1]);
+  });
+
+  it('un set cortado en «enviando» se reconsulta por CUNE y no se reenvía con otro CUNE', async () => {
+    const { s, filas, envios } = armar();
+    await dentro(() => s.iniciar(SEDE, owner));
+    const docs = filas[0].conjunto.documentos;
+    docs[0].estado = 'enviando'; // corte de Vercel tras grabar y antes de la respuesta
+    const { numero, cune } = docs[0];
+    envios.length = 0;
+    await dentro(() => s.consultar(SEDE, owner));
+    expect(envios).toHaveLength(0);
+    expect(filas[0].conjunto.documentos[0]).toMatchObject({ numero, cune, estado: 'aceptado' });
+  });
+
+  it('«enviando» que la DIAN no recibió vuelve a la cola con número nuevo', async () => {
+    const { s, filas } = armar({ consulta: { ok: false, origen: 'adapter', codigo: 'NO_RECIBIDO_DIAN', mensajes: ['x'] } });
+    await dentro(() => s.iniciar(SEDE, owner));
+    filas[0].conjunto.documentos[0].estado = 'enviando';
+    const viejo = filas[0].conjunto.documentos[0].numero;
+    await dentro(() => s.iniciar(SEDE, owner));
+    expect(filas[0].conjunto.documentos[0].numero).not.toBe(viejo);
+  });
+
+  it('dos llamadas cruzadas: la segunda recibe 409 sin enviar y luego trabaja sobre la copia fresca', async () => {
+    let soltar!: () => void;
+    const puerta = new Promise<void>((r) => (soltar = r));
+    const { s, envios } = armar({ alEnviar: () => puerta });
+    const a = dentro(() => s.iniciar(SEDE, owner));
+    await new Promise((r) => setTimeout(r, 20));
+    await expect(dentro(() => s.iniciar(SEDE, owner))).rejects.toBeInstanceOf(ConflictException);
+    expect(envios).toHaveLength(1);
+    soltar();
+    await a;
+    const b = await dentro(() => s.iniciar(SEDE, owner));
+    expect(b.documentos.filter((d) => d.estado !== 'pendiente').length).toBeGreaterThanOrEqual(4);
+    expect(new Set(envios.map((e) => e.fullNumber)).size).toBe(envios.length);
+  });
+
+  it('la última nota del set es de Eliminar y se envía como TipoNota 2', async () => {
+    const { s, filas, envios } = armar();
+    await dentro(() => s.iniciar(SEDE, owner));
+    expect(filas[0].conjunto.documentos.filter((d: any) => d.nota === 'eliminar')).toHaveLength(1);
+    await dentro(() => s.consultar(SEDE, owner));
+    envios.length = 0;
+    await dentro(() => s.iniciar(SEDE, owner));
+    expect(envios.some((e) => /TipoNota[^>]*>2</.test(e.xmlFirmado))).toBe(true);
   });
 });

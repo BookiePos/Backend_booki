@@ -43,7 +43,11 @@ const emp = (id: Types.ObjectId, doc: string) => {
 };
 const lean = <T>(v: T) => ({ lean: () => ({ exec: async () => v }), exec: async () => v, sort: () => ({ exec: async () => v }) });
 
-function armar(corridas: any[], docs: any[] = []) {
+const SEDE2 = new Types.ObjectId();
+
+function armar(corridas: any[], docs: any[] = [], sedesEmisor: Types.ObjectId[] = [SEDE]) {
+  const auditoria: any[] = [];
+  const consultas: any[] = [];
   const emitir = vi.fn(async (modelo: any) => ({
     documentoId: new Types.ObjectId().toString(),
     fullNumber: 'NE1',
@@ -54,7 +58,10 @@ function armar(corridas: any[], docs: any[] = []) {
     _modelo: modelo,
   }));
   const docsModel = {
-    find: () => lean(docs),
+    find: (f: any) => {
+      consultas.push(f);
+      return lean(docs);
+    },
     findById: (id: string) => ({ exec: async () => docs.find((d) => String(d._id) === id) ?? null }),
     findOne: () => lean(docs[0] ?? null),
     updateOne: () => ({ exec: async () => undefined }),
@@ -63,13 +70,13 @@ function armar(corridas: any[], docs: any[] = []) {
     docsModel as any,
     { find: () => lean(corridas) } as any,
     { find: () => lean([]) } as any,
-    { find: () => lean([{ _id: SEDE }]) } as any,
+    { find: () => lean(sedesEmisor.map((_id) => ({ _id }))) } as any,
     { list: async () => [emp(E1, '111'), emp(E2, '222'), emp(E3, '333')] } as any,
     { obtenerPorSede: async () => EMISOR } as any,
     { emitir } as any,
-    { record: async () => undefined } as any,
+    { record: async (r: any) => auditoria.push(r) } as any,
   );
-  return { s, emitir };
+  return { s, emitir, auditoria, consultas };
 }
 const dentro = <T>(f: () => Promise<T>) => TenantContext.run({ businessId: 'b1' } as any, f);
 
@@ -191,7 +198,7 @@ describe('NominaPeriodoService.listar', () => {
 describe('NominaPeriodoService.ajustar', () => {
   const cabeza = (extra: object = {}) => ({
     _id: new Types.ObjectId(), sedeId: SEDE, periodo: '2026-10', fullNumber: 'NE1', cune: 'cune1', issueDate: '2026-10-31',
-    dianStatus: 'accepted', vigente: true, tipoXml: '102', empleado: { docNumber: '111' }, ...extra,
+    dianStatus: 'accepted', vigente: true, tipoXml: '102', emisor: { nitNorm: '900123456' }, empleado: { docNumber: '111' }, ...extra,
   });
 
   it('eliminar emite un 103 tipo 2 contra el último aceptado', async () => {
@@ -205,7 +212,7 @@ describe('NominaPeriodoService.ajustar', () => {
   it('reemplazar recalcula desde las corridas actuales y emite un 103 tipo 1', async () => {
     const d = cabeza();
     const { s, emitir } = armar([run('cerrada', [[E1, 'Ana']])], [d]);
-    consolidar.mockReturnValue({ ok: true, modelo: { nuevo: true }, advertencias: [], recorte: {} });
+    consolidar.mockReturnValue({ ok: true, modelo: { nuevo: true, trabajador: { numeroDocumento: '111' } }, advertencias: [], recorte: {} });
     await dentro(() => s.ajustar(String(d._id), 'reemplazar', owner));
     expect(consolidar).toHaveBeenCalledTimes(1);
     expect(emitir.mock.calls[0]![0]).toMatchObject({ tipoNota: 1, documento: { nuevo: true } });
@@ -225,5 +232,88 @@ describe('NominaPeriodoService.ajustar', () => {
     await expect(dentro(() => s.ajustar(String(d._id), 'eliminar', { ...owner, role: 'cashier', sedeIds: [SEDE.toString()] } as unknown as JwtUser))).rejects.toBeInstanceOf(ForbiddenException);
     await expect(dentro(() => s.ajustar(new Types.ObjectId().toString(), 'eliminar', owner))).rejects.toThrow(/no encontrado/);
     expect(emitir).not.toHaveBeenCalled();
+  });
+});
+
+describe('dos NIT y alcance del usuario', () => {
+  it('a consolidar solo llegan colillas de sedes del emisor; el borrador de otro NIT no bloquea', async () => {
+    const { s } = armar([run('cerrada', [[E1, 'Ana']]), run('borrador', [[E1, 'Ana']], OTRA_SEDE)]);
+    await dentro(() => s.preparar('2026-10', SEDE.toString(), owner));
+    const entrada = consolidar.mock.calls[0]![0] as any;
+    expect(entrada.slips).toHaveLength(1);
+    expect(entrada.slips[0].estado).toBe('cerrada');
+    expect(entrada.slips[0].sedeId).toBe(SEDE.toString());
+  });
+
+  it('usuario limitado: bloquea al trabajador con liquidación en otra sede del NIT', async () => {
+    const limitado = { ...owner, role: 'cashier', sedeIds: [SEDE.toString()] } as unknown as JwtUser;
+    const { s, emitir } = armar([run('cerrada', [[E1, 'Ana']]), run('cerrada', [[E1, 'Ana']], SEDE2)], [], [SEDE, SEDE2]);
+    const p = await dentro(() => s.preparar('2026-10', SEDE.toString(), limitado));
+    expect(p.trabajadores[0]).toMatchObject({ ok: false });
+    expect(p.trabajadores[0]!.bloqueos[0]).toMatch(/sedes que no puedes ver/);
+    const e = await dentro(() => s.emitir('2026-10', SEDE.toString(), limitado));
+    expect(e.resultados[0]!.estado).toBe('bloqueado');
+    expect(emitir).not.toHaveBeenCalled();
+    expect(consolidar).not.toHaveBeenCalled();
+  });
+
+  it('quien ve todas las sedes del NIT sí emite al trabajador multi-sede', async () => {
+    const { s, emitir } = armar([run('cerrada', [[E1, 'Ana']]), run('cerrada', [[E1, 'Ana']], SEDE2)], [], [SEDE, SEDE2]);
+    await dentro(() => s.emitir('2026-10', SEDE.toString(), owner));
+    expect(emitir).toHaveBeenCalledTimes(1);
+    expect(((consolidar.mock.calls[0]![0] as any).slips as unknown[]).length).toBe(2);
+  });
+});
+
+describe('lotes, existentes y auditoría', () => {
+  it('presupuesto global: pasado el tope no empieza otro y devuelve el cursor', async () => {
+    const { s, emitir } = armar([run('cerrada', [[E1, 'Ana'], [E2, 'Beto'], [E3, 'Carla']])]);
+    const r = await dentro(() => s.emitir('2026-10', SEDE.toString(), owner, { presupuestoMs: 0 }));
+    expect(emitir).toHaveBeenCalledTimes(1);
+    expect(r.pendientes).toBe(2);
+    expect(r.siguienteCursor).toBe(r.resultados[0]!.empleadoId);
+  });
+
+  it('LOTE_EMISION_MAX es 3', () => {
+    expect(LOTE_EMISION_MAX).toBe(3);
+  });
+
+  it('existentes normaliza el documento como lo guarda el 102 y se limita a las sedes del emisor', async () => {
+    const e = { _id: E1, docNumber: '1.017-123', firstName: 'N', lastName: 'A', sedeId: SEDE };
+    const doc = { _id: new Types.ObjectId(), fullNumber: 'NE3', dianStatus: 'accepted', empleado: { docNumber: '1017123' } };
+    const { s, consultas, emitir } = armar([run('cerrada', [[E1, 'Ana']])], [doc]);
+    (s as any).empleados = { list: async () => [{ ...e, toObject: () => e }] };
+    const r = await dentro(() => s.emitir('2026-10', SEDE.toString(), owner));
+    expect(r.resultados[0]).toMatchObject({ estado: 'existente', fullNumber: 'NE3' });
+    expect(emitir).not.toHaveBeenCalled();
+    const f = consultas.find((c) => c['empleado.docNumber']);
+    expect(f['empleado.docNumber']).toEqual({ $in: ['1017123'] });
+    expect(f.sedeId.$in.map(String)).toEqual([SEDE.toString()]);
+  });
+
+  it('el listado deja fila de auditoría', async () => {
+    const { s, auditoria } = armar([], []);
+    await dentro(() => s.listar('2026-10', SEDE.toString(), owner));
+    expect(auditoria[0]).toMatchObject({ action: 'einvoicing.nomina.periodo.listada', method: 'GET' });
+  });
+
+  const docBase = () => ({
+    _id: new Types.ObjectId(), sedeId: SEDE, periodo: '2026-10', fullNumber: 'NE1', cune: 'c', issueDate: '2026-10-31',
+    dianStatus: 'accepted', vigente: true, tipoXml: '102', emisor: { nitNorm: '900123456' }, empleado: { docNumber: '111' },
+  });
+
+  it('reemplazar: si cambió el documento del trabajador, 409 y no emite', async () => {
+    const d = docBase();
+    const { s, emitir } = armar([run('cerrada', [[E1, 'Ana']])], [d]);
+    consolidar.mockReturnValue({ ok: true, modelo: { trabajador: { numeroDocumento: '999' } }, advertencias: [], recorte: {} });
+    await expect(dentro(() => s.ajustar(String(d._id), 'reemplazar', owner))).rejects.toThrow(/identidad del trabajador/);
+    expect(emitir).not.toHaveBeenCalled();
+  });
+
+  it('reemplazar: sin corrida sugiere Eliminar', async () => {
+    const d = docBase();
+    const { s } = armar([run('cerrada', [[E1, 'Ana']])], [d]);
+    consolidar.mockReturnValue({ ok: false, bloqueos: ['sin corrida cerrada.'] });
+    await expect(dentro(() => s.ajustar(String(d._id), 'reemplazar', owner))).rejects.toThrow(/usa Eliminar/);
   });
 });

@@ -15,16 +15,22 @@ import { tiempoLaborado360 } from './consolidar';
 import type { DocumentoNe } from './modelo';
 
 export type TipoDocSetNe = 'nie' | 'niae';
-export type EstadoDocSetNe = 'pendiente' | 'enviado' | 'aceptado' | 'rechazado';
+/** `enviando`: grabado ANTES de salir a la red; si el proceso se corta, se reconsulta por CUNE antes de reenviar. */
+export type EstadoDocSetNe = 'pendiente' | 'enviando' | 'enviado' | 'aceptado' | 'rechazado';
 
 /** Documentos aceptados que exige el set, por tipo (guía DIAN de nómina electrónica). */
 export const SET_NOMINA_EXIGIDO: Readonly<Record<TipoDocSetNe, number>> = { nie: 4, niae: 4 };
 
 /** Prefijos de pruebas: distintos de los reales (`NE` / `NA`), así que nunca chocan en la DIAN ni en BookiPos. */
+/** Cuántas de las notas del set son de Eliminar (el resto Reemplazar). Configurable: el portal de la DIAN manda. */
+export const NOTAS_ELIMINAR_DEL_SET = 1;
+
 export const PREFIJO_SET_NE: Readonly<Record<TipoDocSetNe, string>> = { nie: 'NEP', niae: 'NAP' };
 
 export interface DocSetNe {
   tipo: TipoDocSetNe;
+  /** Solo en notas: Reemplazar (TipoNota 1) o Eliminar (TipoNota 2). */
+  nota?: 'reemplazar' | 'eliminar';
   /** Consecutivo propio del set (el número es prefijo + consecutivo). */
   numero: number;
   estado: EstadoDocSetNe;
@@ -49,8 +55,9 @@ export interface SetHabilitacionNe {
 
 const TIPOS: readonly TipoDocSetNe[] = ['nie', 'niae'];
 
-const nuevoDoc = (tipo: TipoDocSetNe, numero: number): DocSetNe => ({
+const nuevoDoc = (tipo: TipoDocSetNe, numero: number, nota?: DocSetNe['nota']): DocSetNe => ({
   tipo,
+  ...(nota ? { nota } : {}),
   numero,
   estado: 'pendiente',
   cune: null,
@@ -71,14 +78,18 @@ export function inicioSetNomina(ahoraMs: number): number {
 /** Plan inicial: las nóminas primero (cada nota reemplaza a una nómina YA aceptada del set). */
 export function planSetNomina(testSetId: string, ahora: Date): SetHabilitacionNe {
   let n = inicioSetNomina(ahora.getTime());
-  const documentos = TIPOS.flatMap((tipo) => Array.from({ length: SET_NOMINA_EXIGIDO[tipo] }, () => nuevoDoc(tipo, n++)));
+  const documentos = TIPOS.flatMap((tipo) =>
+    Array.from({ length: SET_NOMINA_EXIGIDO[tipo] }, (_, i) =>
+      nuevoDoc(tipo, n++, tipo === 'niae' ? (i >= SET_NOMINA_EXIGIDO.niae - NOTAS_ELIMINAR_DEL_SET ? 'eliminar' : 'reemplazar') : undefined),
+    ),
+  );
   return { testSetId, iniciadaAt: ahora.toISOString(), siguiente: n, documentos };
 }
 
 /** Los rechazados vuelven a la cola con un número nuevo (un número ya enviado no se reusa). */
 export function reintentarRechazados(s: SetHabilitacionNe): SetHabilitacionNe {
   let siguiente = s.siguiente;
-  const documentos = s.documentos.map((d) => (d.estado === 'rechazado' ? nuevoDoc(d.tipo, siguiente++) : d));
+  const documentos = s.documentos.map((d) => (d.estado === 'rechazado' ? nuevoDoc(d.tipo, siguiente++, d.nota) : d));
   return { ...s, siguiente, documentos };
 }
 
@@ -107,7 +118,7 @@ export function resumenSetNomina(s: SetHabilitacionNe): ResumenSetNe {
           exigidos: SET_NOMINA_EXIGIDO[t],
           aceptados: contar(docs, 'aceptado'),
           rechazados: contar(docs, 'rechazado'),
-          enCurso: contar(docs, 'pendiente', 'enviado'),
+          enCurso: contar(docs, 'pendiente', 'enviando', 'enviado'),
         },
       ];
     }),
@@ -139,8 +150,8 @@ export const TRABAJADOR_SINTETICO = {
   segundoApellido: 'HABILITACION',
   primerNombre: 'TRABAJADOR',
   ingreso: '2025-01-02',
-  /** Sueldo mensual: $2.000.000 en centavos. */
-  sueldo: 200_000_000 as Centavos,
+  /** Sueldo mensual: $4.000.000 en centavos. Pasa de 2 SMMLV, así que NO lleva auxilio de transporte. */
+  sueldo: 400_000_000 as Centavos,
 } as const;
 
 const ultimoDia = (mes: string): string => {

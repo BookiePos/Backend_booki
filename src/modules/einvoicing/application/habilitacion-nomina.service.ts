@@ -134,16 +134,6 @@ export class HabilitacionNominaService {
         if (!fila) throw err;
       }
     }
-    let set = fila.conjunto;
-    // Cambió el TestSetId: el set viejo no vale para el nuevo.
-    if (set.testSetId !== base.testSetId) {
-      if (!enviar) {
-        return this.vista(set, 'El TestSetId de nómina cambió: inicia la habilitación de nuevo.');
-      }
-      set = planSetNomina(base.testSetId, ahora);
-    }
-    if (resumenSetNomina(set).aprobada) return this.vista(set);
-
     const bloqueo = randomUUID();
     const tomado = await this.model
       .findOneAndUpdate(
@@ -154,15 +144,28 @@ export class HabilitacionNominaService {
       .exec();
     if (!tomado) throw new ConflictException('Ya hay una corrida de la habilitación en curso: espera un minuto y consulta el avance.');
 
+    // Desde aquí manda la copia leída DESPUÉS de tomar el bloqueo: la anterior pudo quedar vieja.
+    let set = tomado.conjunto;
     let error: string | undefined;
+    const persistir = async (nuevo: SetHabilitacionNe): Promise<void> => {
+      set = nuevo;
+      await this.model.updateOne({ _id: fila!._id, bloqueo }, { $set: { conjunto: nuevo } }).exec();
+    };
     try {
-      const limite = Date.now() + PRESUPUESTO_CORRIDA_MS;
-      set = await this.consultarEnviados(set, base.transmisor, limite);
-      if (enviar) {
-        set = reintentarRechazados(set);
-        const r = await this.enviarPendientes(set, base, limite, ahora);
-        set = r.set;
-        error = r.error;
+      if (set.testSetId !== base.testSetId) {
+        // Cambió el TestSetId: el set viejo no vale para el nuevo.
+        if (!enviar) error = 'El TestSetId de nómina cambió: inicia la habilitación de nuevo.';
+        else await persistir(planSetNomina(base.testSetId, ahora));
+      }
+      if (!(set.testSetId !== base.testSetId) && !resumenSetNomina(set).aprobada) {
+        const limite = Date.now() + PRESUPUESTO_CORRIDA_MS;
+        await persistir(await this.consultarEnviados(set, base.transmisor, limite));
+        if (enviar) {
+          await persistir(reintentarRechazados(set));
+          const r = await this.enviarPendientes(set, base, limite, ahora, persistir);
+          set = r.set;
+          error = r.error;
+        }
       }
     } finally {
       // Siempre se guarda lo avanzado y se suelta el bloqueo (un envío hecho no se puede perder).
@@ -224,6 +227,7 @@ export class HabilitacionNominaService {
     base: Awaited<ReturnType<HabilitacionNominaService['preparar']>>,
     limite: number,
     ahora: Date,
+    persistir: (s: SetHabilitacionNe) => Promise<void>,
   ): Promise<{ set: SetHabilitacionNe; error?: string }> {
     let set = inicial;
     for (let i = 0; i < set.documentos.length; i++) {
@@ -248,6 +252,9 @@ export class HabilitacionNominaService {
       }
       const prefijo = PREFIJO_SET_NE[d.tipo];
       const enviado: DocSetNe = { ...d, cune: armado.cune, fecha: reloj.fecha, intentos: d.intentos + 1 };
+      // Número + CUNE + estado se graban ANTES de salir: un corte no reenvía el mismo número con otro CUNE.
+      set = this.poner(set, i, { ...enviado, estado: 'enviando' });
+      await persistir(set);
       const r = await this.llamar(limite, (p) =>
         base.transmisor.enviarSetPruebas({
           tipo: d.tipo === 'niae' ? 'payroll_adjustment' : 'payroll',
@@ -297,6 +304,16 @@ export class HabilitacionNominaService {
       { departamento: base.empleador.departamento, municipio: base.empleador.municipio, direccion: base.empleador.direccion },
       reloj.fecha,
     );
+    if (d.tipo === 'niae' && pred && d.nota === 'eliminar') {
+      return armarNominaAjuste(
+        {
+          tipoNota: TipoNota.Eliminar,
+          emision,
+          predecesor: { numero: `${PREFIJO_SET_NE.nie}${pred.numero}`, cune: pred.cune!, fecha: pred.fecha! },
+        },
+        base.ctx,
+      );
+    }
     if (d.tipo === 'niae' && pred) {
       return armarNominaAjuste(
         {
@@ -317,7 +334,7 @@ export class HabilitacionNominaService {
     let actual = set;
     for (let i = 0; i < actual.documentos.length; i++) {
       const d = actual.documentos[i]!;
-      if (d.estado !== 'enviado') continue;
+      if (d.estado !== 'enviado' && d.estado !== 'enviando') continue;
       if (limite - Date.now() < PRESUPUESTO_RED_MIN_MS * 2) break;
       const r = await this.llamar(limite, (p) =>
         transmisor.consultar({ trackId: d.trackId ?? undefined, cufe: d.cune ?? undefined, ...p }),
@@ -325,6 +342,10 @@ export class HabilitacionNominaService {
       const destino = this.destino(r);
       if (destino === 'accepted') actual = this.poner(actual, i, { ...d, estado: 'aceptado', mensaje: null });
       else if (destino === 'rejected') actual = this.poner(actual, i, { ...d, estado: 'rechazado', mensaje: this.texto(r) });
+      else if (d.estado === 'enviando' && r.codigo === 'NO_RECIBIDO_DIAN') {
+        // La DIAN confirma que nunca lo recibió: queda rechazado local y vuelve a la cola con número nuevo.
+        actual = this.poner(actual, i, { ...d, estado: 'rechazado', mensaje: 'El envío se cortó antes de llegar a la DIAN; se reenvía con número nuevo.' });
+      }
       // Sin veredicto: sigue enviado (la DIAN aún valida o no hubo red).
     }
     return actual;
