@@ -21,6 +21,7 @@ import {
   type SecretoCifrado,
 } from '../../../shared/crypto/secretos';
 import type { ConfigurarNominaDto } from './dto/configurar-nomina.dto';
+import type { ConfigurarFacturaDto } from './dto/configurar-factura.dto';
 import { normalizarNit } from '../domain/consecutivo-unico';
 import {
   CAMPOS_SECRETOS_EMISOR,
@@ -51,7 +52,8 @@ import { AuditService } from '../../core-audit/application/audit.service';
 export interface CredencialesEmisorInput {
   facturaSoftwareId?: string;
   facturaPin?: string;
-  facturaTestSetId?: string;
+  /** `null` borra el TestSetId de factura guardado. */
+  facturaTestSetId?: string | null;
   nominaSoftwareId?: string;
   nominaPin?: string;
   /** `null` borra el TestSetId guardado (al pasar a producción, por ejemplo). */
@@ -316,9 +318,10 @@ export class FiscalEmittersService {
     // Se cifra todo antes de escribir: si falta la llave no queda nada a medias.
     const set: Record<string, unknown> = {};
     if (input.facturaSoftwareId !== undefined) set.facturaSoftwareId = input.facturaSoftwareId;
-    if (input.facturaTestSetId !== undefined) set.facturaTestSetId = input.facturaTestSetId;
     if (input.nominaSoftwareId !== undefined) set.nominaSoftwareId = input.nominaSoftwareId;
     const unset: Record<string, ''> = {};
+    if (input.facturaTestSetId === null) unset.facturaTestSetId = '';
+    else if (input.facturaTestSetId !== undefined) set.facturaTestSetId = input.facturaTestSetId;
     if (input.nominaTestSetId === null) unset.nominaTestSetId = '';
     else if (input.nominaTestSetId !== undefined) set.nominaTestSetId = input.nominaTestSetId;
     if (input.facturaPin) set.facturaPin = secreto(input.facturaPin, 'facturaPin');
@@ -380,6 +383,58 @@ export class FiscalEmittersService {
       success: true,
       ip,
       action: teniaPin ? 'einvoicing.nomina.actualizada' : 'einvoicing.nomina.configurada',
+      detail: { emisorId: emisor.id as string, conTestSetId: String(!!dto.testSetId), testSetIdBorrado: String(dto.testSetId === null) },
+    });
+    return this.vistaDeSede(sedeId, user);
+  }
+
+  /**
+   * Guarda las credenciales DIAN de FACTURA electrónica del emisor de la sede
+   * (SoftwareID, PIN cifrado, TestSetId). Mismo contrato que `configurarNomina`:
+   * sin llave de cifrado responde 503 y no escribe nada; el PIN no sale.
+   */
+  async configurarFactura(
+    sedeId: string,
+    dto: ConfigurarFacturaDto,
+    user: JwtUser,
+    ip?: string,
+  ): Promise<{ emisor: EmisorVista | null; estado: EstadoConfiguracion | null }> {
+    assertSedeAccess(user, sedeId);
+    let llave: Buffer | null;
+    try {
+      llave = leerLlave();
+    } catch {
+      llave = null;
+    }
+    if (!llave) {
+      throw new ServiceUnavailableException(
+        `Falta la llave de cifrado (${VARIABLE_LLAVE}) o está mal formada: no se puede guardar el PIN de factura. Avisa a soporte.`,
+      );
+    }
+    const emisor = await this.obtenerPorSede(sedeId);
+    if (!emisor) {
+      throw new BadRequestException(
+        'La sede no tiene emisor fiscal: configura primero los datos fiscales de la sede.',
+      );
+    }
+    const antes = await this.conSecretosOrFail(emisor.id as string);
+    const teniaPin = antes.get('facturaPin') != null;
+    await this.guardarCredenciales(emisor.id as string, {
+      facturaSoftwareId: dto.softwareId,
+      facturaPin: dto.pin,
+      ...(dto.testSetId !== undefined ? { facturaTestSetId: dto.testSetId } : {}),
+    });
+    await this.audit.record({
+      userId: user.userId,
+      userEmail: user.email,
+      userName: user.name,
+      role: user.role,
+      method: 'PUT',
+      path: `/einvoicing/sedes/${sedeId}/emisor/factura`,
+      statusCode: 200,
+      success: true,
+      ip,
+      action: teniaPin ? 'einvoicing.factura.actualizada' : 'einvoicing.factura.configurada',
       detail: { emisorId: emisor.id as string, conTestSetId: String(!!dto.testSetId), testSetIdBorrado: String(dto.testSetId === null) },
     });
     return this.vistaDeSede(sedeId, user);

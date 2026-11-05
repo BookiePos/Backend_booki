@@ -26,6 +26,7 @@ import {
   CertificadoEmisorService,
   type ArchivoCertificado,
 } from '../application/certificado-emisor.service';
+import { ConfigurarFacturaDto } from '../application/dto/configurar-factura.dto';
 import { ConfigurarNominaDto } from '../application/dto/configurar-nomina.dto';
 import { CargarCertificadoDto } from '../application/dto/cargar-certificado.dto';
 import { LlaveCifradoInterceptor } from './llave-cifrado.interceptor';
@@ -104,6 +105,22 @@ export class EinvoicingController {
     @Ip() ip: string,
   ) {
     return this.certificados.cargar(sedeId, file, dto.password, user, ip);
+  }
+
+  /**
+   * Guarda SoftwareID, PIN (cifrado) y TestSetId de la FACTURA electrónica del
+   * emisor. Igual que la nómina: solo el Dueño (`einvoicing.certificate`) y 503
+   * sin llave de cifrado.
+   */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CERTIFICATE)
+  @Put('sedes/:sedeId/emisor/factura')
+  configurarFactura(
+    @Param('sedeId') sedeId: string,
+    @Body() dto: ConfigurarFacturaDto,
+    @CurrentUser() user: JwtUser,
+    @Ip() ip: string,
+  ) {
+    return this.emisores.configurarFactura(sedeId, dto, user, ip);
   }
 
   /**

@@ -25,3 +25,12 @@ describe('EinvoicingController.configurarNomina · permisos', () => {
     ]);
   });
 });
+
+describe('EinvoicingController.configurarFactura · permisos', () => {
+  it('PUT sedes/:sedeId/emisor/factura exige einvoicing.certificate', () => {
+    const handler = EinvoicingController.prototype.configurarFactura;
+    expect(Reflect.getMetadata(PERMISSIONS_KEY, handler)).toEqual([
+      PERMISSIONS.EINVOICING_CERTIFICATE,
+    ]);
+  });
+});
