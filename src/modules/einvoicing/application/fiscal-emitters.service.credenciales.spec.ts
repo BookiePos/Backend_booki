@@ -74,8 +74,10 @@ describe('FiscalEmittersService', () => {
         emisores.set(e.id, e);
         return e;
       }),
-      updateOne: vi.fn((f: { _id: unknown }, u: { $set: Record<string, unknown> }) => {
-        Object.assign(emisores.get(String(f._id)), u.$set);
+      updateOne: vi.fn((f: { _id: unknown }, u: { $set?: Record<string, unknown>; $unset?: Record<string, ''> }) => {
+        const e = emisores.get(String(f._id));
+        Object.assign(e, u.$set);
+        for (const k of Object.keys(u.$unset ?? {})) delete e[k];
         return chain({ acknowledged: true });
       }),
     };
@@ -338,6 +340,28 @@ describe('FiscalEmittersService', () => {
       expect(audit.record).not.toHaveBeenCalled();
     });
 
+    it('llave de cifrado mal formada: 503 y no escribe nada', async () => {
+      const s = nuevaSede();
+      const e = await svc.asegurarParaSede(s);
+      process.env[VARIABLE_LLAVE] = 'esto-no-es-una-llave';
+      await expect(
+        svc.configurarNomina(s, { softwareId: UUID_SW, pin: 'pin-ne' }, dueno(s)),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(model.updateOne).not.toHaveBeenCalled();
+      expect(emisores.get(e.id).nominaSoftwareId).toBeUndefined();
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+
+    it('testSetId: null borra el que había sin tocar lo demás', async () => {
+      const s = nuevaSede();
+      const e = await svc.asegurarParaSede(s);
+      await svc.configurarNomina(s, { softwareId: UUID_SW, pin: 'a', testSetId: UUID_TS }, dueno(s));
+      const r = await svc.configurarNomina(s, { softwareId: UUID_SW, pin: 'b', testSetId: null }, dueno(s));
+      expect(emisores.get(e.id).nominaTestSetId).toBeUndefined();
+      expect(emisores.get(e.id).nominaSoftwareId).toBe(UUID_SW);
+      expect(r.emisor).toMatchObject({ tieneNominaTestSetId: false, tieneNominaPin: true });
+    });
+
     it('sede ajena: 403 sin tocar el emisor', async () => {
       const s = nuevaSede();
       await svc.asegurarParaSede(s);
@@ -377,6 +401,19 @@ describe('FiscalEmittersService', () => {
       expect((await validar({ softwareId: uuid, pin: '' })).length).toBeGreaterThan(0);
       expect((await validar({ softwareId: uuid })).length).toBeGreaterThan(0);
       expect((await validar({ softwareId: uuid, pin: 'x', testSetId: 'abc' })).length).toBeGreaterThan(0);
+    });
+
+    it('el PIN de solo espacios no pasa, y se recortan PIN, softwareId y testSetId', async () => {
+      const uuid = '3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b';
+      expect((await validar({ softwareId: uuid, pin: '    ' })).length).toBeGreaterThan(0);
+      const dto = plainToInstance(ConfigurarNominaDto, { softwareId: ` ${uuid} `, pin: '  1234 ', testSetId: ` ${uuid}\n` });
+      expect(await validate(dto)).toEqual([]);
+      expect(dto).toMatchObject({ softwareId: uuid, pin: '1234', testSetId: uuid });
+    });
+
+    it('testSetId: null es válido (borra el guardado)', async () => {
+      const uuid = '3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b';
+      expect(await validar({ softwareId: uuid, pin: 'x', testSetId: null })).toEqual([]);
     });
   });
 });

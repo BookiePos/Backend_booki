@@ -47,6 +47,21 @@ function orUndef(v?: string): string | undefined {
   return v ? v : undefined;
 }
 
+/** Prefijo con el que la API devuelve el número de cuenta enmascarado. */
+export const MASCARA_CUENTA = '••••';
+
+/** `••••1234` (últimos 4 dígitos); vacío si no hay cuenta. */
+export function enmascararCuenta(cuenta?: string | null): string | undefined {
+  if (!cuenta) return undefined;
+  return `${MASCARA_CUENTA}${cuenta.slice(-4)}`;
+}
+
+/** Empleado como lo ve la API: sin el número de cuenta completo. */
+export type EmpleadoVista = Record<string, unknown> & {
+  accountNumber?: string;
+  tieneCuenta: boolean;
+};
+
 @Injectable()
 export class EmployeesService {
   constructor(
@@ -55,6 +70,24 @@ export class EmployeesService {
     @InjectModel(Position.name)
     private readonly positions: Model<PositionDocument>,
   ) {}
+
+  /**
+   * Vista PÚBLICA del empleado para las respuestas de la API: el número de
+   * cuenta sale enmascarado (`••••1234`) y se añade `tieneCuenta`. El número
+   * completo sigue guardado; el consolidador de nómina lo lee con
+   * `list()` / `getOrFail()` / `create()` / `update()`, que devuelven el
+   * documento crudo (uso interno: NO los serialices tal cual en un controlador).
+   */
+  aVista(emp: EmployeeDocument): EmpleadoVista {
+    const plano = (
+      typeof emp.toObject === 'function' ? emp.toObject() : { ...emp }
+    ) as unknown as Record<string, unknown> & { accountNumber?: string };
+    return {
+      ...plano,
+      accountNumber: enmascararCuenta(plano.accountNumber),
+      tieneCuenta: !!plano.accountNumber,
+    };
+  }
 
   /**
    * Alcance por sede (ítem 3.9). Sin `user` (seeds, nómina) no se filtra.
@@ -224,7 +257,12 @@ export class EmployeesService {
     if (dto.bank !== undefined) emp.bank = orUndef(dto.bank);
     if (dto.accountType !== undefined)
       emp.accountType = orUndef(dto.accountType) as AccountType;
-    if (dto.accountNumber !== undefined)
+    // Un formulario que reenvía el valor enmascarado (`••••1234`) no debe pisar
+    // el número real: se ignora. `''` sí lo limpia.
+    if (
+      dto.accountNumber !== undefined &&
+      !dto.accountNumber.startsWith(MASCARA_CUENTA)
+    )
       emp.accountNumber = orUndef(dto.accountNumber);
 
     // Documentos / certificados
