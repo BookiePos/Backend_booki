@@ -130,6 +130,14 @@ export class PayrollEDocument {
   @Prop()
   pendienteCierrePredecesor?: boolean;
 
+  /**
+   * El 103 ocupa su predecesor mientras no lo rechace la DIAN (borrador,
+   * firmado, en vuelo o aceptado). Un rechazo lo pone en false. Booleano en vez
+   * de `$in` de estados: el filtro parcial de Mongo solo admite igualdad.
+   */
+  @Prop()
+  ocupaPredecesor?: boolean;
+
   @Prop({ required: true, enum: DIAN_STATUS, default: 'draft' })
   dianStatus!: DianStatus;
 
@@ -187,16 +195,18 @@ export const INDICE_NOMINA_102_VIGENTE = {
 } as const;
 
 /**
- * Un 103 vigente por (predecesor, tipo de nota): reintentar el mismo ajuste no
- * crea otro, y un rechazo se corrige con el MISMO tipo; cambiar de idea
- * (Reemplazar ↔ Eliminar) es un documento nuevo, no una mutación del anterior.
+ * Un solo 103 NO rechazado por predecesor, sea cual sea su tipo de nota: un
+ * Reemplazar y un Eliminar sobre el mismo documento no conviven (si el Eliminar
+ * se aceptara primero y luego el Reemplazar, la DIAN tendría dos documentos
+ * vigentes). Un rechazado se corrige con el MISMO tipo (mismo documento); para
+ * cambiar de tipo hay que esperar al rechazo.
  */
 export const INDICE_NOMINA_103_POR_PREDECESOR = {
-  keys: { 'emisor.nitNorm': 1, 'predecesor.cune': 1, tipoNota: 1 },
+  keys: { 'emisor.nitNorm': 1, 'predecesor.cune': 1 },
   options: {
-    name: 'nomina_103_por_predecesor_unico',
+    name: 'nomina_103_un_ajuste_por_predecesor',
     unique: true,
-    partialFilterExpression: { tipoXml: '103', vigente: true },
+    partialFilterExpression: { tipoXml: '103', ocupaPredecesor: true },
   },
 } as const;
 

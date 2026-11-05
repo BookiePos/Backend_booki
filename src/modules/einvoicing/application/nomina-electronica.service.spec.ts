@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { Types } from 'mongoose';
 
 vi.mock('@nestjs/mongoose', async (importOriginal) => {
@@ -85,6 +85,13 @@ function modeloFalso() {
           leer(f, 'empleado.docNumber') === leer(d, 'empleado.docNumber')
         ) {
           throw Object.assign(new Error('E11000 nomina_102_vigente_unico'), { code: 11000, keyPattern: { periodo: 1 } });
+        }
+      }
+      if (d.tipoXml === '103' && d.ocupaPredecesor) {
+        for (const f of filas.values()) {
+          if (f.tipoXml === '103' && f.ocupaPredecesor && leer(f, 'predecesor.cune') === leer(d, 'predecesor.cune')) {
+            throw Object.assign(new Error('E11000 nomina_103_un_ajuste_por_predecesor'), { code: 11000, keyPattern: { 'predecesor.cune': 1 } });
+          }
         }
       }
       const fila = { _id: new Types.ObjectId(), ...d };
@@ -443,6 +450,63 @@ describe('NominaElectronicaService', () => {
       // Y reintentar el Reemplazar rechazado conserva su número y su tipo.
       const r3 = await emitir(modeloAjuste(1, CUNE_PRED));
       expect(r3).toMatchObject({ documentoId: r.documentoId, fullNumber: 'NA1' });
+    });
+
+    it('un Reemplazar en vuelo bloquea un Eliminar sobre el mismo predecesor (409); tras el rechazo se puede cambiar de tipo', async () => {
+      await sembrarPredecesor();
+      transmisor.enviar.mockResolvedValueOnce(sinVeredicto('RED'));
+      const r = await emitir(modeloAjuste(1, CUNE_PRED));
+      expect(r.dianStatus).toBe('sent');
+      await expect(emitir(modeloAjuste(2, CUNE_PRED))).rejects.toThrow(/ajuste en curso o aceptado/);
+      await expect(emitir(modeloAjuste(2, CUNE_PRED))).rejects.toBeInstanceOf(ConflictException);
+      expect(modelo.filas.size).toBe(2); // el 102 y el Reemplazar
+      // La DIAN rechaza el Reemplazar: ya se puede emitir el Eliminar, y el rechazado sigue sin ocupar nada.
+      transmisor.enviar.mockResolvedValueOnce(RECHAZADA);
+      await emitir(modeloAjuste(1, CUNE_PRED));
+      expect(modelo.filas.get(r.documentoId!)).toMatchObject({ dianStatus: 'rejected', ocupaPredecesor: false });
+      const e = await emitir(modeloAjuste(2, CUNE_PRED));
+      expect(e).toMatchObject({ tipoXml: '103', dianStatus: 'accepted' });
+      // Y ahora el Reemplazar rechazado ya no puede volver (el Eliminar ocupa el predecesor).
+      await expect(emitir(modeloAjuste(1, CUNE_PRED))).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('un rechazado se reintenta con el mismo tipo sin conflicto', async () => {
+      await sembrarPredecesor();
+      transmisor.enviar.mockResolvedValueOnce(RECHAZADA);
+      const r = await emitir(modeloAjuste(1, CUNE_PRED));
+      expect(modelo.filas.get(r.documentoId!)!.ocupaPredecesor).toBe(false);
+      const r2 = await emitir(modeloAjuste(1, CUNE_PRED));
+      expect(r2).toMatchObject({ documentoId: r.documentoId, dianStatus: 'accepted' });
+    });
+
+    it('carrera: E11000 del índice de un ajuste por predecesor (otro tipo ganó) → 409 y el número se devuelve', async () => {
+      await sembrarPredecesor();
+      modelo.fallosCreate.push(() =>
+        Object.assign(new Error('E11000 nomina_103_un_ajuste_por_predecesor'), { code: 11000, keyPattern: { 'emisor.nitNorm': 1, 'predecesor.cune': 1 } }),
+      );
+      await expect(emitir(modeloAjuste(1, CUNE_PRED))).rejects.toBeInstanceOf(ConflictException);
+      expect(contadores.seqs.get(contadorNomina(NIT, 'NA'))).toBe(0);
+      expect(modelo.filas.size).toBe(1);
+    });
+
+    it('un ajuste aceptado con cierre pendiente se repara antes de decidir quién es la cabeza', async () => {
+      const raiz = await sembrarPredecesor();
+      const CUNE_R1 = 'c'.repeat(96);
+      // El Reemplazar se acepta pero el cierre del 102 falla.
+      const original = modelo.updateOne;
+      modelo.updateOne = () => ({ exec: async () => { throw new Error('base caída'); } }) as never;
+      const r1 = await emitir(modeloAjuste(1, CUNE_PRED));
+      modelo.updateOne = original;
+      const f1 = modelo.filas.get(r1.documentoId!)!;
+      f1.cune = CUNE_R1;
+      expect(f1.pendienteCierrePredecesor).toBe(true);
+      expect(raiz.superado).toBeUndefined();
+      // Un segundo ajuste sobre el 102 repara el cierre y se rechaza por superado (no por 409 confuso).
+      await expect(emitir(modeloAjuste(2, CUNE_PRED))).rejects.toThrow(/ya fue reemplazado/);
+      expect(raiz.superado).toBe(true);
+      expect(f1.pendienteCierrePredecesor).toBeUndefined();
+      // Y sobre el nuevo último, sí.
+      expect((await emitir(modeloAjuste(2, CUNE_R1, 'NA1'))).dianStatus).toBe('accepted');
     });
 
     it('Reemplazar con otro trabajador o mes que el predecesor: 400', async () => {

@@ -230,12 +230,12 @@ export class NominaElectronicaService {
         return this.transmitirExistente(existente);
       }
       // Borrador o rechazado: se vuelve a armar, pero su predecesor tiene que seguir siendo el último de la cadena.
-      if (ident.predecesorDoc) this.assertEsCabezaDeCadena(ident.predecesorDoc);
+      await this.verificarAjustable(ident, existente);
       return this.regenerarYTransmitir(existente, modelo, ctx, emisor.id as string);
     }
 
     // 3. Documento nuevo: solo se ajusta el ÚLTIMO documento aceptado y vigente de la cadena.
-    if (ident.predecesorDoc) this.assertEsCabezaDeCadena(ident.predecesorDoc);
+    await this.verificarAjustable(ident);
     return this.crearYTransmitir(modelo, tipoXml, ident, ctx, sedeId, emisor, user);
   }
 
@@ -311,6 +311,39 @@ export class NominaElectronicaService {
    * cadena (102 → 103 Reemplazar → …). Apuntar a uno ya reemplazado o a una
    * cadena eliminada se rechaza con un mensaje claro.
    */
+  /**
+   * Antes de crear o corregir un 103: repara cierres pendientes, comprueba que
+   * el predecesor sea la cabeza de la cadena y que ningún OTRO ajuste no
+   * rechazado (en curso o aceptado) ocupe ese predecesor. La garantía final
+   * contra carreras es el índice único `nomina_103_un_ajuste_por_predecesor`.
+   */
+  private async verificarAjustable(
+    ident: Awaited<ReturnType<NominaElectronicaService['identificar']>>,
+    existente?: PayrollEDocumentDocument,
+  ): Promise<void> {
+    let pred = ident.predecesorDoc;
+    if (!pred) return;
+    if (pred.pendienteCierrePredecesor) {
+      await this.repararCierre(pred);
+      pred = await this.cargar(String(pred._id));
+    }
+    let ocupante = await this.model
+      .findOne({ 'emisor.nitNorm': pred.emisor.nitNorm, 'predecesor.cune': pred.cune, tipoXml: '103', ocupaPredecesor: true })
+      .exec();
+    if (ocupante && String(ocupante._id) !== String(existente?._id) && ocupante.pendienteCierrePredecesor) {
+      // Un ajuste aceptado cuyo cierre quedó pendiente: se repara antes de decidir.
+      await this.repararCierre(ocupante);
+      pred = await this.cargar(String(pred._id));
+      ocupante = null;
+    }
+    this.assertEsCabezaDeCadena(pred);
+    if (ocupante && String(ocupante._id) !== String(existente?._id)) throw this.ajusteEnCurso();
+  }
+
+  private ajusteEnCurso(): ConflictException {
+    return new ConflictException('Ya hay un ajuste en curso o aceptado sobre ese documento.');
+  }
+
   private assertEsCabezaDeCadena(pred: PayrollEDocumentDocument): void {
     if (pred.dianStatus !== 'accepted') {
       throw new BadRequestException('El documento que se quiere ajustar todavía no fue aceptado por la DIAN.');
@@ -374,6 +407,8 @@ export class NominaElectronicaService {
           },
           ...(ident.predecesor ? { predecesor: ident.predecesor } : {}),
           ...(ident.raizId ? { raizId: ident.raizId } : {}),
+          // Un 103 ocupa su predecesor hasta que la DIAN lo rechace (índice único parcial).
+          ...(tipoXml === '103' ? { ocupaPredecesor: true } : {}),
           dianStatus: 'draft',
           vigente: true,
           createdByEmail: user?.email ?? 'sistema',
@@ -390,6 +425,12 @@ export class NominaElectronicaService {
         if (nombre === 'consecutivo' && intento < MAX_REINTENTOS_NUMERO) continue; // el contador se atrasó: otro número
         await this.devolverNumero(counterId, numero);
         if (nombre === 'consecutivo') throw new ConflictException('No se pudo reservar el consecutivo de nómina.');
+        if (nombre === 'ajuste') {
+          // Otro 103 se quedó con el predecesor: si es el mismo ajuste, se devuelve el suyo; si es de otro tipo, 409.
+          const mismo = await this.model.findOne(ident.filtro).exec();
+          if (!mismo) throw this.ajusteEnCurso();
+          return this.resultado(mismo, false, 'EN_CURSO', ['Otra emisión de este documento está en curso.']);
+        }
         // Carrera: otra emisión del mismo documento ganó. Se devuelve el suyo, sin renumerar.
         const ganador = await this.model.findOne(ident.filtro).exec();
         if (!ganador) throw err;
@@ -422,12 +463,15 @@ export class NominaElectronicaService {
       } catch (err) {
         throw this.errorDeArmado(err);
       }
-      const actualizado = await this.escribirOFallar(String(existente._id), existente.dianStatus, bloqueo.id, {
+      let actualizado: PayrollEDocumentDocument;
+      try {
+        actualizado = await this.escribirOFallar(String(existente._id), existente.dianStatus, bloqueo.id, {
         $set: {
           cune: armado.cune,
           issueDate: modelo.emision.fecha,
           issueTime: modelo.emision.hora,
           tipoAmbiente: ctx.tipoAmbiente,
+          ...(existente.tipoXml === '103' ? { ocupaPredecesor: true } : {}),
           totales: {
             devengadosCentavos: armado.totales.devengados,
             deduccionesCentavos: armado.totales.deducciones,
@@ -436,6 +480,11 @@ export class NominaElectronicaService {
         },
         $unset: { rechazoMotivo: '' },
       });
+      } catch (err) {
+        // Otro 103 se quedó con el predecesor mientras este estaba rechazado.
+        if (esDuplicado(err) && this.indiceDuplicado(err) === 'ajuste') throw this.ajusteEnCurso();
+        throw err;
+      }
       return await this.firmarGuardarYTransmitir(actualizado, armado.cune, armado.xml, bloqueo.id, emisorId, actualizado.dianStatus);
     } finally {
       await this.soltarBloqueo(String(existente._id), bloqueo.id);
@@ -599,7 +648,11 @@ export class NominaElectronicaService {
     const set: Record<string, unknown> = { dianStatus: destino, respuestaDian: this.limpiar(r) };
     if (r.trackId) set.trackId = r.trackId;
     if (r.zipKey) set.zipKey = r.zipKey;
-    if (destino === 'rejected') set.rechazoMotivo = this.motivoRechazo(r);
+    if (destino === 'rejected') {
+      set.rechazoMotivo = this.motivoRechazo(r);
+      // Un rechazo suelta el predecesor: se puede corregir (mismo tipo) o cambiar de idea.
+      if (doc.tipoXml === '103') set.ocupaPredecesor = false;
+    }
     const update: UpdateQuery<PayrollEDocumentDocument> = { $set: set };
     if (destino === 'accepted') {
       update.$unset = { rechazoMotivo: '' };
@@ -804,10 +857,11 @@ export class NominaElectronicaService {
     await this.counters.findOneAndUpdate({ _id: counterId, seq }, { $inc: { seq: -1 } }).exec();
   }
 
-  private indiceDuplicado(err: unknown): 'consecutivo' | 'otro' {
+  private indiceDuplicado(err: unknown): 'consecutivo' | 'ajuste' | 'otro' {
     const e = err as { keyPattern?: Record<string, unknown>; message?: string };
     const claves = Object.keys(e.keyPattern ?? {});
     if (claves.includes('number') || (e.message ?? '').includes('nomina_consecutivo_unico')) return 'consecutivo';
+    if (claves.includes('predecesor.cune') || (e.message ?? '').includes('nomina_103_un_ajuste_por_predecesor')) return 'ajuste';
     return 'otro';
   }
 
