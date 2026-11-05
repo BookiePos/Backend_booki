@@ -16,6 +16,12 @@ import {
   PayrollEDocument,
   PayrollEDocumentSchema,
 } from './infrastructure/schemas/payroll-e-document.schema';
+import { PayrollHabilitacion, PayrollHabilitacionSchema } from './infrastructure/schemas/payroll-habilitacion.schema';
+import { PayrollRun, PayrollRunSchema } from '../payroll/infrastructure/schemas/payroll-run.schema';
+import { PayrollDeduction, PayrollDeductionSchema } from '../payroll/infrastructure/schemas/payroll-deduction.schema';
+import { EmployeesModule } from '../employees/employees.module';
+import { NominaPeriodoService } from './application/nomina-periodo.service';
+import { HabilitacionNominaService } from './application/habilitacion-nomina.service';
 import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
 import { EinvoicingService } from './application/einvoicing.service';
 import { FiscalEmittersService } from './application/fiscal-emitters.service';
@@ -48,11 +54,15 @@ import { ControlModule } from '../control/control.module';
     TenantMongooseModule.forFeature([
       { name: ElectronicDocument.name, schema: ElectronicDocumentSchema },
       { name: PayrollEDocument.name, schema: PayrollEDocumentSchema },
+      { name: PayrollHabilitacion.name, schema: PayrollHabilitacionSchema },
+      { name: PayrollRun.name, schema: PayrollRunSchema },
+      { name: PayrollDeduction.name, schema: PayrollDeductionSchema },
       { name: Counter.name, schema: CounterSchema },
       { name: FiscalEmitter.name, schema: FiscalEmitterSchema },
       { name: Sede.name, schema: SedeSchema },
     ]),
     SalesModule,
+    EmployeesModule,
     SedesModule,
     ControlModule,
     StorageModule,
@@ -71,6 +81,8 @@ import { ControlModule } from '../control/control.module';
     { provide: PROVEEDOR_TRANSMISOR_DIAN, useClass: ProveedorTransmisorPorEmisor },
     // Nómina electrónica: firma, persistencia y transmisión con credenciales de NÓMINA.
     NominaElectronicaService,
+    NominaPeriodoService,
+    HabilitacionNominaService,
     { provide: PROVEEDOR_TRANSMISOR_NOMINA, useClass: ProveedorTransmisorNomina },
     // Fase 5B: entrega al adquiriente (PDF + AttachedDocument/ZIP) tras `accepted`.
     EntregaDianService,

@@ -116,6 +116,12 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `GET /einvoicing/sedes/:sedeId/emisor` | `einvoicing.configure` | ✓ | ✓ | · | · | · |
 | `POST /einvoicing/sedes/:sedeId/emisor/certificado` | `einvoicing.certificate` | ✓ | · | · | · | · |
 | `PUT /einvoicing/sedes/:sedeId/emisor/nomina` | `einvoicing.certificate` | ✓ | · | · | · | · |
+| `POST /einvoicing/nomina/periodos/:periodo/preparar` | `payroll.einvoice` | ✓ | ✓ | · | · | · |
+| `POST /einvoicing/nomina/periodos/:periodo/emitir` | `payroll.einvoice` | ✓ | ✓ | · | · | · |
+| `GET /einvoicing/nomina` | `payroll.einvoice` | ✓ | ✓ | · | · | · |
+| `POST /einvoicing/nomina/:id/ajuste` | `payroll.einvoice` | ✓ | ✓ | · | · | · |
+| `POST /einvoicing/sedes/:sedeId/emisor/nomina/habilitacion` | `einvoicing.certificate` | ✓ | · | · | · | · |
+| `GET /einvoicing/sedes/:sedeId/emisor/nomina/habilitacion` | `einvoicing.certificate` | ✓ | · | · | · | · |
 | `POST /einvoicing/nomina/:id/transmitir` | `payroll.einvoice` | ✓ | ✓ | · | · | · |
 | `GET /einvoicing/nomina/:id` | `payroll.einvoice` | ✓ | ✓ | · | · | · |
 | `GET /einvoicing` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
