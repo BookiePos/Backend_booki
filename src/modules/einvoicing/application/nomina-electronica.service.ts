@@ -121,8 +121,10 @@ export class NominaElectronicaService {
    * ajuste (predecesor) no se renumera; si ya está aceptado no se vuelve a
    * enviar, y si quedó en vuelo o firmado se reenvía el mismo XML.
    *
-   * `user` es el camino HTTP (acceso a la sede y auditoría); sin él es un
-   * camino de sistema (la auditoría queda como `SERVER`).
+   * `user` es el camino HTTP: si llega, SIEMPRE se comprueba el acceso a la
+   * sede. Sin `user` es SOLO un camino de sistema (cron, consolidador ya
+   * autorizado): no hay a quién comprobarle la sede y la auditoría queda como
+   * `SERVER`. Un controlador nunca debe llamarlo sin el usuario.
    */
   async emitir(modelo: ModeloNomina, sedeId: string, user?: JwtUser): Promise<ResultadoNominaElectronica> {
     TenantContext.currentOrThrow();
@@ -159,22 +161,31 @@ export class NominaElectronicaService {
    */
   async consultar(docId: string, user?: JwtUser): Promise<ResultadoNominaElectronica> {
     TenantContext.currentOrThrow();
-    const doc = await this.cargar(docId);
-    if (user) assertSedeAccess(user, doc.sedeId.toString());
-    if (doc.dianStatus !== 'sent') return this.resultado(doc, false, undefined, []);
     try {
-      const ctx = await this.contexto(doc.sedeId.toString(), {
-        tipoXml: doc.tipoXml,
-        tipoAmbiente: doc.tipoAmbiente,
-        nitNorm: doc.emisor.nitNorm,
-        cune: doc.cune,
-      });
-      if (!ctx.ok) return this.sinRed(doc, ctx.motivos);
-      const r = await this.consultarVeredicto(doc, ctx.transmisor, new Date(Date.now() + BLOQUEO_TRANSMISION_MS));
-      await this.auditar('einvoicing.nomina.consultada', user, docId, true, r.codigo ?? r.dianStatus ?? '-', r);
+      const doc = await this.cargar(docId);
+      if (user) assertSedeAccess(user, doc.sedeId.toString());
+      let r: ResultadoNominaElectronica;
+      if (doc.dianStatus === 'accepted') {
+        await this.repararCierre(doc);
+        r = this.resultado(doc, false, undefined, []);
+      } else if (doc.dianStatus !== 'sent') {
+        r = this.resultado(doc, false, undefined, []);
+      } else {
+        const ctx = await this.contexto(doc.sedeId.toString(), {
+          tipoXml: doc.tipoXml,
+          tipoAmbiente: doc.tipoAmbiente,
+          nitNorm: doc.emisor.nitNorm,
+          cune: doc.cune,
+        });
+        r = ctx.ok
+          ? await this.consultarVeredicto(doc, ctx.transmisor, new Date(Date.now() + BLOQUEO_TRANSMISION_MS))
+          : await this.sinRed(doc, ctx.motivos);
+      }
+      // Toda lectura deja fila, salga o no a la red.
+      await this.auditar('einvoicing.nomina.consultada', user, docId, true, r.codigo ?? r.dianStatus ?? '-', r, 'GET');
       return r;
     } catch (err) {
-      await this.auditar('einvoicing.nomina.consultada', user, docId, false, (err as Error)?.name ?? 'Error');
+      await this.auditar('einvoicing.nomina.consultada', user, docId, false, (err as Error)?.name ?? 'Error', undefined, 'GET');
       throw err;
     }
   }
@@ -211,16 +222,20 @@ export class NominaElectronicaService {
     const existente = await this.model.findOne(ident.filtro).exec();
     if (existente) {
       if (existente.dianStatus === 'accepted') {
+        await this.repararCierre(existente);
         return this.resultado(existente, false, undefined, ['El documento ya fue aceptado por la DIAN.']);
       }
       if (existente.xmlPath && (existente.dianStatus === 'signed' || existente.dianStatus === 'sent')) {
         // Ya firmado: el mismo XML, el mismo número.
         return this.transmitirExistente(existente);
       }
+      // Borrador o rechazado: se vuelve a armar, pero su predecesor tiene que seguir siendo el último de la cadena.
+      if (ident.predecesorDoc) this.assertEsCabezaDeCadena(ident.predecesorDoc);
       return this.regenerarYTransmitir(existente, modelo, ctx, emisor.id as string);
     }
 
-    // 3. Documento nuevo: número propio, atómico.
+    // 3. Documento nuevo: solo se ajusta el ÚLTIMO documento aceptado y vigente de la cadena.
+    if (ident.predecesorDoc) this.assertEsCabezaDeCadena(ident.predecesorDoc);
     return this.crearYTransmitir(modelo, tipoXml, ident, ctx, sedeId, emisor, user);
   }
 
@@ -243,6 +258,7 @@ export class NominaElectronicaService {
         },
         predecesor: undefined as { documentId?: Types.ObjectId; numero: string; cune: string; fecha: string } | undefined,
         predecesorDoc: null as PayrollEDocumentDocument | null,
+        raizId: undefined as Types.ObjectId | undefined,
       };
     }
 
@@ -250,9 +266,6 @@ export class NominaElectronicaService {
     const predecesorDoc = await this.model
       .findOne({ 'emisor.nitNorm': nitNorm, cune: pred.cune })
       .exec();
-    if (predecesorDoc && predecesorDoc.dianStatus !== 'accepted') {
-      throw new BadRequestException('El documento que se quiere ajustar todavía no fue aceptado por la DIAN.');
-    }
     let periodo: string | undefined;
     let empleado: { docType?: string; docNumber?: string; name?: string } | undefined;
     if (modelo.tipoNota === TipoNota.Reemplazar) {
@@ -263,6 +276,12 @@ export class NominaElectronicaService {
         docNumber: String(t.numeroDocumento).replace(/\D/g, ''),
         name: [t.primerNombre, t.otrosNombres, t.primerApellido, t.segundoApellido].filter(Boolean).join(' '),
       };
+      // El ajuste corrige al MISMO trabajador y mes: otro es un documento nuevo, no un ajuste.
+      if (predecesorDoc && (predecesorDoc.empleado?.docNumber !== empleado.docNumber || predecesorDoc.periodo !== periodo)) {
+        throw new BadRequestException(
+          'El trabajador o el mes del modelo no coinciden con los del documento que se quiere reemplazar.',
+        );
+      }
     } else if (predecesorDoc) {
       periodo = predecesorDoc.periodo;
       empleado = { ...(predecesorDoc.empleado as object) } as typeof empleado;
@@ -272,12 +291,41 @@ export class NominaElectronicaService {
       );
     }
     return {
-      filtro: { 'emisor.nitNorm': nitNorm, 'predecesor.cune': pred.cune, tipoXml, vigente: true },
+      filtro: {
+        'emisor.nitNorm': nitNorm,
+        'predecesor.cune': pred.cune,
+        tipoXml,
+        tipoNota: modelo.tipoNota,
+        vigente: true,
+      },
       periodo: periodo!,
       empleado: empleado!,
       predecesor: { documentId: predecesorDoc?._id as Types.ObjectId | undefined, ...pred },
       predecesorDoc,
+      raizId: predecesorDoc ? ((predecesorDoc.raizId ?? predecesorDoc._id) as Types.ObjectId) : undefined,
     };
+  }
+
+  /**
+   * Un ajuste solo puede apuntar al ÚLTIMO documento aceptado y vigente de su
+   * cadena (102 → 103 Reemplazar → …). Apuntar a uno ya reemplazado o a una
+   * cadena eliminada se rechaza con un mensaje claro.
+   */
+  private assertEsCabezaDeCadena(pred: PayrollEDocumentDocument): void {
+    if (pred.dianStatus !== 'accepted') {
+      throw new BadRequestException('El documento que se quiere ajustar todavía no fue aceptado por la DIAN.');
+    }
+    if (pred.tipoXml === '103' && pred.tipoNota === TipoNota.Eliminar) {
+      throw new BadRequestException(`El documento ${pred.fullNumber} es una eliminación: no se ajusta.`);
+    }
+    if (pred.superado) {
+      throw new BadRequestException(
+        `El documento ${pred.fullNumber} ya fue reemplazado por un ajuste posterior: ajusta el último documento aceptado de la cadena.`,
+      );
+    }
+    if (pred.vigente === false) {
+      throw new BadRequestException(`El documento ${pred.fullNumber} ya fue eliminado: no se puede ajustar.`);
+    }
   }
 
   private async crearYTransmitir(
@@ -325,6 +373,7 @@ export class NominaElectronicaService {
             comprobanteCentavos: armado.totales.comprobante,
           },
           ...(ident.predecesor ? { predecesor: ident.predecesor } : {}),
+          ...(ident.raizId ? { raizId: ident.raizId } : {}),
           dianStatus: 'draft',
           vigente: true,
           createdByEmail: user?.email ?? 'sistema',
@@ -430,7 +479,7 @@ export class NominaElectronicaService {
       }
       throw err;
     }
-    const { pathname } = await this.storage.guardarArtefacto(emisorId, docId, 'xml', Buffer.from(xmlFirmado, 'utf8'));
+    const { pathname } = await this.storage.guardarNomina(emisorId, docId, Buffer.from(xmlFirmado, 'utf8'));
     if (desde !== 'signed') assertTransicion(desde, 'signed');
     const firmado = await this.escribirOFallar(docId, desde, bloqueo, {
       $set: { dianStatus: 'signed', xmlPath: pathname, cune },
@@ -450,6 +499,7 @@ export class NominaElectronicaService {
   /** Documento ya generado: reenvía el MISMO XML firmado o consulta si ya está en vuelo con trackId. */
   private async transmitirExistente(doc: PayrollEDocumentDocument): Promise<ResultadoNominaElectronica> {
     if (doc.dianStatus === 'accepted') {
+      await this.repararCierre(doc);
       return this.resultado(doc, false, undefined, ['El documento ya fue aceptado por la DIAN.']);
     }
     if (doc.dianStatus === 'rejected') {
@@ -480,7 +530,7 @@ export class NominaElectronicaService {
       if (!bloqueo.doc.xmlPath) {
         throw new ConflictException('El documento está firmado sin XML guardado: no se rearma ni se renumera. Revisión manual.');
       }
-      const xmlFirmado = (await this.storage.leerArtefactoGuardado(bloqueo.doc.xmlPath, docId, 'xml')).toString('utf8');
+      const xmlFirmado = (await this.storage.leerNominaGuardada(bloqueo.doc.xmlPath, docId)).toString('utf8');
       return await this.enviarConBloqueo(bloqueo.doc, xmlFirmado, bloqueo.id, hasta, ctx);
     } finally {
       await this.soltarBloqueo(docId, bloqueo.id);
@@ -551,7 +601,11 @@ export class NominaElectronicaService {
     if (r.zipKey) set.zipKey = r.zipKey;
     if (destino === 'rejected') set.rechazoMotivo = this.motivoRechazo(r);
     const update: UpdateQuery<PayrollEDocumentDocument> = { $set: set };
-    if (destino === 'accepted') update.$unset = { rechazoMotivo: '' };
+    if (destino === 'accepted') {
+      update.$unset = { rechazoMotivo: '' };
+      // Un 103 aceptado deja anotado, en la misma escritura, que falta cerrar su cadena.
+      if (doc.tipoXml === '103') set.pendienteCierrePredecesor = true;
+    }
     // Sin bloqueo (consulta): solo si sigue en vuelo; el veredicto es final y se aplica una vez.
     const final = await this.model
       .findOneAndUpdate(
@@ -564,19 +618,39 @@ export class NominaElectronicaService {
       this.logger.error(`Nómina ${docId}: no se pudo guardar el veredicto (${destino}); queda en vuelo.`);
       return this.resultado(doc, transmitido, r.codigo, r.mensajes);
     }
-    if (final.dianStatus === 'accepted') await this.cerrarPredecesor(final);
+    if (final.dianStatus === 'accepted') await this.repararCierre(final);
     return this.resultado(final, transmitido, r.codigo, r.mensajes);
   }
 
-  /** Un Eliminar aceptado libera el mes del 102 al que apunta (se puede volver a emitir). */
-  private async cerrarPredecesor(doc: PayrollEDocumentDocument): Promise<void> {
-    if (doc.tipoXml !== '103' || doc.tipoNota !== TipoNota.Eliminar) return;
-    const id = doc.predecesor?.documentId;
-    if (!id) return;
+  /**
+   * Cierra la cadena de un 103 aceptado, de forma idempotente:
+   *  - Reemplazar: el predecesor queda `superado` (la vigencia pasa a este 103).
+   *  - Eliminar: TODA la cadena (el 102 raíz y cada 103) deja de ser vigente y
+   *    el mes se libera para volver a emitirse.
+   * Si falla, el 103 conserva `pendienteCierrePredecesor` y el siguiente
+   * `consultar`/`transmitir`/`emitir` lo repara.
+   */
+  private async repararCierre(doc: PayrollEDocumentDocument): Promise<void> {
+    if (doc.tipoXml !== '103' || !doc.pendienteCierrePredecesor) return;
     try {
-      await this.model.updateOne({ _id: id }, { $set: { vigente: false } }).exec();
+      const predId = doc.predecesor?.documentId;
+      if (doc.tipoNota === TipoNota.Eliminar) {
+        const raiz = doc.raizId ?? predId;
+        if (raiz) {
+          await this.model
+            .updateMany({ $or: [{ _id: raiz }, { raizId: raiz }] }, { $set: { vigente: false, superado: true } })
+            .exec();
+        }
+      } else if (predId) {
+        // El 102 raíz sigue ocupando el mes (vigente); un 103 superado deja de serlo.
+        await this.model.updateOne({ _id: predId }, { $set: { superado: true } }).exec();
+        await this.model.updateOne({ _id: predId, tipoXml: '103' }, { $set: { vigente: false } }).exec();
+      }
+      await this.model.updateOne({ _id: doc._id }, { $unset: { pendienteCierrePredecesor: '' } }).exec();
     } catch (err) {
-      this.logger.warn(`Nómina ${String(doc._id)}: no se pudo liberar el predecesor (${(err as Error).name}).`);
+      this.logger.warn(
+        `Nómina ${String(doc._id)}: no se pudo cerrar la cadena (${(err as Error).name}); queda pendiente y se repara luego.`,
+      );
     }
   }
 
@@ -840,6 +914,7 @@ export class NominaElectronicaService {
     success: boolean,
     codigo: string,
     r?: ResultadoNominaElectronica,
+    metodo: 'GET' | 'POST' = 'POST',
   ): Promise<void> {
     const documentoId = String(docId).slice(0, 64);
     const detail: Record<string, string> = { documentoId, codigo: String(codigo).slice(0, 60) };
@@ -854,8 +929,11 @@ export class NominaElectronicaService {
       userEmail: user?.email,
       userName: user?.name,
       role: user?.role,
-      method: user ? 'POST' : 'SERVER',
-      path: `/einvoicing/nomina/${documentoId}`,
+      method: user ? metodo : 'SERVER',
+      path:
+        action === 'einvoicing.nomina.transmitida'
+          ? `/einvoicing/nomina/${documentoId}/transmitir`
+          : `/einvoicing/nomina/${documentoId}`,
       success,
       action,
       detail,

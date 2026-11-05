@@ -69,7 +69,7 @@ describe('DirectoDian · nómina', () => {
     expect(init.headers['Content-Type']).toContain('/IWcfDianCustomerServices/SendNominaSync"');
     expect(init.body).not.toContain('SendBillSync');
     const p = parametros(init.body, 'SendNominaSync');
-    expect(p.fileName).toBe('z0800197268260000000C.zip');
+    expect(Object.keys(p)).toEqual(['contentFile']); // SendNominaSync: solo contentFile (anexo v1.0 §9.5)
     const zip = Buffer.from(p.contentFile!, 'base64');
     expect(zip.subarray(30, 30 + zip.readUInt16LE(26)).toString()).toBe('nie0800197268260000000C.xml');
   });

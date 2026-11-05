@@ -252,10 +252,13 @@ export class DirectoDian implements TransmisorDian {
     return this.#documento(
       // La nómina electrónica tiene su propia operación en el mismo servicio.
       esTipoNomina(entrada.tipo) ? 'SendNominaSync' : 'SendBillSync',
-      [
-        ['fileName', archivo.nombre],
-        ['contentFile', archivo.base64],
-      ],
+      // SendNominaSync solo lleva `contentFile` (anexo nómina v1.0 §9.5); la factura, además, `fileName`.
+      esTipoNomina(entrada.tipo)
+        ? [['contentFile', archivo.base64]]
+        : [
+            ['fileName', archivo.nombre],
+            ['contentFile', archivo.base64],
+          ],
       entrada,
       { cufe: entrada.cufe },
     );

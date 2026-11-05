@@ -48,6 +48,7 @@ function cumple(fila: Fila, filtro: Record<string, any>): boolean {
     if (k === '$or') return (v as Fila[]).some((x) => cumple(fila, x));
     const actual = leer(fila, k);
     if (k === '_id') return String(actual) === String(v);
+    if (actual && v && typeof actual === 'object' && typeof v === 'object' && !('$lte' in v)) return String(actual) === String(v);
     if (v === null) return actual == null;
     if (v && typeof v === 'object' && '$lte' in v) return actual != null && actual <= v.$lte;
     return actual === v;
@@ -62,13 +63,18 @@ function aplicar(fila: Fila, u: Record<string, any>): void {
 
 function modeloFalso() {
   const filas = new Map<string, Fila>();
+  /** Errores que `create` lanza antes de insertar (carreras de índices únicos). */
+  const fallosCreate: Array<() => Error> = [];
   const copia = (f?: Fila) => (f ? { ...f } : null);
   const buscar = (filtro: Fila) => [...filas.values()].find((f) => cumple(f, filtro));
   return {
     filas,
+    fallosCreate,
     findById: (id: string) => ({ exec: async () => copia(filas.get(String(id))) }),
     findOne: (filtro: Fila) => ({ exec: async () => copia(buscar(filtro)) }),
     create: async (d: Fila) => {
+      const fallo = fallosCreate.shift();
+      if (fallo) throw fallo();
       for (const f of filas.values()) {
         if (leer(f, 'emisor.nitNorm') === leer(d, 'emisor.nitNorm') && f.prefix === d.prefix && f.number === d.number) {
           throw Object.assign(new Error('E11000 nomina_consecutivo_unico'), { code: 11000, keyPattern: { number: 1 } });
@@ -91,6 +97,13 @@ function modeloFalso() {
         if (!f) return null;
         aplicar(f, update);
         return copia(f);
+      },
+    }),
+    updateMany: (filtro: Fila, update: Fila) => ({
+      exec: async () => {
+        const todas = [...filas.values()].filter((f) => cumple(f, filtro));
+        todas.forEach((f) => aplicar(f, update));
+        return { matchedCount: todas.length };
       },
     }),
     updateOne: (filtro: Fila, update: Fila) => ({
@@ -181,7 +194,7 @@ describe('NominaElectronicaService', () => {
     expect(r).toMatchObject({ dianStatus: 'accepted', fullNumber: 'NE1', tipoXml: '102', periodo: '2026-10', transmitido: true, intentos: 1 });
     const f = filasOrdenadas()[0]!;
     expect(f.prefix).toBe('NE');
-    expect(f.xmlPath).toMatch(/^einvoicing\/b1\/e1\/docs\/[0-9a-f]{24}\/documento\.xml$/);
+    expect(f.xmlPath).toMatch(/^einvoicing\/b1\/e1\/nomina\/[0-9a-f]{24}\/documento\.xml$/);
     expect(bucket.get(f.xmlPath)!.toString()).toContain('<!--firmado-->');
     expect(contadores.seqs.get(contadorNomina(NIT, 'NE'))).toBe(1);
     expect(proveedor.para).toHaveBeenCalledWith(SEDE, '1');
@@ -376,8 +389,87 @@ describe('NominaElectronicaService', () => {
       const pred = await sembrarPredecesor();
       await emitir(modeloAjuste(2, CUNE_PRED));
       expect(pred.vigente).toBe(false);
+      expect(pred.pendienteCierrePredecesor).toBeUndefined();
       const r = await emitir();
       expect(r).toMatchObject({ tipoXml: '102', fullNumber: 'NE2', dianStatus: 'accepted' });
+    });
+
+    it('cadena completa 102 → Reemplazar → Reemplazar → Eliminar: solo el último es ajustable y Eliminar cierra todo', async () => {
+      const raiz = await sembrarPredecesor();
+      const CUNE_R1 = 'c'.repeat(96);
+      const CUNE_R2 = 'd'.repeat(96);
+      const r1 = await emitir(modeloAjuste(1, CUNE_PRED, 'NE1'));
+      expect(r1.fullNumber).toBe('NA1');
+      const f1 = modelo.filas.get(r1.documentoId!)!;
+      f1.cune = CUNE_R1;
+      expect(String(f1.raizId)).toBe(String(raiz._id));
+      // El 102 raíz queda superado pero SIGUE ocupando el mes.
+      expect(raiz).toMatchObject({ superado: true, vigente: true });
+      // Ajustar de nuevo el 102 ya reemplazado: rechazo con mensaje claro.
+      // Repetir el MISMO Reemplazar es idempotente (devuelve el NA1 aceptado); otro ajuste sobre el 102, no.
+      expect((await emitir(modeloAjuste(1, CUNE_PRED, 'NE1'))).documentoId).toBe(r1.documentoId);
+      await expect(emitir(modeloAjuste(2, CUNE_PRED, 'NE1'))).rejects.toThrow(/ya fue reemplazado/);
+      // Sobre el último, sí.
+      const r2 = await emitir(modeloAjuste(1, CUNE_R1, 'NA1'));
+      expect(r2.fullNumber).toBe('NA2');
+      const f2 = modelo.filas.get(r2.documentoId!)!;
+      f2.cune = CUNE_R2;
+      expect(String(f2.raizId)).toBe(String(raiz._id));
+      expect(f1).toMatchObject({ superado: true, vigente: false });
+      // Mientras la cadena vive, el mes sigue ocupado: el 102 del mes no se duplica.
+      expect((await emitir()).documentoId).toBe(String(raiz._id));
+      // Eliminar el último cierra toda la cadena y libera el mes.
+      const e = await emitir(modeloAjuste(2, CUNE_R2, 'NA2'));
+      expect(e).toMatchObject({ fullNumber: 'NA3', dianStatus: 'accepted' });
+      for (const f of [raiz, f1, f2]) expect(f.vigente).toBe(false);
+      const nuevo = await emitir();
+      expect(nuevo).toMatchObject({ tipoXml: '102', fullNumber: 'NE2', dianStatus: 'accepted' });
+      // Una eliminación no se ajusta.
+      modelo.filas.get(e.documentoId!)!.cune = 'e'.repeat(96);
+      await expect(emitir(modeloAjuste(1, 'e'.repeat(96), 'NA3'))).rejects.toThrow(BadRequestException);
+    });
+
+    it('un rechazo se corrige con el MISMO tipo de nota: cambiar de Reemplazar a Eliminar es un documento nuevo', async () => {
+      await sembrarPredecesor();
+      transmisor.enviar.mockResolvedValueOnce(RECHAZADA).mockResolvedValueOnce(RECHAZADA);
+      const r = await emitir(modeloAjuste(1, CUNE_PRED));
+      expect(r).toMatchObject({ dianStatus: 'rejected', fullNumber: 'NA1' });
+      const e = await emitir(modeloAjuste(2, CUNE_PRED));
+      expect(e.documentoId).not.toBe(r.documentoId);
+      expect(e.fullNumber).toBe('NA2');
+      // El Reemplazar rechazado no se tocó.
+      expect(modelo.filas.get(r.documentoId!)).toMatchObject({ tipoNota: 1, dianStatus: 'rejected', fullNumber: 'NA1' });
+      expect(modelo.filas.get(e.documentoId!)).toMatchObject({ tipoNota: 2 });
+      // Y reintentar el Reemplazar rechazado conserva su número y su tipo.
+      const r3 = await emitir(modeloAjuste(1, CUNE_PRED));
+      expect(r3).toMatchObject({ documentoId: r.documentoId, fullNumber: 'NA1' });
+    });
+
+    it('Reemplazar con otro trabajador o mes que el predecesor: 400', async () => {
+      await sembrarPredecesor();
+      const otroTrabajador = modeloAjuste(1, CUNE_PRED);
+      if ('documento' in otroTrabajador) otroTrabajador.documento.trabajador.numeroDocumento = '999';
+      await expect(emitir(otroTrabajador)).rejects.toThrow(/trabajador o el mes/);
+      const otroMes = modeloAjuste(1, CUNE_PRED);
+      if ('documento' in otroMes) otroMes.documento.periodo.fechaLiquidacionFin = '2026-09-30';
+      await expect(emitir(otroMes)).rejects.toThrow(/trabajador o el mes/);
+    });
+
+    it('si no se pudo cerrar la cadena queda pendiente y consultar la repara de forma idempotente', async () => {
+      const pred = await sembrarPredecesor();
+      const original = modelo.updateMany;
+      modelo.updateMany = () => ({ exec: async () => { throw new Error('base caída'); } }) as never;
+      const e = await emitir(modeloAjuste(2, CUNE_PRED));
+      expect(e.dianStatus).toBe('accepted');
+      const fila = modelo.filas.get(e.documentoId!)!;
+      expect(fila.pendienteCierrePredecesor).toBe(true);
+      expect(pred.vigente).toBe(true);
+      modelo.updateMany = original;
+      await enEmpresa(() => svc.consultar(e.documentoId!, DUENO));
+      expect(pred.vigente).toBe(false);
+      expect(fila.pendienteCierrePredecesor).toBeUndefined();
+      await enEmpresa(() => svc.consultar(e.documentoId!, DUENO));
+      expect(pred.vigente).toBe(false);
     });
 
     it('no ajusta un documento que la DIAN aún no aceptó', async () => {
@@ -389,6 +481,81 @@ describe('NominaElectronicaService', () => {
 
     it('Eliminar sin el predecesor en BookiPos no se puede (no se conoce al trabajador)', async () => {
       await expect(emitir(modeloAjuste(2, CUNE_PRED))).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('carreras de índices únicos', () => {
+    const dup = (keyPattern: Fila) => () =>
+      Object.assign(new Error('E11000 duplicate key'), { code: 11000, keyPattern });
+
+    it('consecutivo ocupado (E11000 sobre el número): reintenta con OTRO número', async () => {
+      modelo.fallosCreate.push(dup({ 'emisor.nitNorm': 1, prefix: 1, number: 1 }));
+      const r = await emitir();
+      expect(r).toMatchObject({ fullNumber: 'NE2', dianStatus: 'accepted' });
+      expect(modelo.filas.size).toBe(1);
+      expect(contadores.seqs.get(contadorNomina(NIT, 'NE'))).toBe(2);
+    });
+
+    it('102 vigente ganado por otra emisión (E11000 sobre el periodo): devuelve al ganador sin enviar ni dejar hueco', async () => {
+      const ganador = {
+        _id: new Types.ObjectId(),
+        sedeId: new Types.ObjectId(SEDE),
+        emisor: { nitNorm: NIT },
+        empleado: { docNumber: '1017123456' },
+        periodo: '2026-10',
+        tipoXml: '102',
+        vigente: true,
+        prefix: 'NE',
+        number: 1,
+        fullNumber: 'NE1',
+        dianStatus: 'sent',
+        cune: 'g'.repeat(96),
+        intentos: 1,
+      };
+      modelo.fallosCreate.push(() => {
+        modelo.filas.set(String(ganador._id), ganador); // la otra emisión insertó justo antes
+        return dup({ 'emisor.nitNorm': 1, periodo: 1, 'empleado.docNumber': 1 })();
+      });
+      const r = await emitir();
+      expect(r).toMatchObject({ documentoId: String(ganador._id), fullNumber: 'NE1', codigo: 'EN_CURSO', transmitido: false });
+      expect(transmisor.enviar).not.toHaveBeenCalled();
+      expect(firmante.firmar).not.toHaveBeenCalled();
+      expect(modelo.filas.size).toBe(1);
+      // El número que se había tomado se devolvió.
+      expect(contadores.seqs.get(contadorNomina(NIT, 'NE'))).toBe(0);
+    });
+  });
+
+  describe('auditoría y bucket', () => {
+    it('consultar deja fila GET aunque no salga a la red, y también al fallar', async () => {
+      const r = await emitir();
+      audit.record.mockClear();
+      await enEmpresa(() => svc.consultar(r.documentoId!, DUENO)); // aceptado: sin red
+      expect(audit.record).toHaveBeenCalledTimes(1);
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ method: 'GET', action: 'einvoicing.nomina.consultada', success: true, path: `/einvoicing/nomina/${r.documentoId}` }),
+      );
+      audit.record.mockClear();
+      await expect(enEmpresa(() => svc.consultar(r.documentoId!, AJENO))).rejects.toBeInstanceOf(ForbiddenException);
+      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ method: 'GET', success: false }));
+    });
+
+    it('transmitir audita POST en su ruta; sin usuario (sistema) queda SERVER', async () => {
+      transmisor.enviar.mockResolvedValueOnce(sinVeredicto('RED'));
+      const r = await emitir();
+      audit.record.mockClear();
+      await enEmpresa(() => svc.transmitir(r.documentoId!, DUENO));
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({ method: 'POST', path: `/einvoicing/nomina/${r.documentoId}/transmitir` }),
+      );
+      audit.record.mockClear();
+      await enEmpresa(() => svc.emitir(modeloIndividual({ documento: '555' }), SEDE));
+      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ method: 'SERVER' }));
+    });
+
+    it('el XML vive bajo nomina/<docId>/, no bajo docs/', async () => {
+      await emitir();
+      expect([...bucket.keys()][0]).toMatch(/^einvoicing\/b1\/e1\/nomina\/[0-9a-f]{24}\/documento\.xml$/);
     });
   });
 });

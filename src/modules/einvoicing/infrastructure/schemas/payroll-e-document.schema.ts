@@ -112,6 +112,24 @@ export class PayrollEDocument {
   @Prop({ default: true })
   vigente!: boolean;
 
+  /**
+   * Raíz de la cadena de ajustes (el 102 original). Solo en los 103; la raíz
+   * es el propio 102. Un Eliminar aceptado cierra TODA la cadena.
+   */
+  @Prop({ type: Types.ObjectId, ref: 'PayrollEDocument', index: true })
+  raizId?: Types.ObjectId;
+
+  /** Un Reemplazar aceptado pasó la vigencia al 103: este documento ya no se puede ajustar. */
+  @Prop()
+  superado?: boolean;
+
+  /**
+   * Un 103 aceptado cuyo cierre del predecesor/cadena no se pudo guardar. El
+   * siguiente `consultar`/`transmitir`/`emitir` lo repara de forma idempotente.
+   */
+  @Prop()
+  pendienteCierrePredecesor?: boolean;
+
   @Prop({ required: true, enum: DIAN_STATUS, default: 'draft' })
   dianStatus!: DianStatus;
 
@@ -168,9 +186,13 @@ export const INDICE_NOMINA_102_VIGENTE = {
   },
 } as const;
 
-/** Un 103 vigente por predecesor: reintentar el mismo ajuste no crea otro. */
+/**
+ * Un 103 vigente por (predecesor, tipo de nota): reintentar el mismo ajuste no
+ * crea otro, y un rechazo se corrige con el MISMO tipo; cambiar de idea
+ * (Reemplazar ↔ Eliminar) es un documento nuevo, no una mutación del anterior.
+ */
 export const INDICE_NOMINA_103_POR_PREDECESOR = {
-  keys: { 'emisor.nitNorm': 1, 'predecesor.cune': 1 },
+  keys: { 'emisor.nitNorm': 1, 'predecesor.cune': 1, tipoNota: 1 },
   options: {
     name: 'nomina_103_por_predecesor_unico',
     unique: true,

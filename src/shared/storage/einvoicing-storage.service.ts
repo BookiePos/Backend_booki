@@ -140,6 +140,35 @@ export class EinvoicingStorageService {
   }
 
   /**
+   * XML firmado de la NÓMINA electrónica: prefijo propio
+   * (`einvoicing/<empresa>/<emisor>/nomina/<docId>/documento.xml`), aparte de
+   * los documentos de factura.
+   */
+  async guardarNomina(emisorId: string, docId: string, contenido: Buffer): Promise<{ pathname: string }> {
+    return this.storage.uploadPrivado(this.rutaNomina(emisorId, docId), contenido, CONTENT_TYPE.xml);
+  }
+
+  /** Lee el XML de nómina por la ruta guardada; mismas validaciones que `leerArtefactoGuardado`. */
+  async leerNominaGuardada(pathname: string | undefined, docId: string): Promise<Buffer> {
+    const partes = typeof pathname === 'string' ? pathname.split('/') : [];
+    const [raiz, empresa, emisorId, carpeta, id, archivo] = partes;
+    const valida =
+      partes.length === 6 &&
+      raiz === 'einvoicing' &&
+      carpeta === 'nomina' &&
+      empresa === TenantContext.currentOrThrow().businessId &&
+      typeof emisorId === 'string' &&
+      SEGMENTO.test(emisorId) &&
+      id === docId &&
+      archivo === 'documento.xml';
+    if (!valida) {
+      throw new BadRequestException('Ruta de nómina no válida para este documento.');
+    }
+    const { buffer } = await this.storage.descargarPrivado(this.rutaNomina(emisorId, docId));
+    return buffer;
+  }
+
+  /**
    * URL firmada de vida corta para descargar el XML, PDF o ZIP. Solo acepta
    * `TipoArtefactoFe`: el certificado no puede pasar por aquí.
    */
@@ -191,6 +220,10 @@ export class EinvoicingStorageService {
       throw new BadRequestException('Tipo de archivo no permitido.');
     }
     return `${this.prefijoEmisor(emisorId)}/docs/${this.segmento(docId, 'documento')}/documento.${tipo}`;
+  }
+
+  private rutaNomina(emisorId: string, docId: string): string {
+    return `${this.prefijoEmisor(emisorId)}/nomina/${this.segmento(docId, 'documento')}/documento.xml`;
   }
 
   /** Un solo segmento de ruta, de una lista cerrada de caracteres. */
