@@ -38,6 +38,9 @@ import {
 } from './application/transmision-dian.puertos';
 import { NominaElectronicaService } from './application/nomina-electronica.service';
 import { ArmadorUblFactura } from './application/armador-ubl';
+import { DocumentoFeVistaService } from './application/documento-fe-vista.service';
+import { RangosDianService } from './application/rangos-dian.service';
+import { CoreAuthModule } from '../core-auth/core-auth.module';
 import { EntregaDianService } from './application/entrega-dian.service';
 import { EmisionDocumentoFiscalDian } from './application/emision-documento-fiscal.adaptador';
 import { EMISION_DOCUMENTO_FISCAL } from '../sales/application/emision-documento-fiscal.puerto';
@@ -67,6 +70,7 @@ import { ControlModule } from '../control/control.module';
     ControlModule,
     StorageModule,
     CoreAuditModule,
+    CoreAuthModule,
   ],
   controllers: [EinvoicingController],
   providers: [
@@ -86,6 +90,8 @@ import { ControlModule } from '../control/control.module';
     { provide: PROVEEDOR_TRANSMISOR_NOMINA, useClass: ProveedorTransmisorNomina },
     // Fase 5B: entrega al adquiriente (PDF + AttachedDocument/ZIP) tras `accepted`.
     EntregaDianService,
+    DocumentoFeVistaService,
+    RangosDianService,
     { provide: ENTREGA_DIAN, useExisting: EntregaDianService },
     // Fase 7 (PR 7B): el cobro pide el documento fiscal por este puerto. Ventas
     // lo resuelve con ModuleRef (este módulo ya importa SalesModule).

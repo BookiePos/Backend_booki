@@ -39,6 +39,15 @@ interface PayslipEmail {
   filename: string;
 }
 
+interface FacturaElectronicaEmail {
+  to: string;
+  numero: string;
+  emisorNombre: string;
+  total: string;
+  zip: Buffer;
+  filename: string;
+}
+
 export interface MailResult {
   sent: boolean;
   id?: string;
@@ -294,6 +303,57 @@ export class MailService {
       this.logger.error(`Fallo enviando comprobante a ${msg.to}: ${message}`);
       return { sent: false, error: message };
     }
+  }
+
+  /** Envía la factura electrónica (ZIP: AttachedDocument firmado + PDF) al adquiriente. */
+  async sendFacturaElectronica(msg: FacturaElectronicaEmail): Promise<MailResult> {
+    const subject = `Factura electrónica ${msg.numero} · ${msg.emisorNombre}`;
+    if (!this.resend) {
+      if (this.esProduccion()) {
+        this.logger.error(`Sin RESEND_API_KEY en producción: no se envió la factura ${msg.numero}.`);
+        return { sent: false, error: 'Proveedor de correo no configurado' };
+      }
+      this.logger.log(`[correo simulado] Factura electrónica ${msg.numero} para ${msg.to} (${msg.zip.length} bytes).`);
+      return { sent: false, simulated: true };
+    }
+    try {
+      const { data, error } = await this.resend.emails.send({
+        from: this.from,
+        to: msg.to,
+        subject,
+        html: this.facturaElectronicaHtml(msg),
+        attachments: [{ filename: msg.filename, content: msg.zip }],
+      });
+      if (error) {
+        this.logger.error(`Resend rechazó la factura ${msg.numero} a ${msg.to}: ${error.message}`);
+        return { sent: false, error: error.message };
+      }
+      this.logger.log(`Factura electrónica ${msg.numero} enviada a ${msg.to} (id: ${data?.id})`);
+      return { sent: true, id: data?.id };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Fallo enviando la factura ${msg.numero} a ${msg.to}: ${message}`);
+      return { sent: false, error: message };
+    }
+  }
+
+  private facturaElectronicaHtml(msg: FacturaElectronicaEmail): string {
+    return `<!doctype html>
+<html lang="es"><body style="margin:0;background:#faf9f7;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#201f1d;">
+  <div style="max-width:480px;margin:0 auto;padding:40px 24px;">
+    <div style="background:#ffffff;border:1px solid #e8e4de;border-radius:16px;padding:32px;">
+      <p style="font-size:13px;color:#8a857c;margin:0 0 4px;text-transform:uppercase;letter-spacing:.04em;">${escapeHtml(msg.emisorNombre)}</p>
+      <h1 style="font-size:20px;margin:0 0 16px;font-weight:600;">Factura electrónica ${escapeHtml(msg.numero)}</h1>
+      <p style="font-size:15px;line-height:1.5;color:#4b4842;margin:0 0 16px;">
+        Adjuntamos tu factura electrónica por <strong>${escapeHtml(msg.total)}</strong>. El archivo ZIP
+        trae el documento firmado (XML) y su representación gráfica (PDF).
+      </p>
+      <p style="font-size:13px;line-height:1.5;color:#8a857c;margin:0;">
+        Documento validado por la DIAN. Si no esperabas este correo, puedes ignorarlo.
+      </p>
+    </div>
+  </div>
+</body></html>`;
   }
 
   private payslipHtml(msg: PayslipEmail): string {

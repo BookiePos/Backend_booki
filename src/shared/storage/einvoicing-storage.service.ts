@@ -121,6 +121,20 @@ export class EinvoicingStorageService {
     docId: string,
     tipo: TipoArtefactoFe,
   ): Promise<Buffer> {
+    const emisorId = this.emisorDeRutaGuardada(pathname, docId, tipo);
+    // Se rearma con las validaciones de siempre: la ruta leída es la canónica.
+    return this.leerArtefacto(emisorId, docId, tipo);
+  }
+
+  /**
+   * Emisor de una ruta guardada, tras validarla entera (empresa del contexto,
+   * documento y tipo): es lo que permite firmar una URL sin confiar en la ruta.
+   */
+  emisorDeRutaGuardada(
+    pathname: string | undefined,
+    docId: string,
+    tipo: TipoArtefactoFe,
+  ): string {
     const partes = typeof pathname === 'string' ? pathname.split('/') : [];
     const [raiz, empresa, emisorId, docs, id, archivo] = partes;
     const valida =
@@ -135,8 +149,7 @@ export class EinvoicingStorageService {
     if (!valida) {
       throw new BadRequestException('Ruta de artefacto no válida para este documento.');
     }
-    // Se rearma con las validaciones de siempre: la ruta leída es la canónica.
-    return this.leerArtefacto(emisorId, docId, tipo);
+    return emisorId;
   }
 
   /**

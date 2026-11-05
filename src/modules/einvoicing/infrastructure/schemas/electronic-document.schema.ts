@@ -341,6 +341,14 @@ export class ElectronicDocument {
   @Prop({ type: Object })
   entregaDian?: Record<string, unknown>;
 
+  /**
+   * Envíos por correo al adquiriente: `envios` (cuenta contra el tope),
+   * `ultimoAt`, `ultimoPara` e `ultimoId` (de Resend). Nunca guarda el ZIP ni
+   * URLs firmadas. Ver `DocumentoFeVistaService`.
+   */
+  @Prop({ type: Object })
+  correoEntrega?: Record<string, unknown>;
+
   /** Motivo del rechazo, solo si la DIAN respondió IsValid=false. */
   @Prop()
   rechazoMotivo?: string;
