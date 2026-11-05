@@ -1,0 +1,721 @@
+/**
+ * Consolidador de nómina electrónica: de las liquidaciones de BookiPos
+ * (`PayrollRun.slips`) al `DocumentoNe` de UN trabajador en UN mes, con un
+ * pre-vuelo que bloquea POR TRABAJADOR (no el mes entero).
+ *
+ * Fuente del mapeo: `documentacion/fe-fase8-anexo-nomina.md`. Es puro: recibe
+ * las filas ya leídas (corridas, empleado, deducciones aplicadas, emisor) y no
+ * toca la base. Los endpoints y la persistencia van en el PR de emisión.
+ *
+ * Qué entra: básico (días), auxilio de transporte, horas extra y recargos (con
+ * su cantidad y su % de recargo), bonificaciones, comisiones, salud, pensión,
+ * FSP (solidaridad 0,5 % + subsistencia), retención en la fuente y las
+ * deducciones de nómina (`sale`/`arrastre` → Deuda; `manual` → OtraDeduccion).
+ * Qué NO entra: aportes del empleador y provisiones (no son pagos al
+ * trabajador). Prima, cesantías, vacaciones, incapacidades, licencias y retiro
+ * no se inventan: si aparecen, el trabajador se bloquea (tarea 11 del dueño).
+ *
+ * Dinero: las colillas están en COP entero; se suman con `sumCop()` y se pasan
+ * a centavos con `centavosDeCop()`. El modelo no lleva totales: el armador los
+ * recalcula sumando los nodos que escribe.
+ */
+import { cop, redondearA, sumCop } from '../../../finance/domain/money.util';
+import { DANE_MUNICIPIO, YYYYMMDD } from '../../../employees/domain/employees.constants';
+import type { PayrollBreakdown } from '../../../payroll/domain/payroll-calc';
+import type { Centavos } from '../redondeo';
+import { centavosDeCop } from '../redondeo';
+import type { DeduccionesNe, DevengadosNe, DocumentoNe, HoraNe, TipoHoraNe } from './modelo';
+
+// ── Entradas ─────────────────────────────────────────────────────────────────
+
+const PENDIENTE_DUENO = 'pendiente de decisión del dueño (tarea 11)';
+
+/** Lo que el consolidador lee de la colilla (`PayrollSlip`). */
+export interface ColillaConsolidar {
+  employeeId: string;
+  employeeName?: string;
+  diasTrabajados: number;
+  salaryType?: string;
+  breakdown: PayrollBreakdown;
+  otrasDeduccionesDetalle?: { concept: string; amount: number; source?: string }[];
+}
+
+/** Una colilla con los datos de la corrida que la contiene. */
+export interface CorridaColilla {
+  corridaId: string;
+  /** YYYY-MM */
+  periodo: string;
+  cobertura: 'all' | 'sede';
+  sedeId?: string;
+  estado: 'borrador' | 'cerrada';
+  /** Tramo del mes que cubre la corrida (quincena o corrida parcial); sin él se asume el mes entero. */
+  rango?: { desde: string; hasta: string };
+  colilla: ColillaConsolidar;
+}
+
+/** Lo que se lee de `PayrollDeduction`. `appliedRunId` en texto. */
+export interface DeduccionConsolidar {
+  employeeId: string;
+  concept: string;
+  amount: number;
+  source: string;
+  status?: string;
+  appliedRunId?: string;
+}
+
+/** Lo que se lee del expediente (`Employee`); `accountNumber` es el crudo, no el enmascarado. */
+export interface EmpleadoConsolidar {
+  id: string;
+  docType?: string;
+  docNumber?: string;
+  firstName?: string;
+  lastName?: string;
+  secondLastName?: string;
+  otherNames?: string;
+  docTypeDian?: string;
+  tipoTrabajador?: string;
+  subTipoTrabajador?: string;
+  altoRiesgoPension?: boolean;
+  contractType?: string;
+  tipoContratoDian?: string;
+  hireDate?: string;
+  terminationDate?: string;
+  salary?: number;
+  salaryType?: string;
+  municipioDaneTrabajo?: string;
+  direccionTrabajo?: string;
+  address?: string;
+  medioPago?: string;
+  bank?: string;
+  accountType?: string;
+  accountNumber?: string;
+}
+
+/** El emisor fiscal de la sede (`FiscalEmitter`): respaldo de municipio y dirección del lugar de trabajo. */
+export interface EmpleadorConsolidar {
+  razonSocial?: string;
+  municipioDane?: string;
+  direccion?: string;
+}
+
+export interface PagoConsolidar {
+  /** Fechas reales de egreso (YYYY-MM-DD). Sin ellas se usa el último día del mes, con advertencia. */
+  fechasPagos: string[];
+}
+
+export interface EntradaConsolidar {
+  /** YYYY-MM */
+  periodo: string;
+  empleado: EmpleadoConsolidar;
+  empleador: EmpleadorConsolidar;
+  slips: CorridaColilla[];
+  deducciones: DeduccionConsolidar[];
+  pago: PagoConsolidar;
+}
+
+/** Lo que se dejó de reportar por neto negativo (pesos): la parte de cada colilla que `crearArrastres` lleva al mes siguiente. */
+export interface RecorteNeto {
+  otras: number;
+  deuda: number;
+  total: number;
+}
+
+export type ResultadoConsolidar =
+  | { ok: true; modelo: DocumentoNe; advertencias: string[]; recorte: RecorteNeto }
+  | { ok: false; bloqueos: string[] };
+
+// ── Catálogos ────────────────────────────────────────────────────────────────
+
+/** `recargoDetalle.key` de BookiPos → tipo de hora de la nómina electrónica. */
+const TIPO_POR_CLAVE: Record<string, TipoHoraNe> = {
+  extraDiurna: 'HED',
+  extraNocturna: 'HEN',
+  recargoNocturno: 'HRN',
+  extraDiurnaDominical: 'HEDDF',
+  dominical: 'HRDDF',
+  extraNocturnaDominical: 'HENDF',
+  nocturnoDominical: 'HRNDF',
+};
+
+const DIAN_DOC_POR_DOCTYPE: Record<string, string> = {
+  CC: '13',
+  CE: '22',
+  TI: '12',
+  PA: '41',
+  PEP: '47',
+  NIT: '31',
+};
+
+/** `contractType` → códigos DIAN admitidos (aprendizaje: 4 lectiva o 5 prácticas). */
+const CONTRATO_DIAN_POR_TIPO: Record<string, string[]> = {
+  fijo: ['1'],
+  indefinido: ['2'],
+  obra_labor: ['3'],
+  aprendizaje: ['4', '5'],
+};
+
+const DEVENGADOS_CONOCIDOS = new Set([
+  'salario',
+  'auxilioTransporte',
+  'recargos',
+  'horasExtra',
+  'recargoDetalle',
+  'bonificacionSalarial',
+  'bonificacionNoSalarial',
+  'comisiones',
+  'total',
+]);
+
+const MEDIO_TRANSFERENCIA = '47';
+const MEDIO_CONSIGNACION = '42';
+const FSP_SOLIDARIDAD_PCT = 0.5;
+
+// ── Utilidades ───────────────────────────────────────────────────────────────
+
+const pct2 = (v: number): number => redondearA(v, 2);
+
+function ultimoDiaDelMes(periodo: string): string {
+  const y = Number(periodo.slice(0, 4));
+  const m = Number(periodo.slice(5, 7));
+  return `${periodo}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0')}`;
+}
+
+/** Antigüedad con años de 360 y meses de 30, contando ambos extremos (anexo §8.3.1). */
+export function tiempoLaborado360(desde: string, hasta: string): number {
+  const [y1, m1, d1] = desde.split('-').map(Number) as [number, number, number];
+  const [y2, m2, d2] = hasta.split('-').map(Number) as [number, number, number];
+  // El último día de cualquier mes (también febrero) cuenta como 30.
+  const dia360 = (fecha: string, d: number) => (fecha === ultimoDiaDelMes(fecha.slice(0, 7)) ? 30 : Math.min(d, 30));
+  return Math.max(1, (y2 - y1) * 360 + (m2 - m1) * 30 + (dia360(hasta, d2) - dia360(desde, d1)) + 1);
+}
+
+const enteroPositivo = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0;
+
+function nombreDe(e: EmpleadoConsolidar): string {
+  return `${e.firstName ?? ''} ${e.lastName ?? ''}`.trim() || e.docNumber || e.id;
+}
+
+/** Dos tramos de fechas YYYY-MM-DD se cruzan si ninguno termina antes de que empiece el otro. */
+const seCruzan = (a: { desde: string; hasta: string }, b: { desde: string; hasta: string }) =>
+  a.desde <= b.hasta && b.desde <= a.hasta;
+
+/** Dos corridas del mismo mes cubren al mismo trabajador a la vez (el estudio, §5: se bloquea, no se suma). */
+function corridasSolapadas(a: CorridaColilla, b: CorridaColilla, mes: { desde: string; hasta: string }): boolean {
+  if (a.corridaId === b.corridaId) return false;
+  if (!seCruzan(a.rango ?? mes, b.rango ?? mes)) return false;
+  const hayTodas = a.cobertura === 'all' || b.cobertura === 'all';
+  return hayTodas || (a.sedeId ?? '') === (b.sedeId ?? '');
+}
+
+// ── Pre-vuelo del trabajador ─────────────────────────────────────────────────
+
+function revisarTrabajador(e: EmpleadoConsolidar, periodo: string, bloqueos: string[]): void {
+  const quien = nombreDe(e);
+  const ficha = `Corrígelo en el expediente de ${quien} (Empleados → Nómina electrónica)`;
+  const doc = (e.docNumber ?? '').trim();
+
+  if (!e.docTypeDian) {
+    bloqueos.push(`${quien}: falta el tipo de documento DIAN. ${ficha}.`);
+  } else if (e.docTypeDian === '31') {
+    bloqueos.push(
+      `${quien}: el tipo de documento DIAN es 31 (NIT) y un trabajador no tiene NIT. ${ficha} con su cédula u otro documento personal.`,
+    );
+  } else if (e.docType && DIAN_DOC_POR_DOCTYPE[e.docType] && DIAN_DOC_POR_DOCTYPE[e.docType] !== e.docTypeDian) {
+    bloqueos.push(
+      `${quien}: el tipo de documento (${e.docType}) no coincide con el código DIAN ${e.docTypeDian} (debería ser ${DIAN_DOC_POR_DOCTYPE[e.docType]}). ${ficha}.`,
+    );
+  }
+  if (!/^\d+$/.test(doc)) {
+    bloqueos.push(
+      `${quien}: el número de documento «${doc}» no es numérico y la DIAN lo recibe como entero. ${ficha} solo con dígitos, sin puntos ni letras.`,
+    );
+  }
+  if (!e.tipoTrabajador) bloqueos.push(`${quien}: falta el tipo de trabajador DIAN (01 = dependiente). ${ficha}.`);
+  if (!e.subTipoTrabajador) {
+    bloqueos.push(`${quien}: falta el subtipo de trabajador DIAN (00 = no aplica). ${ficha}.`);
+  }
+
+  if (e.contractType === 'prestacion_servicios') {
+    bloqueos.push(
+      `${quien}: tiene contrato de prestación de servicios y el contratista no lleva nómina electrónica (no es una relación laboral). Quítalo de la corrida o corrige el tipo de contrato en su expediente.`,
+    );
+  } else if (!e.tipoContratoDian) {
+    bloqueos.push(`${quien}: falta el tipo de contrato DIAN. ${ficha}.`);
+  } else if (e.contractType && CONTRATO_DIAN_POR_TIPO[e.contractType]) {
+    const validos = CONTRATO_DIAN_POR_TIPO[e.contractType]!;
+    if (!validos.includes(e.tipoContratoDian)) {
+      bloqueos.push(
+        `${quien}: el tipo de contrato (${e.contractType}) no coincide con el código DIAN ${e.tipoContratoDian} (debería ser ${validos.join(' o ')}). ${ficha}.`,
+      );
+    }
+  }
+
+  if (!e.hireDate || !YYYYMMDD.test(e.hireDate)) {
+    bloqueos.push(`${quien}: falta la fecha de ingreso (o no es YYYY-MM-DD). ${ficha}.`);
+  } else if (e.hireDate > ultimoDiaDelMes(periodo)) {
+    bloqueos.push(`${quien}: la fecha de ingreso ${e.hireDate} es posterior al mes ${periodo}. Corrígela en su expediente.`);
+  }
+
+  if (!enteroPositivo(e.salary)) bloqueos.push(`${quien}: falta el salario mensual pactado. ${ficha}.`);
+
+  if (!e.medioPago) {
+    bloqueos.push(`${quien}: falta el medio de pago (efectivo, transferencia…). ${ficha}.`);
+  } else if (e.medioPago === MEDIO_TRANSFERENCIA) {
+    const faltan = [
+      !e.bank?.trim() && 'banco',
+      !e.accountType && 'tipo de cuenta',
+      !e.accountNumber?.trim() && 'número de cuenta',
+    ].filter(Boolean);
+    if (faltan.length > 0) {
+      bloqueos.push(`${quien}: el medio de pago es transferencia y falta ${faltan.join(', ')}. ${ficha}.`);
+    }
+  }
+
+  if (e.terminationDate && e.terminationDate.slice(0, 7) === periodo) {
+    bloqueos.push(
+      `${quien}: se retira en ${periodo} (${e.terminationDate}). La liquidación del retiro (cesantías, prima, vacaciones, indemnización) aún no se reporta: ${PENDIENTE_DUENO}.`,
+    );
+  }
+}
+
+// ── Revisión de cada colilla ────────────────────────────────────────────────
+
+function revisarColilla(c: CorridaColilla, quien: string, bloqueos: string[]): boolean {
+  const b = c.colilla.breakdown;
+  const dev = b.devengados;
+  const ded = b.deducciones;
+  const donde = `${quien} (corrida ${c.corridaId})`;
+  const antes = bloqueos.length;
+
+  for (const [clave, valor] of Object.entries(dev as unknown as Record<string, unknown>)) {
+    if (!DEVENGADOS_CONOCIDOS.has(clave) && typeof valor === 'number' && valor > 0) {
+      bloqueos.push(
+        `${donde}: la colilla trae el concepto «${clave}» (prima, cesantías, vacaciones, incapacidad, licencia, retiro u otro) y aún no se reporta: ${PENDIENTE_DUENO}.`,
+      );
+    }
+  }
+  for (const l of dev.recargoDetalle ?? []) {
+    if (!TIPO_POR_CLAVE[l.key]) {
+      bloqueos.push(`${donde}: tipo de hora «${l.key}» sin equivalente en la nómina electrónica: ${PENDIENTE_DUENO}.`);
+    }
+  }
+
+  const sumaDev = sumCop([
+    dev.salario,
+    dev.auxilioTransporte,
+    dev.recargos,
+    dev.horasExtra,
+    dev.bonificacionSalarial,
+    dev.bonificacionNoSalarial,
+    dev.comisiones,
+  ]);
+  if (sumaDev !== cop(dev.total)) {
+    bloqueos.push(`${donde}: los devengados no cuadran entre sí (${sumaDev} ≠ ${dev.total}). Revisa o recalcula la corrida.`);
+  }
+  const pagoHoras = sumCop((dev.recargoDetalle ?? []).map((l) => l.valor));
+  if (pagoHoras !== cop(dev.recargos + dev.horasExtra)) {
+    bloqueos.push(
+      `${donde}: el detalle de horas (${pagoHoras}) no cuadra con recargos + horas extra (${cop(dev.recargos + dev.horasExtra)}). Revisa o recalcula la corrida.`,
+    );
+  }
+  const sumaDed = sumCop([ded.salud, ded.pension, ded.fsp, ded.retencionFuente, ded.otras]);
+  if (sumaDed !== cop(ded.total)) {
+    bloqueos.push(`${donde}: las deducciones no cuadran entre sí (${sumaDed} ≠ ${ded.total}). Revisa o recalcula la corrida.`);
+  }
+  const detalle = sumCop((c.colilla.otrasDeduccionesDetalle ?? []).map((d) => d.amount));
+  if (detalle !== cop(ded.otras)) {
+    bloqueos.push(
+      `${donde}: el detalle de otras deducciones (${detalle}) no suma lo descontado (${ded.otras}). Revisa o recalcula la corrida.`,
+    );
+  }
+  const importes: [string, number][] = [
+    ['salario', dev.salario],
+    ['auxilio de transporte', dev.auxilioTransporte],
+    ['recargos', dev.recargos],
+    ['horas extra', dev.horasExtra],
+    ['bonificación salarial', dev.bonificacionSalarial],
+    ['bonificación no salarial', dev.bonificacionNoSalarial],
+    ['comisiones', dev.comisiones],
+    ['total devengado', dev.total],
+    ['IBC', b.ibc],
+    ['salud', ded.salud],
+    ['pensión', ded.pension],
+    ['FSP', ded.fsp],
+    ['retención en la fuente', ded.retencionFuente],
+    ['otras deducciones', ded.otras],
+    ['total deducciones', ded.total],
+    ...(dev.recargoDetalle ?? []).map((l): [string, number] => [`horas ${l.key}`, l.valor]),
+    ...(c.colilla.otrasDeduccionesDetalle ?? []).map((d): [string, number] => [`deducción «${d.concept}»`, d.amount]),
+  ];
+  const malos = importes.filter(([, v]) => !Number.isInteger(v) || v < 0).map(([k, v]) => `${k} (${String(v)})`);
+  if (malos.length > 0) {
+    bloqueos.push(`${donde}: importes que no son pesos enteros no negativos: ${malos.join(', ')}. Revisa o recalcula la corrida.`);
+  }
+  if (!Number.isInteger(c.colilla.diasTrabajados) || c.colilla.diasTrabajados < 0) {
+    bloqueos.push(`${donde}: los días trabajados (${c.colilla.diasTrabajados}) deben ser un entero no negativo.`);
+  }
+  return bloqueos.length === antes;
+}
+
+/** Clasifica cada deducción de la colilla: Deuda (fiado y arrastre) u OtraDeduccion (manual). */
+function clasificarDeducciones(
+  c: CorridaColilla,
+  deducciones: DeduccionConsolidar[],
+  advertir: (m: string) => void,
+): { deuda: number; otras: number[]; arrastre: number } {
+  const propias = deducciones.filter(
+    (d) => d.appliedRunId === c.corridaId && d.employeeId === c.colilla.employeeId && d.status !== 'cancelled',
+  );
+  const usadas = new Set<DeduccionConsolidar>();
+  let deuda = 0;
+  let arrastre = 0;
+  const otras: number[] = [];
+  for (const det of c.colilla.otrasDeduccionesDetalle ?? []) {
+    // Mismo concepto y monto; entre los candidatos manda el que tiene el mismo origen que dice la colilla.
+    const candidatos = propias.filter((d) => !usadas.has(d) && d.concept === det.concept && d.amount === det.amount);
+    const par = candidatos.find((d) => det.source && d.source === det.source) ?? candidatos[0];
+    if (par) usadas.add(par);
+    else if (!det.source) {
+      advertir(
+        `Corrida ${c.corridaId}: la deducción «${det.concept}» (${det.amount}) no se pudo vincular a ninguna deducción aplicada; se reporta como OtraDeduccion. Si era un consumo o fiado, debería ir como Deuda: revísala.`,
+      );
+    }
+    const fuente = par?.source ?? det.source ?? 'manual';
+    if (fuente === 'sale') deuda += det.amount;
+    else if (fuente === 'arrastre') {
+      deuda += det.amount;
+      arrastre += det.amount;
+    } else otras.push(det.amount);
+  }
+  return { deuda, otras, arrastre };
+}
+
+// ── Consolidación ───────────────────────────────────────────────────────────
+
+export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsolidar {
+  const { periodo, empleado: e, empleador } = entrada;
+  const bloqueos: string[] = [];
+  const advertencias: string[] = [];
+  const quien = nombreDe(e);
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(periodo)) {
+    return { ok: false, bloqueos: [`El periodo «${periodo}» no es un mes YYYY-MM.`] };
+  }
+  const primero = `${periodo}-01`;
+  const ultimo = ultimoDiaDelMes(periodo);
+
+  revisarTrabajador(e, periodo, bloqueos);
+
+  // Corridas del trabajador en el mes.
+  const delMes = entrada.slips.filter((s) => s.periodo === periodo && s.colilla.employeeId === e.id);
+  const cerradas = delMes.filter((s) => s.estado === 'cerrada');
+  const borradores = delMes.filter((s) => s.estado !== 'cerrada');
+  if (borradores.length > 0) {
+    bloqueos.push(`${quien}: la corrida de ${periodo} sigue en borrador. Ciérrala antes de generar la nómina electrónica.`);
+  }
+  if (cerradas.length === 0) {
+    if (borradores.length === 0) {
+      bloqueos.push(`${quien}: no tiene ninguna corrida cerrada en ${periodo}; sin pagos en el mes no hay documento.`);
+    }
+    return { ok: false, bloqueos };
+  }
+  const mes = { desde: primero, hasta: ultimo };
+  const vistos = new Set<string>();
+  for (const c of delMes) {
+    if (vistos.has(c.corridaId)) {
+      bloqueos.push(
+        `${quien}: la colilla de la corrida ${c.corridaId} viene repetida en ${periodo}; sumarla dos veces duplicaría el pago. Revisa los datos de entrada.`,
+      );
+    }
+    vistos.add(c.corridaId);
+    const r = c.rango;
+    if (r && !(YYYYMMDD.test(r.desde) && YYYYMMDD.test(r.hasta) && r.desde <= r.hasta && r.desde >= primero && r.hasta <= ultimo)) {
+      bloqueos.push(`${quien}: el rango de la corrida ${c.corridaId} (${r.desde} a ${r.hasta}) no está dentro de ${periodo}.`);
+    }
+  }
+  for (let i = 0; i < cerradas.length; i++) {
+    for (let j = i + 1; j < cerradas.length; j++) {
+      if (corridasSolapadas(cerradas[i]!, cerradas[j]!, mes)) {
+        bloqueos.push(
+          `${quien}: aparece en dos corridas cerradas de ${periodo} con coberturas que se solapan (${cerradas[i]!.cobertura} y ${cerradas[j]!.cobertura}); sumarlas duplicaría el pago. Elimina la corrida repetida o ajusta su cobertura.`,
+        );
+      }
+    }
+  }
+  const colillasOk = cerradas.map((c) => revisarColilla(c, quien, bloqueos));
+  if (bloqueos.length > 0 || colillasOk.some((ok) => !ok)) return { ok: false, bloqueos };
+
+  // ── Devengados ──
+  const colillas = cerradas.map((c) => c.colilla);
+  const dias = colillas.reduce((s, c) => s + c.diasTrabajados, 0);
+  if (dias > 30) {
+    bloqueos.push(`${quien}: suma ${dias} días trabajados en ${periodo} y el mes comercial tiene 30. Revisa las corridas.`);
+  }
+  const sum = (pick: (b: PayrollBreakdown) => number): number => sumCop(colillas.map((c) => pick(c.breakdown)));
+
+  const horasPorClave = new Map<string, HoraNe>();
+  for (const col of colillas) {
+    for (const l of col.breakdown.devengados.recargoDetalle ?? []) {
+      const tipo = TIPO_POR_CLAVE[l.key]!;
+      const porcentaje = pct2(l.factor * 100);
+      const clave = `${tipo}|${porcentaje}`;
+      const h = horasPorClave.get(clave) ?? { tipo, cantidad: 0, porcentaje, pago: 0 };
+      h.cantidad = pct2(h.cantidad + l.horas);
+      h.pago += centavosDeCop(l.valor);
+      horasPorClave.set(clave, h);
+    }
+  }
+  const ordenTipos: string[] = Object.values(TIPO_POR_CLAVE);
+  const horas = [...horasPorClave.values()].sort(
+    (a, b) => ordenTipos.indexOf(a.tipo) - ordenTipos.indexOf(b.tipo) || a.porcentaje - b.porcentaje,
+  );
+
+  const auxilio = sum((b) => b.devengados.auxilioTransporte);
+  const bonS = sum((b) => b.devengados.bonificacionSalarial);
+  const bonNS = sum((b) => b.devengados.bonificacionNoSalarial);
+  const comisiones = sum((b) => b.devengados.comisiones);
+
+  const devengados: DevengadosNe = {
+    basico: { dias, sueldo: centavosDeCop(sum((b) => b.devengados.salario)) },
+    ...(auxilio > 0 ? { transporte: { auxilio: centavosDeCop(auxilio) } } : {}),
+    horas,
+    vacacionesComunes: [],
+    vacacionesCompensadas: [],
+    incapacidades: [],
+    licenciasMP: [],
+    bonificaciones:
+      bonS > 0 || bonNS > 0
+        ? [{ ...(bonS > 0 ? { s: centavosDeCop(bonS) } : {}), ...(bonNS > 0 ? { ns: centavosDeCop(bonNS) } : {}) }]
+        : [],
+    auxilios: [],
+    otrosConceptos: [],
+    comisiones: comisiones > 0 ? [centavosDeCop(comisiones)] : [],
+    pagosTerceros: [],
+  };
+
+  // ── Deducciones ──
+  const ibc = sum((b) => b.ibc);
+  const salud = sum((b) => b.deducciones.salud);
+  const pension = sum((b) => b.deducciones.pension);
+  const fsp = sum((b) => b.deducciones.fsp);
+  const retencion = sum((b) => b.deducciones.retencionFuente);
+
+  if (e.subTipoTrabajador === '01' && pension > 0) {
+    bloqueos.push(
+      `${quien}: es pensionado por vejez activo (subtipo 01) y la nómina le descontó pensión (${pension}). Corrige la colilla (un pensionado no cotiza pensión) o el subtipo en su expediente.`,
+    );
+  }
+
+  if (e.subTipoTrabajador === '01' && fsp > 0) {
+    bloqueos.push(
+      `${quien}: es pensionado por vejez activo (subtipo 01) y la nómina le descontó fondo de solidaridad pensional (${fsp}). Corrige la colilla o el subtipo en su expediente.`,
+    );
+  }
+  if (fsp > 0 && ibc <= 0) {
+    bloqueos.push(`${quien}: la nómina descontó FSP (${fsp}) con IBC en 0; no se puede derivar su porcentaje. Revisa la corrida.`);
+  }
+
+  // FSP: solidaridad 0,5 % del IBC y subsistencia el resto, colilla por colilla.
+  let fspSol = 0;
+  let fspSub = 0;
+  for (const col of colillas) {
+    const f = col.breakdown.deducciones.fsp;
+    const sol = Math.min(f, cop(col.breakdown.ibc * (FSP_SOLIDARIDAD_PCT / 100)));
+    fspSol += sol;
+    fspSub += f - sol;
+  }
+  const porcentajeSalud = ibc > 0 ? pct2((salud / ibc) * 100) : 4;
+  const porcentajePension = e.subTipoTrabajador === '01' ? 0 : ibc > 0 ? pct2((pension / ibc) * 100) : 4;
+  // Pendiente: en corridas parciales la tarifa sale mezclada (Σ FSP / Σ IBC); lo exacto sería la tarifa de cada
+  // colilla. Hoy no bloquea porque BookiPos liquida una corrida por mes.
+  const tarifaFsp = ibc > 0 ? pct2((fsp / ibc) * 100) : 0;
+  if (fspSub > 0 && pct2(tarifaFsp - FSP_SOLIDARIDAD_PCT) <= 0) {
+    bloqueos.push(`${quien}: el FSP descontado (${fsp}) no alcanza para partirlo en solidaridad y subsistencia. Revisa la corrida.`);
+  }
+
+  const clasificadas = cerradas.map((c) => clasificarDeducciones(c, entrada.deducciones, (m) => advertencias.push(m)));
+
+  // Neto negativo (estudio §2): lo reportado es lo que de verdad se descontó. `crearArrastres` lleva a la nómina
+  // siguiente el saldo de CADA colilla con neto negativo (−netoPagar, sin importar el origen de la deducción,
+  // también lo manual); allí sale como Deuda. Por eso el exceso se calcula por colilla y no con el mes sumado.
+  // Se recortan primero las otras deducciones y luego la Deuda; salud, pensión, FSP y retención no se tocan.
+  let deuda = 0;
+  let otras: number[] = [];
+  const recorte: RecorteNeto = { otras: 0, deuda: 0, total: 0 };
+  cerradas.forEach((c, i) => {
+    const bd = c.colilla.breakdown;
+    const cl = clasificadas[i]!;
+    let exceso = Math.max(0, cop(bd.deducciones.total) - cop(bd.devengados.total));
+    const antes = sumCop(cl.otras) + cl.deuda;
+    if (exceso > antes) {
+      bloqueos.push(
+        `${quien}: en la corrida ${c.corridaId} salud, pensión, FSP y retención superan lo devengado (${bd.devengados.total}); el comprobante no puede ser negativo y no hay deducciones de nómina que recortar. Revisa la corrida.`,
+      );
+      return;
+    }
+    const saldo = exceso;
+    const otrasC = cl.otras.map((v) => {
+      const r = Math.min(v, exceso);
+      exceso -= r;
+      return v - r;
+    });
+    const recOtras = sumCop(cl.otras) - sumCop(otrasC);
+    otras = otras.concat(otrasC);
+    deuda += cl.deuda - exceso;
+    recorte.otras += recOtras;
+    recorte.deuda += exceso;
+    recorte.total += saldo;
+    if (saldo > 0) {
+      advertencias.push(
+        `${quien}: la colilla de la corrida ${c.corridaId} tiene neto negativo (−${saldo}). Se reporta ${antes - saldo} de ${antes} en deducciones de nómina; el saldo de ${saldo} (otras deducciones: ${recOtras}, Deuda: ${saldo - recOtras}) lo lleva el sistema como arrastre al mes siguiente, donde sale como Deuda.`,
+      );
+    }
+  });
+  if (bloqueos.length > 0) return { ok: false, bloqueos };
+
+  const deducciones: DeduccionesNe = {
+    salud: { porcentaje: porcentajeSalud, valor: centavosDeCop(salud) },
+    fondoPension: { porcentaje: porcentajePension, valor: centavosDeCop(pension) },
+    ...(fsp > 0
+      ? {
+          fondoSP: {
+            porcentaje: FSP_SOLIDARIDAD_PCT,
+            valor: centavosDeCop(fspSol),
+            ...(fspSub > 0
+              ? { porcentajeSub: pct2(tarifaFsp - FSP_SOLIDARIDAD_PCT), valorSub: centavosDeCop(fspSub) }
+              : {}),
+          },
+        }
+      : {}),
+    sindicatos: [],
+    sanciones: [],
+    libranzas: [],
+    pagosTerceros: [],
+    anticipos: [],
+    otras: otras.filter((v) => v > 0).map(centavosDeCop),
+    ...(retencion > 0 ? { retencionFuente: centavosDeCop(retencion) } : {}),
+    ...(deuda > 0 ? { deuda: centavosDeCop(deuda) } : {}),
+  };
+
+  // ── Datos del trabajador y del pago ──
+  const municipioPropio = e.municipioDaneTrabajo?.trim();
+  const municipio = municipioPropio || empleador.municipioDane?.trim();
+  if (!municipio || !DANE_MUNICIPIO.test(municipio)) {
+    bloqueos.push(
+      `${quien}: falta el municipio DANE del lugar de trabajo (5 dígitos) ni el emisor tiene uno válido. Complétalo en el expediente o en los datos fiscales del emisor.`,
+    );
+  } else if (!municipioPropio) {
+    advertencias.push(`${quien}: sin municipio DANE propio; se usa el del emisor (${municipio}).`);
+  }
+  const direccion = (e.direccionTrabajo || e.address || empleador.direccion || '').trim();
+  if (!direccion) {
+    bloqueos.push(`${quien}: falta la dirección del lugar de trabajo (ni el expediente ni el emisor la tienen).`);
+  }
+  if (bloqueos.length > 0) return { ok: false, bloqueos };
+
+  // Nombres: `lastName` es el primer apellido; si no hay segundo y viene «Pérez Gómez», se parte y se avisa.
+  let primerApellido = (e.lastName ?? '').trim();
+  let segundoApellido = (e.secondLastName ?? '').trim();
+  if (!segundoApellido) {
+    const partes = primerApellido.split(/\s+/).filter(Boolean);
+    if (partes.length === 2) {
+      [primerApellido, segundoApellido] = [partes[0]!, partes[1]!];
+      advertencias.push(`${quien}: no tiene segundo apellido registrado; se partió el apellido. Confírmalo en el expediente.`);
+    } else {
+      advertencias.push(`${quien}: no tiene segundo apellido registrado; el documento lo lleva vacío.`);
+    }
+  }
+  let primerNombre = (e.firstName ?? '').trim();
+  let otrosNombres = (e.otherNames ?? '').trim();
+  if (!otrosNombres) {
+    const partes = primerNombre.split(/\s+/).filter(Boolean);
+    if (partes.length > 1) {
+      primerNombre = partes[0]!;
+      otrosNombres = partes.slice(1).join(' ');
+    }
+  }
+
+  const medio = e.medioPago!;
+  const conCuenta = medio === MEDIO_TRANSFERENCIA || (medio === MEDIO_CONSIGNACION && !!e.accountNumber?.trim());
+  const fechasPagos = [...entrada.pago.fechasPagos];
+  const malas = fechasPagos.filter((f) => !YYYYMMDD.test(f));
+  const finMesSiguiente = ultimoDiaDelMes(new Date(Date.UTC(Number(periodo.slice(0, 4)), Number(periodo.slice(5, 7)), 1)).toISOString().slice(0, 7));
+  if (malas.length > 0) {
+    bloqueos.push(`${quien}: fechas de pago inválidas (${malas.join(', ')}); deben ser YYYY-MM-DD.`);
+  } else if (fechasPagos.some((f) => f < primero)) {
+    bloqueos.push(`${quien}: hay una fecha de pago anterior al inicio de ${periodo} (${primero}). Corrígela en la corrida.`);
+  } else if (fechasPagos.some((f) => f > finMesSiguiente)) {
+    advertencias.push(`${quien}: hay una fecha de pago posterior al mes siguiente a ${periodo}; confírmala.`);
+  }
+  if (fechasPagos.length === 0) {
+    fechasPagos.push(ultimo);
+    advertencias.push(`${quien}: no hay fecha de pago registrada; se usó el último día del mes (${ultimo}).`);
+  }
+  if (bloqueos.length > 0) return { ok: false, bloqueos };
+
+  const desdeLiq = e.hireDate! > primero ? e.hireDate! : primero;
+  const unaCorrida = cerradas.length === 1;
+  const todasConRango = cerradas.every((c) => c.rango);
+  const quincenales = todasConRango && cerradas.every((c) => c.rango!.hasta.slice(-2) <= '16' || c.rango!.desde.slice(-2) >= '16');
+  const periodoNomina = unaCorrida ? '5' : quincenales ? '4' : '6';
+
+  const modelo: DocumentoNe = {
+    periodo: {
+      fechaIngreso: e.hireDate!,
+      fechaLiquidacionInicio: desdeLiq,
+      fechaLiquidacionFin: ultimo,
+      tiempoLaborado: tiempoLaborado360(e.hireDate!, ultimo),
+    },
+    periodoNomina,
+    trabajador: {
+      tipoTrabajador: e.tipoTrabajador!,
+      subTipoTrabajador: e.subTipoTrabajador!,
+      altoRiesgoPension: e.altoRiesgoPension === true,
+      tipoDocumento: e.docTypeDian!,
+      numeroDocumento: (e.docNumber ?? '').trim(),
+      primerApellido,
+      segundoApellido,
+      primerNombre,
+      ...(otrosNombres ? { otrosNombres } : {}),
+      lugarTrabajo: { departamento: municipio!.slice(0, 2), municipio: municipio!, direccion },
+      salarioIntegral: e.salaryType === 'integral',
+      tipoContrato: e.tipoContratoDian!,
+      sueldo: centavosDeCop(e.salary!),
+    },
+    pago: {
+      forma: '1',
+      metodo: medio,
+      ...(conCuenta
+        ? {
+            banco: e.bank?.trim() || undefined,
+            tipoCuenta: e.accountType,
+            numeroCuenta: e.accountNumber?.trim() || undefined,
+          }
+        : {}),
+    },
+    fechasPagos,
+    devengados,
+    deducciones,
+  };
+  return { ok: true, modelo, advertencias, recorte };
+}
+
+/** Suma en centavos de los valores que el armador escribiría; sirve para verificar el cuadre con las colillas. */
+export function totalesDeModelo(m: DocumentoNe): { devengados: Centavos; deducciones: Centavos } {
+  const d = m.devengados;
+  const dev =
+    d.basico.sueldo +
+    (d.transporte?.auxilio ?? 0) +
+    d.horas.reduce((s, h) => s + h.pago, 0) +
+    d.bonificaciones.reduce((s, b) => s + (b.s ?? 0) + (b.ns ?? 0), 0) +
+    d.comisiones.reduce((s, v) => s + v, 0);
+  const x = m.deducciones;
+  const ded =
+    x.salud.valor +
+    x.fondoPension.valor +
+    (x.fondoSP?.valor ?? 0) +
+    (x.fondoSP?.valorSub ?? 0) +
+    x.otras.reduce((s, v) => s + v, 0) +
+    (x.retencionFuente ?? 0) +
+    (x.deuda ?? 0);
+  return { devengados: dev, deducciones: ded };
+}
