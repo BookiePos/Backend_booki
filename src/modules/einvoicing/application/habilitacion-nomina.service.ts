@@ -27,6 +27,7 @@ import { armarNominaAjuste, armarNominaIndividual } from '../domain/nomina/xml-n
 import {
   PREFIJO_SET_NE,
   SET_NOMINA_EXIGIDO,
+  UMBRAL_REENVIO_MS,
   documentoSintetico,
   mensajeAvance,
   planSetNomina,
@@ -159,7 +160,7 @@ export class HabilitacionNominaService {
       }
       if (!(set.testSetId !== base.testSetId) && !resumenSetNomina(set).aprobada) {
         const limite = Date.now() + PRESUPUESTO_CORRIDA_MS;
-        await persistir(await this.consultarEnviados(set, base.transmisor, limite));
+        await persistir(await this.consultarEnviados(set, base.transmisor, limite, ahora));
         if (enviar) {
           await persistir(reintentarRechazados(set));
           const r = await this.enviarPendientes(set, base, limite, ahora, persistir);
@@ -253,7 +254,7 @@ export class HabilitacionNominaService {
       const prefijo = PREFIJO_SET_NE[d.tipo];
       const enviado: DocSetNe = { ...d, cune: armado.cune, fecha: reloj.fecha, intentos: d.intentos + 1 };
       // Número + CUNE + estado se graban ANTES de salir: un corte no reenvía el mismo número con otro CUNE.
-      set = this.poner(set, i, { ...enviado, estado: 'enviando' });
+      set = this.poner(set, i, { ...enviado, estado: 'enviando', enviadoAt: ahora.toISOString() });
       await persistir(set);
       const r = await this.llamar(limite, (p) =>
         base.transmisor.enviarSetPruebas({
@@ -330,7 +331,7 @@ export class HabilitacionNominaService {
 
   // ── Consulta ──────────────────────────────────────────────────────────────
 
-  private async consultarEnviados(set: SetHabilitacionNe, transmisor: TransmisorDian, limite: number): Promise<SetHabilitacionNe> {
+  private async consultarEnviados(set: SetHabilitacionNe, transmisor: TransmisorDian, limite: number, ahora: Date): Promise<SetHabilitacionNe> {
     let actual = set;
     for (let i = 0; i < actual.documentos.length; i++) {
       const d = actual.documentos[i]!;
@@ -342,7 +343,11 @@ export class HabilitacionNominaService {
       const destino = this.destino(r);
       if (destino === 'accepted') actual = this.poner(actual, i, { ...d, estado: 'aceptado', mensaje: null });
       else if (destino === 'rejected') actual = this.poner(actual, i, { ...d, estado: 'rechazado', mensaje: this.texto(r) });
-      else if (d.estado === 'enviando' && r.codigo === 'NO_RECIBIDO_DIAN') {
+      else if (
+        d.estado === 'enviando' &&
+        r.codigo === 'NO_RECIBIDO_DIAN' &&
+        (!d.enviadoAt || ahora.getTime() - new Date(d.enviadoAt).getTime() > UMBRAL_REENVIO_MS)
+      ) {
         // La DIAN confirma que nunca lo recibió: queda rechazado local y vuelve a la cola con número nuevo.
         actual = this.poner(actual, i, { ...d, estado: 'rechazado', mensaje: 'El envío se cortó antes de llegar a la DIAN; se reenvía con número nuevo.' });
       }

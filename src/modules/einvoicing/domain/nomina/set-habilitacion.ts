@@ -25,6 +25,9 @@ export const SET_NOMINA_EXIGIDO: Readonly<Record<TipoDocSetNe, number>> = { nie:
 /** Cuántas de las notas del set son de Eliminar (el resto Reemplazar). Configurable: el portal de la DIAN manda. */
 export const NOTAS_ELIMINAR_DEL_SET = 1;
 
+/** Un `enviando` sin rastro en la DIAN solo se renumera pasado este tiempo (el envío es asíncrono y puede no estar indexado). */
+export const UMBRAL_REENVIO_MS = 10 * 60_000;
+
 export const PREFIJO_SET_NE: Readonly<Record<TipoDocSetNe, string>> = { nie: 'NEP', niae: 'NAP' };
 
 export interface DocSetNe {
@@ -43,6 +46,8 @@ export interface DocSetNe {
   /** Lo que dijo la DIAN (o por qué sigue pendiente), en español. */
   mensaje: string | null;
   intentos: number;
+  /** ISO del momento en que se grabó `enviando`/se envió. */
+  enviadoAt?: string;
 }
 
 export interface SetHabilitacionNe {

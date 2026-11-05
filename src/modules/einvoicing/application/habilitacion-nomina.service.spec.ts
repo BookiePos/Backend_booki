@@ -166,6 +166,22 @@ describe('HabilitacionNominaService', () => {
     expect(filas[0].conjunto.documentos[0].numero).not.toBe(viejo);
   });
 
+  it('«enviando» sin rastro: antes de 10 min queda en vuelo; pasado el umbral se renumera', async () => {
+    const { s, filas } = armar({ consulta: { ok: false, origen: 'adapter', codigo: 'NO_RECIBIDO_DIAN', mensajes: ['x'] } });
+    const t0 = new Date('2026-11-05T15:00:00Z');
+    await dentro(() => s.iniciar(SEDE, owner, t0));
+    const d0 = filas[0].conjunto.documentos[0];
+    const viejo = d0.numero;
+    d0.estado = 'enviando';
+    d0.enviadoAt = t0.toISOString();
+    await dentro(() => s.consultar(SEDE, owner, new Date(t0.getTime() + 9 * 60_000)));
+    expect(filas[0].conjunto.documentos[0]).toMatchObject({ estado: 'enviando', numero: viejo });
+    await dentro(() => s.consultar(SEDE, owner, new Date(t0.getTime() + 11 * 60_000)));
+    expect(filas[0].conjunto.documentos[0].estado).toBe('rechazado');
+    await dentro(() => s.iniciar(SEDE, owner, new Date(t0.getTime() + 12 * 60_000)));
+    expect(filas[0].conjunto.documentos[0].numero).not.toBe(viejo);
+  });
+
   it('dos llamadas cruzadas: la segunda recibe 409 sin enviar y luego trabaja sobre la copia fresca', async () => {
     let soltar!: () => void;
     const puerta = new Promise<void>((r) => (soltar = r));
