@@ -23,6 +23,21 @@ export interface PayslipPdfData {
   /** Etiqueta opcional de la corrida. */
   periodLabel?: string;
   breakdown: PayrollBreakdown;
+  /** Documento soporte de nómina electrónica aceptado y vigente del período, si existe. */
+  nominaElectronica?: PayslipNominaElectronica;
+}
+
+export interface PayslipNominaElectronica {
+  numero: string;
+  cune: string;
+}
+
+/** Texto de la nota al pie sobre la nómina electrónica, según haya o no documento aceptado. */
+export function textoNominaElectronica(ne?: PayslipNominaElectronica): string {
+  if (ne?.numero && ne.cune) {
+    return `Documento soporte de pago de nómina electrónica N.º ${ne.numero} — CUNE ${ne.cune}`;
+  }
+  return 'Este desprendible no reemplaza el documento soporte de pago de nómina electrónica.';
 }
 
 const money = new Intl.NumberFormat('es-CO', {
@@ -220,12 +235,10 @@ export function buildPayslipPdf(data: PayslipPdfData): Promise<Buffer> {
   doc
     .fontSize(8)
     .fillColor(MUTED)
-    .text(
-      'Comprobante de pago de salarios (art. 138 CST). No constituye documento soporte de nómina electrónica ante la DIAN.',
-      left,
-      doc.y + 4,
-      { width },
-    );
+    .text('Comprobante de pago de salarios (art. 138 CST).', left, doc.y + 4, { width });
+  // El CUNE (96 hex) cabe en una línea en A4 a 8 pt; si no, PDFKit parte la línea
+  // y el texto sigue completo, así que nunca se trunca.
+  doc.text(textoNominaElectronica(data.nominaElectronica), left, doc.y + 2, { width });
 
   doc.end();
   return done;

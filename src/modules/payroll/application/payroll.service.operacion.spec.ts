@@ -66,6 +66,7 @@ function armar(o: {
   aprobadas?: { _id: Types.ObjectId; employeeId: string; amount: number; concept: string }[];
   matched?: number[];
   deduccion?: Record<string, any> | null;
+  nominaEl?: { fullNumber: string; cune: string } | null;
   aplicadaVenta?: (Record<string, unknown> | null)[];
   settingsDoc?: Record<string, any> | null;
 } = {}) {
@@ -101,6 +102,12 @@ function armar(o: {
     create: vi.fn(async (d: unknown) => d),
     updateMany: vi.fn(() => exec({ matchedCount: matched.length ? matched.shift() : (o.aprobadas?.length ?? 0) })),
   };
+  const nominaElectronica = {
+    findOne: vi.fn(() => {
+      const q: any = { sort: () => q, select: () => q, lean: () => q, exec: () => Promise.resolve(o.nominaEl ?? null) };
+      return q;
+    }),
+  };
   const mail = { sendPayslip: vi.fn(async () => ({ sent: true, id: 'm1' })) };
   const params = {
     number: async (_k: string, fb: number) => fb,
@@ -119,8 +126,9 @@ function armar(o: {
     mail as any,
     params as any,
     ledgerPosting as any,
+    nominaElectronica as any,
   );
-  return { service, settings, runs, deductions, mail, ledgerPosting, settingsDoc };
+  return { service, settings, runs, deductions, mail, ledgerPosting, settingsDoc, nominaElectronica };
 }
 
 function corrida(over: Record<string, unknown> = {}) {
@@ -308,6 +316,25 @@ describe('PayrollService · colilla por correo', () => {
     const msg = (mail.sendPayslip.mock.calls[0] as any)[0];
     expect(msg).toMatchObject({ employerName: 'Panadería SAS', filename: 'comprobante-nomina-2026-09-1020.pdf' });
     expect(msg.pdf.subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('consulta el 102/103 aceptado y vigente del trabajador en el período', async () => {
+    const { service: s0 } = armar();
+    const { breakdown } = await s0.preview({ salarioBase: 2_000_000 } as never);
+    const run = corrida();
+    const eid = new Types.ObjectId().toHexString();
+    run.slips[0]!.employeeId = eid;
+    run.slips[0]!.breakdown = breakdown;
+    const { service, nominaElectronica } = armar({ run, nominaEl: { fullNumber: 'NE12', cune: 'abc' } });
+    await service.sendSlip(id, eid);
+    expect(nominaElectronica.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        periodo: '2026-09',
+        tipoXml: { $in: ['102', '103'] },
+        dianStatus: 'accepted',
+        vigente: true,
+      }),
+    );
   });
 });
 

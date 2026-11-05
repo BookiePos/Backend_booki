@@ -184,6 +184,7 @@ function armar(o: { run?: Doc | null; deducciones?: Doc[] } = {}) {
     {} as any,
     params as any,
     ledgerPosting as any,
+    {} as any,
   );
   return { service, runs, deductions, ledgerPosting, creadas };
 }

@@ -38,7 +38,11 @@ import { MailService } from '../../core-auth/application/mail.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { effectiveEntitlements } from '../../control/domain/plans';
 import { PlanUpgradeRequiredException } from '../../control/domain/plan-upgrade.exception';
-import { buildPayslipPdf } from './payslip-pdf';
+import {
+  PayrollEDocument,
+  PayrollEDocumentDocument,
+} from '../../einvoicing/infrastructure/schemas/payroll-e-document.schema';
+import { buildPayslipPdf, type PayslipNominaElectronica } from './payslip-pdf';
 import {
   classifyTurnos,
   lunesDe,
@@ -118,6 +122,8 @@ export class PayrollService {
     private readonly mail: MailService,
     private readonly params: ParamsService,
     private readonly ledgerPosting: LedgerPostingService,
+    @InjectModel(PayrollEDocument.name)
+    private readonly nominaElectronica: Model<PayrollEDocumentDocument>,
   ) {}
 
   /** Genera el comprobante (PDF) de un desprendible y lo envía al correo del empleado. */
@@ -185,6 +191,7 @@ export class PayrollService {
       period: run.period,
       periodLabel: run.label,
       breakdown: slip.breakdown,
+      nominaElectronica: await this.nominaAceptada(employeeId, run.period),
     });
 
     const slug = (slip.docNumber || employeeId).replace(/[^a-zA-Z0-9]/g, '');
@@ -201,6 +208,32 @@ export class PayrollService {
     });
 
     return { ...result, email };
+  }
+
+  /**
+   * Consulta acotada: el 102/103 aceptado y vigente del trabajador en el período
+   * (un Eliminar aceptado no cuenta: no deja documento vigente). No importa el
+   * servicio de nómina electrónica, solo su esquema (modelo por proxy de tenancy).
+   */
+  private async nominaAceptada(
+    employeeId: string,
+    periodo: string,
+  ): Promise<PayslipNominaElectronica | undefined> {
+    if (!Types.ObjectId.isValid(employeeId)) return undefined;
+    const doc = await this.nominaElectronica
+      .findOne({
+        'empleado.employeeId': new Types.ObjectId(employeeId),
+        periodo,
+        tipoXml: { $in: ['102', '103'] },
+        tipoNota: { $ne: 2 },
+        dianStatus: 'accepted',
+        vigente: true,
+      })
+      .sort({ createdAt: -1 })
+      .select('fullNumber cune')
+      .lean()
+      .exec();
+    return doc ? { numero: doc.fullNumber, cune: doc.cune } : undefined;
   }
 
   /** Novedades (horas extra/recargos) sugeridas desde Turnos para un período. */
