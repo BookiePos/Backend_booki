@@ -30,7 +30,12 @@ import {
   type CampoSecretoEmisor,
   type EstadoConfiguracion,
 } from '../domain/emisor-fiscal';
-import { resolverTransmisor } from '../domain/resolver-transmisor';
+import {
+  faltantesParaTransmitir,
+  resolverTransmisor,
+  type EmisorTransmision,
+} from '../domain/resolver-transmisor';
+import type { TipoAmbiente } from '../domain/emisor-fiscal';
 import { StubDian } from '../domain/stub-dian';
 import type { TransmisorDian } from '../domain/transmisor-dian';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
@@ -96,6 +101,14 @@ export interface EmisorVista {
   /** SoftwareID + PIN de nómina guardados. */
   nominaConfigurada: boolean;
   tieneCertificado: boolean;
+}
+
+/** Lo que el emisor tiene para transmitir nómina (ver `estadoNomina`). */
+export interface EstadoNomina extends EmisorTransmision {
+  tipoAmbiente: TipoAmbiente;
+  habilitado: boolean;
+  testSetId?: string;
+  faltaParaTransmitir: string[];
 }
 
 const SELECT_SECRETOS = '+facturaPin +nominaPin +certPasswordCifrada';
@@ -243,6 +256,32 @@ export class FiscalEmittersService {
       },
       ahora,
     );
+  }
+
+  /**
+   * Qué tiene el emisor para transmitir NÓMINA: el .p12 (el mismo de la
+   * factura) y el SoftwareID, el PIN y el TestSetId de nómina. Nunca mira las
+   * credenciales de la factura. Solo presencia: no descifra nada.
+   */
+  async estadoNomina(emisorId: string, ahora: Date = new Date()): Promise<EstadoNomina> {
+    const base = await this.estadoConfiguracion(emisorId, ahora);
+    const e = await this.conSecretosOrFail(emisorId);
+    const softwareId = e.nominaSoftwareId?.trim() || undefined;
+    const tienePin = e.get('nominaPin') != null;
+    const testSetId = e.nominaTestSetId?.trim() || undefined;
+    return {
+      certificadoVigente: base.certificadoVigente,
+      tipoAmbiente: base.tipoAmbiente,
+      habilitado: base.habilitado,
+      softwareId,
+      tienePin,
+      testSetId,
+      faltaParaTransmitir: faltantesParaTransmitir({
+        certificadoVigente: base.certificadoVigente,
+        softwareId,
+        tienePin,
+      }),
+    };
   }
 
   /**

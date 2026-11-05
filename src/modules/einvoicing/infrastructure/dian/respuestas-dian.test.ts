@@ -40,7 +40,7 @@ export function dianResponseInterno(d: DatosDianResponse, etiqueta = 'b'): strin
 }
 
 /** SendBillSync o GetStatus (misma forma DianResponse). */
-export function respuestaDocumento(op: 'SendBillSync' | 'GetStatus', d: DatosDianResponse): string {
+export function respuestaDocumento(op: 'SendBillSync' | 'SendNominaSync' | 'GetStatus', d: DatosDianResponse): string {
   return sobre(
     `<${op}Response xmlns="http://wcf.dian.colombia"><${op}Result xmlns:b="http://schemas.datacontract.org/2004/07/DianResponse" ` +
       `xmlns:i="http://www.w3.org/2001/XMLSchema-instance">${dianResponseInterno(d)}</${op}Result></${op}Response>`,

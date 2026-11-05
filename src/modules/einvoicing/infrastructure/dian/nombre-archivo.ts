@@ -88,3 +88,41 @@ export function consecutivoDeNumero(fullNumber: string): number {
 export function anioColombia(ahora: Date): number {
   return new Date(ahora.getTime() - 5 * 3_600_000).getUTCFullYear();
 }
+
+/** Tipos de documento que viajan por la ruta de nómina electrónica. */
+export function esTipoNomina(tipo: DocType): boolean {
+  return tipo === 'payroll' || tipo === 'payroll_adjustment';
+}
+
+export interface DatosNombreArchivoNomina {
+  tipo: 'payroll' | 'payroll_adjustment';
+  /** NIT del empleador sin dígito de verificación. */
+  nit: string;
+  /** Consecutivo del archivo (entero ≥ 1, cabe en 8 dígitos hex). */
+  consecutivo: number;
+  /** Año (4 dígitos) del envío. */
+  anio: number;
+}
+
+/**
+ * Nombre de los archivos de la nómina electrónica (anexo técnico V1.0, §3.3 a
+ * §3.5): `nie` (NominaIndividual) o `niae` (NominaIndividualDeAjuste) + NIT de
+ * 10 dígitos + año de 2 + consecutivo en hexadecimal de 8 posiciones, en
+ * mayúsculas (`nie0800197268200000000C.xml`); el ZIP es `z` + el mismo cuerpo.
+ * A diferencia de la factura NO lleva el código de proveedor tecnológico (3
+ * dígitos). POR CONFIRMAR en habilitación: el anexo habla del consecutivo de
+ * envíos del año; aquí se usa el consecutivo del propio documento.
+ */
+export function nombresArchivoNomina(d: DatosNombreArchivoNomina): NombresArchivo {
+  const nit = d.nit.replace(/\D/g, '');
+  if (nit.length === 0 || nit.length > 10) throw new Error('NIT inválido para el nombre de archivo');
+  if (!Number.isSafeInteger(d.consecutivo) || d.consecutivo < 1 || d.consecutivo > 0xffffffff) {
+    throw new Error('Consecutivo de archivo fuera de rango');
+  }
+  if (!Number.isInteger(d.anio) || d.anio < 2000 || d.anio > 2099) throw new Error('Año inválido');
+  const cuerpoNe =
+    nit.padStart(10, '0') +
+    String(d.anio % 100).padStart(2, '0') +
+    d.consecutivo.toString(16).toUpperCase().padStart(8, '0');
+  return { xml: `${PREFIJO_ARCHIVO[d.tipo]}${cuerpoNe}.xml`, zip: `z${cuerpoNe}.zip` };
+}

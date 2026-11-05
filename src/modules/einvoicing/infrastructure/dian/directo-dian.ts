@@ -23,7 +23,13 @@ import {
   respuestaRed,
   type EsperadoDian,
 } from './mapeo-respuesta';
-import { anioColombia, consecutivoDeNumero, nombresArchivo } from './nombre-archivo';
+import {
+  anioColombia,
+  consecutivoDeNumero,
+  esTipoNomina,
+  nombresArchivo,
+  nombresArchivoNomina,
+} from './nombre-archivo';
 import { contentTypeSoap, sobreFirmado, type CredencialSoap, type ParametrosOperacion } from './sobre-soap';
 import { zipUnArchivo } from './zip-memoria';
 
@@ -244,7 +250,8 @@ export class DirectoDian implements TransmisorDian {
     const archivo = this.#empaquetar(entrada);
     if ('respuesta' in archivo) return archivo.respuesta;
     return this.#documento(
-      'SendBillSync',
+      // La nómina electrónica tiene su propia operación en el mismo servicio.
+      esTipoNomina(entrada.tipo) ? 'SendNominaSync' : 'SendBillSync',
       [
         ['fileName', archivo.nombre],
         ['contentFile', archivo.base64],
@@ -302,13 +309,17 @@ export class DirectoDian implements TransmisorDian {
     if (!e.xmlFirmado?.trim()) return { respuesta: configFaltante('Falta el XML firmado del documento') };
     try {
       const ahora = this.#reloj();
-      const nombres = nombresArchivo({
-        tipo: e.tipo,
-        nit: this.#nit,
-        consecutivo: consecutivoDeNumero(e.fullNumber),
-        anio: anioColombia(ahora),
-        codigoPt: this.#codigoPt,
-      });
+      const consecutivo = consecutivoDeNumero(e.fullNumber);
+      const nombres =
+        e.tipo === 'payroll' || e.tipo === 'payroll_adjustment'
+          ? nombresArchivoNomina({ tipo: e.tipo, nit: this.#nit, consecutivo, anio: anioColombia(ahora) })
+          : nombresArchivo({
+              tipo: e.tipo,
+              nit: this.#nit,
+              consecutivo,
+              anio: anioColombia(ahora),
+              codigoPt: this.#codigoPt,
+            });
       const zip = zipUnArchivo(nombres.xml, e.xmlFirmado, ahora);
       return { nombre: nombres.zip, base64: zip.toString('base64') };
     } catch {

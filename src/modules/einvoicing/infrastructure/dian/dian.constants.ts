@@ -14,6 +14,8 @@ export const URL_DIAN_POR_AMBIENTE: Readonly<Record<TipoAmbiente, string>> = {
 
 export const OPERACIONES_DIAN = [
   'SendBillSync',
+  /** Nómina electrónica (producción): mismo WCF, operación propia. POR CONFIRMAR en habilitación. */
+  'SendNominaSync',
   'SendTestSetAsync',
   'GetStatusZip',
   'GetStatus',
