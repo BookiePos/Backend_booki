@@ -12,6 +12,13 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # En 0.x un «minor» rompe la API (0.8 → 0.9 rompió la firma XAdES y el
+      # build de main). La firma de la factura electrónica se revisó contra
+      # 0.8: subir de minor exige PR propio con revisión de seguridad.
+      - dependency-name: "@xmldom/xmldom"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "xml-crypto"
+        update-types: ["version-update:semver-minor"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
