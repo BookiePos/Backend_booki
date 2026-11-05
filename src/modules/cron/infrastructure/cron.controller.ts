@@ -12,6 +12,7 @@ import { Public } from '../../core-auth/infrastructure/decorators/public.decorat
 import { BillingScheduler } from '../../billing/application/billing.scheduler';
 import { RecurringExpenseScheduler } from '../../finance/application/recurring-expense.scheduler';
 import { CertificadoEmisorService } from '../../einvoicing/application/certificado-emisor.service';
+import { ReconsultaDianService } from '../../einvoicing/application/reconsulta-dian.service';
 import { secretoDeCronValido } from '../domain/cron-auth';
 import type { ResultadoBarrido } from '../../../shared/barridos/resultado-barrido';
 
@@ -42,21 +43,13 @@ export class CronController {
     private readonly billing: BillingScheduler,
     private readonly recurrentes: RecurringExpenseScheduler,
     private readonly certificados: CertificadoEmisorService,
+    private readonly reconsultaDian: ReconsultaDianService,
   ) {}
 
   @Public()
   @Get('diario')
   async diario(@Headers('authorization') authorization?: string) {
-    const secreto = this.config.get<string>('CRON_SECRET');
-    if (!secreto) {
-      // Sin detalle en la respuesta: quien llama sin autenticar no tiene por qué
-      // saber qué falta en el despliegue. El motivo queda en el log.
-      this.logger.error('CRON_SECRET no está configurado: /cron/diario queda cerrado.');
-      throw new ServiceUnavailableException();
-    }
-    if (!secretoDeCronValido(authorization, secreto)) {
-      throw new UnauthorizedException();
-    }
+    this.exigirSecreto(authorization, 'diario');
 
     const inicio = Date.now();
     // En serie: los dos tocan el control-plane. El segundo corre aunque el
@@ -85,5 +78,40 @@ export class CronController {
     }
     this.logger.log(`Barridos diarios terminados en ${ms} ms.`);
     return { ok: true, tareas, ms };
+  }
+
+  /**
+   * Reconsulta de documentos DIAN (Fase 10). La llama un workflow de GitHub
+   * Actions cada 30 min (Vercel Hobby solo permite un cron diario). Idempotente:
+   * reenviar es seguro (mismo XML, bloqueo por documento), así que llamarlo de
+   * más no duplica nada. 500 si algo falló, para que el workflow se marque en rojo.
+   */
+  @Public()
+  @Get('dian-reconsulta')
+  async dianReconsulta(@Headers('authorization') authorization?: string) {
+    this.exigirSecreto(authorization, 'dian-reconsulta');
+    const inicio = Date.now();
+    const resultado = await this.reconsultaDian.barrer({ hasta: inicio + PLAZO_BARRIDOS_MS });
+    const ms = Date.now() - inicio;
+    if (resultado.estado === 'error') {
+      this.logger.error(`Reconsulta DIAN con fallos en ${ms} ms: ${resultado.detalle ?? 'error'}`);
+      throw new InternalServerErrorException({ ok: false, tareas: { 'dian-reconsulta': resultado }, ms });
+    }
+    this.logger.log(`Reconsulta DIAN terminada en ${ms} ms.`);
+    return { ok: true, tareas: { 'dian-reconsulta': resultado }, ms };
+  }
+
+  /** Falla cerrado: sin `CRON_SECRET` configurado nada pasa. */
+  private exigirSecreto(authorization: string | undefined, ruta: string): void {
+    const secreto = this.config.get<string>('CRON_SECRET');
+    if (!secreto) {
+      // Sin detalle en la respuesta: quien llama sin autenticar no tiene por qué
+      // saber qué falta en el despliegue. El motivo queda en el log.
+      this.logger.error(`CRON_SECRET no está configurado: /cron/${ruta} queda cerrado.`);
+      throw new ServiceUnavailableException();
+    }
+    if (!secretoDeCronValido(authorization, secreto)) {
+      throw new UnauthorizedException();
+    }
   }
 }

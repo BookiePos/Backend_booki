@@ -38,6 +38,13 @@ import {
   type ProveedorTransmisorDian,
 } from './transmision-dian.puertos';
 import { ENTREGA_DIAN, type EntregaDian } from './entrega-dian.puerto';
+import {
+  MARGEN_PLAZO_RECONSULTA_MS,
+  REPOSO_RECONSULTA_MS,
+  cifrasVacias,
+  esRechazoDeRegla,
+  type CifrasReconsulta,
+} from '../domain/reconsulta';
 
 /**
  * Vida del bloqueo de transmisión. Mayor que la duración máxima de una función
@@ -136,7 +143,7 @@ export class TransmisionDianService {
   /** Una fila por transmisión: quién, qué documento, qué intento, qué resultó. Sin secretos. */
   private async auditar(
     docId: string,
-    user: JwtUser,
+    user: JwtUser | undefined,
     success: boolean,
     codigo: string,
     r?: ResultadoTransmision,
@@ -150,11 +157,12 @@ export class TransmisionDianService {
       detail.transmitido = String(r.transmitido);
     }
     await this.audit.record({
-      userId: user.userId,
-      userEmail: user.email,
-      userName: user.name,
-      role: user.role,
-      method: 'POST',
+      // Sin usuario es la reconsulta del cron: actor SYSTEM, sin sesión.
+      userId: user?.userId,
+      userEmail: user?.email,
+      userName: user ? user.name : 'SYSTEM',
+      role: user ? user.role : 'SYSTEM',
+      method: user ? 'POST' : 'SERVER',
       path: `/einvoicing/documentos/${documentoId}/transmitir`,
       success,
       action: 'einvoicing.documento.transmitido',
@@ -162,10 +170,56 @@ export class TransmisionDianService {
     });
   }
 
-  private async ejecutar(docId: string, user: JwtUser): Promise<ResultadoTransmision> {
+  /**
+   * Camino de SISTEMA (cron de reconsulta): los documentos que llevan más de 10 min en
+   * `sent`, de los más viejos a los más nuevos, hasta `limite`. Reenvía el MISMO
+   * XML firmado (o consulta) por la misma ruta que el reintento manual, con su
+   * gate de ambiente y su bloqueo. Sin usuario no hay chequeo de sede (el barrido
+   * recorre todas) pero sí tenancy: exige un `TenantContext` abierto. Nunca
+   * lanza por un documento: las reglas cuentan como omitidos y lo inesperado
+   * como errores.
+   */
+  async reconsultarPendientes(
+    limite: number,
+    opts: { ahora?: Date; hasta?: number } = {},
+  ): Promise<CifrasReconsulta> {
+    TenantContext.currentOrThrow();
+    const ahora = opts.ahora ?? new Date();
+    const cifras = cifrasVacias();
+    const docs = await this.model
+      .find({
+        dianStatus: 'sent',
+        enviadoAt: { $lte: new Date(ahora.getTime() - REPOSO_RECONSULTA_MS) },
+        $or: [{ bloqueoHasta: null }, { bloqueoHasta: { $lte: ahora } }],
+      })
+      .sort({ enviadoAt: 1 })
+      .limit(Math.max(0, limite))
+      .select('_id')
+      .exec();
+    for (const { _id } of docs) {
+      if (opts.hasta !== undefined && Date.now() + MARGEN_PLAZO_RECONSULTA_MS > opts.hasta) break;
+      const docId = String(_id);
+      cifras.revisados++;
+      try {
+        const r = await this.ejecutar(docId);
+        if (r.dianStatus !== 'sent') cifras.avanzados++;
+        await this.auditar(docId, undefined, true, r.codigo ?? r.dianStatus, r);
+      } catch (err) {
+        if (esRechazoDeRegla(err)) cifras.omitidos++;
+        else {
+          cifras.errores++;
+          this.logger.error(`Reconsulta del documento ${docId}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        await this.auditar(docId, undefined, false, (err as Error)?.name ?? 'Error');
+      }
+    }
+    return cifras;
+  }
+
+  private async ejecutar(docId: string, user?: JwtUser): Promise<ResultadoTransmision> {
     const doc = await this.cargar(docId);
     const sedeId = doc.sedeId.toString();
-    assertSedeAccess(user, sedeId);
+    if (user) assertSedeAccess(user, sedeId);
 
     if (doc.dianStatus === 'accepted') {
       return this.resultado(doc, false, undefined, ['El documento ya fue aceptado por la DIAN.']);

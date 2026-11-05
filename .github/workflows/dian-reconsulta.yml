@@ -1,0 +1,32 @@
+name: Reconsulta DIAN
+
+# Vercel Hobby solo permite un cron diario; la reconsulta de documentos
+# electrónicos (reenvío del mismo XML, GetStatus, sets de nómina) corre cada 30 min
+# desde aquí. Requiere el secret CRON_SECRET del repo (mismo valor que en Vercel).
+on:
+  schedule:
+    - cron: '20,50 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: dian-reconsulta
+  cancel-in-progress: false
+
+jobs:
+  reconsulta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Llamar /cron/dian-reconsulta
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::Falta el secret CRON_SECRET en el repo."
+            exit 1
+          fi
+          curl -fsS --max-time 290 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            https://api.bookipos.com/cron/dian-reconsulta
