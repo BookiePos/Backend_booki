@@ -107,7 +107,9 @@ const entero = (n: number, que: string) => {
 
 const FECHA = /^\d{4}-\d{2}-\d{2}$/;
 function assertFecha(f: string | undefined, que: string): void {
-  if (f === undefined || !FECHA.test(f) || Number.isNaN(Date.parse(`${f}T00:00:00Z`))) {
+  // Date.parse acepta días inexistentes (2026-02-31 → 3 de marzo): se exige ida y vuelta.
+  const ms = f === undefined ? NaN : Date.parse(`${f}T00:00:00Z`);
+  if (f === undefined || !FECHA.test(f) || Number.isNaN(ms) || new Date(ms).toISOString().slice(0, 10) !== f) {
     throw new DocumentoUblInvalidoError(`${que} debe ser una fecha YYYY-MM-DD y llegó «${String(f)}»`);
   }
 }
@@ -505,7 +507,8 @@ export function armarNominaIndividual(modelo: ModeloNominaIndividual, ctx: Conte
 const predecesorAttrs = (p: PredecesorNe) => ({ NumeroPred: p.numero, CUNEPred: p.cune, FechaGenPred: p.fecha });
 
 function assertPredecesor(p: PredecesorNe): void {
-  if (!p.numero.trim() || !/^[0-9a-f]{96}$/i.test(p.cune) || !/^\d{4}-\d{2}-\d{2}$/.test(p.fecha)) {
+  assertFecha(p.fecha, 'La fecha del predecesor');
+  if (!p.numero.trim() || !/^[0-9a-f]{96}$/i.test(p.cune)) {
     throw new DocumentoUblInvalidoError(
       'El predecesor del ajuste necesita número, CUNE (SHA-384, 96 hex) y fecha YYYY-MM-DD.',
     );
@@ -527,6 +530,13 @@ export function armarNominaAjuste(modelo: ModeloNominaAjuste, ctx: ContextoNomin
       `${DECLARACION}${abrirRaiz('103')}<TipoNota>${TipoNota.Reemplazar}</TipoNota><Reemplazar>` +
       `${el('ReemplazandoPredecesor', predecesorAttrs(modelo.predecesor))}${c.xml}</Reemplazar></NominaIndividualDeAjuste>`;
     return { ...c, xml };
+  }
+  // Defensa en tiempo de ejecución: un TipoNota inesperado (3, o "1" en texto
+  // desde la base o la API) NUNCA debe caer en Eliminar y anular el predecesor.
+  if ((modelo.tipoNota as unknown) !== TipoNota.Eliminar) {
+    throw new DocumentoUblInvalidoError(
+      `TipoNota inválido para el ajuste de nómina: «${String(modelo.tipoNota)}» (1 Reemplazar, 2 Eliminar).`,
+    );
   }
   const numero = validarEmision(em, ctx);
   const cune = calcularCuneEliminar({

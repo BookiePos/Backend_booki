@@ -385,5 +385,15 @@ describe('nómina electrónica: NominaIndividualDeAjuste (103)', () => {
     expect(() =>
       armarNominaAjuste({ tipoNota: 2, emision, predecesor: { ...predecesor, cune: 'corto' } }, ctx),
     ).toThrow(/predecesor/);
+    // Día inexistente: Date.parse lo correría a marzo; debe rechazarse.
+    expect(() =>
+      armarNominaAjuste({ tipoNota: 2, emision, predecesor: { ...predecesor, fecha: '2026-02-31' } }, ctx),
+    ).toThrow(/fecha del predecesor/);
+    // Un TipoNota inesperado (3, o "1" en texto) nunca cae en Eliminar.
+    for (const tipoNota of [3, '1', '2']) {
+      expect(() =>
+        armarNominaAjuste({ tipoNota, emision, predecesor } as unknown as Parameters<typeof armarNominaAjuste>[0], ctx),
+      ).toThrow(/TipoNota inválido/);
+    }
   });
 });
