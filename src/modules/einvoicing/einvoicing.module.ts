@@ -12,6 +12,10 @@ import {
   FiscalEmitter,
   FiscalEmitterSchema,
 } from './infrastructure/schemas/fiscal-emitter.schema';
+import {
+  PayrollEDocument,
+  PayrollEDocumentSchema,
+} from './infrastructure/schemas/payroll-e-document.schema';
 import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
 import { EinvoicingService } from './application/einvoicing.service';
 import { FiscalEmittersService } from './application/fiscal-emitters.service';
@@ -22,8 +26,11 @@ import {
   FIRMANTE_DIAN,
   FirmanteP12,
   PROVEEDOR_TRANSMISOR_DIAN,
+  PROVEEDOR_TRANSMISOR_NOMINA,
+  ProveedorTransmisorNomina,
   ProveedorTransmisorPorEmisor,
 } from './application/transmision-dian.puertos';
+import { NominaElectronicaService } from './application/nomina-electronica.service';
 import { ArmadorUblFactura } from './application/armador-ubl';
 import { EntregaDianService } from './application/entrega-dian.service';
 import { EmisionDocumentoFiscalDian } from './application/emision-documento-fiscal.adaptador';
@@ -40,6 +47,7 @@ import { ControlModule } from '../control/control.module';
   imports: [
     TenantMongooseModule.forFeature([
       { name: ElectronicDocument.name, schema: ElectronicDocumentSchema },
+      { name: PayrollEDocument.name, schema: PayrollEDocumentSchema },
       { name: Counter.name, schema: CounterSchema },
       { name: FiscalEmitter.name, schema: FiscalEmitterSchema },
       { name: Sede.name, schema: SedeSchema },
@@ -61,6 +69,9 @@ import { ControlModule } from '../control/control.module';
     { provide: ARMADOR_XML_DIAN, useClass: ArmadorUblFactura },
     { provide: FIRMANTE_DIAN, useClass: FirmanteP12 },
     { provide: PROVEEDOR_TRANSMISOR_DIAN, useClass: ProveedorTransmisorPorEmisor },
+    // Nómina electrónica: firma, persistencia y transmisión con credenciales de NÓMINA.
+    NominaElectronicaService,
+    { provide: PROVEEDOR_TRANSMISOR_NOMINA, useClass: ProveedorTransmisorNomina },
     // Fase 5B: entrega al adquiriente (PDF + AttachedDocument/ZIP) tras `accepted`.
     EntregaDianService,
     { provide: ENTREGA_DIAN, useExisting: EntregaDianService },
@@ -73,6 +84,7 @@ import { ControlModule } from '../control/control.module';
     FiscalEmittersService,
     CertificadoEmisorService,
     TransmisionDianService,
+    NominaElectronicaService,
   ],
 })
 export class EinvoicingModule {}

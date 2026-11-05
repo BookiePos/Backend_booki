@@ -2,7 +2,11 @@ import { Inject, Injectable, NotImplementedException, Optional } from '@nestjs/c
 import type { TransmisorDian } from '../domain/transmisor-dian';
 import type { TipoAmbiente } from '../domain/emisor-fiscal';
 import { StubDian } from '../domain/stub-dian';
-import { faltantesParaTransmitir, resolverTransmisor } from '../domain/resolver-transmisor';
+import {
+  faltantesParaTransmitir,
+  resolverTransmisor,
+  type EmisorTransmision,
+} from '../domain/resolver-transmisor';
 import type { ElectronicDocumentDocument } from '../infrastructure/schemas/electronic-document.schema';
 import { firmarXml } from '../infrastructure/firma/firma-xades';
 import { abrirP12 } from '../infrastructure/firma/material-p12';
@@ -19,6 +23,8 @@ import { FiscalEmittersService } from './fiscal-emitters.service';
 export const ARMADOR_XML_DIAN = Symbol('ARMADOR_XML_DIAN');
 export const FIRMANTE_DIAN = Symbol('FIRMANTE_DIAN');
 export const PROVEEDOR_TRANSMISOR_DIAN = Symbol('PROVEEDOR_TRANSMISOR_DIAN');
+/** Transmisor de la nómina electrónica: mismo servicio de la DIAN, credenciales de NÓMINA. */
+export const PROVEEDOR_TRANSMISOR_NOMINA = Symbol('PROVEEDOR_TRANSMISOR_NOMINA');
 /** Transporte HTTP hacia la DIAN. Opcional: sin él, `fetch`. Los tests lo cambian por un doble. */
 export const TRANSPORTE_HTTP_DIAN = Symbol('TRANSPORTE_HTTP_DIAN');
 
@@ -108,7 +114,7 @@ export class AmbienteNoCoincideError extends Error {
 @Injectable()
 export class ProveedorTransmisorPorEmisor implements ProveedorTransmisorDian {
   constructor(
-    private readonly emisores: FiscalEmittersService,
+    protected readonly emisores: FiscalEmittersService,
     @Optional() @Inject(TRANSPORTE_HTTP_DIAN) private readonly transporte?: TransporteHttp,
   ) {}
 
@@ -116,7 +122,7 @@ export class ProveedorTransmisorPorEmisor implements ProveedorTransmisorDian {
     const emisor = await this.emisores.obtenerPorSede(sedeId);
     if (!emisor || emisor.tipoAmbiente !== ambiente) throw new AmbienteNoCoincideError();
     const emisorId = emisor.id as string;
-    const estado = await this.emisores.estadoConfiguracion(emisorId);
+    const estado = await this.estadoTransmision(emisorId);
     // Sin lo mínimo no se toca el certificado (ni queda una lectura en la auditoría).
     if (faltantesParaTransmitir(estado).length > 0) return resolverTransmisor(estado);
 
@@ -139,6 +145,14 @@ export class ProveedorTransmisorPorEmisor implements ProveedorTransmisorDian {
     }
   }
 
+  /**
+   * Lo que el emisor tiene para transmitir: certificado, SoftwareID y PIN. Aquí
+   * son los de la FACTURA; el transmisor de nómina lo cambia por los de nómina.
+   */
+  protected async estadoTransmision(emisorId: string): Promise<EmisorTransmision> {
+    return this.emisores.estadoConfiguracion(emisorId);
+  }
+
   /** Llave y certificado del .p12 del emisor, o `null` si no hay o no abre. */
   private async material(emisorId: string): Promise<CredencialSoap | null> {
     const cert = await this.emisores.cargarCertificado(emisorId, MOTIVO_CERTIFICADO_TRANSMISION);
@@ -149,5 +163,26 @@ export class ProveedorTransmisorPorEmisor implements ProveedorTransmisorDian {
     } catch {
       return null;
     }
+  }
+}
+
+/**
+ * Transmisor de la nómina electrónica. Igual que el de la factura (mismo .p12,
+ * mismo ambiente decidido por el gate) pero con el SoftwareID y el PIN de
+ * NÓMINA: si faltan, stub con `CONFIG_FALTANTE` y nada sale a la red. Las
+ * credenciales de la factura nunca se usan aquí.
+ */
+@Injectable()
+export class ProveedorTransmisorNomina extends ProveedorTransmisorPorEmisor {
+  constructor(
+    emisores: FiscalEmittersService,
+    @Optional() @Inject(TRANSPORTE_HTTP_DIAN) transporte?: TransporteHttp,
+  ) {
+    super(emisores, transporte);
+  }
+
+  protected override async estadoTransmision(emisorId: string): Promise<EmisorTransmision> {
+    const n = await this.emisores.estadoNomina(emisorId);
+    return { certificadoVigente: n.certificadoVigente, softwareId: n.softwareId, tienePin: n.tienePin };
   }
 }

@@ -15,6 +15,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { EinvoicingService } from '../application/einvoicing.service';
 import { FiscalEmittersService } from '../application/fiscal-emitters.service';
 import { TransmisionDianService } from '../application/transmision-dian.service';
+import { NominaElectronicaService } from '../application/nomina-electronica.service';
 import { EntregaDianService } from '../application/entrega-dian.service';
 import {
   CERT_MAX_BYTES,
@@ -40,6 +41,7 @@ export class EinvoicingController {
     private readonly certificados: CertificadoEmisorService,
     private readonly transmision: TransmisionDianService,
     private readonly entrega: EntregaDianService,
+    private readonly nomina: NominaElectronicaService,
   ) {}
 
   /**
@@ -112,6 +114,23 @@ export class EinvoicingController {
     @Ip() ip: string,
   ) {
     return this.emisores.configurarNomina(sedeId, dto, user, ip);
+  }
+
+  /**
+   * Transmite (o reintenta) un documento de nómina electrónica ya generado:
+   * reenvía el mismo XML firmado. Credenciales de nómina; sin ellas, CONFIG_FALTANTE.
+   */
+  @RequirePermissions(PERMISSIONS.PAYROLL_EINVOICE)
+  @Post('nomina/:id/transmitir')
+  transmitirNomina(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.nomina.transmitir(id, user);
+  }
+
+  /** Estado de un documento de nómina electrónica (consulta a la DIAN si está en vuelo). */
+  @RequirePermissions(PERMISSIONS.PAYROLL_EINVOICE)
+  @Get('nomina/:id')
+  consultarNomina(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.nomina.consultar(id, user);
   }
 
   @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
