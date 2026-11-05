@@ -389,6 +389,51 @@ describe('FiscalEmittersService', () => {
     });
   });
 
+  describe('configurarFactura', () => {
+    const UUID_SW = '3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b';
+    const UUID_TS = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+    const dueno = (s: string) => ({ userId: 'u1', role: 'owner', permissions: [], sedeIds: [s] }) as unknown as JwtUser;
+
+    it('cifra el PIN con <emisorId>:facturaPin, audita sin secretos y no lo devuelve', async () => {
+      const s = nuevaSede();
+      const e = await svc.asegurarParaSede(s);
+      const r = await svc.configurarFactura(s, { softwareId: UUID_SW, pin: 'pin-fe-123', testSetId: UUID_TS }, dueno(s), '1.2.3.4');
+      const guardado = emisores.get(e.id);
+      expect(guardado.facturaSoftwareId).toBe(UUID_SW);
+      expect(guardado.facturaTestSetId).toBe(UUID_TS);
+      expect(descifrar(guardado.facturaPin, contextoSecreto(e.id, 'facturaPin'))).toBe('pin-fe-123');
+      expect(r.emisor).toMatchObject({ tieneFacturaPin: true, tieneFacturaTestSetId: true, facturaSoftwareId: UUID_SW });
+      expect(JSON.stringify(r)).not.toMatch(/pin-fe-123|"iv"|"tag"/);
+      const llamada = JSON.stringify(audit.record.mock.calls);
+      expect(llamada).toContain('einvoicing.factura.configurada');
+      expect(llamada).not.toMatch(/pin-fe-123/);
+    });
+
+    it('sin llave de cifrado: 503 y no escribe nada', async () => {
+      const s = nuevaSede();
+      await svc.asegurarParaSede(s);
+      delete process.env[VARIABLE_LLAVE];
+      await expect(
+        svc.configurarFactura(s, { softwareId: UUID_SW, pin: 'pin' }, dueno(s)),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(model.updateOne).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+
+    it('testSetId: null borra el guardado y la sede sin emisor da 400', async () => {
+      const s = nuevaSede();
+      const e = await svc.asegurarParaSede(s);
+      await svc.configurarFactura(s, { softwareId: UUID_SW, pin: 'a', testSetId: UUID_TS }, dueno(s));
+      await svc.configurarFactura(s, { softwareId: UUID_SW, pin: 'b', testSetId: null }, dueno(s));
+      expect(emisores.get(e.id).facturaTestSetId).toBeUndefined();
+      expect(emisores.get(e.id).facturaSoftwareId).toBe(UUID_SW);
+      const sin = nuevaSede();
+      await expect(
+        svc.configurarFactura(sin, { softwareId: UUID_SW, pin: 'x' }, dueno(sin)),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
   describe('ConfigurarNominaDto', () => {
     const validar = async (o: object) =>
       (await validate(plainToInstance(ConfigurarNominaDto, o))).flatMap((x) => Object.keys(x.constraints ?? {}));
