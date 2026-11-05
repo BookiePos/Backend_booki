@@ -16,6 +16,10 @@ import { EinvoicingService } from '../application/einvoicing.service';
 import { FiscalEmittersService } from '../application/fiscal-emitters.service';
 import { TransmisionDianService } from '../application/transmision-dian.service';
 import { NominaElectronicaService } from '../application/nomina-electronica.service';
+import { NominaPeriodoService } from '../application/nomina-periodo.service';
+import { HabilitacionNominaService } from '../application/habilitacion-nomina.service';
+import { AjusteNominaDto } from '../application/dto/ajuste-nomina.dto';
+import { EmitirPeriodoNominaDto } from '../application/dto/emitir-periodo-nomina.dto';
 import { EntregaDianService } from '../application/entrega-dian.service';
 import {
   CERT_MAX_BYTES,
@@ -42,6 +46,8 @@ export class EinvoicingController {
     private readonly transmision: TransmisionDianService,
     private readonly entrega: EntregaDianService,
     private readonly nomina: NominaElectronicaService,
+    private readonly periodos: NominaPeriodoService,
+    private readonly habilitacionNomina: HabilitacionNominaService,
   ) {}
 
   /**
@@ -114,6 +120,53 @@ export class EinvoicingController {
     @Ip() ip: string,
   ) {
     return this.emisores.configurarNomina(sedeId, dto, user, ip);
+  }
+
+  /** Pre-vuelo del mes: por trabajador, qué bloquea o advierte. No emite nada. */
+  @RequirePermissions(PERMISSIONS.PAYROLL_EINVOICE)
+  @Post('nomina/periodos/:periodo/preparar')
+  prepararNomina(@Param('periodo') periodo: string, @Query('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
+    return this.periodos.preparar(periodo, sedeId, user);
+  }
+
+  /** Emite los trabajadores sin bloqueo, en lotes con cursor (presupuesto de Vercel). Idempotente. */
+  @RequirePermissions(PERMISSIONS.PAYROLL_EINVOICE)
+  @Post('nomina/periodos/:periodo/emitir')
+  emitirNominaPeriodo(
+    @Param('periodo') periodo: string,
+    @Query('sedeId') sedeId: string,
+    @Body() dto: EmitirPeriodoNominaDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.periodos.emitir(periodo, sedeId, user, dto);
+  }
+
+  /** Documentos de nómina electrónica del mes (sin datos sensibles). */
+  @RequirePermissions(PERMISSIONS.PAYROLL_EINVOICE)
+  @Get('nomina')
+  listarNomina(@Query('periodo') periodo: string, @Query('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
+    return this.periodos.listar(periodo, sedeId, user);
+  }
+
+  /** Nota de ajuste (103): reemplazar (recalcula desde las corridas) o eliminar. */
+  @RequirePermissions(PERMISSIONS.PAYROLL_EINVOICE)
+  @Post('nomina/:id/ajuste')
+  ajustarNomina(@Param('id') id: string, @Body() dto: AjusteNominaDto, @CurrentUser() user: JwtUser) {
+    return this.periodos.ajustar(id, dto.tipoNota, user);
+  }
+
+  /** Arma, firma y envía el set de pruebas de nómina (trabajador sintético). Solo ambiente 2. */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CERTIFICATE)
+  @Post('sedes/:sedeId/emisor/nomina/habilitacion')
+  iniciarHabilitacionNomina(@Param('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
+    return this.habilitacionNomina.iniciar(sedeId, user);
+  }
+
+  /** Reconsulta el veredicto del set de pruebas de nómina. */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CERTIFICATE)
+  @Get('sedes/:sedeId/emisor/nomina/habilitacion')
+  estadoHabilitacionNomina(@Param('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
+    return this.habilitacionNomina.consultar(sedeId, user);
   }
 
   /**
