@@ -62,6 +62,9 @@ describe('tipoDeChoque', () => {
   it('distingue el choque de número del de venta+tipo', () => {
     expect(tipoDeChoque({ code: 11000, keyPattern: { 'emisor.nitNorm': 1, prefix: 1, number: 1 } })).toBe('consecutivo');
     expect(tipoDeChoque({ code: 11000, keyPattern: { saleId: 1, type: 1 } })).toBe('venta');
+    // Fase 6B: la misma operación ya tiene su nota (índice origen_nota).
+    expect(tipoDeChoque({ code: 11000, keyPattern: { origenNota: 1 } })).toBe('venta');
+    expect(tipoDeChoque({ code: 11000, message: 'index: origen_nota dup key' })).toBe('venta');
     expect(tipoDeChoque({ code: 11000, message: 'index: consecutivo_unico dup key' })).toBe('consecutivo');
   });
 

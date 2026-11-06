@@ -16,7 +16,7 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
   };
 });
 
-import { MENSAJE_NOTA_SIN_PIN, EinvoicingService } from './einvoicing.service';
+import { EinvoicingService } from './einvoicing.service';
 import { AVISO_DOMICILIO_SIN_INC } from '../domain/documento-venta';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
@@ -449,79 +449,6 @@ describe('EinvoicingService · documento de la Fase 2', () => {
     expect(counters.findOneAndUpdate).not.toHaveBeenCalled();
     expect(model.create).not.toHaveBeenCalled();
   });
-
-  describe('nota crédito', () => {
-    const facturaGuardada = () => ({
-      _id: new Types.ObjectId(),
-      type: 'invoice',
-      saleId,
-      sedeId: new Types.ObjectId(sedeId),
-      fullNumber: 'FE1',
-      cufe: 'cufe-factura',
-      emisor: { nit: '900.123.456-7', nitNorm: '900123456' },
-      adquiriente: { docType: '13', docNumber: '222222222222' },
-      lines: [],
-      taxableBase: 13889,
-      ivaTotal: 0,
-      incTotal: 1111,
-      icaTotal: 0,
-      payableAmount: 16500,
-      total: 16500,
-      discountTotal: 0,
-      formaPago: '1',
-      medioPago: '10',
-    });
-    const anular = () =>
-      TenantContext.run({ businessId: 'b1', dbName: 'biz_b1' }, () =>
-        svc.createCreditNote(factura._id.toString(), 'Anulación', user),
-      );
-
-    it('con PIN: CUDE con el PIN del software y el ambiente del emisor', async () => {
-      factura = facturaGuardada();
-      emisor = { id: 'e1', tipoAmbiente: '1' };
-      pin = '12345';
-      const nota: any = await anular();
-      const esperado = sha384(
-        nota.fullNumber + nota.issueDate + nota.issueTime + '13889.00' +
-          '01' + '0.00' + '04' + '1111.00' + '03' + '0.00' + '16500.00' +
-          '900123456' + '222222222222' + '12345' + '1',
-      );
-      expect(nota.cufe).toBe(esperado);
-      expect(nota.qrUrl).toBe(`https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=${esperado}`);
-      expect(nota.aviso).toBeUndefined();
-      expect(nota.dianStatus).toBe('draft');
-    });
-
-    it('sin PIN: se rechaza antes de cupo y folio, nunca con la clave técnica', async () => {
-      factura = facturaGuardada();
-      emisor = { id: 'e1', tipoAmbiente: '2' };
-      pin = null;
-      const err = await anular().catch((e) => e);
-      expect(err).toBeInstanceOf(BadRequestException);
-      expect(err.message).toBe(MENSAJE_NOTA_SIN_PIN);
-      expect(businesses.consumeDocument).not.toHaveBeenCalled();
-      expect(counters.findOneAndUpdate).not.toHaveBeenCalled();
-      expect(model.create).not.toHaveBeenCalled();
-    });
-
-    it('sin emisor fiscal: también se rechaza', async () => {
-      factura = facturaGuardada();
-      await expect(anular()).rejects.toThrow(MENSAJE_NOTA_SIN_PIN);
-      expect(model.create).not.toHaveBeenCalled();
-    });
-
-    it('factura vieja con centavos: el CUDE los conserva', async () => {
-      factura = { ...facturaGuardada(), taxableBase: 1000.5, ivaTotal: 190.5, incTotal: undefined, payableAmount: undefined, total: 1191 };
-      emisor = { id: 'e1', tipoAmbiente: '2' };
-      pin = '12345';
-      const nota: any = await anular();
-      expect(nota.cufe).toBe(
-        sha384(
-          nota.fullNumber + nota.issueDate + nota.issueTime + '1000.50' +
-            '01' + '190.50' + '04' + '0.00' + '03' + '0.00' + '1191.00' +
-            '900123456' + '222222222222' + '12345' + '2',
-        ),
-      );
-    });
-  });
+  // La nota crédito ya no copia la factura: nace de la devolución o la anulación
+  // de la venta (Fase 6B). Sus pruebas están en einvoicing.service.notas.spec.ts.
 });

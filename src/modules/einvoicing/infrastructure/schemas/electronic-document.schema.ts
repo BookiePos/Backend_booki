@@ -85,6 +85,12 @@ export class DocLine {
   @Prop({ type: DocPerUnitTaxSchema }) perUnitTax?: DocPerUnitTax;
   /** Total de la línea (base + impuestos). */
   @Prop({ required: true, min: 0 }) total!: number;
+  /**
+   * Solo en las notas de la Fase 6B: el grupo del documento referido que
+   * acredita la línea (producto de la venta o `domicilio`). Con él se calcula
+   * el saldo acreditable de las notas siguientes.
+   */
+  @Prop() refKey?: string;
 }
 const DocLineSchema = SchemaFactory.createForClass(DocLine);
 
@@ -305,6 +311,21 @@ export class ElectronicDocument {
   @Prop({ enum: ['invoice', 'pos'] })
   referenceType?: string;
 
+  /**
+   * Llave idempotente de la operación que originó la nota (Fase 6B):
+   * `devolucion:<returnId>` o `anulacion:<saleId>`. Reintentar la misma
+   * operación devuelve la misma nota. Índice único parcial `origen_nota`.
+   */
+  @Prop()
+  origenNota?: string;
+
+  /**
+   * Venta de la nota (Fase 6B). Las notas nuevas NO llevan `saleId`: el índice
+   * único `saleId_1_type_1` permitiría una sola nota por venta.
+   */
+  @Prop({ type: Types.ObjectId, ref: 'Sale', index: true })
+  notaDeVenta?: Types.ObjectId;
+
   /** Periodo de una nota sin referencia (InvoicePeriod). */
   @Prop({ type: Object })
   period?: { desde: string; hasta: string };
@@ -428,6 +449,15 @@ ElectronicDocumentSchema.index(
 );
 
 // Cola de la reconsulta del cron: sent, el menos reconsultado primero (nulos primero).
+// Una nota por operación (devolución o anulación): el reintento no la duplica.
+ElectronicDocumentSchema.index(
+  { origenNota: 1 },
+  { name: 'origen_nota', unique: true, partialFilterExpression: { origenNota: { $exists: true } } },
+);
+
+// Notas previas de un documento, para el saldo acreditable.
+ElectronicDocumentSchema.index({ referenceId: 1, type: 1 });
+
 ElectronicDocumentSchema.index({ dianStatus: 1, reconsultadoAt: 1, enviadoAt: 1 }, { name: 'reconsulta_cola' });
 
 // Único (checklist 1, Fase 1): un solo documento por (emisor, prefijo, número).

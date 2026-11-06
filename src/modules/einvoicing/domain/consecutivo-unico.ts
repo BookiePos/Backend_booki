@@ -154,10 +154,11 @@ export function tipoDeChoque(
   const claves = Object.keys(e.keyPattern ?? {});
   if (claves.includes('number') || claves.includes('emisor.nitNorm')) return 'consecutivo';
   if (claves.includes(CAMPO_EXCLUSION_FISCAL)) return 'exclusion';
-  if (claves.includes('saleId')) return 'venta';
+  // `origenNota` (Fase 6B): la misma operación ya tiene su nota; se devuelve.
+  if (claves.includes('saleId') || claves.includes('origenNota')) return 'venta';
   const msg = e.message ?? '';
   if (msg.includes('consecutivo_unico')) return 'consecutivo';
-  if (msg.includes('saleId_1_type_1')) return 'venta';
+  if (msg.includes('saleId_1_type_1') || msg.includes('origen_nota')) return 'venta';
   if (msg.includes(INDICE_EXCLUSION_FISCAL.options.name)) return 'exclusion';
   return null;
 }
