@@ -21,7 +21,7 @@ const LID = new Types.ObjectId().toString();
 const owner = { role: 'owner', permissions: [], sedeIds: [], email: 'o@x.co' } as any;
 const otraSede = { role: 'cashier', permissions: [], sedeIds: [new Types.ObjectId().toString()], email: 'c@x.co' } as any;
 
-function armar(liqInicial?: any, errorAlAprobar?: unknown, empleadosVisibles: string[] = [EMP]) {
+function armar(liqInicial?: any, errorAlAprobar?: unknown, empleadosVisibles: string[] = [EMP], corridas: any[] = []) {
   const creadas: any[] = [];
   // Almacén en memoria: findById devuelve una FOTO; findOneAndUpdate aplica la condición de forma atómica.
   let actual: any = liqInicial ? { ...liqInicial } : null;
@@ -44,17 +44,22 @@ function armar(liqInicial?: any, errorAlAprobar?: unknown, empleadosVisibles: st
   };
   const empUpdate = vi.fn(() => ({ exec: async () => ({}) }));
   const employees = {
-    findById: () => ({ select: () => ({ exec: async () => ({ sedeId: SEDE }) }), exec: async () => ({ sedeId: SEDE }) }),
+    findById: () => ({
+      select: () => ({ exec: async () => ({ sedeId: SEDE, hireDate: '2024-02-01' }) }),
+      exec: async () => ({ sedeId: SEDE, hireDate: '2024-02-01' }),
+    }),
     find: vi.fn(() => ({ select: () => ({ exec: async () => empleadosVisibles.map((id) => ({ _id: id })) }) })),
     updateOne: empUpdate,
   };
+  const runs = { find: vi.fn(() => ({ select: () => ({ lean: () => ({ exec: async () => corridas }) }) })) };
   const service = new PayrollService(
-    {} as any, {} as any, employees as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any,
+    {} as any, runs as any, employees as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any,
     liquidaciones as any,
   );
   vi.spyOn(service, 'liquidacion').mockResolvedValue({
     input: { employeeId: EMP, employeeName: 'Ana', salarioBase: 1_500_000, salaryType: 'ordinario', contractType: 'indefinido', fechaInicio: '2024-02-01', fechaFin: '2026-10-20', motivo: 'renuncia' },
     breakdown: { diasLiquidados: 980, diasPrima: 110, cesantias: 1, interesesCesantias: 1, prima: 1, vacaciones: 1, indemnizacion: 0, salariosPendientes: 0, vacacionesDisfrutadasDias: 0 } as any,
+    advertencias: [],
   });
   return { service, creadas, liquidaciones, employees, empUpdate, get liq() { return actual; } };
 }
@@ -127,6 +132,44 @@ describe('PayrollService: liquidación de retiro', () => {
     expect(d.empUpdate).not.toHaveBeenCalled();
     const an = armar(borrador({ estado: 'anulada' }));
     await expect(an.service.aprobarLiquidacion(LID, { medioPago: '10', fechaPago: '2026-10-25' }, owner)).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('aprobar avisa (sin bloquear) si una corrida cerrada del mes ya pagó más días que hasta el retiro', async () => {
+    const cerrada = [{ slips: [{ employeeId: EMP, diasTrabajados: 30 }] }];
+    const t = armar(borrador(), undefined, [EMP], cerrada);
+    const r = await t.service.aprobarLiquidacion(LID, { medioPago: '10', fechaPago: '2026-10-25' }, owner);
+    expect(r.estado).toBe('aprobada');
+    expect(r.advertencias.join()).toMatch(/le paga 30 días; hasta el retiro \(2026-10-20\) van 20/);
+    expect(r.advertencias.join()).toMatch(/deducción o un ajuste/);
+    const bien = armar(borrador(), undefined, [EMP], [{ slips: [{ employeeId: EMP, diasTrabajados: 20 }] }]);
+    expect((await bien.service.aprobarLiquidacion(LID, { medioPago: '10', fechaPago: '2026-10-25' }, owner)).advertencias).toEqual([]);
+  });
+
+  it('reaprobar con otro medio o fecha avisa que se ignoraron', async () => {
+    const t = armar(borrador({ estado: 'aprobada', pago: { medio: '10', fecha: '2026-10-25' } }));
+    const r = await t.service.aprobarLiquidacion(LID, { medioPago: '47', fechaPago: '2026-10-26' }, owner);
+    expect(r.advertencias.join()).toMatch(/se ignoraron el medio y la fecha/);
+    const igual = await t.service.aprobarLiquidacion(LID, { medioPago: '10', fechaPago: '2026-10-25' }, owner);
+    expect(igual.advertencias).toEqual([]);
+  });
+
+  it('anular una aprobada avisa que el empleado sigue como retirado (no lo revierte)', async () => {
+    const t = armar(borrador({ estado: 'aprobada' }));
+    const r = await t.service.anularLiquidacion(LID, owner);
+    expect(r.advertencias.join()).toMatch(/sigue como retirado/);
+    expect(t.empUpdate).not.toHaveBeenCalled();
+    const b = armar(borrador());
+    expect((await b.service.anularLiquidacion(LID, owner)).advertencias).toEqual([]);
+  });
+
+  it('avisa del art. 253 CST si hubo devengos variables en los últimos 3 meses', async () => {
+    const conExtras = [{ slips: [{ employeeId: EMP, breakdown: { devengados: { recargos: 0, horasExtra: 80_000, comisiones: 0, bonificacionSalarial: 0 } } }] }];
+    const t = armar(undefined, undefined, [EMP], conExtras);
+    expect((await (t.service as any).avisoVariables(EMP, '2026-10-20')).join()).toMatch(/art. 253 CST/);
+    const filtro = (t.service as any).runs.find.mock.calls[0][0];
+    expect(filtro.period.$in).toEqual(['2026-10', '2026-09', '2026-08']);
+    const fijo = armar(undefined, undefined, [EMP], [{ slips: [{ employeeId: EMP, breakdown: { devengados: { recargos: 0, horasExtra: 0, comisiones: 0, bonificacionSalarial: 0 } } }] }]);
+    expect(await (fijo.service as any).avisoVariables(EMP, '2026-10-20')).toEqual([]);
   });
 
   it('anular es atómico: deja rastro y la segunda vez da 409; otra sede no la ve', async () => {

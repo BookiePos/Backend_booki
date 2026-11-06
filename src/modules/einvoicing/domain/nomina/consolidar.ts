@@ -32,6 +32,7 @@ import { cop, redondearA, sumCop } from '../../../finance/domain/money.util';
 import { DANE_MUNICIPIO, YYYYMMDD } from '../../../employees/domain/employees.constants';
 import type { PayrollBreakdown } from '../../../payroll/domain/payroll-calc';
 import { MEDIOS_PAGO_NOMINA, NOMBRE_MEDIO_PAGO } from '../../../payroll/domain/pago-nomina';
+import { diasPagablesHastaRetiro } from '../../../payroll/domain/liquidacion-calc';
 import type { Centavos } from '../redondeo';
 import { centavosDeCop } from '../redondeo';
 import type { DeduccionesNe, DevengadosNe, DocumentoNe, HoraNe, TipoHoraNe } from './modelo';
@@ -151,6 +152,11 @@ export interface EntradaConsolidar {
   liquidacion?: LiquidacionConsolidar;
   /** UVT vigente (pesos): para el aviso de retención sobre cesantías. */
   uvt?: number;
+  /**
+   * Devengado total (pesos) de cada mes con colillas cerradas en los últimos 6
+   * meses, incluido el del retiro: base del promedio del art. 206-4 ET.
+   */
+  devengadoUltimos6Meses?: number[];
 }
 
 /** Lo que se dejó de reportar por neto negativo (pesos): la parte de cada colilla que `crearArrastres` lleva al mes siguiente. */
@@ -471,6 +477,7 @@ function agregarLiquidacion(
   bloqueos: string[],
   advertencias: string[],
   uvt: number | undefined,
+  devengados6m: number[] | undefined,
 ): void {
   const importes: [string, number][] = [
     ['cesantías', liq.cesantias],
@@ -524,10 +531,13 @@ function agregarLiquidacion(
       `${quien}: la indemnización (${liq.indemnizacion}) puede llevar retención en la fuente (art. 401-3 ET) y BookiPos no la calcula. Confírmalo con el contador antes de emitir.`,
     );
   }
-  const salario = liq.salarioBase ?? 0;
-  if (liq.cesantias + liq.interesesCesantias > 0 && enteroPositivo(uvt) && salario > TOPE_CESANTIAS_EXENTAS_UVT * uvt) {
+  // Art. 206-4 ET: se mide con el ingreso mensual PROMEDIO de los últimos 6 meses (devengado total de las
+  // colillas, con horas extra, recargos y demás variables); sin colillas, el salario pactado.
+  const meses = (devengados6m ?? []).filter((v) => Number.isFinite(v) && v > 0);
+  const promedio = meses.length > 0 ? cop(sumCop(meses) / meses.length) : (liq.salarioBase ?? 0);
+  if (liq.cesantias + liq.interesesCesantias > 0 && enteroPositivo(uvt) && promedio > TOPE_CESANTIAS_EXENTAS_UVT * uvt) {
     advertencias.push(
-      `${quien}: con salario de ${salario} (más de ${TOPE_CESANTIAS_EXENTAS_UVT} UVT) las cesantías e intereses no son exentos del todo (art. 206 num. 4 ET) y BookiPos no calcula esa retención. Confírmalo con el contador.`,
+      `${quien}: con ingreso mensual promedio de ${promedio} en los últimos ${meses.length || 1} mes(es) (más de ${TOPE_CESANTIAS_EXENTAS_UVT} UVT) las cesantías e intereses no son exentos del todo (art. 206 num. 4 ET) y BookiPos no calcula esa retención. Confírmalo con el contador.`,
     );
   }
 }
@@ -691,16 +701,15 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     pagosTerceros: [],
   };
   if (liq) {
-    agregarLiquidacion(devengados, liq, quien, bloqueos, advertencias, entrada.uvt);
+    agregarLiquidacion(devengados, liq, quien, bloqueos, advertencias, entrada.uvt, entrada.devengadoUltimos6Meses);
     // La colilla del mes no puede pagar días después del retiro: pasa si la corrida se cerró antes de aprobar
     // la liquidación (con el mes entero). No se reporta; la corrida cerrada no se recalcula, así que se corrige
     // con el contador (pago de más) y una nueva corrida o ajuste.
     if (e.hireDate && YYYYMMDD.test(e.hireDate)) {
-      const desde = e.hireDate > primero ? e.hireDate : primero;
-      const tope = liq.fechaRetiro >= desde ? tiempoLaborado360(desde, liq.fechaRetiro) : 0;
+      const tope = diasPagablesHastaRetiro(e.hireDate, liq.fechaRetiro);
       if (dias > tope) {
         bloqueos.push(
-          `${quien}: las corridas de ${periodo} le pagan ${dias} días y el retiro fue el ${liq.fechaRetiro} (${tope} días). La corrida se cerró antes del retiro: no se puede reportar así. Revísalo con el contador.`,
+          `${quien}: las corridas de ${periodo} le pagan ${dias} días y el retiro fue el ${liq.fechaRetiro} (${tope} días). La corrida se cerró antes de aprobar la liquidación y no se puede reportar así. Registra con el contador el pago de más (${dias - tope} días) como una deducción o un ajuste del empleado; para la próxima, aprueba la liquidación ANTES de cerrar la corrida del mes.`,
         );
       }
     }

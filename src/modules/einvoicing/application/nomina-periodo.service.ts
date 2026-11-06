@@ -492,6 +492,7 @@ export class NominaPeriodoService {
       .findOne({ employeeId: id, estado: 'aprobada', fechaRetiro: { $gte: `${ctx.periodo}-01`, $lte: finMes } })
       .lean()
       .exec()) as unknown as (PayrollLiquidacion & { _id: Types.ObjectId }) | null;
+    const devengadoUltimos6Meses = liq ? await this.devengadoUltimos6Meses(id, ctx.periodo) : undefined;
     const entrada: EntradaConsolidar = {
       periodo: ctx.periodo,
       empleado,
@@ -500,6 +501,7 @@ export class NominaPeriodoService {
       deducciones,
       smmlv: ctx.smmlv,
       uvt: ctx.uvt,
+      ...(devengadoUltimos6Meses ? { devengadoUltimos6Meses } : {}),
       ...(liq
         ? {
             liquidacion: {
@@ -522,6 +524,33 @@ export class NominaPeriodoService {
     };
     const r = consolidarNominaMes(entrada);
     return r.ok ? { ok: true as const, modelo: r.modelo as DocumentoNe, advertencias: r.advertencias } : { ok: false as const, bloqueos: r.bloqueos };
+  }
+
+  /**
+   * Devengado total del empleado por mes en las corridas CERRADAS de los últimos
+   * 6 meses (incluido `periodo`): base del promedio del art. 206-4 ET. Solo
+   * cuentan las corridas de la empresa (tenant); un mes con dos corridas suma.
+   */
+  private async devengadoUltimos6Meses(employeeId: string, periodo: string): Promise<number[]> {
+    const y = Number(periodo.slice(0, 4));
+    const m = Number(periodo.slice(5, 7));
+    const meses = Array.from({ length: 6 }, (_, i) => {
+      const d = new Date(Date.UTC(y, m - 1 - i, 1));
+      return d.toISOString().slice(0, 7);
+    });
+    const corridas = (await this.runs
+      .find({ period: { $in: meses }, status: 'cerrada', 'slips.employeeId': employeeId })
+      .lean()
+      .exec()) as unknown as LeanRun[];
+    const porMes = new Map<string, number>();
+    for (const r of corridas) {
+      for (const sl of r.slips) {
+        if (sl.employeeId !== employeeId) continue;
+        const total = (sl.breakdown as unknown as { devengados?: { total?: number } })?.devengados?.total ?? 0;
+        porMes.set(r.period, (porMes.get(r.period) ?? 0) + total);
+      }
+    }
+    return [...porMes.values()];
   }
 
   private emision(ctx: ContextoPeriodo): EmisionNe {

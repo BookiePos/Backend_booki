@@ -83,7 +83,7 @@ function armar(o: {
   const runs = {
     findOne: () => exec(o.existente ?? null),
     findById: () => exec(o.run ?? null),
-    find: vi.fn(() => ({ select: () => ({ sort: () => ({ limit: () => exec([]) }) }) })),
+    find: vi.fn(() => ({ select: () => ({ sort: () => ({ limit: () => exec([]) }), lean: () => exec([]) }) })),
     create: vi.fn(async (d: Record<string, unknown>) => ({ ...d, _id: new Types.ObjectId() })),
     deleteOne: vi.fn(() => exec({})),
   };

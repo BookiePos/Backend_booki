@@ -424,6 +424,16 @@ describe('consolidarNominaMes: retiro en el mes (decisión 4 del dueño)', () =>
     expect(ok({ ...retiro(liq({ indemnizacion: 0 })), uvt: 52_374 }).advertencias.join()).not.toMatch(/206/);
   });
 
+  it('206-4 ET: promedio de 6 meses con horas extra que cruzan el tope avisa; sin variables no', () => {
+    // Tope: 350 × 52.374 = 18.330.900. Salario pactado de 10 millones, pero un mes con horas extra lo sube.
+    const base = { ...retiro(liq({ indemnizacion: 0, salarioBase: 10_000_000 }), { salary: 10_000_000 }), uvt: 52_374 };
+    const cruza = ok({ ...base, devengadoUltimos6Meses: [10_000_000, 30_000_000] }); // promedio 20.000.000
+    expect(cruza.advertencias.join()).toMatch(/promedio de 20000000 en los últimos 2 mes/);
+    expect(ok({ ...base, devengadoUltimos6Meses: [10_000_000, 12_000_000] }).advertencias.join()).not.toMatch(/206/);
+    // Sin colillas: el salario pactado es el piso.
+    expect(ok(base).advertencias.join()).not.toMatch(/206/);
+  });
+
   it('corrida cerrada antes del retiro con más días que los trabajados: bloquea', () => {
     const e = entrada({
       empleado: empleado({ terminationDate: '2026-10-20' }),
@@ -431,6 +441,7 @@ describe('consolidarNominaMes: retiro en el mes (decisión 4 del dueño)', () =>
       liquidacion: liq(),
     });
     expect(bloqueos(e).join()).toMatch(/le pagan 30 días y el retiro fue el 2026-10-20 \(20 días\)/);
+    expect(bloqueos(e).join()).toMatch(/deducción o un ajuste del empleado/);
   });
 });
 

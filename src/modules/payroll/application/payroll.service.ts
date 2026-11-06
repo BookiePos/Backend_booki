@@ -47,6 +47,7 @@ import {
   PayrollLiquidacion,
   type PayrollLiquidacionDocument,
 } from '../infrastructure/schemas/payroll-liquidacion.schema';
+import { diasPagablesHastaRetiro } from '../domain/liquidacion-calc';
 import { buildPayslipPdf, type PayslipNominaElectronica } from './payslip-pdf';
 import {
   classifyTurnos,
@@ -64,6 +65,7 @@ import {
   fechaCorteDePeriodo,
   jornadaSemanalVigente,
   PayrollInput,
+  type PayrollBreakdown,
   SalaryType,
 } from '../domain/payroll-calc';
 import { UpdatePayrollSettingsDto } from './dto/update-settings.dto';
@@ -106,6 +108,15 @@ export interface PreviewResult {
     arlRiskLevel?: ArlLevel;
   };
   breakdown: ReturnType<typeof computeSlip>;
+}
+
+/** Respuesta con avisos que no bloquean (el front los muestra). */
+type ConAvisos<T> = T & { advertencias: string[] };
+function conAvisos<T>(doc: T, advertencias: string[]): ConAvisos<T> {
+  const plano = (typeof (doc as { toObject?: () => T }).toObject === 'function'
+    ? (doc as unknown as { toObject: () => T }).toObject()
+    : doc) as T;
+  return { ...plano, advertencias };
 }
 
 /** Una liquidación se guarda cerca del retiro: hasta este margen hacia el futuro (preaviso corto). */
@@ -986,6 +997,7 @@ export class PayrollService {
       motivo: string;
     };
     breakdown: LiquidacionBreakdown;
+    advertencias: string[];
   }> {
     if (user && dto.employeeId) await this.empleadoEnAlcance(dto.employeeId, user);
     const s = await this.parametrosEn(dto.fechaFin);
@@ -1053,7 +1065,37 @@ export class PayrollService {
         motivo: dto.motivo,
       },
       breakdown: computeLiquidacion(input, s),
+      advertencias: dto.employeeId ? await this.avisoVariables(dto.employeeId, dto.fechaFin) : [],
     };
+  }
+
+  /**
+   * Art. 253 CST: con salario variable, las prestaciones se liquidan con el
+   * promedio de lo devengado. BookiPos aún usa el salario fijo; se avisa si en
+   * las corridas cerradas de los últimos 3 meses hubo horas extra, recargos,
+   * comisiones o bonificaciones salariales.
+   */
+  private async avisoVariables(employeeId: string, fechaFin: string): Promise<string[]> {
+    const y = Number(fechaFin.slice(0, 4));
+    const m = Number(fechaFin.slice(5, 7));
+    const meses = [0, 1, 2].map((i) => new Date(Date.UTC(y, m - 1 - i, 1)).toISOString().slice(0, 7));
+    const corridas = await this.runs
+      .find({ period: { $in: meses }, status: 'cerrada', 'slips.employeeId': employeeId })
+      .select('slips.employeeId slips.breakdown')
+      .lean()
+      .exec();
+    const variable = (corridas as unknown as { slips: { employeeId: string; breakdown?: PayrollBreakdown }[] }[])
+      .flatMap((r) => r.slips)
+      .filter((sl) => sl.employeeId === employeeId)
+      .reduce((t, sl) => {
+        const d = sl.breakdown?.devengados;
+        return t + (d ? (d.recargos ?? 0) + (d.horasExtra ?? 0) + (d.comisiones ?? 0) + (d.bonificacionSalarial ?? 0) : 0);
+      }, 0);
+    return variable > 0
+      ? [
+          `En los últimos 3 meses tuvo devengos variables (${variable}: horas extra, recargos, comisiones o bonificaciones). Por el art. 253 CST las prestaciones se liquidan con el salario PROMEDIO, y este cálculo usa el salario fijo: revísalo con el contador.`,
+        ]
+      : [];
   }
 
   listRuns(user?: SedeScopeUser): Promise<PayrollRunDocument[]> {
@@ -1195,11 +1237,19 @@ export class PayrollService {
     id: string,
     pago: { medioPago: string; fechaPago: string },
     user?: SedeScopeUser & { email?: string },
-  ): Promise<PayrollLiquidacionDocument> {
+  ): Promise<ConAvisos<PayrollLiquidacion>> {
     const liq = await this.liquidacionEnAlcance(id, user);
     if (liq.estado === 'aprobada') {
       await this.marcarRetiro(liq);
-      return liq;
+      const distinto = liq.pago && (liq.pago.medio !== pago.medioPago || liq.pago.fecha !== pago.fechaPago);
+      return conAvisos(liq, [
+        ...(distinto
+          ? [
+              `La liquidación ya estaba aprobada con pago ${liq.pago!.medio} del ${liq.pago!.fecha}: se ignoraron el medio y la fecha enviados. Para cambiarlos, anúlala y guarda y aprueba una nueva.`,
+            ]
+          : []),
+        ...(await this.avisoCorridaCerrada(liq)),
+      ]);
     }
     if (liq.estado !== 'borrador') {
       throw new BadRequestException(`La liquidación está ${liq.estado}; solo se aprueba un borrador.`);
@@ -1237,14 +1287,46 @@ export class PayrollService {
       throw new ConflictException('La liquidación cambió mientras la aprobabas (otra persona la aprobó o la anuló). Vuelve a cargarla.');
     }
     await this.marcarRetiro(aprobada);
-    return aprobada;
+    return conAvisos(aprobada, await this.avisoCorridaCerrada(aprobada));
+  }
+
+  /**
+   * Aviso (no bloquea) si una corrida CERRADA del mes del retiro ya le pagó más
+   * días de los que van hasta el retiro: misma comparación que el bloqueo del
+   * consolidador (`diasPagablesHastaRetiro`). La corrida cerrada no se
+   * recalcula; el pago de más se registra con el contador.
+   */
+  private async avisoCorridaCerrada(liq: { employeeId: string; fechaRetiro: string }): Promise<string[]> {
+    const periodo = liq.fechaRetiro.slice(0, 7);
+    const corridas = await this.runs
+      .find({ period: periodo, status: 'cerrada', 'slips.employeeId': liq.employeeId })
+      .select('slips.employeeId slips.diasTrabajados')
+      .lean()
+      .exec();
+    const dias = (corridas as unknown as { slips: { employeeId: string; diasTrabajados: number }[] }[])
+      .flatMap((r) => r.slips)
+      .filter((sl) => sl.employeeId === liq.employeeId)
+      .reduce((t, sl) => t + (sl.diasTrabajados ?? 0), 0);
+    if (dias === 0) return [];
+    const emp = await this.employees.findById(liq.employeeId).select('hireDate').exec();
+    const tope = diasPagablesHastaRetiro(emp?.hireDate, liq.fechaRetiro);
+    if (dias <= tope) return [];
+    return [
+      `La nómina de ${periodo} ya se cerró y le paga ${dias} días; hasta el retiro (${liq.fechaRetiro}) van ${tope}. La nómina electrónica de ese mes queda bloqueada: registra con el contador el pago de más (${dias - tope} días) como una deducción o un ajuste del empleado. Para la próxima, aprueba la liquidación antes de cerrar la corrida del mes.`,
+    ];
   }
 
   /**
    * Anula una liquidación (borrador o aprobada), atómico. Si ya salió en una
    * nómina electrónica aceptada, el documento se corrige con la nota de ajuste.
+   * NO deshace el retiro que dejó la aprobación (fecha y estado `retirado` en el
+   * expediente): anular suele ser para corregir cifras, no porque el empleado
+   * no se haya ido. Se avisa; si el retiro fue un error, se edita el expediente.
    */
-  async anularLiquidacion(id: string, user?: SedeScopeUser & { email?: string }): Promise<PayrollLiquidacionDocument> {
+  async anularLiquidacion(
+    id: string,
+    user?: SedeScopeUser & { email?: string },
+  ): Promise<ConAvisos<PayrollLiquidacion>> {
     const liq = await this.liquidacionEnAlcance(id, user);
     const anulada = await this.liquidaciones
       .findOneAndUpdate(
@@ -1254,7 +1336,12 @@ export class PayrollService {
       )
       .exec();
     if (!anulada) throw new ConflictException('La liquidación ya está anulada.');
-    return anulada;
+    return conAvisos(
+      anulada,
+      liq.estado === 'aprobada'
+        ? ['El empleado sigue como retirado en el expediente (fecha y estado). Si el retiro fue un error, edítalo en el expediente.']
+        : [],
+    );
   }
 
   /**

@@ -83,6 +83,18 @@ export function dias360Inclusivo(from: string, to: string): number {
   return Math.max(0, ((y2 ?? 0) - (y1 ?? 0)) * 360 + ((m2 ?? 0) - (m1 ?? 0)) * 30 + (d2 - d1) + 1);
 }
 
+/**
+ * Días que la nómina del mes del retiro puede pagar: del mayor entre el
+ * ingreso y el día 1 del mes, hasta el retiro, ambos incluidos (360). La usan
+ * el aviso al aprobar la liquidación y el bloqueo del consolidador, para que
+ * las dos comparen igual.
+ */
+export function diasPagablesHastaRetiro(hireDate: string | undefined, fechaRetiro: string): number {
+  const primero = `${fechaRetiro.slice(0, 7)}-01`;
+  const desde = hireDate && hireDate > primero ? hireDate : primero;
+  return fechaRetiro >= desde ? dias360Inclusivo(desde, fechaRetiro) : 0;
+}
+
 /** Días entre dos fechas por el método comercial 360 (meses de 30 días), sin contar el último. */
 export function dias360(from: string, to: string): number {
   const [y1, m1, dd1] = from.split('-').map(Number);
