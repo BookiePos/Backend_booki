@@ -523,7 +523,7 @@ function agregarLiquidacion(
       );
       return;
     }
-    d.vacacionesCompensadas = [{ dias: Math.max(1, Math.round(pendientes)), pago: centavosDeCop(liq.vacaciones) }];
+    d.vacacionesCompensadas = [{ dias: Math.max(1, redondearA(pendientes, 0)), pago: centavosDeCop(liq.vacaciones) }];
   }
   if (liq.indemnizacion > 0) {
     d.indemnizacion = centavosDeCop(liq.indemnizacion);
