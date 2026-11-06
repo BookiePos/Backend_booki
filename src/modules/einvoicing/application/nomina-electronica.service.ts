@@ -219,7 +219,7 @@ export class NominaElectronicaService {
         enviadoAt: { $lte: new Date(ahora.getTime() - REPOSO_RECONSULTA_MS) },
         $or: [{ bloqueoHasta: null }, { bloqueoHasta: { $lte: ahora } }],
       })
-      .sort({ enviadoAt: 1 })
+      .sort({ reconsultadoAt: 1, enviadoAt: 1 })
       .limit(Math.max(0, limite))
       .select('_id')
       .exec();
@@ -227,6 +227,8 @@ export class NominaElectronicaService {
       if (opts.hasta !== undefined && Date.now() + MARGEN_PLAZO_RECONSULTA_MS > opts.hasta) break;
       const docId = String(_id);
       cifras.revisados++;
+      // Se marca antes de intentar, también si queda omitido: pasa al final de la cola.
+      await this.model.updateOne({ _id }, { $set: { reconsultadoAt: new Date() } }).exec();
       try {
         const r = await this.transmitirExistente(await this.cargar(docId));
         if (r.dianStatus !== 'sent') cifras.avanzados++;

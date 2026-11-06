@@ -109,9 +109,9 @@ export class ReconsultaDianService {
       }
       return { estado: 'ok', cifras };
     } catch (err) {
-      const detalle = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Fallo en la reconsulta DIAN: ${detalle}`);
-      return { estado: 'error', detalle };
+      // El detalle crudo solo al log: la respuesta es pública de cara al workflow.
+      this.logger.error(`Fallo en la reconsulta DIAN: ${err instanceof Error ? err.message : String(err)}`);
+      return { estado: 'error', detalle: 'falló la reconsulta DIAN (ver el log)' };
     } finally {
       this.corriendo = false;
     }

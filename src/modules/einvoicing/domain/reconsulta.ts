@@ -11,7 +11,7 @@ export const REPOSO_RECONSULTA_MS = 10 * 60_000;
 export const LIMITE_RECONSULTA_POR_EMPRESA = 10;
 
 /** No se empieza otro documento si quedan menos de esto antes del plazo global. */
-export const MARGEN_PLAZO_RECONSULTA_MS = 30_000;
+export const MARGEN_PLAZO_RECONSULTA_MS = 60_000;
 
 export interface CifrasReconsulta {
   /** Documentos o sets que se intentaron. */

@@ -106,6 +106,7 @@ describe('reconsultarPendientes de los servicios (camino de sistema)', () => {
   const ctx = { businessId: 'a', dbName: 'biz_a' };
   const modelo = (ids: string[]) => {
     const find = vi.fn();
+    const updateOne = vi.fn(() => ({ exec: async () => undefined }));
     const q: any = {
       sort: vi.fn(() => q),
       limit: vi.fn(() => q),
@@ -113,7 +114,7 @@ describe('reconsultarPendientes de los servicios (camino de sistema)', () => {
       exec: async () => ids.map((id) => ({ _id: id })),
     };
     find.mockReturnValue(q);
-    return { find, q };
+    return { find, q, updateOne };
   };
   const armar = (Clase: any, ids: string[], ejecutar: (id: string) => Promise<any>) => {
     const s = Object.create(Clase.prototype);
@@ -146,7 +147,7 @@ describe('reconsultarPendientes de los servicios (camino de sistema)', () => {
         expect(f.dianStatus).toBe('sent');
         expect(f.enviadoAt.$lte.getTime()).toBe(ahora.getTime() - REPOSO_RECONSULTA_MS);
         expect(m.q.limit).toHaveBeenCalledWith(7);
-        expect(m.q.sort).toHaveBeenCalledWith({ enviadoAt: 1 });
+        expect(m.q.sort).toHaveBeenCalledWith({ reconsultadoAt: 1, enviadoAt: 1 });
       });
 
       it('audita como SYSTEM, cuenta avanzados/omitidos/errores y sigue tras un fallo', async () => {
@@ -174,6 +175,38 @@ describe('reconsultarPendientes de los servicios (camino de sistema)', () => {
       });
     });
   }
+
+  it('marca reconsultadoAt en cada intento (también omitidos) y ordena por él: 12 docs con 10 atascados', async () => {
+    const hechos = new Map<string, number>();
+    const { s, m } = armar(TransmisionDianService, [], async () => {
+      throw new ConflictException('en vuelo sin XML');
+    });
+    // Cola simulada: reconsultadoAt nulo primero, luego enviadoAt.
+    const docs = Array.from({ length: 12 }, (_, i) => ({ id: `d${i}`, enviadoAt: i, reconsultadoAt: undefined as number | undefined }));
+    const atascados = new Set(docs.slice(0, 10).map((d) => d.id));
+    let reloj = 100;
+    m.updateOne.mockImplementation(((f: any, u: any) => {
+      const d = docs.find((x) => x.id === f._id)!;
+      d.reconsultadoAt = u.$set.reconsultadoAt ? ++reloj : undefined;
+      hechos.set(d.id, (hechos.get(d.id) ?? 0) + 1);
+      return { exec: async () => undefined };
+    }) as any);
+    m.q.exec = async () =>
+      [...docs]
+        .sort((a, b) => (a.reconsultadoAt ?? -1) - (b.reconsultadoAt ?? -1) || a.enviadoAt - b.enviadoAt)
+        .slice(0, 10)
+        .map((d) => ({ _id: d.id }));
+    s.ejecutar = async (id: string) => {
+      if (atascados.has(id)) throw new ConflictException('en vuelo sin XML');
+      return { dianStatus: 'accepted' };
+    };
+    await TenantContext.run(ctx, () => s.reconsultarPendientes(10, { ahora }));
+    const r2 = await TenantContext.run(ctx, () => s.reconsultarPendientes(10, { ahora }));
+    expect(hechos.get('d10')).toBe(1);
+    expect(hechos.get('d11')).toBe(1);
+    expect(r2.avanzados).toBe(2);
+    expect(m.q.sort).toHaveBeenCalledWith({ reconsultadoAt: 1, enviadoAt: 1 });
+  });
 
   describe('habilitación de nómina', () => {
     const fila = (estados: string[]) => ({

@@ -141,7 +141,7 @@ export class HabilitacionNominaService {
       cifras.revisados++;
       try {
         const antes = resumenSetNomina(fila.conjunto);
-        const v = await this.correr(sedeId, false, ahora);
+        const v = await this.correr(sedeId, false, ahora, opts.hasta);
         if (v.resumen && v.resumen.aceptados !== antes.aceptados) cifras.avanzados++;
         await this.auditar('einvoicing.nomina.habilitacion.consultada', undefined, sedeId, true, v, undefined, 'GET');
       } catch (err) {
@@ -160,7 +160,7 @@ export class HabilitacionNominaService {
 
   // ── Núcleo ────────────────────────────────────────────────────────────────
 
-  private async correr(sedeId: string, enviar: boolean, ahora: Date): Promise<VistaHabilitacionNomina> {
+  private async correr(sedeId: string, enviar: boolean, ahora: Date, hasta?: number): Promise<VistaHabilitacionNomina> {
     const base = await this.preparar(sedeId);
     let fila = await this.model.findOne({ emisorId: base.emisorId }).exec();
     if (!fila) {
@@ -203,7 +203,7 @@ export class HabilitacionNominaService {
         else await persistir(planSetNomina(base.testSetId, ahora));
       }
       if (!(set.testSetId !== base.testSetId) && !resumenSetNomina(set).aprobada) {
-        const limite = Date.now() + PRESUPUESTO_CORRIDA_MS;
+        const limite = Math.min(Date.now() + PRESUPUESTO_CORRIDA_MS, hasta ?? Infinity);
         await persistir(await this.consultarEnviados(set, base.transmisor, limite, ahora));
         if (enviar) {
           await persistir(reintentarRechazados(set));
