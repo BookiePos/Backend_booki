@@ -66,7 +66,22 @@ describe('armarDocumentoSet', () => {
     }
   });
 
-  it('las notas todavía no tienen armador', () => {
-    expect(() => armarDocumentoSet({ ...entrada('fv', 0), tipo: 'nc' as never })).toThrow(/armador/);
+  const REF = { numero: 'SETP990000123', cufe: 'b'.repeat(96), fecha: '2026-11-06' };
+
+  it('la nota crédito (91) y la débito se arman con referencia a la factura y CUDE con el PIN', () => {
+    const nc = armarDocumentoSet({ ...entrada('fv', 0), tipo: 'nc', numero: 990_000_200, referencia: REF });
+    expect(nc.numeroCompleto).toBe('NC990000200');
+    expect(nc.xml).toContain('<cbc:CreditNoteTypeCode>91<');
+    expect(nc.xml).toContain(REF.numero);
+    expect(nc.xml).toContain(REF.cufe);
+    const nd = armarDocumentoSet({ ...entrada('fv', 0), tipo: 'nd', numero: 990_000_201, referencia: REF });
+    expect(nd.xml).toContain('DebitNote');
+    expect(nd.xml).toContain('<cbc:ResponseCode>4<');
+    const otro = armarDocumentoSet({ ...entrada('fv', 0), tipo: 'nc', numero: 990_000_200, referencia: REF, softwarePin: '99999' });
+    expect(otro.codigo).not.toBe(nc.codigo);
+  });
+
+  it('una nota sin factura de referencia no se arma', () => {
+    expect(() => armarDocumentoSet({ ...entrada('fv', 0), tipo: 'nc' })).toThrow(/factura aceptada/);
   });
 });

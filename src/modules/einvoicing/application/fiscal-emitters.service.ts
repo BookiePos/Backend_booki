@@ -279,7 +279,8 @@ export class FiscalEmittersService {
     return {
       certificadoVigente: base.certificadoVigente,
       tipoAmbiente: base.tipoAmbiente,
-      habilitado: base.habilitado,
+      // Nómina lee SU indicador: aprobar el set de factura no basta para transmitir nómina en producción.
+      habilitado: e.habilitadoNomina === true,
       softwareId,
       tienePin,
       testSetId,
@@ -306,6 +307,10 @@ export class FiscalEmittersService {
    * para producción» (`habilitado`, que el gate exige): NO cambia `tipoAmbiente`, pasar
    * a producción es una decisión del dueño. Con el POS solo anota la fecha. Idempotente;
    * solo actúa en ambiente de habilitación.
+   *
+   * INDICADORES: `habilitado` es el de FACTURA y POS (comparten SoftwareID/PIN y gate); la
+   * NÓMINA tiene el suyo, `habilitadoNomina`, que este método nunca toca. PENDIENTE: la
+   * habilitación de nómina todavía no lo enciende (hoy se pone a mano al aprobar su set).
    */
   async marcarSetAprobado(emisorId: string, clase: 'fe' | 'pos', ahora: Date = new Date()): Promise<void> {
     const set = clase === 'fe' ? { habilitado: true, facturaSetAprobadoAt: ahora } : { posSetAprobadoAt: ahora };

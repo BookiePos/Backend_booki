@@ -21,7 +21,7 @@ const owner = { userId: 'u', email: 'o@x.co', name: 'O', role: 'owner', permissi
 const otra = { ...owner, role: 'cashier', sedeIds: [new Types.ObjectId().toString()] } as unknown as JwtUser;
 const EMISOR = { id: new Types.ObjectId().toString(), nitNorm: '900123456', nit: '900123456', nitDv: '7', razonSocial: 'X SAS', direccion: 'Cl 1', municipioDane: '05001' };
 
-function armar(opts: { ambiente?: string; testSetId?: string; consulta?: any; alEnviar?: () => Promise<void> } = {}) {
+function armar(opts: { ambiente?: string; testSetId?: string; consulta?: any; respuestaEnvio?: any; alEnviar?: () => Promise<void> } = {}) {
   const filas: any[] = [];
   const copia = <T>(v: T): T => JSON.parse(JSON.stringify(v));
   const modelo = {
@@ -56,7 +56,7 @@ function armar(opts: { ambiente?: string; testSetId?: string; consulta?: any; al
       // Al salir a la red el set ya debe estar grabado como «enviando».
       grabados.push(filas[0].conjunto.documentos.filter((d: any) => d.estado === 'enviando').length);
       if (opts.alEnviar) await opts.alEnviar();
-      return { ok: true, isValid: true, origen: 'dian', codigo: '00', mensajes: [], trackId: `T${envios.length}` };
+      return opts.respuestaEnvio ?? { ok: true, isValid: true, origen: 'dian', codigo: '00', mensajes: [], trackId: `T${envios.length}` };
     },
     consultar: async () => opts.consulta ?? { ok: true, isValid: true, origen: 'dian', codigo: '00', mensajes: [] },
     enviar: async () => {
@@ -85,7 +85,7 @@ function armar(opts: { ambiente?: string; testSetId?: string; consulta?: any; al
     { para: async () => transmisor } as any,
     audit as any,
   );
-  return { s, filas, envios, grabados };
+  return { s, filas, envios, grabados, opts };
 }
 
 const dentro = <T>(f: () => Promise<T>) => TenantContext.run({ businessId: 'b1' } as any, f);
@@ -161,6 +161,7 @@ describe('HabilitacionNominaService', () => {
     const { s, filas } = armar({ consulta: { ok: false, origen: 'adapter', codigo: 'NO_RECIBIDO_DIAN', mensajes: ['x'] } });
     await dentro(() => s.iniciar(SEDE, owner));
     filas[0].conjunto.documentos[0].estado = 'enviando';
+    delete filas[0].conjunto.documentos[0].enviadoAt; // sin fecha de envío se renumera de inmediato
     const viejo = filas[0].conjunto.documentos[0].numero;
     await dentro(() => s.iniciar(SEDE, owner));
     expect(filas[0].conjunto.documentos[0].numero).not.toBe(viejo);
@@ -178,6 +179,23 @@ describe('HabilitacionNominaService', () => {
     expect(filas[0].conjunto.documentos[0]).toMatchObject({ estado: 'enviando', numero: viejo });
     await dentro(() => s.consultar(SEDE, owner, new Date(t0.getTime() + 11 * 60_000)));
     expect(filas[0].conjunto.documentos[0].estado).toBe('rechazado');
+    await dentro(() => s.iniciar(SEDE, owner, new Date(t0.getTime() + 12 * 60_000)));
+    expect(filas[0].conjunto.documentos[0].numero).not.toBe(viejo);
+  });
+
+  it('un envio sin trackId (timeout) se reconsulta por CUNE y, tras el umbral y NO_RECIBIDO, se renumera', async () => {
+    const { s, filas, opts } = armar({ respuestaEnvio: { ok: false, origen: 'adapter', codigo: 'RED', mensajes: ['timeout'] }, consulta: { ok: false, origen: 'adapter', codigo: 'NO_RECIBIDO_DIAN', mensajes: ['x'] } });
+    const t0 = new Date('2026-11-05T15:00:00Z');
+    await dentro(() => s.iniciar(SEDE, owner, t0));
+    const d0 = filas[0].conjunto.documentos[0];
+    expect(d0).toMatchObject({ estado: 'enviado', trackId: null });
+    expect(d0.enviadoAt).toBeTruthy();
+    const viejo = d0.numero;
+    await dentro(() => s.consultar(SEDE, owner, new Date(t0.getTime() + 9 * 60_000)));
+    expect(filas[0].conjunto.documentos[0]).toMatchObject({ estado: 'enviado', numero: viejo });
+    await dentro(() => s.consultar(SEDE, owner, new Date(t0.getTime() + 11 * 60_000)));
+    expect(filas[0].conjunto.documentos[0].estado).toBe('rechazado');
+    opts.respuestaEnvio = undefined;
     await dentro(() => s.iniciar(SEDE, owner, new Date(t0.getTime() + 12 * 60_000)));
     expect(filas[0].conjunto.documentos[0].numero).not.toBe(viejo);
   });

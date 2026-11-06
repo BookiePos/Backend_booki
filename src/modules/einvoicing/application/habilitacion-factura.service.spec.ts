@@ -115,7 +115,7 @@ function armar(
     { para: async () => transmisor } as any,
     { record: async () => undefined } as any,
   );
-  return { s, filas, envios, grabados, marcados };
+  return { s, filas, envios, grabados, marcados, opts };
 }
 
 const dentro = <T>(f: () => Promise<T>) => TenantContext.run({ businessId: 'b1' } as any, f);
@@ -178,10 +178,53 @@ describe('HabilitacionFacturaService', () => {
     }
     expect(new Set(envios.map((e) => e.fullNumber)).size).toBe(EXIGIDAS);
     expect(v.aprobada).toBe(false);
-    expect(v.documentos.every((d) => d.estado === 'enviado')).toBe(true);
+    expect(v.documentos.filter((d) => d.tipo === 'fv').every((d) => d.estado === 'enviado')).toBe(true);
+    expect(v.documentos.filter((d) => d.tipo !== 'fv').every((d) => d.estado === 'pendiente')).toBe(true);
     expect(filas).toHaveLength(1);
     expect(filas[0].clase).toBe('fe');
     expect(marcados).toHaveLength(0); // sin aceptación no hay listo para producción
+  });
+
+  it('las notas solo salen cuando su factura está aceptada, referidas a ella', async () => {
+    const { s, envios, filas } = armar();
+    await dentro(() => s.iniciar(SEDE, owner));
+    expect(envios.map((e) => e.tipo)).toEqual(Array(EXIGIDAS).fill('invoice'));
+    // Con las facturas solo enviadas (sin veredicto) otra corrida no manda notas.
+    const sinVeredicto = armar({ consulta: { ok: false, origen: 'adapter', codigo: 'RED', mensajes: ['x'] } });
+    await dentro(() => sinVeredicto.s.iniciar(SEDE, owner));
+    await dentro(() => sinVeredicto.s.iniciar(SEDE, owner));
+    expect(sinVeredicto.envios).toHaveLength(EXIGIDAS);
+    // Aceptadas las facturas, salen la NC (91) y la ND con referencia a una factura aceptada.
+    await dentro(() => s.consultar(SEDE, owner));
+    envios.length = 0;
+    await dentro(() => s.iniciar(SEDE, owner));
+    expect(envios.map((e) => e.tipo)).toEqual(['credit_note', 'debit_note']);
+    const base = filas[0].conjunto.documentos.find((d: any) => d.tipo === 'fv' && d.estado === 'aceptado');
+    for (const e of envios) {
+      expect(e.xmlFirmado).toContain(`SETP${base.numero}`);
+      expect(e.xmlFirmado).toContain(base.codigo);
+    }
+    expect(envios[0].xmlFirmado).toContain('<cbc:CreditNoteTypeCode>91<');
+  });
+
+  it('un envio sin trackId (timeout) se reconsulta por CUFE y, tras el umbral y NO_RECIBIDO, se renumera', async () => {
+    const { s, filas, opts } = armar({
+      respuestaEnvio: { ok: false, origen: 'adapter', codigo: 'RED', mensajes: ['timeout'] },
+      consulta: { ok: false, origen: 'adapter', codigo: 'NO_RECIBIDO_DIAN', mensajes: ['x'] },
+    });
+    const t0 = new Date('2026-11-05T15:00:00Z');
+    await dentro(() => s.iniciar(SEDE, owner, 'fe', t0));
+    const d0 = filas[0].conjunto.documentos[0];
+    expect(d0).toMatchObject({ estado: 'enviado', trackId: null });
+    expect(d0.enviadoAt).toBeTruthy();
+    const viejo = d0.numero;
+    await dentro(() => s.consultar(SEDE, owner, 'fe', new Date(t0.getTime() + 9 * 60_000)));
+    expect(filas[0].conjunto.documentos[0]).toMatchObject({ estado: 'enviado', numero: viejo });
+    await dentro(() => s.consultar(SEDE, owner, 'fe', new Date(t0.getTime() + 11 * 60_000)));
+    expect(filas[0].conjunto.documentos[0].estado).toBe('rechazado');
+    opts.respuestaEnvio = undefined;
+    await dentro(() => s.iniciar(SEDE, owner, 'fe', new Date(t0.getTime() + 12 * 60_000)));
+    expect(filas[0].conjunto.documentos[0].numero).not.toBe(viejo);
   });
 
   it('consultar sin set iniciado no crea ni envía', async () => {
@@ -200,10 +243,20 @@ describe('HabilitacionFacturaService', () => {
   });
 
   it('al aceptar todo marca el emisor listo para producción, una sola vez, sin pasarlo a producción', async () => {
-    const { s, marcados } = armar();
+    const { s, marcados, opts, filas } = armar();
     await dentro(() => s.iniciar(SEDE, owner));
+    await dentro(() => s.consultar(SEDE, owner));
+    await dentro(() => s.iniciar(SEDE, owner)); // salen las notas
+    const local = await dentro(() => s.consultar(SEDE, owner));
+    // Todo aceptado por el conteo local, pero sin el veredicto del SET de la DIAN no se marca nada.
+    expect(local.aprobada).toBe(true);
+    expect(local.listoParaProduccion).toBe(false);
+    expect(local.mensaje).toMatch(/falta el veredicto del set/);
+    expect(marcados).toHaveLength(0);
+    // La DIAN da el veredicto del set: la última nota se acepta con «Set de prueba … Aceptado».
+    filas[0].conjunto.documentos[filas[0].conjunto.documentos.length - 1].estado = 'enviado';
+    opts.consulta = { ...OK, mensajes: ['Set de prueba con identificador TS se encuentra Aceptado.'] };
     const c = await dentro(() => s.consultar(SEDE, owner));
-    expect(c.aprobada).toBe(true);
     expect(c.listoParaProduccion).toBe(true);
     expect(c.mensaje).toMatch(/dueño/);
     await dentro(() => s.consultar(SEDE, owner));
@@ -270,9 +323,12 @@ describe('HabilitacionFacturaService', () => {
 
   describe('avanzarEnCurso (cron)', () => {
     it('avanza con su GET los sets en curso, sin enviar nada nuevo', async () => {
-      const { s, envios, marcados } = armar();
+      const { s, envios, marcados, opts } = armar();
       await dentro(() => s.iniciar(SEDE, owner));
+      await dentro(() => s.avanzarEnCurso(10)); // acepta las facturas; las notas no salen desde el cron
+      await dentro(() => s.iniciar(SEDE, owner)); // salen las notas
       envios.length = 0;
+      opts.consulta = { ...OK, mensajes: ['Set de prueba con identificador TS se encuentra Aceptado.'] };
       const c = await dentro(() => s.avanzarEnCurso(10));
       expect(c).toMatchObject({ revisados: 1, avanzados: 1, errores: 0 });
       expect(envios).toHaveLength(0);

@@ -318,7 +318,7 @@ export class HabilitacionNominaService {
       const destino = this.destino(r);
       if (trackId || destino === 'sent') {
         // En vuelo: con trackId se consulta por él; sin respuesta, por su CUNE. Nunca se reenvía.
-        set = this.poner(set, i, { ...enviado, estado: 'enviado', trackId, mensaje: null });
+        set = this.poner(set, i, { ...enviado, estado: 'enviado', trackId, mensaje: null, enviadoAt: ahora.toISOString() });
       } else if (destino === 'accepted') {
         set = this.poner(set, i, { ...enviado, estado: 'aceptado', mensaje: null });
       } else {
@@ -388,7 +388,8 @@ export class HabilitacionNominaService {
       if (destino === 'accepted') actual = this.poner(actual, i, { ...d, estado: 'aceptado', mensaje: null });
       else if (destino === 'rejected') actual = this.poner(actual, i, { ...d, estado: 'rechazado', mensaje: this.texto(r) });
       else if (
-        d.estado === 'enviando' &&
+        // Un envío sin trackId (timeout de SendTestSetAsync) nunca avanzaría por GetStatusZip: se trata como enviando.
+        (d.estado === 'enviando' || (d.estado === 'enviado' && !d.trackId)) &&
         r.codigo === 'NO_RECIBIDO_DIAN' &&
         (!d.enviadoAt || ahora.getTime() - new Date(d.enviadoAt).getTime() > UMBRAL_REENVIO_MS)
       ) {

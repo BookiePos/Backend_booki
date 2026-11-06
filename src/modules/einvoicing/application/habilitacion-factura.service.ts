@@ -30,6 +30,7 @@ import {
   PREFIJO_SET,
   RESOLUCION_SETP,
   UMBRAL_REENVIO_MS,
+  baseDeNota,
   mensajeAvance,
   mensajeSetAceptado,
   planSet,
@@ -53,6 +54,8 @@ import {
 
 /** Tope de una corrida: cabe holgado en la función de Vercel. */
 export const PRESUPUESTO_CORRIDA_FACTURA_MS = 45_000;
+/** Tipo de documento DIAN con el que sale cada documento del set. */
+const TIPO_ENVIO = { fv: 'invoice', pos: 'pos', nc: 'credit_note', nd: 'debit_note' } as const;
 const BLOQUEO_CORRIDA_MS = 60_000;
 const MAX_MENSAJE = 300;
 
@@ -242,7 +245,8 @@ export class HabilitacionFacturaService {
         }
       }
       // Set aceptado: el emisor queda «listo para producción» (idempotente). NO pasa solo a ambiente 1.
-      if (set.testSetId === base.testSetId && resumenSet(set).aprobada && !set.listoMarcadoAt) {
+      // Solo con el veredicto de la DIAN sobre el SET (`aceptadoPorDian`), no por el conteo local.
+      if (set.testSetId === base.testSetId && set.aceptadoPorDian === true && !set.listoMarcadoAt) {
         await this.emisores.marcarSetAprobado(base.emisorId, clase, ahora);
         set = { ...set, listoMarcadoAt: ahora.toISOString() };
       }
@@ -348,6 +352,13 @@ export class HabilitacionFacturaService {
       if (resumenSet(set).aprobada) break; // con el set aceptado no se gasta un envío más
       if (limite - Date.now() < PRESUPUESTO_RED_MIN_MS * 5) break;
 
+      // Una nota espera a que la DIAN acepte la factura que corrige (si la valida antes, la rechaza).
+      let referencia: { numero: string; cufe: string; fecha: string } | undefined;
+      if (d.tipo === 'nc' || d.tipo === 'nd') {
+        const fv = baseDeNota(set);
+        if (!fv) continue;
+        referencia = { numero: `${PREFIJO_SET[fv.tipo]}${fv.numero}`, cufe: fv.codigo!, fecha: fv.fecha! };
+      }
       const reloj = relojColombia(ahora);
       let armado: ReturnType<typeof armarDocumentoSet>;
       let xmlFirmado: string;
@@ -361,6 +372,7 @@ export class HabilitacionFacturaService {
           emisor: base.emisor,
           softwareId: base.softwareId,
           softwarePin: base.softwarePin,
+          referencia,
         });
         xmlFirmado = await this.firmante.firmar(armado.xml, base.emisorId);
       } catch (err) {
@@ -377,7 +389,7 @@ export class HabilitacionFacturaService {
       await persistir(set);
       const r = await this.llamar(limite, (p) =>
         base.transmisor.enviarSetPruebas({
-          tipo: d.tipo === 'pos' ? 'pos' : 'invoice',
+          tipo: TIPO_ENVIO[d.tipo],
           fullNumber: `${PREFIJO_SET[d.tipo]}${d.numero}`,
           cufe: armado.codigo,
           xmlFirmado,
@@ -396,7 +408,7 @@ export class HabilitacionFacturaService {
         set = { ...this.poner(set, i, { ...enviado, estado: 'set_aceptado', mensaje: aceptadoSet }), aceptadoPorDian: true };
       } else if (trackId || destino === 'sent') {
         // En vuelo: con trackId se consulta por él; sin respuesta, por su CUFE. Nunca se reenvía.
-        set = this.poner(set, i, { ...enviado, estado: 'enviado', trackId, mensaje: null });
+        set = this.poner(set, i, { ...enviado, estado: 'enviado', trackId, mensaje: null, enviadoAt: ahora.toISOString() });
       } else if (destino === 'accepted') {
         set = this.poner(set, i, { ...enviado, estado: 'aceptado', mensaje: null });
       } else {
@@ -432,10 +444,13 @@ export class HabilitacionFacturaService {
         actual = { ...this.poner(actual, i, { ...d, estado: 'set_aceptado', mensaje: aceptadoSet }), aceptadoPorDian: true };
       } else if (destino === 'accepted') {
         actual = this.poner(actual, i, { ...d, estado: 'aceptado', mensaje: null });
+        // Una aceptación que además dice «Set de prueba … Aceptado» es el veredicto del set.
+        if (mensajeSetAceptado(r.mensajes, actual.testSetId)) actual = { ...actual, aceptadoPorDian: true };
       } else if (destino === 'rejected') {
         actual = this.poner(actual, i, { ...d, estado: 'rechazado', mensaje: this.texto(r) });
       } else if (
-        d.estado === 'enviando' &&
+        // Un envío sin trackId (timeout de SendTestSetAsync) nunca avanzaría por GetStatusZip: se trata como enviando.
+        (d.estado === 'enviando' || (d.estado === 'enviado' && !d.trackId)) &&
         r.codigo === 'NO_RECIBIDO_DIAN' &&
         (!d.enviadoAt || ahora.getTime() - new Date(d.enviadoAt).getTime() > UMBRAL_REENVIO_MS)
       ) {
@@ -504,12 +519,14 @@ export class HabilitacionFacturaService {
       clase: set.clase,
       estado: resumen.aprobada ? 'aprobada' : 'en_curso',
       aprobada: resumen.aprobada,
-      listoParaProduccion: resumen.aprobada && !!set.listoMarcadoAt,
+      listoParaProduccion: set.aceptadoPorDian === true && !!set.listoMarcadoAt,
       mensaje:
         mensajeAvance(set) +
-        (resumen.aprobada && set.clase === 'fe'
+        (set.aceptadoPorDian === true && set.clase === 'fe'
           ? ' El emisor quedó listo para producción; el paso al ambiente de producción lo da el dueño.'
-          : ''),
+          : resumen.aprobada
+            ? ' Todos los documentos están aceptados, pero falta el veredicto del set de la DIAN: confirma en el portal que el software figura como habilitado antes de pasar a producción.'
+            : ''),
       testSetId: set.testSetId,
       resumen,
       documentos: set.documentos.map((d) => ({

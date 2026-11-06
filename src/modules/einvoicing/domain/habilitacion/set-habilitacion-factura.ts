@@ -32,12 +32,12 @@ export type EstadoDocSet = 'pendiente' | 'enviando' | 'enviado' | 'aceptado' | '
  * Documentos de FACTURA que deben quedar ACEPTADOS.
  * - `fv`: 8 facturas de venta. Cifra de AlíaCorp (`SET_PRUEBAS_EXIGIDO`), que la
  *   DIAN mostró en el portal de habilitación. A confirmar en el portal del piloto.
- * - `nc` / `nd`: el portal suele pedir 1 nota crédito y 1 nota débito (AlíaCorp: 1 y 1), pero los armadores de
- *   notas (`nota-ubl.ts`, PR #123) todavía no están en main, así que quedan en 0. Al aterrizar, se suben aquí y se
- *   agrega su armador en `ARMADORES` del servicio. Mientras tanto la DIAN suele dar el set por aceptado con las 8
- *   facturas («se encuentra Aceptado», S110) y `aceptadoPorDian` lo cubre.
+ * - `nc` / `nd`: 1 nota crédito y 1 nota débito (cifra de AlíaCorp). Cada una referencia una factura ACEPTADA
+ *   del mismo set y solo sale cuando esa factura ya fue aceptada (`baseDeNota`). Si el portal pide otras cifras,
+ *   se ajustan aquí. La DIAN suele dar el set por aceptado antes de evaluar las notas («se encuentra Aceptado»,
+ *   S110); `aceptadoPorDian` lo cubre.
  */
-export const SET_FACTURA_EXIGIDO: Readonly<Record<'fv' | 'nc' | 'nd', number>> = { fv: 8, nc: 0, nd: 0 };
+export const SET_FACTURA_EXIGIDO: Readonly<Record<'fv' | 'nc' | 'nd', number>> = { fv: 8, nc: 1, nd: 1 };
 
 /**
  * Documentos del POS que exige su set. A CONFIRMAR EN HABILITACIÓN: ni el anexo DE v1.0 ni la caja de herramientas
