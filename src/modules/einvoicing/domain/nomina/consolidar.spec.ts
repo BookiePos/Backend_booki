@@ -356,6 +356,8 @@ describe('consolidarNominaMes: retiro en el mes (decisión 4 del dueño)', () =>
     fechaRetiro: '2026-10-20',
     diasLiquidados: 980,
     diasPrima: 110,
+    diasVacacionesPendientes: 40.83,
+    salarioBase: 1_500_000,
     cesantias: 4_083_333,
     interesesCesantias: 1_333_889,
     prima: 458_333,
@@ -376,7 +378,8 @@ describe('consolidarNominaMes: retiro en el mes (decisión 4 del dueño)', () =>
 
   it('lleva cesantías, intereses, prima, vacaciones compensadas e indemnización, y pasa el XSD', async () => {
     const l = liq();
-    const { modelo } = ok(retiro(l));
+    const { modelo, advertencias } = ok(retiro(l));
+    expect(advertencias.join()).toMatch(/401-3 ET/);
     expect(modelo.periodo).toMatchObject({
       fechaRetiro: '2026-10-20',
       fechaLiquidacionFin: '2026-10-20',
@@ -405,9 +408,29 @@ describe('consolidarNominaMes: retiro en el mes (decisión 4 del dueño)', () =>
     expect(bloqueos(retiro(liq({ diasPrima: undefined }))).join()).toMatch(/días del semestre/);
   });
 
-  it('vacaciones de pocos días reportan al menos 1 día', () => {
-    const { modelo } = ok(retiro(liq({ diasLiquidados: 10, vacaciones: 41_667 })));
-    expect(modelo.devengados.vacacionesCompensadas).toEqual([{ dias: 1, pago: 4_166_700 }]);
+  it('vacaciones: los días pendientes (causados menos disfrutados), al menos 1 si hay pago', () => {
+    const { modelo } = ok(retiro(liq({ diasVacacionesPendientes: 0.42, vacaciones: 21_000 })));
+    expect(modelo.devengados.vacacionesCompensadas).toEqual([{ dias: 1, pago: 2_100_000 }]);
+    const sin = ok(retiro(liq({ diasVacacionesPendientes: 0, vacaciones: 0 })));
+    expect(sin.modelo.devengados.vacacionesCompensadas).toEqual([]);
+    expect(bloqueos(retiro(liq({ diasVacacionesPendientes: undefined }))).join()).toMatch(/vacaciones pendientes/);
+  });
+
+  it('sin indemnización no avisa de la 401-3; salario alto avisa de la 206-4 (con UVT)', () => {
+    const r = ok(retiro(liq({ indemnizacion: 0 })));
+    expect(r.advertencias.join()).not.toMatch(/401-3/);
+    const alto = ok({ ...retiro(liq({ indemnizacion: 0, salarioBase: 30_000_000 }), { salary: 30_000_000 }), uvt: 52_374 });
+    expect(alto.advertencias.join()).toMatch(/206 num. 4 ET/);
+    expect(ok({ ...retiro(liq({ indemnizacion: 0 })), uvt: 52_374 }).advertencias.join()).not.toMatch(/206/);
+  });
+
+  it('corrida cerrada antes del retiro con más días que los trabajados: bloquea', () => {
+    const e = entrada({
+      empleado: empleado({ terminationDate: '2026-10-20' }),
+      slips: [corrida({ dias: 30, pago: { medio: '10', fecha: '2026-10-31' } })],
+      liquidacion: liq(),
+    });
+    expect(bloqueos(e).join()).toMatch(/le pagan 30 días y el retiro fue el 2026-10-20 \(20 días\)/);
   });
 });
 

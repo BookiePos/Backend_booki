@@ -108,6 +108,15 @@ export interface PreviewResult {
   breakdown: ReturnType<typeof computeSlip>;
 }
 
+/** Una liquidación se guarda cerca del retiro: hasta este margen hacia el futuro (preaviso corto). */
+const MARGEN_RETIRO_FUTURO_DIAS = 30;
+
+function sumarDiasIso(fecha: string, dias: number): string {
+  const d = new Date(`${fecha}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + dias);
+  return d.toISOString().slice(0, 10);
+}
+
 /**
  * Empleados que entran en la corrida del periodo: los activos con salario y
  * los retirados cuyo retiro cae en el mes. Antes los retirados quedaban
@@ -118,7 +127,8 @@ export function filtroNominables(period: string): Record<string, unknown> {
   return {
     salary: { $gt: 0 },
     $or: [
-      { status: 'activo' },
+      // Un activo con retiro anterior al periodo ya no se nomina (quedó activo por error).
+      { status: 'activo', terminationDate: { $not: { $lt: `${period}-01` } } },
       { status: 'retirado', terminationDate: { $gte: `${period}-01`, $lte: fechaCorteDePeriodo(period) } },
     ],
   };
@@ -1013,6 +1023,11 @@ export class PayrollService {
         'La fecha de inicio no puede ser posterior a la de retiro.',
       );
     }
+    if (dto.inicioCesantias && (dto.inicioCesantias < fechaInicio || dto.inicioCesantias > dto.fechaFin)) {
+      throw new BadRequestException(
+        'El inicio de las cesantías debe estar entre la fecha de ingreso y la de retiro.',
+      );
+    }
 
     const input: LiquidacionInput = {
       salarioBase,
@@ -1023,6 +1038,8 @@ export class PayrollService {
       motivo: dto.motivo as MotivoRetiro,
       salariosPendientes: dto.salariosPendientes,
       diasFaltantesContrato: dto.diasFaltantesContrato,
+      inicioCesantias: dto.inicioCesantias,
+      vacacionesDisfrutadasDias: dto.vacacionesDisfrutadasDias,
     };
     return {
       input: {
@@ -1102,8 +1119,14 @@ export class PayrollService {
     dto: LiquidacionDto,
     user: SedeScopeUser & { email?: string },
   ): Promise<PayrollLiquidacionDocument> {
-    if (!dto.employeeId) {
-      throw new BadRequestException('Para guardar la liquidación elige el empleado.');
+    if (!dto.employeeId || !Types.ObjectId.isValid(dto.employeeId)) {
+      throw new BadRequestException('Para guardar la liquidación elige un empleado válido.');
+    }
+    const limite = sumarDiasIso(fechaColombia(new Date()), MARGEN_RETIRO_FUTURO_DIAS);
+    if (dto.fechaFin > limite) {
+      throw new BadRequestException(
+        `La fecha de retiro (${dto.fechaFin}) está a más de ${MARGEN_RETIRO_FUTURO_DIAS} días: guarda la liquidación cerca del retiro.`,
+      );
     }
     if ((dto.salariosPendientes ?? 0) > 0) {
       throw new BadRequestException(
@@ -1128,11 +1151,19 @@ export class PayrollService {
     });
   }
 
-  listarLiquidaciones(employeeId: string | undefined, user?: SedeScopeUser): Promise<PayrollLiquidacionDocument[]> {
+  /** Lista por la sede ACTUAL del empleado (igual que aprobar y anular), no por la que tenía al guardarla. */
+  async listarLiquidaciones(employeeId: string | undefined, user?: SedeScopeUser): Promise<PayrollLiquidacionDocument[]> {
     const filtro: Record<string, unknown> = {};
     if (employeeId) filtro.employeeId = employeeId;
     const sedes = user ? allowedSedeIds(user) : null;
-    if (sedes) filtro.sedeId = { $in: sedes.map((id) => new Types.ObjectId(id)) };
+    if (sedes) {
+      const visibles = await this.employees
+        .find({ sedeId: { $in: sedes.map((id) => new Types.ObjectId(id)) } })
+        .select('_id')
+        .exec();
+      const ids = visibles.map((e) => String(e._id));
+      filtro.employeeId = employeeId ? (ids.includes(employeeId) ? employeeId : { $in: [] }) : { $in: ids };
+    }
     return this.liquidaciones.find(filtro).sort({ createdAt: -1 }).limit(100).exec();
   }
 
@@ -1143,11 +1174,22 @@ export class PayrollService {
     return liq;
   }
 
+  /** Deja el retiro en el expediente: fecha y estado `retirado` (idempotente). */
+  private async marcarRetiro(liq: { employeeId: string; fechaRetiro: string }): Promise<void> {
+    await this.employees
+      .updateOne(
+        { _id: new Types.ObjectId(liq.employeeId) },
+        { $set: { terminationDate: liq.fechaRetiro, status: 'retirado' } },
+      )
+      .exec();
+  }
+
   /**
    * Aprueba un borrador con el medio y la fecha real del pago. Queda fija: es
    * la que la nómina electrónica del mes del retiro reporta (cesantías,
-   * intereses, prima, vacaciones compensadas e indemnización). Deja la fecha
-   * de retiro en el expediente para que el pre-vuelo la encuentre.
+   * intereses, prima, vacaciones compensadas e indemnización). Deja el retiro
+   * en el expediente. Atómico: solo pasa de `borrador` a `aprobada` una vez;
+   * si ya estaba aprobada, solo reaplica el retiro (idempotente).
    */
   async aprobarLiquidacion(
     id: string,
@@ -1155,41 +1197,64 @@ export class PayrollService {
     user?: SedeScopeUser & { email?: string },
   ): Promise<PayrollLiquidacionDocument> {
     const liq = await this.liquidacionEnAlcance(id, user);
+    if (liq.estado === 'aprobada') {
+      await this.marcarRetiro(liq);
+      return liq;
+    }
     if (liq.estado !== 'borrador') {
       throw new BadRequestException(`La liquidación está ${liq.estado}; solo se aprueba un borrador.`);
     }
+    if (liq.breakdown?.vacacionesDisfrutadasDias === undefined) {
+      throw new BadRequestException(
+        'Falta cuántos días de vacaciones ya disfrutó el empleado: vuelve a guardar la liquidación con ese dato (0 si no disfrutó ninguno).',
+      );
+    }
     const motivo = motivoPagoInvalido(liq.fechaRetiro.slice(0, 7), pago.medioPago, pago.fechaPago, fechaColombia(new Date()));
     if (motivo) throw new BadRequestException(motivo);
-    liq.estado = 'aprobada';
-    liq.pago = { medio: pago.medioPago, fecha: pago.fechaPago };
-    liq.aprobadaPor = user?.email;
-    liq.aprobadaEn = new Date();
+    let aprobada: PayrollLiquidacionDocument | null;
     try {
-      await liq.save();
+      aprobada = await this.liquidaciones
+        .findOneAndUpdate(
+          { _id: liq._id, estado: 'borrador' },
+          {
+            $set: {
+              estado: 'aprobada',
+              pago: { medio: pago.medioPago, fecha: pago.fechaPago },
+              aprobadaPor: user?.email,
+              aprobadaEn: new Date(),
+            },
+          },
+          { new: true },
+        )
+        .exec();
     } catch (err) {
       if ((err as { code?: number }).code === 11000) {
         throw new ConflictException('El empleado ya tiene una liquidación aprobada. Anúlala antes de aprobar otra.');
       }
       throw err;
     }
-    await this.employees
-      .updateOne({ _id: new Types.ObjectId(liq.employeeId) }, { $set: { terminationDate: liq.fechaRetiro } })
-      .exec();
-    return liq;
+    if (!aprobada) {
+      throw new ConflictException('La liquidación cambió mientras la aprobabas (otra persona la aprobó o la anuló). Vuelve a cargarla.');
+    }
+    await this.marcarRetiro(aprobada);
+    return aprobada;
   }
 
   /**
-   * Anula una liquidación (borrador o aprobada). Si ya salió en una nómina
-   * electrónica aceptada, el documento se corrige con la nota de ajuste.
+   * Anula una liquidación (borrador o aprobada), atómico. Si ya salió en una
+   * nómina electrónica aceptada, el documento se corrige con la nota de ajuste.
    */
   async anularLiquidacion(id: string, user?: SedeScopeUser & { email?: string }): Promise<PayrollLiquidacionDocument> {
     const liq = await this.liquidacionEnAlcance(id, user);
-    if (liq.estado === 'anulada') throw new BadRequestException('La liquidación ya está anulada.');
-    liq.estado = 'anulada';
-    liq.anuladaPor = user?.email;
-    liq.anuladaEn = new Date();
-    await liq.save();
-    return liq;
+    const anulada = await this.liquidaciones
+      .findOneAndUpdate(
+        { _id: liq._id, estado: { $ne: 'anulada' } },
+        { $set: { estado: 'anulada', anuladaPor: user?.email, anuladaEn: new Date() } },
+        { new: true },
+      )
+      .exec();
+    if (!anulada) throw new ConflictException('La liquidación ya está anulada.');
+    return anulada;
   }
 
   /**

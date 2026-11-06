@@ -125,6 +125,10 @@ export interface LiquidacionConsolidar {
   diasLiquidados: number;
   /** Días del semestre que paga la prima. */
   diasPrima?: number;
+  /** Días hábiles de vacaciones pendientes (causados menos disfrutados) que paga la liquidación. */
+  diasVacacionesPendientes?: number;
+  /** Salario mensual con que se liquidó (para el aviso de retención de cesantías, art. 206-4 ET). */
+  salarioBase?: number;
   cesantias: number;
   interesesCesantias: number;
   prima: number;
@@ -145,6 +149,8 @@ export interface EntradaConsolidar {
   smmlv?: number;
   /** Liquidación de retiro aprobada cuyo retiro cae en el mes. */
   liquidacion?: LiquidacionConsolidar;
+  /** UVT vigente (pesos): para el aviso de retención sobre cesantías. */
+  uvt?: number;
 }
 
 /** Lo que se dejó de reportar por neto negativo (pesos): la parte de cada colilla que `crearArrastres` lleva al mes siguiente. */
@@ -446,13 +452,26 @@ function clasificarDeducciones(
 
 /** Tasa de los intereses de cesantías (Ley 52 de 1975): `Cesantias@Porcentaje`. */
 const INTERESES_CESANTIAS_PCT = 12;
+/**
+ * Salario mensual promedio por encima del cual las cesantías y sus intereses
+ * dejan de ser exentos del todo (art. 206 num. 4 ET), en UVT.
+ * A CONFIRMAR con el contador: tope vigente y si se mide con el promedio de los últimos 6 meses.
+ */
+const TOPE_CESANTIAS_EXENTAS_UVT = 350;
 
 /**
  * Nodos del retiro (anexo §3): Cesantias (pago, 12.00, intereses), Primas
  * (días del semestre), VacacionesCompensadas (días = días liquidados × 15 /
  * 360) e Indemnizacion. El último sueldo NO va aquí: va en la colilla del mes.
  */
-function agregarLiquidacion(d: DevengadosNe, liq: LiquidacionConsolidar, quien: string, bloqueos: string[]): void {
+function agregarLiquidacion(
+  d: DevengadosNe,
+  liq: LiquidacionConsolidar,
+  quien: string,
+  bloqueos: string[],
+  advertencias: string[],
+  uvt: number | undefined,
+): void {
   const importes: [string, number][] = [
     ['cesantías', liq.cesantias],
     ['intereses de cesantías', liq.interesesCesantias],
@@ -487,11 +506,30 @@ function agregarLiquidacion(d: DevengadosNe, liq: LiquidacionConsolidar, quien: 
     d.primas = { dias: liq.diasPrima!, pago: centavosDeCop(liq.prima) };
   }
   if (liq.vacaciones > 0) {
-    // Días hábiles causados: 15 por año de servicio (art. 186 CST), proporcionales; al menos 1 si hay pago.
-    const dias = Math.max(1, Math.round((liq.diasLiquidados * 15) / 360));
-    d.vacacionesCompensadas = [{ dias, pago: centavosDeCop(liq.vacaciones) }];
+    // Los días que se pagan: causados (15 por año, art. 186 CST) menos los ya disfrutados (art. 189).
+    // Con pago, al menos 1 día. Las compensadas no son base de salud ni pensión (art. 192 CST):
+    // a confirmar con concepto UGPP vigente.
+    const pendientes = liq.diasVacacionesPendientes;
+    if (typeof pendientes !== 'number' || !Number.isFinite(pendientes) || pendientes < 0) {
+      bloqueos.push(
+        `${quien}: la liquidación de retiro no trae los días de vacaciones pendientes (causados menos disfrutados). Anúlala y guárdala de nuevo.`,
+      );
+      return;
+    }
+    d.vacacionesCompensadas = [{ dias: Math.max(1, Math.round(pendientes)), pago: centavosDeCop(liq.vacaciones) }];
   }
-  if (liq.indemnizacion > 0) d.indemnizacion = centavosDeCop(liq.indemnizacion);
+  if (liq.indemnizacion > 0) {
+    d.indemnizacion = centavosDeCop(liq.indemnizacion);
+    advertencias.push(
+      `${quien}: la indemnización (${liq.indemnizacion}) puede llevar retención en la fuente (art. 401-3 ET) y BookiPos no la calcula. Confírmalo con el contador antes de emitir.`,
+    );
+  }
+  const salario = liq.salarioBase ?? 0;
+  if (liq.cesantias + liq.interesesCesantias > 0 && enteroPositivo(uvt) && salario > TOPE_CESANTIAS_EXENTAS_UVT * uvt) {
+    advertencias.push(
+      `${quien}: con salario de ${salario} (más de ${TOPE_CESANTIAS_EXENTAS_UVT} UVT) las cesantías e intereses no son exentos del todo (art. 206 num. 4 ET) y BookiPos no calcula esa retención. Confírmalo con el contador.`,
+    );
+  }
 }
 
 // ── Consolidación ───────────────────────────────────────────────────────────
@@ -652,7 +690,21 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     comisiones: comisiones > 0 ? [centavosDeCop(comisiones)] : [],
     pagosTerceros: [],
   };
-  if (liq) agregarLiquidacion(devengados, liq, quien, bloqueos);
+  if (liq) {
+    agregarLiquidacion(devengados, liq, quien, bloqueos, advertencias, entrada.uvt);
+    // La colilla del mes no puede pagar días después del retiro: pasa si la corrida se cerró antes de aprobar
+    // la liquidación (con el mes entero). No se reporta; la corrida cerrada no se recalcula, así que se corrige
+    // con el contador (pago de más) y una nueva corrida o ajuste.
+    if (e.hireDate && YYYYMMDD.test(e.hireDate)) {
+      const desde = e.hireDate > primero ? e.hireDate : primero;
+      const tope = liq.fechaRetiro >= desde ? tiempoLaborado360(desde, liq.fechaRetiro) : 0;
+      if (dias > tope) {
+        bloqueos.push(
+          `${quien}: las corridas de ${periodo} le pagan ${dias} días y el retiro fue el ${liq.fechaRetiro} (${tope} días). La corrida se cerró antes del retiro: no se puede reportar así. Revísalo con el contador.`,
+        );
+      }
+    }
+  }
 
   // ── Deducciones ──
   const ibc = sum((b) => b.ibc);
@@ -849,7 +901,11 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
   return { ok: true, modelo, advertencias, recorte };
 }
 
-/** Suma en centavos de los valores que el armador escribiría; sirve para verificar el cuadre con las colillas. */
+/**
+ * Suma en centavos de los valores que el armador escribiría; sirve para verificar el cuadre con las colillas.
+ * `salariosPendientes` de la liquidación NO entra: el consolidador la bloquea, porque el último sueldo va en la
+ * colilla del mes (Basico, con salud y pensión); sumarla aquí lo reportaría dos veces.
+ */
 export function totalesDeModelo(m: DocumentoNe): { devengados: Centavos; deducciones: Centavos } {
   const d = m.devengados;
   const dev =

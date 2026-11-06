@@ -89,6 +89,8 @@ interface ContextoPeriodo {
   corridas: LeanRun[];
   /** SMMLV vigente al cierre del mes (core-params), para el mínimo del salario integral. */
   smmlv: number;
+  /** UVT vigente al cierre del mes (core-params), para el aviso de retención de cesantías. */
+  uvt: number;
 }
 
 interface LeanRun {
@@ -393,7 +395,8 @@ export class NominaPeriodoService {
     }
     const finMes = new Date(Date.UTC(Number(periodo.slice(0, 4)), Number(periodo.slice(5, 7)), 0)).toISOString().slice(0, 10);
     const smmlv = await this.params.number('nomina.salario_minimo', DEFAULT_PAYROLL_SETTINGS.smmlv, { date: finMes });
-    return { periodo, sedeId, emisor, empleador: empleador.empleador, sedes, sedesEmisor, veTodas, empleados, corridas, smmlv };
+    const uvt = await this.params.number('fiscal.uvt', DEFAULT_PAYROLL_SETTINGS.uvt, { date: finMes });
+    return { periodo, sedeId, emisor, empleador: empleador.empleador, sedes, sedesEmisor, veTodas, empleados, corridas, smmlv, uvt };
   }
 
   /** Contexto para ajustar un documento ya emitido: el de su mes. */
@@ -496,6 +499,7 @@ export class NominaPeriodoService {
       slips,
       deducciones,
       smmlv: ctx.smmlv,
+      uvt: ctx.uvt,
       ...(liq
         ? {
             liquidacion: {
@@ -503,6 +507,8 @@ export class NominaPeriodoService {
               fechaRetiro: liq.fechaRetiro,
               diasLiquidados: liq.breakdown.diasLiquidados,
               diasPrima: liq.breakdown.diasPrima,
+              diasVacacionesPendientes: liq.breakdown.diasVacacionesPendientes,
+              salarioBase: liq.salarioBase,
               cesantias: liq.breakdown.cesantias,
               interesesCesantias: liq.breakdown.interesesCesantias,
               prima: liq.breakdown.prima,
