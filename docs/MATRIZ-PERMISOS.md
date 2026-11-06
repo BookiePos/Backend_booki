@@ -123,6 +123,10 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `POST /einvoicing/nomina/periodos/:periodo/emitir` | `payroll.einvoice` | ✓ | ✓ | · | · | · |
 | `GET /einvoicing/nomina` | `payroll.einvoice` | ✓ | ✓ | · | · | · |
 | `POST /einvoicing/nomina/:id/ajuste` | `payroll.einvoice` | ✓ | ✓ | · | · | · |
+| `POST /einvoicing/sedes/:sedeId/emisor/factura/habilitacion` | `einvoicing.certificate` | ✓ | · | · | · | · |
+| `GET /einvoicing/sedes/:sedeId/emisor/factura/habilitacion` | `einvoicing.certificate` | ✓ | · | · | · | · |
+| `POST /einvoicing/sedes/:sedeId/emisor/pos/habilitacion` | `einvoicing.certificate` | ✓ | · | · | · | · |
+| `GET /einvoicing/sedes/:sedeId/emisor/pos/habilitacion` | `einvoicing.certificate` | ✓ | · | · | · | · |
 | `POST /einvoicing/sedes/:sedeId/emisor/nomina/habilitacion` | `einvoicing.certificate` | ✓ | · | · | · | · |
 | `GET /einvoicing/sedes/:sedeId/emisor/nomina/habilitacion` | `einvoicing.certificate` | ✓ | · | · | · | · |
 | `POST /einvoicing/nomina/:id/transmitir` | `payroll.einvoice` | ✓ | ✓ | · | · | · |
