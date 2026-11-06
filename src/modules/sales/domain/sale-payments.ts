@@ -1,4 +1,4 @@
-import { cop } from '../../finance/domain/money.util';
+import { clampNonNegative, cop } from '../../finance/domain/money.util';
 import {
   CARD_FRANCHISES,
   CARD_TYPES,
@@ -264,6 +264,18 @@ export function cashAmountOf(sale: SalePaymentsView): number {
   return salePartsOf(sale)
     .filter((p) => p.method === 'cash')
     .reduce((a, p) => a + p.amount, 0);
+}
+
+/**
+ * Propina que de verdad entró con el cobro. La propina no se fía: en una venta
+ * fiada entera el asiento no la registra (`postSale`, ítem 1.10), así que
+ * tampoco hay propina que devolver. En un cobro mixto sí entró, con la parte
+ * pagada.
+ */
+export function propinaCobrada(sale: SalePaymentsView): number {
+  const partes = salePartsOf(sale);
+  if (partes.length > 0 && partes.every((p) => p.method === 'credit')) return 0;
+  return clampNonNegative(cop(sale.tip ?? 0));
 }
 
 /** ¿Alguna parte de la venta fue fiada? */

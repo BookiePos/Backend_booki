@@ -43,6 +43,7 @@ import {
 import { SaleReturnsService } from './application/sale-returns.service';
 import { OrdersService } from './application/orders.service';
 import { DocumentoFiscalVentaService } from './application/documento-fiscal-venta.service';
+import { NotaFiscalVentaService } from './application/nota-fiscal-venta.service';
 import { PackagingService } from './application/packaging.service';
 import { SalesController } from './infrastructure/sales.controller';
 import { PlatformOrdersController } from './infrastructure/platform-orders.controller';
@@ -118,6 +119,8 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
     OfflineSalesService,
     PlatformOrdersService,
     DocumentoFiscalVentaService,
+    // Fase 6B: la nota de la devolución y de la anulación, por el mismo puerto.
+    NotaFiscalVentaService,
     PlatformSettlementsService,
   ],
   exports: [SalesService, OrdersService, SaleReturnsService],

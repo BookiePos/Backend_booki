@@ -3,7 +3,16 @@ import {
   ConflictException,
   Injectable,
   Logger,
+  Optional,
 } from '@nestjs/common';
+import {
+  FinanceReceivable,
+  FinanceReceivableDocument,
+} from '../../finance/infrastructure/schemas/finance-receivable.schema';
+import { NotaFiscalVentaService } from './nota-fiscal-venta.service';
+import type { NotaFiscalOperacion } from './emision-documento-fiscal.puerto';
+import { origenNotaDevolucion } from '../domain/documento-fiscal';
+import { hasCreditPart, propinaCobrada } from '../domain/sale-payments';
 import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -23,10 +32,11 @@ import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import {
   buildReturnPlan,
   cogsForReturn,
+  propinaDeDevolucion,
   prorateLots,
   ReturnPlan,
 } from '../domain/sale-return';
-import { sumBy } from '../../finance/domain/money.util';
+import { clampNonNegative, cop, sumBy } from '../../finance/domain/money.util';
 import type { SaleTaxKind } from '../../core-tax/domain/sale-tax';
 
 /**
@@ -41,6 +51,15 @@ import type { SaleTaxKind } from '../../core-tax/domain/sale-tax';
  * merma con `adjust`, la plata con un movimiento de caja y el libro con el
  * mismo servicio de asientos. Aquí solo se decide QUÉ y CUÁNTO.
  */
+/** Motivo de la devolución en llano, para la descripción de la nota. */
+const MOTIVO_DEVOLUCION: Record<string, string> = {
+  defectuoso: 'producto defectuoso',
+  equivocado: 'producto equivocado',
+  sobrante: 'compró de más',
+  garantia: 'garantía',
+  otro: 'otro motivo',
+};
+
 @Injectable()
 export class SaleReturnsService {
   private readonly logger = new Logger('SaleReturns');
@@ -53,6 +72,16 @@ export class SaleReturnsService {
     private readonly catalog: CatalogService,
     private readonly caja: CajaService,
     private readonly ledgerPosting: LedgerPostingService,
+    /**
+     * Cuentas por cobrar: la devolución de una venta fiada baja la cartera
+     * (Fase 6B). Opcionales y al final para no mover las pruebas existentes.
+     */
+    @Optional()
+    @InjectModel(FinanceReceivable.name)
+    private readonly receivables?: Model<FinanceReceivableDocument>,
+    /** Nota crédito / de ajuste de la devolución (Fase 6B). */
+    @Optional()
+    private readonly notas?: NotaFiscalVentaService,
   ) {}
 
   /** Devoluciones ya registradas de una venta, de la más reciente atrás. */
@@ -82,6 +111,9 @@ export class SaleReturnsService {
     money: Map<string, { refund: number; refundTax: number }>;
     /** Lo que ya volvió de cada ítem de inventario (ítem 1.16). */
     components: Map<string, number>;
+    /** Reembolso de productos y propina ya devueltos (decisión 4). */
+    refundTotal: number;
+    tipRefund: number;
   }> {
     const previas = await this.model.find({ saleId }).exec();
     const qty = new Map<string, number>();
@@ -89,7 +121,11 @@ export class SaleReturnsService {
     // que falte de lo pagado (ítem 1.11), sin pesos colgando.
     const money = new Map<string, { refund: number; refundTax: number }>();
     const components = new Map<string, number>();
+    let refundTotal = 0;
+    let tipRefund = 0;
     for (const p of previas) {
+      refundTotal += p.refundTotal ?? 0;
+      tipRefund += p.tipRefund ?? 0;
       for (const c of p.components ?? []) {
         const key = c.productId.toString();
         components.set(key, (components.get(key) ?? 0) + c.qty);
@@ -104,7 +140,7 @@ export class SaleReturnsService {
         });
       }
     }
-    return { qty, money, components };
+    return { qty, money, components, refundTotal, tipRefund };
   }
 
   /**
@@ -202,6 +238,25 @@ export class SaleReturnsService {
       );
     }
 
+    // Reintento de la MISMA devolución (llave del cliente): se devuelve la que
+    // ya quedó, con su nota, en vez de devolver otra vez.
+    const llave = dto.idempotencyKey?.trim() || undefined;
+    if (llave) {
+      const previa = await this.model.findOne({ saleId: sale._id, idempotencyKey: llave }).exec();
+      if (previa) return this.reanudar(previa, sale, user);
+    }
+
+    // Fiado a un EMPLEADO (consumo descontado por nómina): no hay cartera que
+    // bajar y la deducción no admite rebaja parcial. Devolver plata dejaría al
+    // empleado pagando lo que devolvió; se rechaza (fallar cerrado).
+    const fiada = hasCreditPart(sale);
+    const cxc = fiada ? await this.cuentaPorCobrar(sale) : null;
+    if (fiada && this.receivables && !cxc) {
+      throw new ConflictException(
+        'La venta se fió a un empleado (descuento por nómina): no admite devoluciones parciales. Anula la venta completa.',
+      );
+    }
+
     const yaDevuelto = await this.alreadyReturned(sale._id);
     let plan: ReturnPlan;
     try {
@@ -223,6 +278,17 @@ export class SaleReturnsService {
     }
 
     const units = await this.unitsToReturn(sale, plan, yaDevuelto.components);
+
+    // La propina vuelve en proporción a lo devuelto (decisión 4), con el
+    // mismo redondeo acumulado que el reembolso: la última devolución la
+    // salda entera. Va aparte de `refundTotal`, que es solo de productos.
+    const tipRefund = propinaDeDevolucion({
+      propina: propinaCobrada(sale),
+      vendido: sumBy(sale.lines, (l) => l.taxBase + l.taxAmount),
+      devueltoAntes: yaDevuelto.refundTotal,
+      devueltoAhora: plan.refundTotal,
+      propinaAntes: yaDevuelto.tipRefund,
+    });
 
     // El costo de venta que deshace cada ítem que vuelve, con redondeo
     // acumulado sobre lo ya devuelto (ítem 1.16). Si se va a merma NO se
@@ -257,7 +323,10 @@ export class SaleReturnsService {
      * cuadrar: eso se ve y se arregla con un ajuste. Es el mismo criterio con
      * el que producción reserva el cierre antes de consumir.
      */
-    const registro = await this.model.create({
+    let registro: SaleReturnDocument;
+    try {
+      registro = await this.model.create({
+      idempotencyKey: llave,
       saleId: sale._id,
       saleNumber: sale.saleNumber,
       sedeId: new Types.ObjectId(sedeId),
@@ -279,10 +348,19 @@ export class SaleReturnsService {
       refundMethod: dto.refundMethod,
       refundTotal: plan.refundTotal,
       refundTax: plan.refundTax,
+      tipRefund,
       note: dto.note?.trim() || undefined,
       userId: user.userId,
       userEmail: user.email,
     });
+    } catch (err) {
+      // Dos reintentos simultáneos con la misma llave: gana uno y el otro lo devuelve.
+      if (llave && (err as { code?: number })?.code === 11000) {
+        const ganadora = await this.model.findOne({ saleId: sale._id, idempotencyKey: llave }).exec();
+        if (ganadora) return this.reanudar(ganadora, sale, user);
+      }
+      throw err;
+    }
 
     // Una anulación pudo tomar la venta entre la revisión de arriba y el
     // registro: esa anulación revierte TODO el stock y el ingreso, y esta
@@ -308,14 +386,47 @@ export class SaleReturnsService {
       vendido.set(key, (vendido.get(key) ?? 0) + l.qty);
     }
     const despues = await this.alreadyReturned(sale._id);
-    const excede = [...despues.qty].some(
-      ([productId, qty]) => qty > (vendido.get(productId) ?? 0),
-    );
+    // La propina también: dos devoluciones a la vez la calculan sobre el mismo
+    // «ya devuelto» y, entre las dos, no pueden pasar de la cobrada.
+    const excede =
+      [...despues.qty].some(([productId, qty]) => qty > (vendido.get(productId) ?? 0)) ||
+      despues.tipRefund > propinaCobrada(sale);
     if (excede) {
       await this.model.deleteOne({ _id: registro._id }).exec();
       throw new ConflictException(
         'Otra devolución de esta venta se registró al mismo tiempo. Revisa lo ya devuelto e inténtalo de nuevo.',
       );
+    }
+
+    /*
+     * Fiado y nota fiscal ANTES de mover stock, caja o libro (Fase 6B). Los dos
+     * pueden fallar (abono concurrente a la CxC; sin PIN, sin resolución o por
+     * encima del tope de la nota) y, si fallan, la devolución se retira entera:
+     * no queda devuelta en el inventario ni en la plata sin su documento.
+     */
+    let abonoCartera = 0;
+    if (cxc && plan.refundTotal > 0) {
+      try {
+        abonoCartera = await this.abonarCartera(sale, registro, plan.refundTotal, user);
+      } catch (err) {
+        await this.model.deleteOne({ _id: registro._id }).exec();
+        throw err;
+      }
+    }
+    let nota: NotaFiscalOperacion | undefined;
+    if (this.notas) {
+      try {
+        nota = await this.notas.emitir(sale, this.solicitudNota(registro, sale), user);
+      } catch (err) {
+        if (abonoCartera > 0) await this.revertirAbono(sale, registro, abonoCartera);
+        await this.model.deleteOne({ _id: registro._id }).exec();
+        throw err;
+      }
+    }
+    if (abonoCartera > 0 || nota) {
+      registro.abonoCartera = abonoCartera;
+      if (nota) registro.notaFiscal = nota as unknown as Record<string, unknown>;
+      await registro.save();
     }
 
     // La mercancía vuelve al inventario, a los mismos lotes de los que salió.
@@ -361,13 +472,17 @@ export class SaleReturnsService {
     // La plata que sale de la caja del turno. Solo el efectivo: una
     // transferencia o una nota a favor no vacían el cajón, y anotarlas ahí
     // haría que el arqueo del cierre no cuadrara.
-    if (dto.refundMethod === 'cash' && plan.refundTotal > 0) {
+    // Lo que bajó la cartera de un fiado no sale de ninguna parte: el cliente
+    // simplemente debe menos. Solo el resto se devuelve por el medio elegido,
+    // con la propina devuelta (decisión 4), que entró al cajón con el cobro.
+    const enPlata = clampNonNegative(plan.refundTotal - abonoCartera) + tipRefund;
+    if (dto.refundMethod === 'cash' && enPlata > 0) {
       try {
         await this.caja.movement(
           {
             sedeId,
             type: 'out',
-            amount: plan.refundTotal,
+            amount: enPlata,
             reason: 'Devolución de venta',
             note: `Venta ${sale.saleNumber}`,
           } as never,
@@ -381,7 +496,129 @@ export class SaleReturnsService {
     }
 
     await this.postToLedger(registro, sale, dto);
+    // La caja no espera a la DIAN: la nota se transmite detrás de la respuesta.
+    this.notas?.transmitirDetras(nota, user);
     return registro;
+  }
+
+  /** Lo que la nota de la devolución acredita: los mismos valores que van al libro. */
+  private solicitudNota(registro: SaleReturnDocument, sale: SaleDocument) {
+    const motivo = [
+      `Devolución de la venta ${sale.saleNumber} (${MOTIVO_DEVOLUCION[registro.reason] ?? registro.reason})`,
+      registro.note,
+    ]
+      .filter(Boolean)
+      .join(': ');
+    return {
+      origen: origenNotaDevolucion(registro._id.toString()),
+      concepto: '1' as const,
+      motivo,
+      // La propina viaja en el documento como cargo (AllowanceCharge): la nota
+      // acredita la parte devuelta (decisión 4).
+      propina: registro.tipRefund ?? 0,
+      lineas: registro.lines.map((l) => ({
+        productId: l.productId.toString(),
+        qty: l.qty,
+        valor: l.refund,
+        impuesto: l.refundTax ?? 0,
+      })),
+    };
+  }
+
+  /**
+   * Reintento de una devolución ya registrada: no mueve nada otra vez. Si la
+   * nota no alcanzó a quedar, se emite ahora (idempotente por devolución).
+   */
+  private async reanudar(
+    registro: SaleReturnDocument,
+    sale: SaleDocument,
+    user: JwtUser,
+  ): Promise<SaleReturnDocument> {
+    if (this.notas && !registro.notaFiscal) {
+      const nota = await this.notas.emitir(sale, this.solicitudNota(registro, sale), user);
+      registro.notaFiscal = nota as unknown as Record<string, unknown>;
+      await registro.save();
+      this.notas.transmitirDetras(nota, user);
+    }
+    return registro;
+  }
+
+  /** CxC del fiado a cliente (la del empleado no deja CxC). */
+  private async cuentaPorCobrar(sale: SaleDocument): Promise<FinanceReceivableDocument | null> {
+    if (!this.receivables) return null;
+    return this.receivables.findOne({ saleId: sale._id, status: { $ne: 'void' } }).exec();
+  }
+
+  /**
+   * Baja la cuenta por cobrar de la venta fiada por lo devuelto, hasta su
+   * saldo (lo que el cliente todavía debe). Update atómico condicionado a lo
+   * leído, como el abono de `FinanceService`: un abono que entre a la vez no
+   * se pisa. Devuelve lo que bajó; el resto, si el cliente ya había pagado,
+   * se le devuelve por el medio elegido.
+   */
+  private async abonarCartera(
+    sale: SaleDocument,
+    registro: SaleReturnDocument,
+    monto: number,
+    user: JwtUser,
+  ): Promise<number> {
+    for (let intento = 0; intento < 3; intento++) {
+      const cxc = await this.cuentaPorCobrar(sale);
+      if (!cxc) return 0;
+      const abono = Math.min(cop(monto), clampNonNegative(cxc.amount - cxc.paidAmount));
+      if (abono <= 0) return 0;
+      const nuevo = cxc.amount - abono;
+      const status = cxc.paidAmount >= nuevo ? 'paid' : cxc.paidAmount > 0 ? 'partial' : 'open';
+      const hecho = await this.receivables!
+        .findOneAndUpdate(
+          { _id: cxc._id, amount: cxc.amount, paidAmount: cxc.paidAmount, status: { $ne: 'void' } },
+          {
+            $inc: { amount: -abono },
+            $push: {
+              ajustes: {
+                date: fechaColombia(),
+                amount: abono,
+                returnId: registro._id.toString(),
+                motivo: `Devolución de la venta ${sale.saleNumber}`,
+                userEmail: user.email,
+              },
+            },
+            $set: { status },
+          },
+          { new: true },
+        )
+        .exec();
+      if (hecho) return abono;
+    }
+    throw new ConflictException(
+      'La cuenta por cobrar de la venta cambió mientras se registraba la devolución. Vuelve a intentarlo.',
+    );
+  }
+
+  /** Deshace `abonarCartera` cuando la devolución se retira (la nota no se pudo emitir). */
+  private async revertirAbono(
+    sale: SaleDocument,
+    registro: SaleReturnDocument,
+    abono: number,
+  ): Promise<void> {
+    const returnId = registro._id.toString();
+    try {
+      const cxc = await this.receivables!
+        .findOneAndUpdate(
+          { saleId: sale._id, 'ajustes.returnId': returnId },
+          { $inc: { amount: abono }, $pull: { ajustes: { returnId } } },
+          { new: true },
+        )
+        .exec();
+      if (cxc) {
+        const status = cxc.paidAmount >= cxc.amount ? 'paid' : cxc.paidAmount > 0 ? 'partial' : 'open';
+        await this.receivables!.updateOne({ _id: cxc._id }, { $set: { status } }).exec();
+      }
+    } catch (err) {
+      this.logger.error(
+        `CONCILIAR: la devolución ${returnId} de la venta ${sale.saleNumber} se retiró pero la cartera no volvió a su valor (${abono}): ${(err as Error).message}`,
+      );
+    }
   }
 
   /**
@@ -429,6 +666,10 @@ export class SaleReturnsService {
       // Una nota a favor o un cambio por otro producto no sacan plata hoy: la
       // contrapartida es lo que el negocio le queda debiendo al cliente.
       refundMethod: dto.refundMethod,
+      // Lo que bajó la cartera del fiado va contra la 1305, no por el medio elegido.
+      toReceivable: registro.abonoCartera ?? 0,
+      // La propina devuelta sale de la 2380 (decisión 4).
+      tip: registro.tipRefund ?? 0,
       userEmail: registro.userEmail,
     });
   }

@@ -113,8 +113,34 @@ export class SaleReturn {
   @Prop({ default: 0, min: 0 })
   refundTax!: number;
 
+  /**
+   * Propina devuelta, APARTE de `refundTotal` (decisión 4 del dueño): en
+   * proporción a lo devuelto, con redondeo acumulado. Sale de la 2380 y se
+   * devuelve por el mismo medio que el resto.
+   */
+  @Prop({ default: 0, min: 0 })
+  tipRefund!: number;
+
   @Prop({ trim: true })
   note?: string;
+
+  /**
+   * Llave idempotente del cliente (Fase 6B): reintentar la misma devolución
+   * devuelve este registro y su nota, no otra devolución.
+   */
+  @Prop({ trim: true })
+  idempotencyKey?: string;
+
+  /**
+   * Parte del reembolso que bajó la cuenta por cobrar de la venta fiada en vez
+   * de devolverse en plata (Cr 1305 en el asiento).
+   */
+  @Prop({ default: 0, min: 0 })
+  abonoCartera!: number;
+
+  /** Nota crédito / de ajuste de la devolución, o por qué no la lleva (`NotaFiscalOperacion`). */
+  @Prop({ type: Object })
+  notaFiscal?: Record<string, unknown>;
 
   @Prop({ required: true, trim: true })
   userId!: string;
@@ -126,3 +152,9 @@ export class SaleReturn {
 export const SaleReturnSchema = SchemaFactory.createForClass(SaleReturn);
 
 SaleReturnSchema.index({ sedeId: 1, createdAt: -1 });
+
+// Una devolución por llave del cliente: el reintento no devuelve dos veces.
+SaleReturnSchema.index(
+  { saleId: 1, idempotencyKey: 1 },
+  { name: 'devolucion_idempotente', unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } },
+);
