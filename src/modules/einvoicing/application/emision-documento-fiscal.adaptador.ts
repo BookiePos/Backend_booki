@@ -90,6 +90,15 @@ export class EmisionDocumentoFiscalDian
       concepto: conceptoDe(n.discrepancyCode),
       dianStatus: n.dianStatus,
       total: n.payableAmount ?? n.total,
+      // Reparto por venta y producto (tope cruzado de devoluciones y rebajas).
+      asignaciones: (n.asignaciones ?? [])
+        .filter((a) => a.saleId)
+        .map((a) => ({
+          saleId: String(a.saleId),
+          productId: a.refKey,
+          valor: a.base + (a.taxAmount ?? 0),
+          impuesto: a.taxAmount ?? 0,
+        })),
       iva: n.ivaTotal ?? 0,
       inc: n.incTotal ?? 0,
     };

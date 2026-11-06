@@ -22,6 +22,10 @@ import {
   SaleReturnDocument,
 } from '../infrastructure/schemas/sale-return.schema';
 import { SaleDocument } from '../infrastructure/schemas/sale.schema';
+import {
+  NotaSinReferencia,
+  NotaSinReferenciaDocument,
+} from '../infrastructure/schemas/nota-sin-referencia.schema';
 import { CreateSaleReturnDto } from './dto/create-sale-return.dto';
 import { CreateSaleRebateDto } from './dto/create-sale-rebate.dto';
 import {
@@ -90,6 +94,13 @@ export class SaleReturnsService {
     /** Nota crédito / de ajuste de la devolución (Fase 6B). */
     @Optional()
     private readonly notas?: NotaFiscalVentaService,
+    /**
+     * Notas sin referencia (Fase 6C): lo que le asignaron a esta venta cuenta
+     * como rebajado (tope cruzado).
+     */
+    @Optional()
+    @InjectModel(NotaSinReferencia.name)
+    private readonly sinReferencia?: Model<NotaSinReferenciaDocument>,
   ) {}
 
   /** Devoluciones ya registradas de una venta, de la más reciente atrás. */
@@ -134,6 +145,18 @@ export class SaleReturnsService {
         const key = l.productId.toString();
         const m = rebated.get(key) ?? { amount: 0, tax: 0 };
         rebated.set(key, { amount: m.amount + (l.refund ?? 0), tax: m.tax + (l.refundTax ?? 0) });
+      }
+    }
+    // Lo que una nota sin referencia le asignó a esta venta (tope cruzado,
+    // Fase 6C) es una rebaja más de cada producto.
+    if (this.sinReferencia) {
+      const notas = await this.sinReferencia.find({ 'asignaciones.saleId': saleId }).exec();
+      for (const n of notas) {
+        for (const a of n.asignaciones ?? []) {
+          if (String(a.saleId) !== String(saleId)) continue;
+          const m = rebated.get(a.productId) ?? { amount: 0, tax: 0 };
+          rebated.set(a.productId, { amount: m.amount + (a.amount ?? 0), tax: m.tax + (a.tax ?? 0) });
+        }
       }
     }
     const previas = todas.filter((x) => x.kind !== 'rebaja');

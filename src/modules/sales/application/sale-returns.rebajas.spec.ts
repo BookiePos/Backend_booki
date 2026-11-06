@@ -74,10 +74,14 @@ describe('SaleReturnsService · rebaja posterior (Fase 6C)', () => {
   let cxc: any;
   let puerto: any;
   let orden: string[];
+  let asignadas: any[];
+  let sinRef: any;
 
   function build(sale: any = venta(), conNotas = true) {
     registros = [];
     orden = [];
+    asignadas = [];
+    sinRef = { find: vi.fn(() => ({ exec: async () => asignadas })) };
     model = {
       find: vi.fn((f: any = {}) => {
         const filtrados = () =>
@@ -179,6 +183,7 @@ describe('SaleReturnsService · rebaja posterior (Fase 6C)', () => {
       ledger as never,
       receivables as never,
       conNotas ? notas : undefined,
+      sinRef as never,
     );
   }
 
@@ -277,6 +282,26 @@ describe('SaleReturnsService · rebaja posterior (Fase 6C)', () => {
     expect(d.refundTotal).toBe(24_000);
     const rebajado = registros.find((x) => x.kind === 'rebaja').lines[0].refundTax;
     expect(d.lines[0].refundTax + rebajado).toBe(2_222);
+  });
+
+  it('tope cruzado: lo que una nota sin referencia asignó a la venta ya no se puede rebajar ni devolver', async () => {
+    build();
+    asignadas = [{ asignaciones: [{ saleId, productId: HAMB.toString(), amount: 6_000, tax: 444 }] }];
+    await expect(
+      service.createRebaja(
+        saleId.toString(),
+        rebaja({ amount: undefined, lines: [{ productId: HAMB.toString(), amount: 24_001 }] }),
+        user,
+      ),
+    ).rejects.toThrow(/pasa de lo que queda/);
+    // Y la devolución total de las hamburguesas devuelve lo pagado menos lo asignado.
+    const d: any = await service.create(
+      saleId.toString(),
+      devolucion({ lines: [{ productId: HAMB.toString(), qty: 3 }] }),
+      user,
+    );
+    expect(d.refundTotal).toBe(24_000);
+    expect(d.lines[0].refundTax).toBe(1_778);
   });
 
   it('el reintento con la misma llave no rebaja dos veces; con otra carga es 409', async () => {

@@ -28,6 +28,9 @@ describe('NotasSinReferenciaService', () => {
   let caja: any;
   let ledger: any;
   let svc: NotasSinReferenciaService;
+  let cxcs: any[];
+  let receivables: any;
+  let model: any;
 
   const dto = (o: Record<string, unknown> = {}) =>
     ({
@@ -46,7 +49,32 @@ describe('NotasSinReferenciaService', () => {
   beforeEach(() => {
     registros = [];
     orden = [];
-    const model: any = {
+    cxcs = [];
+    receivables = {
+      find: vi.fn((f: any) => ({
+        sort: () => ({ exec: async () => cxcs.filter((c) => ['open', 'partial'].includes(c.status)) }),
+        exec: async () =>
+          cxcs.filter((c) => (c.ajustes ?? []).some((a: any) => a.returnId === f['ajustes.returnId'])),
+      })),
+      findOneAndUpdate: vi.fn((f: any, u: any) => ({
+        exec: async () => {
+          const c = cxcs.find((x) => String(x._id) === String(f._id));
+          if (!c) return null;
+          if (u.$pull) {
+            c.amount += u.$inc.amount;
+            c.ajustes = c.ajustes.filter((a: any) => a.returnId !== u.$pull.ajustes.returnId);
+            return c;
+          }
+          if (f.amount !== c.amount || f.paidAmount !== c.paidAmount) return null;
+          c.amount += u.$inc.amount;
+          c.ajustes = [...(c.ajustes ?? []), u.$push.ajustes];
+          c.status = u.$set.status;
+          return c;
+        },
+      })),
+      updateOne: vi.fn(() => ({ exec: async () => ({}) })),
+    };
+    model = {
       findOne: vi.fn((f: any) => ({ exec: async () => registros.find((r) => r.idempotencyKey === f.idempotencyKey) ?? null })),
       create: vi.fn(async (d: any) => {
         const r = { ...d, _id: new Types.ObjectId(), cajaHecha: false, asientoHecho: false, sedeId: new Types.ObjectId(sedeId), save: vi.fn(async () => undefined) };
@@ -63,6 +91,14 @@ describe('NotasSinReferenciaService', () => {
         },
       })),
       findById: vi.fn((id: any) => ({ exec: async () => registros.find((x) => String(x._id) === String(id)) ?? null })),
+      find: vi.fn(() => ({
+        sort: () => ({
+          limit: () => ({
+            exec: async () =>
+              registros.filter((r) => r.estado === 'en_curso' && (!r.procesandoHasta || r.procesandoHasta < new Date())),
+          }),
+        }),
+      })),
     };
     puerto = {
       emitirNota: vi.fn(),
@@ -81,6 +117,7 @@ describe('NotasSinReferenciaService', () => {
       new NotaFiscalVentaService({ get: () => puerto } as never),
       caja,
       ledger,
+      receivables,
     );
   });
 
@@ -131,5 +168,46 @@ describe('NotasSinReferenciaService', () => {
     expect(b.estado).toBe('completa');
     expect(caja.movement).toHaveBeenCalledTimes(2);
     expect(ledger.postSaleReturn).toHaveBeenCalledTimes(1);
+  });
+
+  it('cartera viva: abona primero las CxC del cliente (1305) y solo el excedente sale por el medio', async () => {
+    cxcs = [{ _id: new Types.ObjectId(), customerId, amount: 10_000, paidAmount: 7_000, status: 'partial', ajustes: [] }];
+    const r: any = await svc.create(dto(), user);
+    expect(r.abonoCartera).toBe(3_000);
+    expect(cxcs[0]).toMatchObject({ amount: 7_000, status: 'paid' });
+    expect(cxcs[0].ajustes[0].returnId).toBe(`sin_referencia:${String(r._id)}`);
+    expect(caja.movement.mock.calls[0][0].amount).toBe(1_000);
+    expect(ledger.postSaleReturn.mock.calls[0][0]).toMatchObject({ refundTotal: 4_000, toReceivable: 3_000 });
+  });
+
+  it('si la nota falla, la cartera vuelve a su valor', async () => {
+    cxcs = [{ _id: new Types.ObjectId(), customerId, amount: 10_000, paidAmount: 7_000, status: 'partial', ajustes: [] }];
+    puerto.emitirNotaSinReferencia.mockRejectedValueOnce(new ConflictException('tope'));
+    await expect(svc.create(dto(), user)).rejects.toThrow('tope');
+    expect(cxcs[0].amount).toBe(10_000);
+    expect(cxcs[0].ajustes).toHaveLength(0);
+  });
+
+  it('guarda el reparto de la nota por venta y producto (tope cruzado)', async () => {
+    const saleId = new Types.ObjectId().toString();
+    puerto.emitirNotaSinReferencia.mockImplementationOnce(async (s: any) => ({
+      estado: 'emitida', documentoId: 'n1', fullNumber: 'NC7', concepto: s.concepto, total: s.monto, iva: 0, inc: 0,
+      asignaciones: [{ saleId, productId: 'p1', valor: 4_000, impuesto: 0 }],
+    }));
+    const r: any = await svc.create(dto(), user);
+    expect(r.asignaciones).toEqual([{ saleId: new Types.ObjectId(saleId), productId: 'p1', amount: 4_000, tax: 0 }]);
+  });
+
+  it('barrido de varadas: completa libro sin tocar la caja (queda pendiente_caja)', async () => {
+    const r: any = await svc.create(dto(), user);
+    // Simula que se cortó tras la nota: sin caja ni asiento.
+    Object.assign(r, { estado: 'en_curso', cajaHecha: false, asientoHecho: false, procesandoHasta: null });
+    caja.movement.mockClear();
+    ledger.postSaleReturn.mockClear();
+    const res = await svc.completarVaradas();
+    expect(res).toEqual({ completadas: 0, pendientesCaja: 1, fallidas: 0 });
+    expect(caja.movement).not.toHaveBeenCalled();
+    expect(ledger.postSaleReturn).toHaveBeenCalledTimes(1);
+    expect(r.estado).toBe('pendiente_caja');
   });
 });

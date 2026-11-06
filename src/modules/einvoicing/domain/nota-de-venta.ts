@@ -273,8 +273,19 @@ export function gruposDelDocumento(
   }));
 }
 
-/** Grupo de tributo de una nota sin referencia: tributo y tarifa. */
-export interface SaldoTributo {
+/** Llave del grupo de tributo (líneas de la nota sin referencia, Fase 6C). */
+export const grupoTributo = (l: { taxScheme?: string; taxRate?: number }): string =>
+  `tributo:${l.taxScheme ?? 'sin'}:${l.taxScheme ? (l.taxRate ?? 0) : 0}`;
+
+/**
+ * Lo que queda por acreditar de un producto (o del domicilio) de UNA factura
+ * del periodo: la unidad sobre la que se reparte la nota sin referencia.
+ */
+export interface UnidadSinReferencia {
+  /** `_id` de la factura. */
+  referenceId: string;
+  saleId?: string;
+  /** Grupo del documento: producto de la venta o `domicilio`. */
   refKey: string;
   taxScheme?: '01' | '04';
   taxRate: number;
@@ -283,93 +294,102 @@ export interface SaldoTributo {
   impuesto: number;
 }
 
-/** Llave del grupo de tributo (nota sin referencia, Fase 6C). */
-export const grupoTributo = (l: { taxScheme?: string; taxRate?: number }): string =>
-  `tributo:${l.taxScheme ?? 'sin'}:${l.taxScheme ? (l.taxRate ?? 0) : 0}`;
-
 /**
- * Saldo por tributo de las facturas de un cliente en un periodo, para la nota
- * SIN referencia (Fase 6C, CustomizationID 22): lo facturado menos las notas
- * con referencia a esas facturas y las notas sin referencia previas del
- * cliente en el mismo mes. El INC de bolsas no entra (no se rebaja).
+ * Parte de una nota sin referencia que le toca a un grupo de una factura
+ * (Fase 6C). Se guarda en la nota: las notas con referencia siguientes y las
+ * devoluciones y rebajas de esa venta la descuentan como si fuera una rebaja
+ * de ese producto (tope cruzado).
  */
-export function saldoPorTributo(
-  facturas: readonly (readonly LineaDocumento[])[],
-  notasConReferencia: readonly (readonly LineaPrevia[])[],
-  notasSinReferencia: readonly (readonly LineaPrevia[])[],
-): SaldoTributo[] {
-  const m = new Map<string, SaldoTributo>();
-  const sumarT = (l: LineaPrevia & { taxRate?: number }, signo: 1 | -1) => {
-    const k = grupoTributo(l);
-    const scheme = l.taxScheme === '01' || l.taxScheme === '04' ? l.taxScheme : undefined;
-    const g = m.get(k) ?? { refKey: k, taxScheme: scheme, taxRate: scheme ? (l.taxRate ?? 0) : 0, valor: 0, impuesto: 0 };
-    const imp = scheme ? (l.taxAmount ?? 0) : 0;
-    g.valor += signo * (l.base + imp);
-    g.impuesto += signo * imp;
-    m.set(k, g);
-  };
-  for (const f of facturas) for (const l of f) sumarT(l, 1);
-  for (const n of [...notasConReferencia, ...notasSinReferencia]) for (const l of n) sumarT(l, -1);
-  return [...m.values()].map((g) => ({
-    ...g,
-    valor: Math.max(g.valor, 0),
-    impuesto: Math.min(Math.max(g.impuesto, 0), Math.max(g.valor, 0)),
-  }));
+export interface AsignacionSinReferencia {
+  referenceId: string;
+  saleId?: string;
+  refKey: string;
+  taxScheme?: '01' | '04';
+  taxRate: number;
+  base: number;
+  taxAmount: number;
 }
 
+/** Una asignación previa, leída como línea de nota para el tope de su factura. */
+export const asignacionComoPrevia = (a: Pick<AsignacionSinReferencia, 'refKey' | 'base' | 'taxScheme' | 'taxAmount'>): LineaPrevia => ({
+  refKey: a.refKey,
+  qty: 0,
+  base: a.base,
+  taxScheme: a.taxScheme,
+  taxAmount: a.taxAmount,
+  sinCantidad: true,
+});
+
 /**
- * Líneas de la nota sin referencia: el monto se reparte entre los tributos en
- * proporción a lo que queda de cada uno, y en cada uno el impuesto sale de su
- * proporción (la parte que agota el saldo se lleva exacto lo que quedaba).
- * Lanza `TopeNotaExcedidoError` si el monto pasa del saldo.
+ * Reparte el monto de la nota sin referencia entre los grupos de las facturas
+ * del periodo, en proporción a lo que queda de cada uno (Fase 6C). En cada
+ * grupo el impuesto sale de su proporción (el que agota el grupo se lleva
+ * exacto el impuesto que quedaba). Las líneas de la nota son la suma de las
+ * asignaciones por tributo, así la nota, el libro y los topes dicen lo mismo.
+ *
+ * Lanza `TopeNotaExcedidoError` si el monto pasa de lo que queda.
  */
-export function lineasSinReferencia(
-  saldos: readonly SaldoTributo[],
+export function repartoSinReferencia(
+  unidades: readonly UnidadSinReferencia[],
   monto: number,
   descripcion: string,
-): (LineaReferida & { sinCantidad: true })[] {
-  const disponible = sumBy(saldos, (g) => g.valor);
+): { lineas: (LineaReferida & { sinCantidad: true })[]; asignaciones: AsignacionSinReferencia[] } {
   if (!(monto > 0)) throw new NotaNoRelacionableError('La nota no tiene valor');
+  const vivas = unidades.filter((u) => u.valor > 0);
+  const disponible = sumBy(vivas, (u) => u.valor);
   if (monto > disponible) {
     throw new TopeNotaExcedidoError(
       `El descuento ($${monto}) pasa de lo que queda por acreditar en las facturas del periodo ($${disponible}).`,
     );
   }
-  const grupos = saldos.filter((g) => g.valor > 0);
-  // Reparto entero que suma exacto `monto` (residuo en la última parte).
-  const sumW = sumBy(grupos, (g) => g.valor);
+  // Reparto entero que suma exacto `monto` (cada parte ≤ su saldo porque monto ≤ disponible).
   let acum = 0;
   let asignado = 0;
-  const partes = grupos.map((g) => {
-    acum += g.valor;
-    const hasta = cop((monto * acum) / sumW);
-    const parte = hasta - asignado;
+  const asignaciones: AsignacionSinReferencia[] = [];
+  for (const u of vivas) {
+    acum += u.valor;
+    const hasta = cop((monto * acum) / disponible);
+    const valor = Math.min(hasta - asignado, u.valor);
     asignado = hasta;
-    return parte;
+    if (valor <= 0) continue;
+    const taxAmount =
+      valor === u.valor ? u.impuesto : Math.min(cop((valor * u.impuesto) / u.valor), u.impuesto);
+    asignaciones.push({
+      referenceId: u.referenceId,
+      saleId: u.saleId,
+      refKey: u.refKey,
+      taxScheme: u.taxScheme,
+      taxRate: u.taxScheme ? u.taxRate : 0,
+      base: valor - taxAmount,
+      taxAmount,
+    });
+  }
+  const porTributo = new Map<string, { taxScheme?: '01' | '04'; taxRate: number; base: number; taxAmount: number }>();
+  for (const a of asignaciones) {
+    const k = grupoTributo(a);
+    const g = porTributo.get(k) ?? { taxScheme: a.taxScheme, taxRate: a.taxRate, base: 0, taxAmount: 0 };
+    g.base += a.base;
+    g.taxAmount += a.taxAmount;
+    porTributo.set(k, g);
+  }
+  const lineas = [...porTributo].map(([refKey, g]) => {
+    const tarifa = g.taxScheme ? ` (${g.taxScheme === '01' ? 'IVA' : 'INC'} ${g.taxRate} %)` : ' (sin impuesto)';
+    return {
+      refKey,
+      description: `${descripcion}${tarifa}`.slice(0, 300),
+      qty: 1,
+      unitCode: '94',
+      unitPrice: g.base,
+      discountAmount: 0,
+      base: g.base,
+      taxScheme: g.taxScheme,
+      taxRate: g.taxRate,
+      taxAmount: g.taxAmount,
+      ivaRate: g.taxScheme === '01' ? g.taxRate : 0,
+      ivaAmount: g.taxScheme === '01' ? g.taxAmount : 0,
+      total: g.base + g.taxAmount,
+      sinCantidad: true as const,
+    };
   });
-  return grupos
-    .map((g, i) => {
-      const valor = Math.min(partes[i]!, g.valor);
-      const taxAmount =
-        valor === g.valor ? g.impuesto : Math.min(cop((valor * g.impuesto) / g.valor), g.impuesto);
-      const base = valor - taxAmount;
-      const tarifa = g.taxScheme ? ` (${g.taxScheme === '01' ? 'IVA' : 'INC'} ${g.taxRate} %)` : ' (sin impuesto)';
-      return {
-        refKey: g.refKey,
-        description: `${descripcion}${tarifa}`.slice(0, 300),
-        qty: 1,
-        unitCode: '94',
-        unitPrice: base,
-        discountAmount: 0,
-        base,
-        taxScheme: g.taxScheme,
-        taxRate: g.taxRate,
-        taxAmount,
-        ivaRate: g.taxScheme === '01' ? g.taxRate : 0,
-        ivaAmount: g.taxScheme === '01' ? taxAmount : 0,
-        total: valor,
-        sinCantidad: true as const,
-      };
-    })
-    .filter((l) => l.total > 0);
+  return { lineas, asignaciones };
 }

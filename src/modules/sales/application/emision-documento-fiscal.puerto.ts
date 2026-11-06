@@ -129,6 +129,12 @@ export interface NotaSinReferenciaEmitida extends NotaFiscalOperacion {
   total: number;
   iva: number;
   inc: number;
+  /**
+   * Cómo se repartió entre las ventas del periodo, por producto (`productId`
+   * es el grupo del documento: producto o `domicilio`). Las devoluciones y
+   * rebajas de esas ventas lo descuentan (tope cruzado).
+   */
+  asignaciones: { saleId: string; productId: string; valor: number; impuesto: number }[];
 }
 
 /** Puerto de la nota sin referencia (lo implementa el mismo adaptador). */
