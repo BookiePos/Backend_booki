@@ -1,4 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// lineasNominaCausada vive en un servicio que importa esquemas: se neutralizan los decoradores.
+vi.mock('@nestjs/mongoose', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nestjs/mongoose')>();
+  return {
+    ...actual,
+    Prop: () => () => undefined,
+    Schema: () => () => undefined,
+    SchemaFactory: { createForClass: () => ({ index: () => undefined, pre: () => undefined }) },
+  };
+});
+
+import { lineasNominaCausada } from '../../core-ledger/application/ledger-posting.service';
+import { ACC } from '../../core-ledger/domain/ledger.constants';
 import { diasCalendario, liquidarAusencias, tramoEnPeriodo, vacacionesDisfrutadasDeNovedades } from './novedades-calc';
 import { computeSlip } from './payroll-calc';
 import { DEFAULT_PAYROLL_SETTINGS } from './payroll.constants';
@@ -178,5 +192,66 @@ describe('computeSlip con ausencias', () => {
     expect(b.ibc).toBe(2_000_000);
     expect(b.aportesEmpleador.pension).toBe(240_000 + 120_000); // 12 % de 2.000.000 + 12 % de 1.000.000
     expect(b.devengados.total).toBe(2_000_000 + b.devengados.auxilioTransporte);
+  });
+});
+
+describe('salario integral: IBC de las ausencias (revisión N1 y N2)', () => {
+  const s = { ...DEFAULT_PAYROLL_SETTINGS, smmlv: SMMLV, exoneracionConfirmada: true };
+  const INTEGRAL = 30_000_000; // 1.000.000 diarios
+
+  it('N1: el IBC de los días de incapacidad es el 70 % del salario (sin doble factor)', () => {
+    const aus = liquidarAusencias(
+      [{ tipo: 'incapacidad_laboral', fechaInicio: '2026-10-01', fechaFin: '2026-10-10' }],
+      '2026-10',
+      INTEGRAL,
+      SMMLV,
+      { factorIntegral: 0.7 },
+    );
+    expect(aus.totalRemunerado).toBe(7_000_000);
+    const b = computeSlip({ salarioBase: INTEGRAL, salaryType: 'integral', diasTrabajados: 20, ausencias: aus, fechaCorte: '2026-10-31' }, s);
+    // 20 días de salario al 70 % (14.000.000) + 10 días de incapacidad ya al 70 % (7.000.000).
+    expect(b.ibc).toBe(21_000_000);
+  });
+
+  it('N2: la licencia remunerada va al 100 % aunque el salario sea integral, y el IBC le aplica el 70 %', () => {
+    const aus = liquidarAusencias(
+      [{ tipo: 'licencia_remunerada', fechaInicio: '2026-10-01', fechaFin: '2026-10-03' }],
+      '2026-10',
+      INTEGRAL,
+      SMMLV,
+      { factorIntegral: 0.7 },
+    );
+    expect(aus.lineas[0]!.valor).toBe(3_000_000);
+    expect(aus.pagoAlSalario).toBe(3_000_000);
+    const b = computeSlip({ salarioBase: INTEGRAL, salaryType: 'integral', diasTrabajados: 27, ausencias: aus, fechaCorte: '2026-10-31' }, s);
+    expect(b.ibc).toBe(21_000_000); // (27.000.000 + 3.000.000) × 70 %
+  });
+});
+
+describe('colilla con solo licencia no remunerada', () => {
+  const s = { ...DEFAULT_PAYROLL_SETTINGS, smmlv: SMMLV, exoneracionConfirmada: true };
+
+  it('neto negativo por el 4 % de pensión: queda a cargo del empleado (1365) y el asiento cuadra', () => {
+    const aus = liquidarAusencias([{ tipo: 'licencia_no_remunerada', fechaInicio: '2026-10-01', fechaFin: '2026-10-31' }], '2026-10', SAL, SMMLV);
+    const b = computeSlip({ salarioBase: SAL, salaryType: 'ordinario', diasTrabajados: 0, ausencias: aus, fechaCorte: '2026-10-31' }, s);
+    expect(b.devengados.total).toBe(0);
+    expect(b.deducciones.pensionLicenciaNR).toBe(120_000); // 4 % de 3.000.000
+    expect(b.netoPagar).toBe(-120_000);
+    // Así arma closeRun las partes: el neto negativo va como saldo a cargo del empleado.
+    const lineas = lineasNominaCausada({
+      neto: 0,
+      saldoACargoEmpleados: 120_000,
+      seguridadSocialEmpleado: b.deducciones.salud + b.deducciones.pension + b.deducciones.fsp + (b.deducciones.pensionLicenciaNR ?? 0),
+      retencionFuente: 0,
+      fiado: 0,
+      otrasDeducciones: 0,
+      arrastre: 0,
+      aportesEmpleador: b.aportesEmpleador.total,
+      provisiones: b.provisiones.total,
+    });
+    const debe = lineas.reduce((t, l) => t + (l.debit ?? 0), 0);
+    const haber = lineas.reduce((t, l) => t + (l.credit ?? 0), 0);
+    expect(debe).toBe(haber);
+    expect(lineas.find((l) => l.accountCode === ACC.CXC_TRABAJADORES)?.debit).toBe(120_000);
   });
 });

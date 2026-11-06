@@ -339,7 +339,12 @@ export function computeSlip(
     devengoSalarial + pagoAusencias + auxilioTransporte + bonificacionNoSalarial;
 
   // IBC.
-  const ibcBase = integral ? (salario + pagoAusencias) * s.integralIbcFactor : devengoSalarial + pagoAusencias;
+  // Integral: el factor (70 %) solo a lo que está al 100 % del salario (salario, vacaciones y licencia
+  // remunerada); incapacidades y maternidad/paternidad ya vienen liquidadas sobre el IBC.
+  const pagoAlSalario = aus?.pagoAlSalario ?? 0;
+  const ibcBase = integral
+    ? (salario + pagoAlSalario) * s.integralIbcFactor + (pagoAusencias - pagoAlSalario)
+    : devengoSalarial + pagoAusencias;
   const ibcMax = s.ibcMaxSmmlv * s.smmlv;
   const ibcMin = s.ibcMinSmmlv * s.smmlv * factorCotizado;
   const ibc = round(Math.min(Math.max(ibcBase, ibcMin), ibcMax));

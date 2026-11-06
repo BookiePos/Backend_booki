@@ -726,6 +726,31 @@ describe('consolidarNominaMes: novedades del mes (decisión 3 del dueño)', () =
     await verificar(modelo, bd.devengados.total, bd.deducciones.total);
   }, 60_000);
 
+  it('solo licencia no remunerada: el 4 % sin pago se recorta (arrastre) y no queda comprobante negativo', () => {
+    const lnr = { tipo: 'licencia_no_remunerada', fechaInicio: '2026-10-01', fechaFin: '2026-10-31', dias: 30, valor: 0, pagador: 'ninguno' };
+    const bd = breakdown({ salario: 0, ibc: 0, salud: 0, pension: 0, extra: { ausencias: 0, ausenciaDetalle: [lnr] } as unknown as Record<string, number> });
+    bd.deducciones.pensionLicenciaNR = 60_000;
+    bd.deducciones.total += 60_000;
+    bd.netoPagar -= 60_000;
+    const r = ok(entrada({ slips: [corrida({ bd, dias: 0 })] }));
+    expect(r.modelo.deducciones.otras).toEqual([]);
+    expect(r.recorte).toMatchObject({ otras: 60_000, total: 60_000 });
+    expect(r.modelo.devengados.licenciasNR).toEqual([{ dias: 30, fechaInicio: '2026-10-01', fechaFin: '2026-10-31' }]);
+  });
+
+  it('licencia no remunerada parcial: el 4 % sale como OtraDeduccion en el XML', async () => {
+    const lnr = { tipo: 'licencia_no_remunerada', fechaInicio: '2026-10-11', fechaFin: '2026-10-30', dias: 20, valor: 0, pagador: 'ninguno' };
+    const bd = breakdown({ salario: 500_000, extra: { ausencias: 0, ausenciaDetalle: [lnr] } as unknown as Record<string, number> });
+    bd.deducciones.pensionLicenciaNR = 40_000;
+    bd.deducciones.total += 40_000;
+    bd.netoPagar -= 40_000;
+    const { modelo } = ok(entrada({ slips: [corrida({ bd, dias: 10 })] }));
+    const r = await verificar(modelo, bd.devengados.total, bd.deducciones.total);
+    expect(modelo.deducciones.otras).toEqual([4_000_000]);
+    expect(r.xml).toContain('<OtrasDeducciones><OtraDeduccion');
+    expect(r.xml).toContain('40000.00');
+  }, 60_000);
+
   it('el detalle de novedades debe sumar lo pagado', () => {
     const bd = conNovedades();
     bd.devengados.ausencias = (bd.devengados.ausencias ?? 0) + 1;

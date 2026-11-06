@@ -23,8 +23,14 @@
  * - Licencias de maternidad y paternidad: 100 % del salario, a cargo de la EPS
  *   (art. 236 CST, Ley 1822/2017; Ley 2114/2021).
  * - Licencia remunerada (luto, calamidad, sufragio…): 100 %, empleador.
- * - Con salario integral, incapacidades y licencias se liquidan sobre el IBC
- *   (70 %, art. 132 CST), no sobre el salario completo.
+ * - Con salario integral, incapacidades y licencias de maternidad/paternidad
+ *   se liquidan sobre el IBC (70 %, art. 132 CST). Vacaciones y licencia
+ *   remunerada son salario del empleador y van al 100 %.
+ *
+ * Límites conocidos:
+ * - Dos novedades parciales que juntas cubren un febrero entero no se
+ *   completan a 30 (solo un tramo que cubre el mes entero): los 2 días que
+ *   faltan quedan como días básicos aunque no haya turnos.
  * - Licencia no remunerada: no paga; suspende el contrato (art. 51 CST). Se
  *   cotiza pensión: 16 % sobre el último salario (piso 1 SMMLV), 12 % del
  *   empleador y 4 % del trabajador, que se le descuenta en la colilla
@@ -82,6 +88,12 @@ export interface AusenciasLiquidadas {
   diasNoRemunerados: number;
   /** Suma de `valor`: entra al devengado y al IBC. */
   totalRemunerado: number;
+  /**
+   * Parte de `totalRemunerado` liquidada al 100 % del salario (vacaciones y
+   * licencia remunerada). En el integral es la única a la que el IBC le aplica
+   * el factor; incapacidades y maternidad/paternidad ya vienen sobre el IBC.
+   */
+  pagoAlSalario: number;
   /** Base del aporte a pensión de la licencia no remunerada (último salario de esos días, piso SMMLV). */
   basePensionNoRemunerada: number;
 }
@@ -92,6 +104,8 @@ export interface OpcionesAusencias {
 }
 
 const DIA_MS = 86_400_000;
+/** Novedades que se pagan al 100 % del salario también en el integral. */
+const AL_SALARIO = new Set<TipoNovedad>(['vacaciones', 'licencia_remunerada']);
 const DIAS_MES = 30;
 
 const ultimoDia = (periodo: string): string => {
@@ -192,10 +206,14 @@ export function liquidarAusencias(
       lineas.push({ id: n.id, tipo: n.tipo, fechaInicio: t.desde, fechaFin: t.hasta, dias, valor: cop(valor), pagador, diasPorPagador: porPagador });
       continue;
     }
+    // Vacaciones y licencia remunerada son salario que paga el empleador: van al 100 % aunque el salario
+    // sea integral. Incapacidades y maternidad/paternidad, sobre el IBC (70 % en integral).
     const diario =
       n.tipo === 'vacaciones'
         ? (n.salarioPromedio && n.salarioPromedio > 0 ? n.salarioPromedio : salarioBase) / DIAS_MES
-        : diarioIbc;
+        : n.tipo === 'licencia_remunerada'
+          ? salarioBase / DIAS_MES
+          : diarioIbc;
     lineas.push({
       id: n.id,
       tipo: n.tipo,
@@ -213,6 +231,7 @@ export function liquidarAusencias(
     diasRemunerados: remuneradas.reduce((s, l) => s + l.dias, 0),
     diasNoRemunerados,
     totalRemunerado: sumCop(remuneradas.map((l) => l.valor)),
+    pagoAlSalario: sumCop(remuneradas.filter((l) => AL_SALARIO.has(l.tipo)).map((l) => l.valor)),
     basePensionNoRemunerada: diasNoRemunerados > 0 ? cop(Math.max(diarioIbc, minimoDiario) * diasNoRemunerados) : 0,
   };
 }

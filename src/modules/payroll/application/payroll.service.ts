@@ -1237,6 +1237,9 @@ export class PayrollService {
     });
     // El cruce se revisó antes de crear, pero dos registros simultáneos pasan los dos: se vuelve a mirar. Si
     // hay otra activa cruzada creada ANTES (menor _id), esta se borra y se responde 409; gana la primera.
+    // Ventana residual (N4): sin transacción ni índice de exclusión, dos altas casi simultáneas cuyos `_id`
+    // salgan en orden distinto al de inserción, o un borrado que falle tras la revisión, pueden dejar dos
+    // cruzadas. El pre-vuelo y la corrida no las suman dos veces sin avisar: el tope de 30 días del mes lo limita.
     const otras = await this.novedades
       .find({
         employeeId: dto.employeeId,
