@@ -351,6 +351,10 @@ export class ElectronicDocument {
   @Prop()
   enviadoAt?: Date;
 
+  /** Último intento de la reconsulta del cron (también si quedó omitido): evita que unos atascados tapen a los demás. */
+  @Prop()
+  reconsultadoAt?: Date;
+
   /**
    * Bloqueo de la transmisión en curso (Fase 4B): id aleatorio de quien lo
    * tomó. Solo el dueño del bloqueo puede mover el estado; así dos llamadas
@@ -394,6 +398,9 @@ ElectronicDocumentSchema.index(
     partialFilterExpression: { ...INDICE_EXCLUSION_FISCAL.options.partialFilterExpression },
   },
 );
+
+// Cola de la reconsulta del cron: sent, el menos reconsultado primero (nulos primero).
+ElectronicDocumentSchema.index({ dianStatus: 1, reconsultadoAt: 1, enviadoAt: 1 }, { name: 'reconsulta_cola' });
 
 // Único (checklist 1, Fase 1): un solo documento por (emisor, prefijo, número).
 // Si una empresa ya tiene duplicados Mongo no lo crea al arrancar; el informe

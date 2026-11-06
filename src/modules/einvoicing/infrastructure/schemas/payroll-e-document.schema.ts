@@ -157,6 +157,8 @@ export class PayrollEDocument {
   intentos?: number;
 
   @Prop() enviadoAt?: Date;
+  /** Último intento de la reconsulta del cron (también si quedó omitido). */
+  @Prop() reconsultadoAt?: Date;
 
   @Prop({ type: String })
   bloqueoTransmision?: string;
@@ -214,3 +216,4 @@ for (const i of [INDICE_NOMINA_CONSECUTIVO, INDICE_NOMINA_102_VIGENTE, INDICE_NO
   PayrollEDocumentSchema.index({ ...i.keys }, { ...i.options, partialFilterExpression: { ...i.options.partialFilterExpression } });
 }
 PayrollEDocumentSchema.index({ sedeId: 1, periodo: 1 });
+PayrollEDocumentSchema.index({ dianStatus: 1, reconsultadoAt: 1, enviadoAt: 1 }, { name: 'reconsulta_cola' });

@@ -42,6 +42,12 @@ import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { AuditService } from '../../core-audit/application/audit.service';
+import {
+  MARGEN_PLAZO_RECONSULTA_MS,
+  cifrasVacias,
+  esRechazoDeRegla,
+  type CifrasReconsulta,
+} from '../domain/reconsulta';
 
 /** Tope de una corrida: cabe holgado en la función de Vercel. */
 export const PRESUPUESTO_CORRIDA_MS = 45_000;
@@ -114,9 +120,47 @@ export class HabilitacionNominaService {
     }
   }
 
+  /**
+   * Camino de SISTEMA (cron de reconsulta): avanza con su GET los sets de
+   * habilitación de nómina que siguen en curso (no aprobados). Solo consulta, no
+   * envía nada nuevo: enviar el set es una acción del dueño. Exige un
+   * `TenantContext` abierto; nunca lanza por un set.
+   */
+  async avanzarEnCurso(
+    limite: number,
+    opts: { ahora?: Date; hasta?: number } = {},
+  ): Promise<CifrasReconsulta> {
+    TenantContext.currentOrThrow();
+    const ahora = opts.ahora ?? new Date();
+    const cifras = cifrasVacias();
+    const filas = await this.model.find({}).sort({ updatedAt: 1 }).exec();
+    const enCurso = filas.filter((f) => !resumenSetNomina(f.conjunto).aprobada).slice(0, Math.max(0, limite));
+    for (const fila of enCurso) {
+      if (opts.hasta !== undefined && Date.now() + MARGEN_PLAZO_RECONSULTA_MS > opts.hasta) break;
+      const sedeId = fila.sedeId.toString();
+      cifras.revisados++;
+      try {
+        const antes = resumenSetNomina(fila.conjunto);
+        const v = await this.correr(sedeId, false, ahora, opts.hasta);
+        if (v.resumen && v.resumen.aceptados !== antes.aceptados) cifras.avanzados++;
+        await this.auditar('einvoicing.nomina.habilitacion.consultada', undefined, sedeId, true, v, undefined, 'GET');
+      } catch (err) {
+        if (esRechazoDeRegla(err)) cifras.omitidos++;
+        else {
+          cifras.errores++;
+          this.logger.error(
+            `Reconsulta del set de nómina de la sede ${sedeId}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        await this.auditar('einvoicing.nomina.habilitacion.consultada', undefined, sedeId, false, undefined, err, 'GET');
+      }
+    }
+    return cifras;
+  }
+
   // ── Núcleo ────────────────────────────────────────────────────────────────
 
-  private async correr(sedeId: string, enviar: boolean, ahora: Date): Promise<VistaHabilitacionNomina> {
+  private async correr(sedeId: string, enviar: boolean, ahora: Date, hasta?: number): Promise<VistaHabilitacionNomina> {
     const base = await this.preparar(sedeId);
     let fila = await this.model.findOne({ emisorId: base.emisorId }).exec();
     if (!fila) {
@@ -159,7 +203,7 @@ export class HabilitacionNominaService {
         else await persistir(planSetNomina(base.testSetId, ahora));
       }
       if (!(set.testSetId !== base.testSetId) && !resumenSetNomina(set).aprobada) {
-        const limite = Date.now() + PRESUPUESTO_CORRIDA_MS;
+        const limite = Math.min(Date.now() + PRESUPUESTO_CORRIDA_MS, hasta ?? Infinity);
         await persistir(await this.consultarEnviados(set, base.transmisor, limite, ahora));
         if (enviar) {
           await persistir(reintentarRechazados(set));
@@ -424,7 +468,7 @@ export class HabilitacionNominaService {
 
   private async auditar(
     action: string,
-    user: JwtUser,
+    user: JwtUser | undefined,
     sedeId: string,
     success: boolean,
     v?: VistaHabilitacionNomina,
@@ -438,11 +482,11 @@ export class HabilitacionNominaService {
     }
     if (err) detail.error = ((err as Error)?.name ?? 'Error').slice(0, 60);
     await this.audit.record({
-      userId: user.userId,
-      userEmail: user.email,
-      userName: user.name,
-      role: user.role,
-      method: metodo,
+      userId: user?.userId,
+      userEmail: user?.email,
+      userName: user ? user.name : 'SYSTEM',
+      role: user ? user.role : 'SYSTEM',
+      method: user ? metodo : 'SERVER',
       path: `/einvoicing/sedes/${detail.sedeId}/emisor/nomina/habilitacion`,
       success,
       action,

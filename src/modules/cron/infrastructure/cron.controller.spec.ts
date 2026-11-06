@@ -34,12 +34,14 @@ describe('CronController.diario', () => {
   const billing = { sweep: vi.fn() };
   const recurrentes = { sweep: vi.fn() };
   const certificados = { barrerVencimientos: vi.fn() };
+  const reconsulta = { barrer: vi.fn() };
   const conSecreto = (secreto?: string) =>
     new CronController(
       { get: () => secreto } as never,
       billing as never,
       recurrentes as never,
       certificados as never,
+      { barrer: reconsulta.barrer } as never,
     );
 
   beforeEach(() => {
@@ -106,5 +108,50 @@ describe('CronController.diario', () => {
 
     expect(r.ok).toBe(true);
     expect(r.tareas['gastos-recurrentes']).toEqual({ estado: 'omitido' });
+  });
+});
+
+describe('CronController.dianReconsulta', () => {
+  const reconsulta = { barrer: vi.fn() };
+  const conSecreto = (secreto?: string) =>
+    new CronController(
+      { get: () => secreto } as never,
+      { sweep: vi.fn() } as never,
+      { sweep: vi.fn() } as never,
+      { barrerVencimientos: vi.fn() } as never,
+      reconsulta as never,
+    );
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    reconsulta.barrer.mockResolvedValue({ estado: 'ok', cifras: { empresas: 1 } });
+  });
+
+  it('con el secreto correcto corre la reconsulta con un plazo global menor a 240 s', async () => {
+    const antes = Date.now();
+    const r = await conSecreto('s3cr3t').dianReconsulta('Bearer s3cr3t');
+    expect(r.ok).toBe(true);
+    const { hasta } = reconsulta.barrer.mock.calls[0]![0] as { hasta: number };
+    expect(hasta - antes).toBeLessThanOrEqual(240_000 + 50);
+  });
+
+  it('secreto ausente o inválido: 401 y no corre nada', async () => {
+    await expect(conSecreto('s3cr3t').dianReconsulta(undefined)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(conSecreto('s3cr3t').dianReconsulta('Bearer otro')).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(reconsulta.barrer).not.toHaveBeenCalled();
+  });
+
+  it('sin CRON_SECRET en el despliegue queda cerrado (503)', async () => {
+    await expect(conSecreto(undefined).dianReconsulta('Bearer x')).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(reconsulta.barrer).not.toHaveBeenCalled();
+  });
+
+  it('si la reconsulta falla responde 500; omitida no es fallo', async () => {
+    reconsulta.barrer.mockResolvedValue({ estado: 'error', detalle: 'falló en 1 empresa(s)' });
+    await expect(conSecreto('s3cr3t').dianReconsulta('Bearer s3cr3t')).rejects.toBeInstanceOf(
+      InternalServerErrorException,
+    );
+    reconsulta.barrer.mockResolvedValue({ estado: 'omitido' });
+    expect((await conSecreto('s3cr3t').dianReconsulta('Bearer s3cr3t')).ok).toBe(true);
   });
 });

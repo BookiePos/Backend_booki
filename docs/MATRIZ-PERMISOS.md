@@ -96,6 +96,7 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `PATCH /taxes/:code` | `tax.manage` | ✓ | ✓ | ✓ | · | · |
 | `POST /taxes/:code/versions` | `tax.manage` | ✓ | ✓ | ✓ | · | · |
 | `GET /cron/diario` | público | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `GET /cron/dian-reconsulta` | público | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `GET /customers` | `customers.view` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /customers/:id` | `customers.view` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /customers` | `customers.manage` | ✓ | ✓ | ✓ | ✓ | · |
