@@ -22,13 +22,6 @@ export class ReceivablePayment {
   @Prop({ enum: PAYMENT_METHODS })
   method?: FinancePaymentMethod;
 
-  /**
-   * Rebajas del valor de la cuenta por devoluciones de la venta fiada (Fase
-   * 6B): `amount` ya viene neto de ellas. Una por devolución (`returnId`).
-   */
-  @Prop({ type: [Object], default: [] })
-  ajustes!: { date: string; amount: number; returnId: string; motivo: string; userEmail: string }[];
-
   @Prop({ trim: true })
   note?: string;
 
@@ -89,6 +82,15 @@ export class FinanceReceivable {
 
   @Prop({ type: [ReceivablePaymentSchema], default: [] })
   payments!: ReceivablePayment[];
+
+  /**
+   * Rebajas del valor de la cuenta por devoluciones de la venta fiada (Fase
+   * 6B): `amount` ya viene neto de ellas. Una por devolución (`returnId`).
+   * Va en la cuenta y no en cada abono: con el esquema estricto, un `$push` a
+   * un camino no declarado se descarta sin error.
+   */
+  @Prop({ type: [Object], default: [] })
+  ajustes!: { date: string; amount: number; returnId: string; motivo: string; userEmail: string }[];
 
   @Prop({ trim: true })
   note?: string;

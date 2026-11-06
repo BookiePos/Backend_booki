@@ -132,6 +132,30 @@ export class SaleReturn {
   idempotencyKey?: string;
 
   /**
+   * Pasos de la devolución (D1). Nace `en_curso` y pasa a `completa` cuando
+   * stock, caja y libro quedaron. Las devoluciones de antes no lo tienen: se
+   * tratan como completas y un reintento no las vuelve a mover.
+   */
+  @Prop({ type: String, enum: ['en_curso', 'completa'] })
+  estado?: 'en_curso' | 'completa';
+
+  /** La cartera del fiado y la nota fiscal ya quedaron. */
+  @Prop()
+  carteraHecha?: boolean;
+
+  /** La mercancía volvió al inventario (y la merma, si aplica, se intentó). */
+  @Prop()
+  stockHecho?: boolean;
+
+  /** La salida de efectivo quedó en la caja (o no había efectivo que sacar). */
+  @Prop()
+  cajaHecha?: boolean;
+
+  /** El asiento de la devolución quedó en el libro. */
+  @Prop()
+  asientoHecho?: boolean;
+
+  /**
    * Parte del reembolso que bajó la cuenta por cobrar de la venta fiada en vez
    * de devolverse en plata (Cr 1305 en el asiento).
    */

@@ -243,7 +243,7 @@ export class SaleReturnsService {
     const llave = dto.idempotencyKey?.trim() || undefined;
     if (llave) {
       const previa = await this.model.findOne({ saleId: sale._id, idempotencyKey: llave }).exec();
-      if (previa) return this.reanudar(previa, sale, user);
+      if (previa) return this.reanudar(previa, sale, user, dto);
     }
 
     // Fiado a un EMPLEADO (consumo descontado por nómina): no hay cartera que
@@ -345,6 +345,12 @@ export class SaleReturnsService {
       reason: dto.reason,
       restock: dto.restock,
       wasteRecorded: false,
+      // Pasos (D1): un reintento con la misma llave completa lo que falte.
+      estado: 'en_curso',
+      carteraHecha: false,
+      stockHecho: false,
+      cajaHecha: false,
+      asientoHecho: false,
       refundMethod: dto.refundMethod,
       refundTotal: plan.refundTotal,
       refundTax: plan.refundTax,
@@ -357,7 +363,7 @@ export class SaleReturnsService {
       // Dos reintentos simultáneos con la misma llave: gana uno y el otro lo devuelve.
       if (llave && (err as { code?: number })?.code === 11000) {
         const ganadora = await this.model.findOne({ saleId: sale._id, idempotencyKey: llave }).exec();
-        if (ganadora) return this.reanudar(ganadora, sale, user);
+        if (ganadora) return this.reanudar(ganadora, sale, user, dto);
       }
       throw err;
     }
@@ -423,82 +429,160 @@ export class SaleReturnsService {
         throw err;
       }
     }
-    if (abonoCartera > 0 || nota) {
-      registro.abonoCartera = abonoCartera;
-      if (nota) registro.notaFiscal = nota as unknown as Record<string, unknown>;
+    registro.abonoCartera = abonoCartera;
+    if (nota) registro.notaFiscal = nota as unknown as Record<string, unknown>;
+    registro.carteraHecha = true;
+    await registro.save();
+
+    await this.completar(registro, sale, user);
+    // La caja no espera a la DIAN: la nota se transmite detrás de la respuesta.
+    this.notas?.transmitirDetras(nota, user);
+    return registro;
+  }
+
+  /**
+   * Stock, caja y libro de una devolución ya registrada, con su nota (D1).
+   *
+   * Cada paso deja su marca en el registro apenas termina, así un fallo a
+   * mitad deja la devolución `en_curso` con lo que falta a la vista, y el
+   * reintento con la misma llave (`reanudar`) retoma desde ahí sin repetir lo
+   * hecho. El orden es el de siempre: stock, caja, libro.
+   *
+   * - Stock: si falla, lanza y no se sigue (no se devuelve plata por
+   *   mercancía que no volvió al inventario).
+   * - Caja: si falla (no hay caja abierta), se registra y se sigue con el
+   *   libro, como antes; la devolución queda `en_curso` hasta que un
+   *   reintento la anote.
+   * - Libro: idempotente por origen (`sale_return` + id de la devolución).
+   *
+   * Queda una ventana que no se puede cerrar sin idempotencia en el stock y la
+   * caja: caerse ENTRE el movimiento y su marca lo repetiría en el reintento.
+   */
+  private async completar(
+    registro: SaleReturnDocument,
+    sale: SaleDocument,
+    user: JwtUser,
+  ): Promise<void> {
+    const sedeId = registro.sedeId.toString();
+
+    if (!registro.stockHecho) {
+      const units = this.unidadesDelRegistro(registro, sale);
+      // La mercancía vuelve al inventario, a los mismos lotes de los que salió.
+      // También cuando se va a merma: primero entra y después se da de baja,
+      // para que el kárdex cuente la historia completa —volvió, y se dañó— en
+      // vez de que la unidad desaparezca sin explicación.
+      if (units.length > 0) await this.stock.reverseSale(sedeId, units, user);
+      registro.stockHecho = true;
       await registro.save();
+
+      if (registro.restock === 'waste' && units.length > 0) {
+        /*
+         * La baja va en un segundo paso y puede fallar sola. Si falla, queda
+         * existencia de MÁS —visible, y se corrige con un ajuste—, que es
+         * preferible a lo contrario: descontar sin haber devuelto dejaría el
+         * inventario corto sin que nadie se entere.
+         */
+        let todas = true;
+        for (const u of units) {
+          try {
+            await this.stock.adjust(
+              {
+                productId: u.productId,
+                sedeId,
+                direction: 'remove',
+                qty: u.qty,
+                reason: 'dano',
+                note: `Devolución de la venta ${sale.saleNumber}`,
+              } as never,
+              user,
+            );
+          } catch (err) {
+            todas = false;
+            this.logger.warn(
+              `No se pudo dar de baja lo devuelto de ${u.productId} en la venta ${sale.saleNumber}: ${(err as Error).message}`,
+            );
+          }
+        }
+        registro.wasteRecorded = todas;
+        await registro.save();
+      }
     }
 
-    // La mercancía vuelve al inventario, a los mismos lotes de los que salió.
-    // También cuando se va a merma: primero entra y después se da de baja, para
-    // que el kárdex cuente la historia completa —volvió, y se dañó— en vez de
-    // que la unidad desaparezca sin explicación.
-    if (units.length > 0) {
-      await this.stock.reverseSale(sedeId, units, user);
-    }
-
-    if (dto.restock === 'waste' && units.length > 0) {
-      /*
-       * La baja va en un segundo paso y puede fallar sola. Si falla, queda
-       * existencia de MÁS —visible, y se corrige con un ajuste—, que es
-       * preferible a lo contrario: descontar sin haber devuelto dejaría el
-       * inventario corto sin que nadie se entere.
-       */
-      let todas = true;
-      for (const u of units) {
+    if (!registro.cajaHecha) {
+      // La plata que sale de la caja del turno. Solo el efectivo: una
+      // transferencia o una nota a favor no vacían el cajón, y anotarlas ahí
+      // haría que el arqueo del cierre no cuadrara.
+      // Lo que bajó la cartera de un fiado no sale de ninguna parte: el cliente
+      // simplemente debe menos. Solo el resto se devuelve por el medio elegido,
+      // con la propina devuelta (decisión 4), que entró al cajón con el cobro.
+      const enPlata =
+        clampNonNegative(registro.refundTotal - (registro.abonoCartera ?? 0)) +
+        (registro.tipRefund ?? 0);
+      let hecha = true;
+      if (registro.refundMethod === 'cash' && enPlata > 0) {
         try {
-          await this.stock.adjust(
+          await this.caja.movement(
             {
-              productId: u.productId,
               sedeId,
-              direction: 'remove',
-              qty: u.qty,
-              reason: 'dano',
-              note: `Devolución de la venta ${sale.saleNumber}`,
+              type: 'out',
+              amount: enPlata,
+              reason: 'Devolución de venta',
+              note: `Venta ${sale.saleNumber}`,
             } as never,
             user,
           );
         } catch (err) {
-          todas = false;
+          hecha = false;
           this.logger.warn(
-            `No se pudo dar de baja lo devuelto de ${u.productId} en la venta ${sale.saleNumber}: ${(err as Error).message}`,
+            `No se pudo registrar en caja la devolución de la venta ${sale.saleNumber}: ${(err as Error).message}`,
           );
         }
       }
-      registro.wasteRecorded = todas;
-      await registro.save();
-    }
-
-    // La plata que sale de la caja del turno. Solo el efectivo: una
-    // transferencia o una nota a favor no vacían el cajón, y anotarlas ahí
-    // haría que el arqueo del cierre no cuadrara.
-    // Lo que bajó la cartera de un fiado no sale de ninguna parte: el cliente
-    // simplemente debe menos. Solo el resto se devuelve por el medio elegido,
-    // con la propina devuelta (decisión 4), que entró al cajón con el cobro.
-    const enPlata = clampNonNegative(plan.refundTotal - abonoCartera) + tipRefund;
-    if (dto.refundMethod === 'cash' && enPlata > 0) {
-      try {
-        await this.caja.movement(
-          {
-            sedeId,
-            type: 'out',
-            amount: enPlata,
-            reason: 'Devolución de venta',
-            note: `Venta ${sale.saleNumber}`,
-          } as never,
-          user,
-        );
-      } catch (err) {
-        this.logger.warn(
-          `No se pudo registrar en caja la devolución de la venta ${sale.saleNumber}: ${(err as Error).message}`,
-        );
+      if (hecha) {
+        registro.cajaHecha = true;
+        await registro.save();
       }
     }
 
-    await this.postToLedger(registro, sale, dto);
-    // La caja no espera a la DIAN: la nota se transmite detrás de la respuesta.
-    this.notas?.transmitirDetras(nota, user);
-    return registro;
+    if (!registro.asientoHecho) {
+      await this.postToLedger(registro, sale);
+      registro.asientoHecho = true;
+      await registro.save();
+    }
+
+    if (registro.stockHecho && registro.cajaHecha && registro.asientoHecho) {
+      registro.estado = 'completa';
+      await registro.save();
+    }
+  }
+
+  /**
+   * Lo que vuelve al inventario, armado desde el registro: los ítems y
+   * cantidades que la devolución fijó al crearse, con sus lotes repartidos
+   * igual que en `unitsToReturn`. Así el reintento mueve exactamente lo mismo.
+   */
+  private unidadesDelRegistro(registro: SaleReturnDocument, sale: SaleDocument) {
+    return (registro.components ?? [])
+      .filter((c) => c.qty > 0)
+      .map((c) => {
+        const productId = c.productId.toString();
+        const componente = sale.components.find((x) => x.productId.toString() === productId);
+        return {
+          productId,
+          qty: c.qty,
+          consumedLots: componente
+            ? prorateLots(
+                (componente.consumedLots ?? []).map((cl) => ({
+                  lotId: cl.lotId?.toString(),
+                  qty: cl.qty,
+                  unitCost: cl.unitCost,
+                })),
+                componente.qty,
+                c.qty,
+              )
+            : [],
+        };
+      });
   }
 
   /** Lo que la nota de la devolución acredita: los mismos valores que van al libro. */
@@ -526,20 +610,44 @@ export class SaleReturnsService {
   }
 
   /**
-   * Reintento de una devolución ya registrada: no mueve nada otra vez. Si la
-   * nota no alcanzó a quedar, se emite ahora (idempotente por devolución).
+   * Reintento de una devolución ya registrada con la misma llave.
+   *
+   * - Si la carga es otra (líneas, cantidades, medio, destino o motivo), 409:
+   *   la llave es de OTRA devolución y devolver la vieja en silencio haría
+   *   creer al cajero que se registró lo que pidió (D2).
+   * - Si quedó a medias (`en_curso`), completa lo que falte en el mismo orden
+   *   que `create`: cartera, nota, stock, caja y libro (D1).
+   * - Si ya estaba completa (o es de antes de los pasos), no mueve nada: solo
+   *   emite la nota si no alcanzó a quedar (idempotente por devolución).
    */
   private async reanudar(
     registro: SaleReturnDocument,
     sale: SaleDocument,
     user: JwtUser,
+    dto: CreateSaleReturnDto,
   ): Promise<SaleReturnDocument> {
+    if (!mismaCarga(registro, dto)) {
+      throw new ConflictException(
+        'Esa llave ya se usó para otra devolución de esta venta, con otros productos, cantidades o medio de devolución. Revisa lo ya devuelto y usa una llave nueva.',
+      );
+    }
+    const enCurso = registro.estado === 'en_curso';
+    if (enCurso && !registro.carteraHecha) {
+      const cxc = hasCreditPart(sale) ? await this.cuentaPorCobrar(sale) : null;
+      if (cxc && registro.refundTotal > 0) {
+        registro.abonoCartera = await this.abonarCartera(sale, registro, registro.refundTotal, user);
+      }
+      registro.carteraHecha = true;
+      await registro.save();
+    }
+    let nota: NotaFiscalOperacion | undefined;
     if (this.notas && !registro.notaFiscal) {
-      const nota = await this.notas.emitir(sale, this.solicitudNota(registro, sale), user);
+      nota = await this.notas.emitir(sale, this.solicitudNota(registro, sale), user);
       registro.notaFiscal = nota as unknown as Record<string, unknown>;
       await registro.save();
-      this.notas.transmitirDetras(nota, user);
     }
+    if (enCurso) await this.completar(registro, sale, user);
+    if (nota) this.notas?.transmitirDetras(nota, user);
     return registro;
   }
 
@@ -565,6 +673,10 @@ export class SaleReturnsService {
     for (let intento = 0; intento < 3; intento++) {
       const cxc = await this.cuentaPorCobrar(sale);
       if (!cxc) return 0;
+      // Un reintento (D1) no abona dos veces: si esta devolución ya bajó la
+      // cartera, se devuelve lo que bajó.
+      const previo = (cxc.ajustes ?? []).find((a) => a.returnId === registro._id.toString());
+      if (previo) return previo.amount;
       const abono = Math.min(cop(monto), clampNonNegative(cxc.amount - cxc.paidAmount));
       if (abono <= 0) return 0;
       const nuevo = cxc.amount - abono;
@@ -632,7 +744,6 @@ export class SaleReturnsService {
   private async postToLedger(
     registro: SaleReturnDocument,
     sale: SaleDocument,
-    dto: CreateSaleReturnDto,
   ): Promise<void> {
     // El costo ya repartido por ítem al armar el registro (0 si fue merma).
     const cogs = sumBy(registro.components ?? [], (c) => c.cogs);
@@ -665,7 +776,7 @@ export class SaleReturnsService {
       cogs,
       // Una nota a favor o un cambio por otro producto no sacan plata hoy: la
       // contrapartida es lo que el negocio le queda debiendo al cliente.
-      refundMethod: dto.refundMethod,
+      refundMethod: registro.refundMethod,
       // Lo que bajó la cartera del fiado va contra la 1305, no por el medio elegido.
       toReceivable: registro.abonoCartera ?? 0,
       // La propina devuelta sale de la 2380 (decisión 4).
@@ -673,4 +784,23 @@ export class SaleReturnsService {
       userEmail: registro.userEmail,
     });
   }
+}
+
+/**
+ * ¿El reintento trae la misma devolución que quedó registrada? Se comparan
+ * las cantidades por producto (agrupadas, como las agrupa el plan), el medio,
+ * el destino de la mercancía y el motivo.
+ */
+function mismaCarga(registro: SaleReturnDocument, dto: CreateSaleReturnDto): boolean {
+  const huella = (ls: readonly { productId: unknown; qty: number }[]) => {
+    const m = new Map<string, number>();
+    for (const l of ls) m.set(String(l.productId), (m.get(String(l.productId)) ?? 0) + l.qty);
+    return [...m].sort(([a], [b]) => a.localeCompare(b)).map(([k, q]) => `${k}:${q}`).join('|');
+  };
+  return (
+    registro.refundMethod === dto.refundMethod &&
+    registro.restock === dto.restock &&
+    registro.reason === dto.reason &&
+    huella(registro.lines) === huella(dto.lines ?? [])
+  );
 }

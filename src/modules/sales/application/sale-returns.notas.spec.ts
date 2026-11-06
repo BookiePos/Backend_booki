@@ -270,11 +270,205 @@ describe('SaleReturnsService · nota fiscal y fiado (Fase 6B)', () => {
 
   it('reintento de una devolución cuya nota no alcanzó a quedar: la emite con la misma llave', async () => {
     build();
-    registros.push({ _id: new Types.ObjectId(), idempotencyKey: 'k-2', reason: 'otro', lines: [{ productId: GAS, qty: 1, refund: 5_000, refundTax: 799 }], save: vi.fn() });
+    // Registro de antes de los pasos (sin `estado`): se trata como completo.
+    registros.push({
+      _id: new Types.ObjectId(),
+      idempotencyKey: 'k-2',
+      reason: 'defectuoso',
+      restock: 'inventory',
+      refundMethod: 'cash',
+      sedeId,
+      refundTotal: 15_000,
+      lines: [
+        { productId: HAMB, qty: 1, refund: 10_000, refundTax: 741 },
+        { productId: GAS, qty: 1, refund: 5_000, refundTax: 799 },
+      ],
+      save: vi.fn(),
+    });
     const r: any = await service.create(saleId.toString(), devolucion({ idempotencyKey: 'k-2' }), user);
     expect(puerto.emitirNota.mock.calls[0][0].origen).toBe(`devolucion:${String(r._id)}`);
     expect(stock.reverseSale).not.toHaveBeenCalled();
     expect(r.notaFiscal.estado).toBe('emitida');
+  });
+
+  describe('pasos de la devolución y reintento con la misma llave (D1)', () => {
+    const conLlave = (k: string, extra: Record<string, unknown> = {}) => devolucion({ idempotencyKey: k, ...extra });
+
+    it('si falla el stock, queda en curso con la nota; el reintento lo termina sin repetir la nota', async () => {
+      build();
+      stock.reverseSale.mockRejectedValueOnce(new Error('kárdex caído'));
+      await expect(service.create(saleId.toString(), conLlave('k-s'), user)).rejects.toThrow('kárdex caído');
+      const r = registros[0];
+      expect(r.estado).toBe('en_curso');
+      expect(r.carteraHecha).toBe(true);
+      expect(r.notaFiscal.estado).toBe('emitida');
+      expect(r.stockHecho).toBe(false);
+      expect(caja.movement).not.toHaveBeenCalled();
+      expect(ledger.postSaleReturn).not.toHaveBeenCalled();
+
+      const otra: any = await service.create(saleId.toString(), conLlave('k-s'), user);
+      expect(otra).toBe(r);
+      expect(registros).toHaveLength(1);
+      expect(puerto.emitirNota).toHaveBeenCalledTimes(1);
+      expect(stock.reverseSale).toHaveBeenCalledTimes(2);
+      expect(caja.movement).toHaveBeenCalledTimes(1);
+      expect(ledger.postSaleReturn).toHaveBeenCalledTimes(1);
+      expect(r.estado).toBe('completa');
+    });
+
+    it('si falla la caja, el libro sigue; el reintento anota solo la caja', async () => {
+      build();
+      caja.movement.mockRejectedValueOnce(new Error('No hay una caja abierta en esta sede'));
+      const r: any = await service.create(saleId.toString(), conLlave('k-c'), user);
+      expect(r.estado).toBe('en_curso');
+      expect(r.stockHecho).toBe(true);
+      expect(r.cajaHecha).toBe(false);
+      expect(r.asientoHecho).toBe(true);
+
+      await service.create(saleId.toString(), conLlave('k-c'), user);
+      expect(stock.reverseSale).toHaveBeenCalledTimes(1);
+      expect(caja.movement).toHaveBeenCalledTimes(2);
+      expect(caja.movement.mock.calls[1][0].amount).toBe(15_000);
+      expect(ledger.postSaleReturn).toHaveBeenCalledTimes(1);
+      expect(r.estado).toBe('completa');
+    });
+
+    it('si falla el libro, el reintento postea solo el asiento', async () => {
+      build();
+      ledger.postSaleReturn.mockRejectedValueOnce(new Error('libro caído'));
+      await expect(service.create(saleId.toString(), conLlave('k-l'), user)).rejects.toThrow('libro caído');
+      const r = registros[0];
+      expect(r.stockHecho).toBe(true);
+      expect(r.cajaHecha).toBe(true);
+      expect(r.asientoHecho).toBe(false);
+
+      await service.create(saleId.toString(), conLlave('k-l'), user);
+      expect(stock.reverseSale).toHaveBeenCalledTimes(1);
+      expect(caja.movement).toHaveBeenCalledTimes(1);
+      expect(ledger.postSaleReturn).toHaveBeenCalledTimes(2);
+      expect(r.estado).toBe('completa');
+    });
+
+    it('una devolución completa no se vuelve a mover en el reintento', async () => {
+      build();
+      await service.create(saleId.toString(), conLlave('k-ok'), user);
+      await service.create(saleId.toString(), conLlave('k-ok'), user);
+      expect(stock.reverseSale).toHaveBeenCalledTimes(1);
+      expect(caja.movement).toHaveBeenCalledTimes(1);
+      expect(ledger.postSaleReturn).toHaveBeenCalledTimes(1);
+    });
+
+    it('fiado: si la cartera ya bajó por esta devolución, el reintento no la vuelve a bajar', async () => {
+      build(venta({ payment: { method: 'credit' } }));
+      const returnId = new Types.ObjectId();
+      cxc = {
+        _id: new Types.ObjectId(),
+        amount: 25_000,
+        paidAmount: 0,
+        status: 'open',
+        ajustes: [{ returnId: String(returnId), amount: 15_000 }],
+      };
+      const r: any = {
+        _id: returnId,
+        idempotencyKey: 'k-f',
+        estado: 'en_curso',
+        carteraHecha: false,
+        stockHecho: false,
+        cajaHecha: false,
+        asientoHecho: false,
+        reason: 'defectuoso',
+        restock: 'inventory',
+        refundMethod: 'cash',
+        sedeId,
+        refundTotal: 15_000,
+        tipRefund: 0,
+        lines: [
+          { productId: HAMB, qty: 1, refund: 10_000, refundTax: 741 },
+          { productId: GAS, qty: 1, refund: 5_000, refundTax: 799 },
+        ],
+        components: [],
+        save: vi.fn(async () => undefined),
+      };
+      registros.push(r);
+      await service.create(saleId.toString(), conLlave('k-f'), user);
+      expect(receivables.findOneAndUpdate).not.toHaveBeenCalled();
+      expect(cxc.amount).toBe(25_000);
+      expect(r.abonoCartera).toBe(15_000);
+      expect(caja.movement).not.toHaveBeenCalled();
+      expect(ledger.postSaleReturn.mock.calls[0][0].toReceivable).toBe(15_000);
+      expect(r.estado).toBe('completa');
+    });
+  });
+
+  describe('reintento con otra carga (D2)', () => {
+    it.each([
+      ['otra cantidad', { lines: [{ productId: HAMB.toString(), qty: 2 }] }],
+      ['otro medio', { refundMethod: 'transfer' }],
+      ['otro destino', { restock: 'waste' }],
+      ['otro motivo', { reason: 'otro' }],
+    ])('%s con la misma llave: 409 y no se mueve nada', async (_n, extra) => {
+      build();
+      await service.create(saleId.toString(), devolucion({ idempotencyKey: 'k-d2' }), user);
+      await expect(
+        service.create(saleId.toString(), devolucion({ idempotencyKey: 'k-d2', ...extra }), user),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(registros).toHaveLength(1);
+      expect(stock.reverseSale).toHaveBeenCalledTimes(1);
+    });
+
+    it('la misma carga en otro orden de líneas es el mismo reintento', async () => {
+      build();
+      const r = await service.create(saleId.toString(), devolucion({ idempotencyKey: 'k-o' }), user);
+      const otra = await service.create(
+        saleId.toString(),
+        devolucion({
+          idempotencyKey: 'k-o',
+          lines: [{ productId: GAS.toString(), qty: 1 }, { productId: HAMB.toString(), qty: 1 }],
+        }),
+        user,
+      );
+      expect(otra).toBe(r);
+    });
+  });
+
+  describe('propina con descuento de documento (D3)', () => {
+    // Venta de lista $46.000 con $6.000 de descuento global ya prorrateado en
+    // las líneas (como `SalesService.create`): lo pagado por productos es
+    // $40.000, y `total` lleva además $600 de INC de bolsas.
+    const conDescuento = () =>
+      venta({
+        tip: 3_001,
+        total: 40_600,
+        discountTotal: 6_000,
+        lines: [
+          { productId: HAMB, sku: 'H1', name: 'Hamburguesa', qty: 3, unitPrice: 11_000, taxKind: 'inc', taxBase: 27_778, taxAmount: 2_222 },
+          { productId: GAS, sku: 'G1', name: 'Gaseosa', qty: 2, unitPrice: 6_500, taxKind: 'iva', taxBase: 8_403, taxAmount: 1_597 },
+        ],
+      });
+
+    it('devolver el 100 % de los productos devuelve la propina entera', async () => {
+      build(conDescuento());
+      const r: any = await service.create(
+        saleId.toString(),
+        devolucion({ lines: [{ productId: HAMB.toString(), qty: 3 }, { productId: GAS.toString(), qty: 2 }] }),
+        user,
+      );
+      expect(r.refundTotal).toBe(40_000);
+      expect(r.tipRefund).toBe(3_001);
+    });
+
+    it('en pedazos también: la suma de los pedazos es la propina entera', async () => {
+      build(conDescuento());
+      await service.create(saleId.toString(), devolucion({ lines: [{ productId: HAMB.toString(), qty: 1 }] }), user);
+      await service.create(saleId.toString(), devolucion({ lines: [{ productId: GAS.toString(), qty: 1 }] }), user);
+      await service.create(
+        saleId.toString(),
+        devolucion({ lines: [{ productId: HAMB.toString(), qty: 2 }, { productId: GAS.toString(), qty: 1 }] }),
+        user,
+      );
+      expect(registros.reduce((t, x) => t + x.refundTotal, 0)).toBe(40_000);
+      expect(registros.reduce((t, x) => t + x.tipRefund, 0)).toBe(3_001);
+    });
   });
 
   describe('venta fiada', () => {
