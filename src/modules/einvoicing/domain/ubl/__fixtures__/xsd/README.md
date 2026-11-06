@@ -5,7 +5,10 @@ Copiados **sin modificar** de la carpeta `XSD/` de la caja de herramientas ofici
 la misma copia que usa AlíaCorp en `apps/erp/lib/dian/__fixtures__/xsd/` (SHA-256 iguales).
 
 - `common/`: esquemas UBL 2.1 de OASIS que distribuye la DIAN.
-- `maindoc/UBL-Invoice-2.1.xsd`: la factura. Las notas (Fase 6) añadirán sus `maindoc` aquí.
+- `maindoc/UBL-Invoice-2.1.xsd`: la factura.
+- `maindoc/UBL-CreditNote-2.1.xsd` y `maindoc/UBL-DebitNote-2.1.xsd` (Fase 6A): las notas. Origen: la caja de
+  herramientas FEV 1.9 de la DIAN, en la copia de AlíaCorp (`apps/erp/lib/dian/__fixtures__/xsd/maindoc/`), copiados sin
+  modificar (los demás SHA-256 de esa carpeta coinciden con los de aquí).
 - `maindoc/DIAN_UBL_Structures.xsd`: la extensión `sts:DianExtensions`.
 - `ejemplos-dian/generica.xml`: ejemplo oficial de la caja (`Generica.xml`), para comprobar que el
   validador acepta lo que publica la propia DIAN.
@@ -31,6 +34,8 @@ tests del builder y, al final, el set de pruebas de habilitación.
 ```
 41ead5af3ea44f1014be098061c62f8d1bfd7f7b8726997836b66e8955036a2c  maindoc/DIAN_UBL_Structures.xsd
 40fae8cb436f3a9506d7acce65ba162caef3b0bed4d5cbc0992b2153ded4edf4  maindoc/UBL-Invoice-2.1.xsd
+21eee9df7418a4ec2a26d92ad80c9b41d5e884959a698793311d2c5c6754c4b0  maindoc/UBL-CreditNote-2.1.xsd
+ea5303c2191dfb579d6d53a66e41094020f33dca0531086da1bd62f722202da0  maindoc/UBL-DebitNote-2.1.xsd
 dd546e4809df86b6445589f69f0d6c9df162840ae386574ddfc1da7638103e15  common/CCTS_CCT_SchemaModule-2.1.xsd
 939172ad8dd057cd403e7f763f6532184dd5ed4b9de24c42ebb35db4792ba613  common/UBL-CommonAggregateComponents-2.1.xsd
 bd4ad043ee1d9da1c7f8018dabf739cfafdfb59143d0d16b9ef769e6b7c408a7  common/UBL-CommonBasicComponents-2.1.xsd

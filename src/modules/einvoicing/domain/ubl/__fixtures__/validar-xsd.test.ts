@@ -20,11 +20,15 @@ import { validateXML, type XMLFileInfo } from 'xmllint-wasm';
 const DIR = join(__dirname, 'xsd');
 
 const NS_INVOICE = 'urn:oasis:names:specification:ubl:schema:xsd:Invoice-2';
+const NS_CREDIT_NOTE = 'urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2';
+const NS_DEBIT_NOTE = 'urn:oasis:names:specification:ubl:schema:xsd:DebitNote-2';
 const NS_STS = 'dian:gov:co:facturaelectronica:Structures-2-1';
 
 const ENVOLTORIO = `<?xml version="1.0" encoding="UTF-8"?>
 <xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <xsd:import namespace="${NS_INVOICE}" schemaLocation="maindoc/UBL-Invoice-2.1.xsd"/>
+  <xsd:import namespace="${NS_CREDIT_NOTE}" schemaLocation="maindoc/UBL-CreditNote-2.1.xsd"/>
+  <xsd:import namespace="${NS_DEBIT_NOTE}" schemaLocation="maindoc/UBL-DebitNote-2.1.xsd"/>
   <xsd:import namespace="${NS_STS}" schemaLocation="maindoc/DIAN_UBL_Structures.xsd"/>
 </xsd:schema>`;
 
