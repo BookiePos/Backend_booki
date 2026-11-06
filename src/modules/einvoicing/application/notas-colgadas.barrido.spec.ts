@@ -22,7 +22,7 @@ describe('NotasColgadasBarrido', () => {
     { _id: new Types.ObjectId(), dbName: 'biz_b' },
   ];
 
-  function build(porDb: Record<string, number>, minutos?: string) {
+  function build(porDb: Record<string, number>, minutos?: string, emiten: string[] = ['biz_a', 'biz_b']) {
     const vistos: { db?: string; filtro: any }[] = [];
     const chain = (v: unknown): any => {
       const c: any = { select: () => c, sort: () => c, limit: () => c, lean: () => c, exec: async () => v };
@@ -40,6 +40,11 @@ describe('NotasColgadasBarrido', () => {
       model,
       { listActive: vi.fn(async () => empresas) } as never,
       { get: () => minutos } as never,
+      {
+        countDocuments: vi.fn(() => ({
+          exec: async () => (emiten.includes(TenantContext.current()?.dbName ?? '') ? 1 : 0),
+        })),
+      } as never,
     );
     return { b, model, vistos };
   }
@@ -68,5 +73,12 @@ describe('NotasColgadasBarrido', () => {
     const r = await b.barrer({ ahora });
     expect(r.estado).toBe('error');
     expect(r.cifras).toMatchObject({ fallidas: 1, colgadas: 1 });
+  });
+
+  it('solo cuenta las empresas con emisor habilitado o en habilitación', async () => {
+    const { b, vistos } = build({ biz_a: 3, biz_b: 2 }, '30', ['biz_b']);
+    const r = await b.barrer({ ahora });
+    expect(vistos.map((v) => v.db)).toEqual(['biz_b']);
+    expect(r.cifras).toMatchObject({ colgadas: 2, empresasSinEmisor: 1 });
   });
 });

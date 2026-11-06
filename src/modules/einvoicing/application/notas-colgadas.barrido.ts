@@ -7,6 +7,10 @@ import {
   ElectronicDocumentDocument,
 } from '../infrastructure/schemas/electronic-document.schema';
 import { BusinessService } from '../../control/application/business.service';
+import {
+  FiscalEmitter,
+  FiscalEmitterDocument,
+} from '../infrastructure/schemas/fiscal-emitter.schema';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import type { ResultadoBarrido } from '../../../shared/barridos/resultado-barrido';
 import { recorrerEmpresas } from '../../../shared/barridos/recorrer-empresas';
@@ -45,6 +49,8 @@ export class NotasColgadasBarrido {
     private readonly model: Model<ElectronicDocumentDocument>,
     private readonly businesses: BusinessService,
     private readonly config: ConfigService,
+    @InjectModel(FiscalEmitter.name)
+    private readonly emisores: Model<FiscalEmitterDocument>,
   ) {}
 
   /** Minutos de la alerta: `FE_NOTA_DRAFT_ALERTA_MIN` o 60. */
@@ -65,6 +71,7 @@ export class NotasColgadasBarrido {
       const empresas = await this.businesses.listActive();
       let colgadas = 0;
       let conColgadas = 0;
+      let sinEmisor = 0;
       const { procesadas, pendientes, fallidas } = await recorrerEmpresas(
         empresas,
         async (biz) => {
@@ -72,6 +79,17 @@ export class NotasColgadasBarrido {
           await TenantContext.run(
             { businessId, dbName: biz.dbName, tipoNegocio: biz.tipoNegocio },
             async () => {
+              // Solo empresas que emiten (habilitadas o con el set de pruebas en
+              // curso): las demás no transmiten y solo meterían ruido.
+              const emite = await this.emisores
+                .countDocuments({
+                  $or: [{ habilitado: true }, { facturaTestSetId: { $exists: true, $nin: [null, ''] } }],
+                })
+                .exec();
+              if (emite === 0) {
+                sinEmisor += 1;
+                return;
+              }
               const filtro = {
                 type: { $in: ['credit_note' as const, 'debit_note' as const] },
                 dianStatus: 'draft' as const,
@@ -104,6 +122,7 @@ export class NotasColgadasBarrido {
         fallidas: fallidas.length,
         colgadas,
         empresasConColgadas: conColgadas,
+        empresasSinEmisor: sinEmisor,
         minutos,
       };
       if (fallidas.length > 0 || pendientes > 0) {
