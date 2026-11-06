@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   HttpException,
   HttpStatus,
   Injectable,
@@ -15,8 +16,9 @@ import {
 } from '../infrastructure/schemas/electronic-document.schema';
 import { motivosLegibles, resumenEstado, type MotivoLegible } from '../domain/motivos-rechazo';
 import { EinvoicingStorageService, type TipoArtefactoFe } from '../../../shared/storage/einvoicing-storage.service';
-import { MailService } from '../../core-auth/application/mail.service';
+import { MailService, enmascararCorreo } from '../../core-auth/application/mail.service';
 import { AuditService } from '../../core-audit/application/audit.service';
+import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { cop } from '../../finance/domain/money.util';
@@ -72,12 +74,6 @@ export interface ResultadoCorreoFe {
   para: string;
   envios: number;
   restantes: number;
-}
-
-/** `ab***@dominio.com`: lo que queda en la auditoría y en los logs. */
-export function enmascararCorreo(email: string): string {
-  const [local = '', dominio = ''] = email.split('@');
-  return `${local.slice(0, 2)}***@${dominio}`;
 }
 
 /**
@@ -182,12 +178,20 @@ export class DocumentoFeVistaService {
       if (doc.type !== 'invoice') {
         throw new BadRequestException('Por ahora solo la factura de venta se envía por correo.');
       }
-      const para = (email ?? doc.adquiriente?.email ?? '').trim().toLowerCase();
+      const delAdquiriente = (doc.adquiriente?.email ?? '').trim().toLowerCase();
+      const indicado = (email ?? '').trim().toLowerCase();
+      const personalizado = Boolean(indicado) && indicado !== delAdquiriente;
+      const para = indicado || delAdquiriente;
       if (!para) {
         throw new BadRequestException('El adquiriente no tiene correo: indica uno para enviar la factura.');
       }
       if (para.length > 254 || !EMAIL.test(para)) throw new BadRequestException('El correo no es válido.');
       destino = enmascararCorreo(para);
+      // El ZIP solo sale por defecto al adquiriente del documento; otro destino
+      // exige además `einvoicing.configure` (evita sacar el archivo a cualquiera).
+      if (personalizado && !user.permissions.includes(PERMISSIONS.EINVOICING_CONFIGURE)) {
+        throw new ForbiddenException('Enviar a un correo distinto al del adquiriente requiere permiso de configuración.');
+      }
 
       if (!doc.attachedPath) {
         // Entrega pendiente (p. ej. falló tras aceptar): se intenta una vez.
@@ -216,6 +220,13 @@ export class DocumentoFeVistaService {
         await this.devolverEnvio(documentoId);
         throw err;
       }
+      if (!resultado.sent && resultado.ambiguo) {
+        // Sin respuesta de Resend: pudo salir. Cuenta como enviado (no se devuelve el cupo).
+        await this.auditar(documentoId, user, 'POST', 'correo', false, `sin_respuesta:${destino}`);
+        throw new ServiceUnavailableException(
+          'No recibimos confirmación del envío: el correo pudo haber salido. Revisa con el cliente antes de reintentar.',
+        );
+      }
       if (!resultado.sent) {
         await this.devolverEnvio(documentoId);
         this.logger.warn(`Correo de ${documentoId} no enviado (${resultado.simulated ? 'simulado' : 'fallo'}).`);
@@ -224,11 +235,11 @@ export class DocumentoFeVistaService {
       await this.model
         .updateOne(
           { _id: documentoId },
-          { $set: { 'correoEntrega.ultimoPara': para, 'correoEntrega.ultimoId': resultado.id ?? null } },
+          { $set: { 'correoEntrega.ultimoPara': para, 'correoEntrega.personalizado': personalizado, 'correoEntrega.ultimoId': resultado.id ?? null } },
         )
         .exec();
       const enviados = this.enviosDe((await this.model.findById(documentoId).exec()) ?? doc);
-      await this.auditar(documentoId, user, 'POST', 'correo', true, destino);
+      await this.auditar(documentoId, user, 'POST', 'correo', true, personalizado ? `otro:${destino}` : destino);
       return { enviado: true, para: destino, envios: enviados, restantes: Math.max(0, CORREO_MAX_ENVIOS - enviados) };
     } catch (err) {
       await this.auditar(documentoId, user, 'POST', 'correo', false, `${(err as Error)?.name ?? 'Error'}:${destino}`);

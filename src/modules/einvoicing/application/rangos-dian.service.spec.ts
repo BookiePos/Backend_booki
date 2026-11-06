@@ -19,7 +19,7 @@ const user = (sedeIds = [SEDE]) =>
   ({ userId: 'u1', email: 'a@b.co', name: 'Ana', role: 'Dueño', sedeIds, permissions: [] }) as unknown as JwtUser;
 
 function montar(opts: { emisor?: object | null; rangos?: object[]; para?: () => Promise<unknown> } = {}) {
-  const claveOculta = { desde: 1, hasta: 100, prefijo: 'FE', resolucion: '1876' };
+  const claveOculta = { desde: 1, hasta: 100, prefijo: 'FE', resolucion: '1876', fechaResolucion: '2026-01-01', vigenciaDesde: '2026-01-02', vigenciaHasta: '2028-01-02' };
   Object.defineProperty(claveOculta, 'claveTecnica', { value: 'SECRETA', enumerable: false });
   const transmisor = {
     rangos: vi.fn(async () => ({
@@ -35,7 +35,7 @@ function montar(opts: { emisor?: object | null; rangos?: object[]; para?: () => 
       opts.emisor === undefined ? { id: 'em1', nitNorm: '900123', tipoAmbiente: '2' } : opts.emisor,
     ),
   };
-  const sedes = { findOrFail: vi.fn(async () => ({ resolucionFe: { numero: '1876', prefijo: 'FE' }, resolucionesFe: [] })) };
+  const sedes = { findOrFail: vi.fn(async () => ({ resolucionFe: { numero: '1876', prefijo: 'FE', rangoDesde: 1, rangoHasta: 100 }, resolucionesFe: [] })) };
   const proveedor = { para: vi.fn(opts.para ?? (async () => transmisor)) };
   const audit = { record: vi.fn(async (_r: unknown) => undefined) };
   const svc = new RangosDianService(emisores as never, sedes as never, proveedor as never, audit as never);
@@ -48,7 +48,7 @@ describe('RangosDianService', () => {
     const r = await m.svc.traer(SEDE, user());
     expect(r.ok).toBe(true);
     expect(r.rangos).toEqual([
-      { desde: 1, hasta: 100, prefijo: 'FE', resolucion: '1876', registrada: true },
+      { desde: 1, hasta: 100, prefijo: 'FE', resolucion: '1876', fechaResolucion: '2026-01-01', vigenciaDesde: '2026-01-02', vigenciaHasta: '2028-01-02', registrada: true },
       { desde: 1, hasta: 50, prefijo: 'POS', resolucion: '999', registrada: false },
     ]);
     expect(JSON.stringify(r)).not.toContain('SECRETA');
@@ -74,5 +74,17 @@ describe('RangosDianService', () => {
     expect(r.ok).toBe(false);
     expect(r.codigo).toBe('CONFIG_FALTANTE');
     expect(m.transmisor.rangos).not.toHaveBeenCalled();
+  });
+  it('la misma resolución con otro tramo no cuenta como registrada', async () => {
+    const m = montar({ rangos: [{ desde: 101, hasta: 200, prefijo: 'FE', resolucion: '1876' }] });
+    const r = await m.svc.traer(SEDE, user());
+    expect(r.rangos[0]!.registrada).toBe(false);
+  });
+  it('claveTecnicaDe devuelve la clave del rango que coincide y solo en el servidor', async () => {
+    const m = montar();
+    const q = { numero: '1876', prefijo: 'FE', desde: 1, hasta: 100 };
+    expect(await m.svc.claveTecnicaDe(SEDE, q, user())).toBe('SECRETA');
+    expect(await m.svc.claveTecnicaDe(SEDE, { ...q, hasta: 99 }, user())).toBeUndefined();
+    await expect(m.svc.claveTecnicaDe(SEDE, q, user(['b'.repeat(24)]))).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

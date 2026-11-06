@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ForbiddenException,
   Controller,
   Get,
   Ip,
@@ -68,12 +69,28 @@ export class EinvoicingController {
   /** Registra o renueva la resolución de una sede, anclando el consecutivo. */
   @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
   @Post('resolutions/:sedeId')
-  registerResolution(
+  async registerResolution(
     @Param('sedeId') sedeId: string,
     @Body() dto: RegisterResolutionDto,
     @CurrentUser() user: JwtUser,
   ) {
-    return this.einvoicing.registerResolution(sedeId, dto, user);
+    const { traerClaveDeDian, ...datos } = dto;
+    if (traerClaveDeDian) {
+      // Registrar desde un rango de la DIAN: la clave la lee el servidor.
+      if (!user.permissions.includes(PERMISSIONS.EINVOICING_CONFIGURE)) {
+        throw new ForbiddenException('Traer la clave técnica de la DIAN requiere permiso de configuración.');
+      }
+      const clave = await this.rangosDian.claveTecnicaDe(
+        sedeId,
+        { numero: datos.numero, prefijo: datos.prefijo?.toUpperCase(), desde: datos.rangoDesde, hasta: datos.rangoHasta },
+        user,
+      );
+      if (!clave) {
+        throw new BadRequestException('La DIAN no devolvió la clave técnica de ese rango. Vuelve a traer los rangos.');
+      }
+      datos.claveTecnica = clave;
+    }
+    return this.einvoicing.registerResolution(sedeId, datos, user);
   }
 
   /**
@@ -81,7 +98,7 @@ export class EinvoicingController {
    * (`GetNumberingRange`, con su certificado). Solo lectura: nada se registra
    * solo, y la clave técnica no viaja.
    */
-  @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
+  @RequirePermissions(PERMISSIONS.EINVOICING_CONFIGURE)
   @Get('sedes/:sedeId/rangos-dian')
   rangosDeLaDian(@Param('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
     return this.rangosDian.traer(sedeId, user);

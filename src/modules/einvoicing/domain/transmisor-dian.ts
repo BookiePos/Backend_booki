@@ -83,6 +83,10 @@ export interface RangoNumeracionDian {
   desde: number;
   hasta: number;
   resolucion?: string;
+  /** YYYY-MM-DD, tal como los da la DIAN. */
+  fechaResolucion?: string;
+  vigenciaDesde?: string;
+  vigenciaHasta?: string;
   claveTecnica?: string;
 }
 

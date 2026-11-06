@@ -16,6 +16,9 @@ export interface RangoDianVista {
   desde: number;
   hasta: number;
   resolucion?: string;
+  fechaResolucion?: string;
+  vigenciaDesde?: string;
+  vigenciaHasta?: string;
   /** ¿Ya hay una resolución registrada en la sede con ese número y prefijo? */
   registrada: boolean;
 }
@@ -56,6 +59,43 @@ export class RangosDianService {
     }
   }
 
+  /**
+   * Clave técnica del rango que coincide con lo que se va a registrar, leída
+   * de la DIAN en el servidor: nunca viaja al navegador. `undefined` si la DIAN
+   * no devuelve ese rango.
+   */
+  async claveTecnicaDe(
+    sedeId: string,
+    q: { numero?: string; prefijo?: string; desde?: number; hasta?: number },
+    user: JwtUser,
+  ): Promise<string | undefined> {
+    assertSedeAccess(user, sedeId);
+    let rangos;
+    try {
+      ({ rangos } = await this.crudo(sedeId));
+    } catch (err) {
+      if (err instanceof AmbienteNoCoincideError) return undefined;
+      throw err;
+    }
+    const r = rangos.find(
+      (x) =>
+        (x.resolucion ?? '') === (q.numero ?? '') &&
+        (x.prefijo ?? '') === (q.prefijo ?? '') &&
+        x.desde === q.desde &&
+        x.hasta === q.hasta,
+    );
+    return r?.claveTecnica;
+  }
+
+  private async crudo(sedeId: string) {
+    const emisor = await this.emisores.obtenerPorSede(sedeId);
+    if (!emisor) throw new BadRequestException('La sede no tiene emisor fiscal: configúralo primero.');
+    const ambiente = emisor.tipoAmbiente as TipoAmbiente;
+    const transmisor = await this.transmisores.para(sedeId, ambiente);
+    const r = await transmisor.rangos(emisor.nitNorm);
+    return { r, rangos: r.ok ? (r.rangos ?? []) : [], ambiente };
+  }
+
   private async consultar(sedeId: string): Promise<RangosDianVista> {
     const sede = await this.sedes.findOrFail(sedeId);
     const emisor = await this.emisores.obtenerPorSede(sedeId);
@@ -80,8 +120,15 @@ export class RangosDianService {
       desde: x.desde,
       hasta: x.hasta,
       resolucion: x.resolucion,
+      fechaResolucion: x.fechaResolucion,
+      vigenciaDesde: x.vigenciaDesde,
+      vigenciaHasta: x.vigenciaHasta,
       registrada: registradas.some(
-        (o) => (o.numero ?? '') === (x.resolucion ?? '') && (o.prefijo ?? '') === (x.prefijo ?? ''),
+        (o) =>
+          (o.numero ?? '') === (x.resolucion ?? '') &&
+          (o.prefijo ?? '') === (x.prefijo ?? '') &&
+          o.rangoDesde === x.desde &&
+          o.rangoHasta === x.hasta,
       ),
     }));
     return {

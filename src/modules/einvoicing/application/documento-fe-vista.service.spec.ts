@@ -15,8 +15,8 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
 import {
   CORREO_MAX_ENVIOS,
   DocumentoFeVistaService,
-  enmascararCorreo,
 } from './documento-fe-vista.service';
+import { enmascararCorreo } from '../../core-auth/application/mail.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 
@@ -27,8 +27,8 @@ const EMPRESA = 'emp1';
 const EMISOR = 'em1';
 const ruta = (t: string) => `einvoicing/${EMPRESA}/${EMISOR}/docs/${String(DOC_ID)}/documento.${t}`;
 
-const user = (sedeIds: string[] = [String(SEDE)]): JwtUser =>
-  ({ userId: 'u1', email: 'a@b.co', name: 'Ana', role: 'Dueño', sedeIds, permissions: [] }) as unknown as JwtUser;
+const user = (sedeIds: string[] = [String(SEDE)], perms: string[] = []): JwtUser =>
+  ({ userId: 'u1', email: 'a@b.co', name: 'Ana', role: 'Dueño', sedeIds, permissions: perms }) as unknown as JwtUser;
 
 type Fila = Record<string, any>;
 
@@ -180,10 +180,33 @@ describe('DocumentoFeVistaService', () => {
     });
     it('sin correo del adquiriente exige uno, y valida el indicado', async () => {
       const m = montar(fila({ adquiriente: { name: 'X' } }));
+      const conf = user([String(SEDE)], ['einvoicing.configure']);
       await expect(enContexto(() => m.svc.enviarCorreo(String(DOC_ID), undefined, user()))).rejects.toThrow(/correo/);
-      await expect(enContexto(() => m.svc.enviarCorreo(String(DOC_ID), 'malo', user()))).rejects.toThrow(/válido/);
-      const r = await enContexto(() => m.svc.enviarCorreo(String(DOC_ID), 'otro@dominio.co', user()));
+      await expect(enContexto(() => m.svc.enviarCorreo(String(DOC_ID), 'malo', conf))).rejects.toThrow(/válido/);
+      const r = await enContexto(() => m.svc.enviarCorreo(String(DOC_ID), 'otro@dominio.co', conf));
       expect(r.envios).toBe(1);
+    });
+    it('un correo distinto al del adquiriente exige configure y queda guardado y auditado enmascarado', async () => {
+      const m = montar(fila());
+      await expect(enContexto(() => m.svc.enviarCorreo(String(DOC_ID), 'otro@dominio.co', user()))).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(m.mail.sendFacturaElectronica).not.toHaveBeenCalled();
+      // El mismo del adquiriente (aunque lo escriban) no exige el permiso.
+      await enContexto(() => m.svc.enviarCorreo(String(DOC_ID), 'CLIENTE@ejemplo.co', user()));
+      const m2 = montar(fila());
+      await enContexto(() => m2.svc.enviarCorreo(String(DOC_ID), 'otro@dominio.co', user([String(SEDE)], ['einvoicing.configure'])));
+      expect(m2.mail.sendFacturaElectronica).toHaveBeenCalledWith(expect.objectContaining({ to: 'otro@dominio.co' }));
+      expect(m2.updates.some((u) => u.update.$set?.['correoEntrega.personalizado'] === true)).toBe(true);
+      const auditado = JSON.stringify(m2.audit.record.mock.calls);
+      expect(auditado).toContain('otro:ot***@dominio.co');
+      expect(auditado).not.toContain('otro@dominio.co');
+    });
+    it('si Resend no responde no se devuelve el cupo', async () => {
+      const m = montar(fila());
+      m.mail.sendFacturaElectronica.mockResolvedValueOnce({ sent: false, error: 'timeout', ambiguo: true } as never);
+      await expect(enContexto(() => m.svc.enviarCorreo(String(DOC_ID), undefined, user()))).rejects.toThrow(/pudo haber salido/);
+      expect(m.fila!.correoEntrega.envios).toBe(1);
     });
     it('el tope de envíos y la espera mínima dan 429 sin enviar', async () => {
       const m = montar(fila({ correoEntrega: { envios: CORREO_MAX_ENVIOS } }));

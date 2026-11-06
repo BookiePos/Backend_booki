@@ -54,6 +54,8 @@ export interface MailResult {
   error?: string;
   /** true cuando no hay proveedor configurado y solo se registró en el log. */
   simulated?: boolean;
+  /** true si la petición pudo llegar a Resend pero no hubo respuesta: puede haber salido. */
+  ambiguo?: boolean;
 }
 
 /**
@@ -313,7 +315,7 @@ export class MailService {
         this.logger.error(`Sin RESEND_API_KEY en producción: no se envió la factura ${msg.numero}.`);
         return { sent: false, error: 'Proveedor de correo no configurado' };
       }
-      this.logger.log(`[correo simulado] Factura electrónica ${msg.numero} para ${msg.to} (${msg.zip.length} bytes).`);
+      this.logger.log(`[correo simulado] Factura electrónica ${msg.numero} para ${enmascararCorreo(msg.to)} (${msg.zip.length} bytes).`);
       return { sent: false, simulated: true };
     }
     try {
@@ -325,15 +327,16 @@ export class MailService {
         attachments: [{ filename: msg.filename, content: msg.zip }],
       });
       if (error) {
-        this.logger.error(`Resend rechazó la factura ${msg.numero} a ${msg.to}: ${error.message}`);
+        this.logger.error(`Resend rechazó la factura ${msg.numero} a ${enmascararCorreo(msg.to)}: ${error.message}`);
         return { sent: false, error: error.message };
       }
-      this.logger.log(`Factura electrónica ${msg.numero} enviada a ${msg.to} (id: ${data?.id})`);
+      this.logger.log(`Factura electrónica ${msg.numero} enviada a ${enmascararCorreo(msg.to)} (id: ${data?.id})`);
       return { sent: true, id: data?.id };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Fallo enviando la factura ${msg.numero} a ${msg.to}: ${message}`);
-      return { sent: false, error: message };
+      this.logger.error(`Fallo enviando la factura ${msg.numero} a ${enmascararCorreo(msg.to)}: ${message}`);
+      // Sin respuesta: Resend pudo haberlo enviado; no se puede dar por no enviado.
+      return { sent: false, error: message, ambiguo: true };
     }
   }
 
@@ -448,6 +451,12 @@ export class MailService {
   </div>
 </body></html>`;
   }
+}
+
+/** `ab***@dominio.com`: lo que queda en logs y auditoría. */
+export function enmascararCorreo(email: string): string {
+  const [local = '', dominio = ''] = email.split('@');
+  return `${local.slice(0, 2)}***@${dominio}`;
 }
 
 function escapeHtml(value: string): string {
