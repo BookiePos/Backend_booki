@@ -11,9 +11,10 @@ import {
   FinanceReceivableDocument,
 } from '../../finance/infrastructure/schemas/finance-receivable.schema';
 import { NotaFiscalVentaService } from './nota-fiscal-venta.service';
+import { SaldoFavorService } from './saldo-favor.service';
 import type { NotaFiscalOperacion, SolicitudNotaVenta } from './emision-documento-fiscal.puerto';
 import { origenNotaDevolucion, origenNotaRebaja } from '../domain/documento-fiscal';
-import { hasCreditPart, propinaCobrada } from '../domain/sale-payments';
+import { hasCreditPart, propinaCobrada, salePartsOf } from '../domain/sale-payments';
 import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -101,6 +102,9 @@ export class SaleReturnsService {
     @Optional()
     @InjectModel(NotaSinReferencia.name)
     private readonly sinReferencia?: Model<NotaSinReferenciaDocument>,
+    /** Saldo a favor por cliente (Fase 6C): lo que la 2805 le acredita. */
+    @Optional()
+    private readonly saldoFavor?: SaldoFavorService,
   ) {}
 
   /** Devoluciones ya registradas de una venta, de la más reciente atrás. */
@@ -305,6 +309,7 @@ export class SaleReturnsService {
         'La venta se fió a un empleado (descuento por nómina): no admite devoluciones parciales. Anula la venta completa.',
       );
     }
+    this.assertTerceroParaSaldo(dto.refundMethod, sale, cxc);
 
     const yaDevuelto = await this.alreadyReturned(sale._id);
     let plan: ReturnPlan;
@@ -486,6 +491,7 @@ export class SaleReturnsService {
       }
     }
     registro.abonoCartera = abonoCartera;
+    registro.aSaldoFavor = await this.parteASaldoFavor(registro, sale);
     if (nota) registro.notaFiscal = nota as unknown as Record<string, unknown>;
     registro.carteraHecha = true;
     const turno = registro.procesandoHasta ?? null;
@@ -541,6 +547,7 @@ export class SaleReturnsService {
         'La venta se fió a un empleado (descuento por nómina): no admite rebajas. Anula la venta completa.',
       );
     }
+    this.assertTerceroParaSaldo(dto.refundMethod, sale, cxc);
 
     const ya = await this.alreadyReturned(sale._id);
     let plan: ReturnType<typeof planDeRebaja>;
@@ -634,6 +641,7 @@ export class SaleReturnsService {
       }
     }
     registro.abonoCartera = abonoCartera;
+    registro.aSaldoFavor = await this.parteASaldoFavor(registro, sale);
     if (nota) registro.notaFiscal = nota as unknown as Record<string, unknown>;
     registro.carteraHecha = true;
     const turno = registro.procesandoHasta ?? null;
@@ -838,9 +846,10 @@ export class SaleReturnsService {
       // Lo que bajó la cartera de un fiado no sale de ninguna parte: el cliente
       // simplemente debe menos. Solo el resto se devuelve por el medio elegido,
       // con la propina devuelta (decisión 4), que entró al cajón con el cobro.
-      const enPlata =
-        clampNonNegative(registro.refundTotal - (registro.abonoCartera ?? 0)) +
-        (registro.tipRefund ?? 0);
+      // Lo pagado con saldo a favor (Fase 6C) vuelve al saldo, nunca al cajón.
+      const enPlata = clampNonNegative(
+        registro.refundTotal - (registro.abonoCartera ?? 0) + (registro.tipRefund ?? 0) - (registro.aSaldoFavor ?? 0),
+      );
       let hecha = true;
       if (registro.refundMethod === 'cash' && enPlata > 0 && caja === 'sin_caja') {
         // El barrido no toca la caja (N6): queda para el cajero.
@@ -884,6 +893,10 @@ export class SaleReturnsService {
       // mismo criterio que el resto de asientos automáticos; un reintento no
       // lo arreglaría (el origen es el mismo) y sí dejaría la devolución
       // varada para siempre.
+      // El saldo a favor del cliente (Fase 6C) va con el asiento que acredita
+      // la 2805, y antes que él: es idempotente por devolución, así que un
+      // reintento no abona dos veces.
+      await this.abonarSaldoFavor(registro, sale);
       await this.postToLedger(registro, sale);
       registro.asientoHecho = true;
       await registro.save();
@@ -1028,6 +1041,7 @@ export class SaleReturnsService {
         if (cxc && registro.refundTotal > 0) {
           registro.abonoCartera = await this.abonarCartera(sale, registro, registro.refundTotal, user);
         }
+        registro.aSaldoFavor = await this.parteASaldoFavor(registro, sale);
         registro.carteraHecha = true;
         await registro.save();
       }
@@ -1042,6 +1056,71 @@ export class SaleReturnsService {
     }
     if (nota) this.notas?.transmitirDetras(nota, user);
     return registro;
+  }
+
+  /**
+   * Sin tercero no hay a quién dejarle saldo a favor (revisión 6C): la 2805
+   * quedaría con un saldo que nadie puede gastar.
+   */
+  private assertTerceroParaSaldo(
+    refundMethod: string,
+    sale: SaleDocument,
+    cxc: FinanceReceivableDocument | null,
+  ): void {
+    if (refundMethod !== 'credit_note' && refundMethod !== 'none') return;
+    if (sale.customerId || cxc?.customerId) return;
+    throw new BadRequestException(
+      'La venta no tiene cliente registrado: identifica al cliente o devuelve en efectivo/transferencia.',
+    );
+  }
+
+  /**
+   * Cuánto de lo que se reconoce ahora vuelve al saldo a favor porque se pagó
+   * con él (Fase 6C): después del abono a la CxC, hasta lo pagado con
+   * `saldo_favor` menos lo que ya volvió en devoluciones y rebajas previas.
+   */
+  private async parteASaldoFavor(registro: SaleReturnDocument, sale: SaleDocument): Promise<number> {
+    const pagado = sumBy(
+      salePartsOf(sale).filter((p) => p.method === 'saldo_favor'),
+      (p) => p.amount,
+    );
+    if (pagado <= 0) return 0;
+    const previas = await this.model.find({ saleId: sale._id }).exec();
+    const yaVolvio = sumBy(
+      previas.filter((p) => String(p._id) !== String(registro._id)),
+      (p) => p.aSaldoFavor ?? 0,
+    );
+    const reconocido = clampNonNegative(
+      registro.refundTotal - (registro.abonoCartera ?? 0) + (registro.tipRefund ?? 0),
+    );
+    return Math.min(reconocido, clampNonNegative(pagado - yaVolvio));
+  }
+
+  /**
+   * Lo que el asiento acredita a la 2805 (devolución o rebaja `credit_note`,
+   * o cambio `none`: lo devuelto menos lo que bajó la cartera, más la
+   * propina), abonado al tercero de la venta. Sin tercero queda en el auxiliar
+   * sin cliente: se ve en el reporte, pero nadie lo puede gastar.
+   */
+  private async abonarSaldoFavor(registro: SaleReturnDocument, sale: SaleDocument): Promise<void> {
+    if (!this.saldoFavor) return;
+    const aSaldo = registro.aSaldoFavor ?? 0;
+    const resto = clampNonNegative(
+      registro.refundTotal - (registro.abonoCartera ?? 0) + (registro.tipRefund ?? 0) - aSaldo,
+    );
+    // Lo pagado con saldo a favor vuelve siempre al saldo; el resto, solo si el medio es a favor.
+    const amount = aSaldo + (registro.refundMethod === 'credit_note' || registro.refundMethod === 'none' ? resto : 0);
+    if (amount <= 0) return;
+    const deCxc = sale.customerId ? null : await this.cuentaPorCobrar(sale).catch(() => null);
+    await this.saldoFavor.abonar({
+      customerId: sale.customerId ?? deCxc?.customerId ?? null,
+      customerName: sale.customer?.name,
+      amount,
+      sourceType: 'sale_return',
+      sourceId: registro._id.toString(),
+      sedeId: registro.sedeId.toString(),
+      memo: `${registro.kind === 'rebaja' ? 'Rebaja' : 'Devolución'} de la venta ${sale.saleNumber}`,
+    });
   }
 
   /** CxC del fiado a cliente (la del empleado no deja CxC). */
@@ -1172,6 +1251,8 @@ export class SaleReturnsService {
       refundMethod: registro.refundMethod,
       // Lo que bajó la cartera del fiado va contra la 1305, no por el medio elegido.
       toReceivable: registro.abonoCartera ?? 0,
+      // Lo pagado con saldo a favor vuelve a la 2805 (Fase 6C).
+      toCustomerCredit: registro.aSaldoFavor ?? 0,
       // La propina devuelta sale de la 2380 (decisión 4).
       tip: registro.tipRefund ?? 0,
       memo: registro.kind === 'rebaja' ? `Rebaja posterior de la venta ${sale.saleNumber}` : undefined,

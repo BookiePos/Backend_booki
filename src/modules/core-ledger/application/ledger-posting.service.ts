@@ -31,6 +31,9 @@ export class LedgerPostingService {
     // Pedido de plataforma de domicilio: la plataforma cobró al cliente y le
     // debe al negocio → cuenta por cobrar (1305), no Caja ni Bancos (ítem 7.5).
     if (method === 'platform') return ACC.CLIENTES;
+    // Pago con saldo a favor (Fase 6C): se gasta lo que el negocio le debía al
+    // cliente, así que el débito baja la 2805 y no entra plata a caja ni bancos.
+    if (method === 'saldo_favor') return ACC.ANTICIPOS_CLIENTES;
     return method === 'cash' ? ACC.CAJA : ACC.BANCOS;
   }
 
@@ -370,6 +373,11 @@ export class LedgerPostingService {
     toReceivable?: number;
     /** Propina que vuelve con la devolución (decisión 4): débito a la 2380. */
     tip?: number;
+    /**
+     * Parte que vuelve al saldo a favor del cliente porque la venta se pagó
+     * con él (Fase 6C): a crédito de la 2805, no por el medio elegido.
+     */
+    toCustomerCredit?: number;
     /** Rebaja posterior (Fase 6C): mismo asiento, otra glosa. */
     memo?: string;
     /**
@@ -399,8 +407,12 @@ export class LedgerPostingService {
     if (cartera > 0) {
       lines.push({ accountCode: ACC.CLIENTES, credit: cartera, sedeId: input.sedeId });
     }
-    if (total - cartera + tip > 0) {
-      lines.push({ accountCode: contrapartida, credit: total - cartera + tip, sedeId: input.sedeId });
+    const aSaldo = Math.min(Math.max(cop(input.toCustomerCredit ?? 0), 0), Math.max(total - cartera + tip, 0));
+    if (aSaldo > 0) {
+      lines.push({ accountCode: ACC.ANTICIPOS_CLIENTES, credit: aSaldo, sedeId: input.sedeId });
+    }
+    if (total - cartera + tip - aSaldo > 0) {
+      lines.push({ accountCode: contrapartida, credit: total - cartera + tip - aSaldo, sedeId: input.sedeId });
     }
     if (tip > 0) {
       lines.push({ accountCode: ACC.PROPINAS_POR_PAGAR, debit: tip, sedeId: input.sedeId });

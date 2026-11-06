@@ -112,6 +112,7 @@ function armarVenta() {
   return {
     _id: saleId,
     saleNumber: 'FV-000777',
+    customerId: new Types.ObjectId(),
     sedeId: { _id: sedeId },
     status: 'completed',
     total,

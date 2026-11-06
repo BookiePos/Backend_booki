@@ -1,9 +1,14 @@
 /**
+ * `saldo_favor` (Fase 6C): el cliente REGISTRADO paga con lo que el negocio le
+ * debe (PUC 2805) por una devolución, una rebaja o un descuento «a favor».
+ * Debita la 2805, no la caja; no entra al arqueo ni a tesorería, y no puede
+ * pasar del saldo del cliente (`SaldoFavorService`). Solo en línea.
+ *
  * `platform`: pedido de Rappi, DiDi Food, Uber Eats… La plataforma cobró al cliente
  * y le liquida al negocio después, así que es cuenta por cobrar (1305) y no
  * entra al arqueo (ítem 7.5).
  */
-export const PAYMENT_METHODS = ['cash', 'card', 'transfer', 'credit', 'platform'] as const;
+export const PAYMENT_METHODS = ['cash', 'card', 'transfer', 'credit', 'platform', 'saldo_favor'] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
 /**

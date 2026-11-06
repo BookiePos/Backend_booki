@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ForbiddenException,
   Controller,
   Get,
   Param,
@@ -19,8 +20,10 @@ import {
   CreateSaleRebateDto,
 } from '../application/dto/create-sale-rebate.dto';
 import { NotasSinReferenciaService } from '../application/notas-sin-referencia.service';
+import { SaldoFavorService } from '../application/saldo-favor.service';
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
+import { allowedSedeIds } from '../../core-auth/domain/sede-access';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { OfflineSalesService } from '../application/offline-sales.service';
 import { DocumentoFiscalVentaService } from '../application/documento-fiscal-venta.service';
@@ -39,6 +42,7 @@ export class SalesController {
     private readonly offline: OfflineSalesService,
     private readonly documentoFiscal: DocumentoFiscalVentaService,
     private readonly sinReferencia: NotasSinReferenciaService,
+    private readonly saldoFavor: SaldoFavorService,
   ) {}
 
   /**
@@ -159,6 +163,29 @@ export class SalesController {
   stats(@Query('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
     if (!sedeId) throw new BadRequestException('sedeId es obligatorio');
     return this.sales.statsToday(sedeId, user);
+  }
+
+  /**
+   * (Antes de `:id`.) Reporte de la 2805 por tercero (Fase 6C): saldo a favor de cada cliente,
+   * lo que dice su auxiliar, lo que quedó sin tercero y el mayor de la 2805.
+   */
+  @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @Get('saldos-favor')
+  saldosFavor(@CurrentUser() user: JwtUser) {
+    // El saldo a favor es de TODA la empresa: el cliente lo gasta en cualquier
+    // sede, aunque cada asiento de la 2805 lleve la sede donde se originó. Por
+    // eso no se filtra por sede y quien está limitado a unas sedes no lo ve.
+    if (allowedSedeIds(user) !== null) {
+      throw new ForbiddenException('El reporte de saldos a favor es de toda la empresa: no está disponible para un usuario limitado por sede.');
+    }
+    return this.saldoFavor.reporte();
+  }
+
+  /** Saldo a favor disponible de un cliente: el POS lo muestra antes de cobrar. */
+  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @Get('saldos-favor/:customerId')
+  async saldoFavorDe(@Param('customerId') customerId: string) {
+    return { customerId, saldo: await this.saldoFavor.saldoDe(customerId) };
   }
 
   @RequirePermissions(PERMISSIONS.POS_SELL)

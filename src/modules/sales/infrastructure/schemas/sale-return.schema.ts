@@ -197,6 +197,13 @@ export class SaleReturn {
   @Prop({ default: 0, min: 0 })
   abonoCartera!: number;
 
+  /**
+   * Parte de lo reconocido que vuelve al saldo a favor del cliente porque la
+   * venta se pagó con `saldo_favor` (Fase 6C): Cr 2805, nunca efectivo.
+   */
+  @Prop({ default: 0, min: 0 })
+  aSaldoFavor!: number;
+
   /** Nota crédito / de ajuste de la devolución, o por qué no la lleva (`NotaFiscalOperacion`). */
   @Prop({ type: Object })
   notaFiscal?: Record<string, unknown>;

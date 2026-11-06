@@ -37,6 +37,8 @@ export const MEDIO_PAGO_BY_METHOD: Record<string, string> = {
   cash: '10',
   card: '48',
   transfer: '42',
+  // Saldo a favor (Fase 6C): compensación con lo que se le debía. ZZZ «Acuerdo mutuo» (a confirmar).
+  saldo_favor: 'ZZZ',
 };
 
 /**
@@ -67,6 +69,7 @@ export function pagoPosDian(p: { method: string; cardType?: string; channel?: st
     case 'credit':
       return { formaPago: '2', medio: '1' };
     case 'platform':
+    case 'saldo_favor':
       return { formaPago: '1', medio: 'ZZZ' };
     default:
       return { formaPago: '1', medio: '1' };

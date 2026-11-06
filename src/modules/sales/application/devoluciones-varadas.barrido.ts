@@ -1,5 +1,6 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { NotasSinReferenciaService } from './notas-sin-referencia.service';
+import { SaldoFavorService } from './saldo-favor.service';
 import { BusinessService } from '../../control/application/business.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import type { ResultadoBarrido } from '../../../shared/barridos/resultado-barrido';
@@ -37,6 +38,9 @@ export class DevolucionesVaradasBarrido {
     /** Descuentos sin referencia varados (Fase 6C): mismo barrido, misma regla de caja. */
     @Optional()
     private readonly sinReferencia?: NotasSinReferenciaService,
+    /** Movimientos de saldo a favor que quedaron sin aplicar (Fase 6C). */
+    @Optional()
+    private readonly saldoFavor?: SaldoFavorService,
   ) {}
 
   /** Nunca lanza: el fallo se devuelve para que `/cron/diario` lo vea. */
@@ -50,6 +54,7 @@ export class DevolucionesVaradasBarrido {
       let completadas = 0;
       let sinTerminar = 0;
       let pendientesCaja = 0;
+      let saldosAplicados = 0;
       const { procesadas, pendientes, fallidas } = await recorrerEmpresas(
         empresas,
         async (biz) => {
@@ -61,9 +66,13 @@ export class DevolucionesVaradasBarrido {
               const n = this.sinReferencia
                 ? await this.sinReferencia.completarVaradas()
                 : { completadas: 0, pendientesCaja: 0, fallidas: 0 };
+              const m = this.saldoFavor
+                ? await this.saldoFavor.aplicarPendientes()
+                : { aplicados: 0, fallidos: 0 };
+              saldosAplicados += m.aplicados;
               return {
                 completadas: d.completadas + n.completadas,
-                fallidas: d.fallidas + n.fallidas,
+                fallidas: d.fallidas + n.fallidas + m.fallidos,
                 pendientesCaja: d.pendientesCaja + n.pendientesCaja,
               };
             },
@@ -86,6 +95,7 @@ export class DevolucionesVaradasBarrido {
         completadas,
         pendientesCaja,
         sinTerminar,
+        saldosAplicados,
         fallidas: fallidas.length,
       };
       if (fallidas.length > 0 || pendientes > 0 || sinTerminar > 0) {

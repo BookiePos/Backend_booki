@@ -4,6 +4,7 @@ import { TenantContext } from '../../../shared/tenancy/tenant-context';
 
 vi.mock('./sale-returns.service', () => ({ SaleReturnsService: class {} }));
 vi.mock('./notas-sin-referencia.service', () => ({ NotasSinReferenciaService: class {} }));
+vi.mock('./saldo-favor.service', () => ({ SaldoFavorService: class {} }));
 vi.mock('../../control/application/business.service', () => ({ BusinessService: class {} }));
 
 import { DevolucionesVaradasBarrido } from './devoluciones-varadas.barrido';
@@ -88,5 +89,25 @@ describe('DevolucionesVaradasBarrido', () => {
     expect(vistas).toEqual(['biz_1']);
     expect(r.estado).toBe('ok');
     expect(r.cifras).toMatchObject({ completadas: 1, pendientesCaja: 1 });
+  });
+
+  it('aplica los movimientos de saldo a favor sin efecto (Fase 6C) en el contexto de cada empresa', async () => {
+    const vistas: (string | undefined)[] = [];
+    const returns = { completarVaradas: vi.fn(async () => ({ completadas: 0, pendientesCaja: 0, fallidas: 0, ocupadas: 0 })) };
+    const saldoFavor = {
+      aplicarPendientes: vi.fn(async () => {
+        vistas.push(TenantContext.current()?.dbName);
+        return { aplicados: 2, fallidos: 0 };
+      }),
+    };
+    const barrido = new DevolucionesVaradasBarrido(
+      { listActive: async () => [empresa(7)] } as never,
+      returns as never,
+      undefined,
+      saldoFavor as never,
+    );
+    const r = await barrido.barrer();
+    expect(vistas).toEqual(['biz_7']);
+    expect(r.cifras).toMatchObject({ saldosAplicados: 2 });
   });
 });

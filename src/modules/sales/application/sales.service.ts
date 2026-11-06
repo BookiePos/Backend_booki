@@ -8,6 +8,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { NotaFiscalVentaService } from './nota-fiscal-venta.service';
+import { MENSAJE_SALDO_INSUFICIENTE, SaldoFavorService } from './saldo-favor.service';
 import type { NotaFiscalOperacion } from './emision-documento-fiscal.puerto';
 import { origenNotaAnulacion } from '../domain/documento-fiscal';
 import { MENSAJE_FUERA_DE_SEMANA_POS, puedeAnularPos } from '../domain/ventana-anulacion';
@@ -266,6 +267,9 @@ export class SalesService {
      */
     @Optional()
     private readonly notas?: NotaFiscalVentaService,
+    /** Saldo a favor del cliente (Fase 6C): el medio `saldo_favor` lo gasta. */
+    @Optional()
+    private readonly saldoFavor?: SaldoFavorService,
   ) {}
 
   /**
@@ -787,6 +791,30 @@ export class SalesService {
       change = received - grandTotal;
     }
 
+    // Saldo a favor (Fase 6C): solo un cliente registrado y solo en línea. Se
+    // revisa aquí, ANTES de tocar inventario, y se gasta de forma atómica al
+    // persistir la venta (`finalizeSale`).
+    const pagoSaldo = montoSaldoFavor(dto, cobro, grandTotal);
+    let saldoFavor: { customerId: string; amount: number } | undefined;
+    if (pagoSaldo > 0) {
+      if (offline) {
+        throw offlineConflict('NO_PERMITIDA_OFFLINE', 'El pago con saldo a favor necesita conexión: no se puede registrar offline');
+      }
+      const parte = (dto.payments ?? []).find((p) => p.method === 'saldo_favor');
+      const customerId = idCliente ?? parte?.customerId ?? dto.payment?.customerId;
+      if (!customerId) {
+        throw new BadRequestException('El pago con saldo a favor requiere seleccionar el cliente registrado.');
+      }
+      if (!this.saldoFavor) {
+        throw new BadRequestException('El saldo a favor no está disponible en este momento.');
+      }
+      const disponible = await this.saldoFavor.saldoDe(customerId);
+      if (disponible < pagoSaldo) {
+        throw new BadRequestException(MENSAJE_SALDO_INSUFICIENTE(disponible, pagoSaldo));
+      }
+      saldoFavor = { customerId, amount: pagoSaldo };
+    }
+
     // El detalle del canal digital (ítem 6.4) también se valida ANTES de tocar
     // inventario: un canal que no es del medio es un 400, no una venta a medias.
     if (!dto.payments) {
@@ -1004,6 +1032,7 @@ export class SalesService {
         isCredit,
         credito,
         cobro,
+        saldoFavor,
         offline: offline ? { ...offline, faltantes } : undefined,
       });
     } catch (err) {
@@ -1151,6 +1180,8 @@ export class SalesService {
     cobro?: SplitPaymentResult;
     /** Venta offline: número reservado, UUID y fecha original. */
     offline?: OfflineSaleOptions;
+    /** Parte pagada con saldo a favor y de quién (Fase 6C). */
+    saldoFavor?: { customerId: string; amount: number };
   },
   ): Promise<SaleDocument> {
     const {
@@ -1180,6 +1211,7 @@ export class SalesService {
       cobro,
       packagingSnapshot,
       offline,
+      saldoFavor,
     } = ctx;
     // La fecha contable es la del cobro: una venta offline sincronizada al
     // día siguiente pertenece al día en que se vendió.
@@ -1211,6 +1243,10 @@ export class SalesService {
     const sale = await this.saleModel.create({
       saleNumber,
       sedeId: new Types.ObjectId(dto.sedeId),
+      // Tercero del saldo a favor (Fase 6C): el que paga con él o el registrado.
+      customerId: saldoFavor
+        ? new Types.ObjectId(saldoFavor.customerId)
+        : (clienteFiscal?._id as Types.ObjectId | undefined),
       // Offline: quien cobró (dueño de la reserva), aunque la registre otro.
       cashierId: offline?.cajero?.userId ?? user.userId,
       cashierEmail: offline?.cajero?.email ?? user.email,
@@ -1294,6 +1330,32 @@ export class SalesService {
     // A partir de aquí la venta EXISTE: cierra la ventana de compensación de
     // stock (los pasos siguientes son best-effort y no revierten inventario).
     holder.sale = sale;
+
+    // Saldo a favor (Fase 6C): se gasta ya con la venta persistida y ANTES del
+    // asiento, que debita la 2805. Atómico: si otro cobro lo gastó entretanto,
+    // se deshace la venta (aún sin asiento ni tesorería) y el llamador
+    // devuelve el stock, igual que cuando falla la deducción de nómina.
+    if (saldoFavor && this.saldoFavor) {
+      try {
+        await this.saldoFavor.consumir({
+          customerId: saldoFavor.customerId,
+          amount: saldoFavor.amount,
+          saleId: sale._id.toString(),
+          sedeId: dto.sedeId,
+          memo: `Pago de la venta ${saleNumber}`,
+        });
+      } catch (err) {
+        try {
+          await this.saleModel.deleteOne({ _id: sale._id }).exec();
+          holder.sale = undefined;
+        } catch (errBorrado) {
+          this.logger.error(
+            `CONCILIAR: la venta ${sale._id.toString()} quedó sin su pago con saldo a favor y no se pudo deshacer: ${(errBorrado as Error).message}`,
+          );
+        }
+        throw err;
+      }
+    }
 
     // Venta a crédito (fiado): no entra a caja. Se rutea según el deudor.
     // Se debe lo mismo que el asiento debita a Clientes: total + domicilio. La
@@ -1767,6 +1829,9 @@ export class SalesService {
     // Reversa del auto-posteo a tesorería (si la venta fue tarjeta/transferencia,
     // o tuvo partes así en un cobro mixto: una por medio).
     await this.treasury.reverse('sale', treasurySourceIds(sale._id.toString()));
+    // Lo que se pagó con saldo a favor vuelve al cliente (el contra-asiento ya
+    // reacreditó la 2805). Idempotente y nunca lanza.
+    await this.saldoFavor?.revertirConsumo(sale._id.toString());
 
     if (cajaParaSalida) {
       try {
@@ -2006,4 +2071,17 @@ export class SalesService {
       };
     });
   }
+}
+
+/**
+ * Cuánto de la venta se paga con saldo a favor (Fase 6C): la parte
+ * `saldo_favor` de un cobro mixto, o todo lo cobrado si es el único medio.
+ */
+function montoSaldoFavor(
+  dto: CreateSaleDto,
+  cobro: SplitPaymentResult | undefined,
+  grandTotal: number,
+): number {
+  if (cobro) return sumBy(cobro.parts.filter((p) => p.method === 'saldo_favor'), (p) => p.amount);
+  return dto.payment?.method === 'saldo_favor' ? cop(grandTotal) : 0;
 }
