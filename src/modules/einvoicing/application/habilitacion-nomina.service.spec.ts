@@ -75,6 +75,10 @@ function armar(opts: { ambiente?: string; testSetId?: string; consulta?: any; re
       faltaParaTransmitir: [],
     }),
     leerSecreto: async () => '12345',
+    marcados: [] as string[],
+    marcarSetAprobado: async (_id: string, clase: string) => {
+      emisores.marcados.push(clase);
+    },
   };
   const firmante = { firmar: async (xml: string) => xml };
   const audit = { record: async () => undefined };
@@ -85,7 +89,7 @@ function armar(opts: { ambiente?: string; testSetId?: string; consulta?: any; re
     { para: async () => transmisor } as any,
     audit as any,
   );
-  return { s, filas, envios, grabados, opts };
+  return { s, filas, envios, grabados, opts, emisores };
 }
 
 const dentro = <T>(f: () => Promise<T>) => TenantContext.run({ businessId: 'b1' } as any, f);
@@ -129,6 +133,17 @@ describe('HabilitacionNominaService', () => {
     await dentro(() => s.iniciar(SEDE, owner));
     expect(envios).toHaveLength(4);
     expect(envios.every((e) => e.tipo === 'payroll_adjustment' && e.fullNumber.startsWith('NAP'))).toBe(true);
+  });
+
+  it('con todo el set aceptado enciende habilitadoNomina (clase ne); antes, no', async () => {
+    const { s, emisores } = armar();
+    await dentro(() => s.iniciar(SEDE, owner));
+    await dentro(() => s.consultar(SEDE, owner));
+    expect(emisores.marcados).toHaveLength(0);
+    await dentro(() => s.iniciar(SEDE, owner));
+    const v = await dentro(() => s.consultar(SEDE, owner));
+    expect(v.aprobada).toBe(true);
+    expect(emisores.marcados).toContain('ne');
   });
 
   it('consultar sin set iniciado no crea ni envía', async () => {

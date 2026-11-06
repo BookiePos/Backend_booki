@@ -309,11 +309,16 @@ export class FiscalEmittersService {
    * solo actúa en ambiente de habilitación.
    *
    * INDICADORES: `habilitado` es el de FACTURA y POS (comparten SoftwareID/PIN y gate); la
-   * NÓMINA tiene el suyo, `habilitadoNomina`, que este método nunca toca. PENDIENTE: la
-   * habilitación de nómina todavía no lo enciende (hoy se pone a mano al aprobar su set).
+   * NÓMINA tiene el suyo, `habilitadoNomina`, que enciende la habilitación de nómina (`'ne'`)
+   * cuando todos los documentos de su set quedan aceptados.
    */
-  async marcarSetAprobado(emisorId: string, clase: 'fe' | 'pos', ahora: Date = new Date()): Promise<void> {
-    const set = clase === 'fe' ? { habilitado: true, facturaSetAprobadoAt: ahora } : { posSetAprobadoAt: ahora };
+  async marcarSetAprobado(emisorId: string, clase: 'fe' | 'pos' | 'ne', ahora: Date = new Date()): Promise<void> {
+    const set =
+      clase === 'fe'
+        ? { habilitado: true, facturaSetAprobadoAt: ahora }
+        : clase === 'ne'
+          ? { habilitadoNomina: true }
+          : { posSetAprobadoAt: ahora };
     await this.model.updateOne({ _id: this.oid(emisorId), tipoAmbiente: '2' }, { $set: set }).exec();
   }
 

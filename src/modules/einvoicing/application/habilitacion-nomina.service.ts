@@ -212,6 +212,11 @@ export class HabilitacionNominaService {
           error = r.error;
         }
       }
+      // Set de nómina aceptado: enciende `habilitadoNomina` (idempotente). Sin esto la nómina no podía
+      // pasar a producción nunca, porque `estadoNomina` ya no lee el `habilitado` de factura.
+      if (set.testSetId === base.testSetId && resumenSetNomina(set).aprobada) {
+        await this.emisores.marcarSetAprobado(base.emisorId, 'ne', ahora);
+      }
     } finally {
       // Siempre se guarda lo avanzado y se suelta el bloqueo (un envío hecho no se puede perder).
       await this.model
