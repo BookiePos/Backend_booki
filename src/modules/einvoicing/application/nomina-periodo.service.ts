@@ -21,6 +21,8 @@ import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { allowedSedeIds, assertSedeAccess } from '../../core-auth/domain/sede-access';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { AuditService } from '../../core-audit/application/audit.service';
+import { ParamsService } from '../../core-params/application/params.service';
+import { DEFAULT_PAYROLL_SETTINGS } from '../../payroll/domain/payroll.constants';
 
 /**
  * Lote de emisión por llamada. Cada documento firma y sale a la red (hasta
@@ -81,6 +83,8 @@ interface ContextoPeriodo {
   veTodas: boolean;
   empleados: Map<string, EmpleadoConsolidar & { sedeId?: string }>;
   corridas: LeanRun[];
+  /** SMMLV vigente al cierre del mes (core-params), para el mínimo del salario integral. */
+  smmlv: number;
 }
 
 interface LeanRun {
@@ -89,6 +93,8 @@ interface LeanRun {
   coverage: string;
   status: string;
   sedeId?: Types.ObjectId;
+  /** Medio y fecha real del pago declarados al cerrar (decisión 1 del dueño). */
+  pago?: { medio?: string; fecha?: string };
   slips: {
     employeeId: string;
     employeeName?: string;
@@ -123,6 +129,7 @@ export class NominaPeriodoService {
     private readonly emisores: FiscalEmittersService,
     private readonly nomina: NominaElectronicaService,
     private readonly audit: AuditService,
+    private readonly params: ParamsService,
   ) {}
 
   // ── Pre-vuelo ─────────────────────────────────────────────────────────────
@@ -379,7 +386,9 @@ export class NominaPeriodoService {
         .filter((sl) => sl.sedeEfectiva !== undefined && sedesEmisor.includes(sl.sedeEfectiva));
       if (slips.length > 0) corridas.push({ ...run, slips });
     }
-    return { periodo, sedeId, emisor, empleador: empleador.empleador, sedes, sedesEmisor, veTodas, empleados, corridas };
+    const finMes = new Date(Date.UTC(Number(periodo.slice(0, 4)), Number(periodo.slice(5, 7)), 0)).toISOString().slice(0, 10);
+    const smmlv = await this.params.number('nomina.salario_minimo', DEFAULT_PAYROLL_SETTINGS.smmlv, { date: finMes });
+    return { periodo, sedeId, emisor, empleador: empleador.empleador, sedes, sedesEmisor, veTodas, empleados, corridas, smmlv };
   }
 
   /** Contexto para ajustar un documento ya emitido: el de su mes. */
@@ -446,6 +455,7 @@ export class NominaPeriodoService {
         cobertura: run.coverage === 'sede' ? 'sede' : 'all',
         sedeId: run.sedeId ? String(run.sedeId) : undefined,
         estado: run.status === 'cerrada' ? 'cerrada' : 'borrador',
+        ...(run.pago?.medio || run.pago?.fecha ? { pago: { medio: run.pago.medio ?? '', fecha: run.pago.fecha ?? '' } } : {}),
         colilla: {
           employeeId: slip.employeeId,
           employeeName: slip.employeeName,
@@ -474,7 +484,7 @@ export class NominaPeriodoService {
       empleador: { razonSocial: ctx.emisor.razonSocial, municipioDane: ctx.emisor.municipioDane, direccion: ctx.emisor.direccion },
       slips,
       deducciones,
-      pago: { fechasPagos: [] },
+      smmlv: ctx.smmlv,
     };
     const r = consolidarNominaMes(entrada);
     return r.ok ? { ok: true as const, modelo: r.modelo as DocumentoNe, advertencias: r.advertencias } : { ok: false as const, bloqueos: r.bloqueos };

@@ -15,6 +15,7 @@ import { PreviewPayrollDto } from '../application/dto/preview-payroll.dto';
 import { CreateRunDto } from '../application/dto/create-run.dto';
 import { CreateDeductionDto } from '../application/dto/deduction.dto';
 import { LiquidacionDto } from '../application/dto/liquidacion.dto';
+import { CerrarRunDto, PagoNominaDto } from '../application/dto/pago-nomina.dto';
 import { DeductionStatus } from '../infrastructure/schemas/payroll-deduction.schema';
 import {
   RequireAnyPermission,
@@ -95,8 +96,15 @@ export class PayrollController {
 
   @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
   @Post('runs/:id/close')
-  closeRun(@Param('id') id: string, @CurrentUser() user: JwtUser) {
-    return this.payroll.closeRun(id, user);
+  closeRun(@Param('id') id: string, @Body() dto: CerrarRunDto, @CurrentUser() user: JwtUser) {
+    return this.payroll.closeRun(id, user, dto);
+  }
+
+  /** Medio y fecha real del pago de una corrida cerrada (nómina electrónica). */
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Put('runs/:id/pago')
+  declararPago(@Param('id') id: string, @Body() dto: PagoNominaDto, @CurrentUser() user: JwtUser) {
+    return this.payroll.declararPago(id, dto, user);
   }
 
   @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)

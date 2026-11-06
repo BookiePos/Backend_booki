@@ -496,7 +496,7 @@ describe('PayrollController', () => {
     await expect(c.sendSlip(id, 'e1', DUENA)).rejects.toBeTruthy();
     await expect(c.recalcRun(id, DUENA)).resolves.toBeTruthy();
     await expect(c.createRun({ period: '2026-09' } as never, DUENA)).resolves.toBeTruthy();
-    await expect(c.closeRun(id, DUENA)).resolves.toBeTruthy();
+    await expect(c.closeRun(id, {} as never, DUENA)).resolves.toBeTruthy();
     run.status = 'borrador';
     await expect(c.removeRun(id, DUENA)).resolves.toEqual({ ok: true });
   });

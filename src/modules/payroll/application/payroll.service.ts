@@ -87,6 +87,7 @@ import {
 } from '../../core-ledger/application/ledger-posting.service';
 import { cop, sumBy } from '../../finance/domain/money.util';
 import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
+import { motivoPagoInvalido } from '../domain/pago-nomina';
 import { esDuplicadoEn } from '../../core-ledger/domain/journal-entry.indices';
 import { INDICE_ARRASTRE_VIVO } from '../domain/payroll-deduction.indices';
 import { diasALiquidar } from '../domain/descanso-remunerado';
@@ -1067,11 +1068,47 @@ export class PayrollService {
     }
   }
 
+  /**
+   * Medio y fecha real del pago de la corrida (decisión 1 del dueño): se
+   * declaran al cerrar o después, sobre una corrida cerrada. La nómina
+   * electrónica del mes no se consolida sin ellos. Si ya hay documento
+   * aceptado, cambiarlos exige corregirlo con la nota de ajuste (Reemplazar).
+   */
+  private validarPago(run: PayrollRunDocument, medio: string, fecha: string): void {
+    const motivo = motivoPagoInvalido(run.period, medio, fecha, fechaColombia(new Date()));
+    if (motivo) throw new BadRequestException(motivo);
+  }
+
+  async declararPago(
+    id: string,
+    pago: { medioPago: string; fechaPago: string },
+    user?: SedeScopeUser & { email?: string },
+  ): Promise<PayrollRunDocument> {
+    const run = await this.getRun(id, user);
+    if (run.status !== 'cerrada') {
+      throw new BadRequestException('El pago se declara sobre una nómina cerrada; ciérrala primero (o decláralo al cerrarla).');
+    }
+    this.validarPago(run, pago.medioPago, pago.fechaPago);
+    run.pago = { medio: pago.medioPago, fecha: pago.fechaPago, declaradoPor: user?.email, declaradoEn: new Date() };
+    await run.save();
+    return run;
+  }
+
   /** Cierra una corrida (borrador → cerrada). Queda fija en el historial. */
-  async closeRun(id: string, user?: SedeScopeUser): Promise<PayrollRunDocument> {
+  async closeRun(
+    id: string,
+    user?: SedeScopeUser & { email?: string },
+    pago?: { medioPago?: string; fechaPago?: string },
+  ): Promise<PayrollRunDocument> {
     const run = await this.getRun(id, user);
     if (run.status === 'cerrada') {
       throw new BadRequestException('La nómina ya está cerrada.');
+    }
+    if (pago && (pago.medioPago || pago.fechaPago)) {
+      if (!pago.medioPago || !pago.fechaPago) {
+        throw new BadRequestException('Declara el medio Y la fecha real del pago, o ninguno de los dos.');
+      }
+      this.validarPago(run, pago.medioPago, pago.fechaPago);
     }
     // Las colillas descuentan consumos: deben estar marcados `applied` a ESTA
     // corrida. Si `recalcRun` agotó sus reintentos, los soltó a `approved` y
@@ -1141,6 +1178,9 @@ export class PayrollService {
 
     run.status = 'cerrada';
     run.closedAt = new Date();
+    if (pago?.medioPago && pago.fechaPago) {
+      run.pago = { medio: pago.medioPago, fecha: pago.fechaPago, declaradoPor: user?.email, declaradoEn: run.closedAt };
+    }
     await run.save();
 
     // Best-effort e idempotente por (payroll_run, runId): igual que el posteo

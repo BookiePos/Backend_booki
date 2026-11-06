@@ -15,6 +15,12 @@
  * trabajador). Prima, cesantías, vacaciones, incapacidades, licencias y retiro
  * no se inventan: si aparecen, el trabajador se bloquea (tarea 11 del dueño).
  *
+ * Pago: el medio y la fecha REAL de cada egreso los declara el negocio al
+ * cerrar la corrida (`PayrollRun.pago`, decisión 1 del dueño, tarea 11). Una
+ * corrida cerrada sin ellos bloquea al trabajador; no se inventa fecha.
+ * Empleador: el NIT del emisor de la sede del trabajador (decisión 6); lo
+ * resuelve `NominaPeriodoService`.
+ *
  * Dinero: las colillas están en COP entero; se suman con `sumCop()` y se pasan
  * a centavos con `centavosDeCop()`. El modelo no lleva totales: el armador los
  * recalcula sumando los nodos que escribe.
@@ -22,6 +28,7 @@
 import { cop, redondearA, sumCop } from '../../../finance/domain/money.util';
 import { DANE_MUNICIPIO, YYYYMMDD } from '../../../employees/domain/employees.constants';
 import type { PayrollBreakdown } from '../../../payroll/domain/payroll-calc';
+import { MEDIOS_PAGO_NOMINA, NOMBRE_MEDIO_PAGO } from '../../../payroll/domain/pago-nomina';
 import type { Centavos } from '../redondeo';
 import { centavosDeCop } from '../redondeo';
 import type { DeduccionesNe, DevengadosNe, DocumentoNe, HoraNe, TipoHoraNe } from './modelo';
@@ -50,7 +57,15 @@ export interface CorridaColilla {
   estado: 'borrador' | 'cerrada';
   /** Tramo del mes que cubre la corrida (quincena o corrida parcial); sin él se asume el mes entero. */
   rango?: { desde: string; hasta: string };
+  /** Medio (código DIAN 5.3.3.2) y fecha real del pago que el negocio declaró al cerrar la corrida (decisión 1 del dueño). */
+  pago?: PagoCorrida;
   colilla: ColillaConsolidar;
+}
+
+export interface PagoCorrida {
+  medio: string;
+  /** YYYY-MM-DD */
+  fecha: string;
 }
 
 /** Lo que se lee de `PayrollDeduction`. `appliedRunId` en texto. */
@@ -85,6 +100,7 @@ export interface EmpleadoConsolidar {
   municipioDaneTrabajo?: string;
   direccionTrabajo?: string;
   address?: string;
+  /** Ya no manda: el medio lo declara el negocio al cerrar la corrida. Se conserva por compatibilidad del expediente. */
   medioPago?: string;
   bank?: string;
   accountType?: string;
@@ -98,11 +114,6 @@ export interface EmpleadorConsolidar {
   direccion?: string;
 }
 
-export interface PagoConsolidar {
-  /** Fechas reales de egreso (YYYY-MM-DD). Sin ellas se usa el último día del mes, con advertencia. */
-  fechasPagos: string[];
-}
-
 export interface EntradaConsolidar {
   /** YYYY-MM */
   periodo: string;
@@ -110,7 +121,8 @@ export interface EntradaConsolidar {
   empleador: EmpleadorConsolidar;
   slips: CorridaColilla[];
   deducciones: DeduccionConsolidar[];
-  pago: PagoConsolidar;
+  /** SMMLV vigente en el mes: sin él no se valida el mínimo del salario integral (13 SMMLV, art. 132 CST). */
+  smmlv?: number;
 }
 
 /** Lo que se dejó de reportar por neto negativo (pesos): la parte de cada colilla que `crearArrastres` lleva al mes siguiente. */
@@ -168,6 +180,9 @@ const DEVENGADOS_CONOCIDOS = new Set([
 
 const MEDIO_TRANSFERENCIA = '47';
 const MEDIO_CONSIGNACION = '42';
+const NOMBRE_MEDIO: Record<string, string> = NOMBRE_MEDIO_PAGO;
+/** Mínimo del salario integral en SMMLV (art. 132 CST). */
+const SMMLV_INTEGRAL = 13;
 const FSP_SOLIDARIDAD_PCT = 0.5;
 
 // ── Utilidades ───────────────────────────────────────────────────────────────
@@ -209,7 +224,13 @@ function corridasSolapadas(a: CorridaColilla, b: CorridaColilla, mes: { desde: s
 
 // ── Pre-vuelo del trabajador ─────────────────────────────────────────────────
 
-function revisarTrabajador(e: EmpleadoConsolidar, periodo: string, bloqueos: string[]): void {
+function revisarTrabajador(
+  e: EmpleadoConsolidar,
+  periodo: string,
+  medio: string | undefined,
+  smmlv: number | undefined,
+  bloqueos: string[],
+): void {
   const quien = nombreDe(e);
   const ficha = `Corrígelo en el expediente de ${quien} (Empleados → Nómina electrónica)`;
   const doc = (e.docNumber ?? '').trim();
@@ -258,16 +279,21 @@ function revisarTrabajador(e: EmpleadoConsolidar, periodo: string, bloqueos: str
 
   if (!enteroPositivo(e.salary)) bloqueos.push(`${quien}: falta el salario mensual pactado. ${ficha}.`);
 
-  if (!e.medioPago) {
-    bloqueos.push(`${quien}: falta el medio de pago (efectivo, transferencia…). ${ficha}.`);
-  } else if (e.medioPago === MEDIO_TRANSFERENCIA) {
+  if (e.salaryType === 'integral' && enteroPositivo(e.salary) && enteroPositivo(smmlv) && e.salary < SMMLV_INTEGRAL * smmlv) {
+    bloqueos.push(
+      `${quien}: tiene salario integral de ${e.salary} y el mínimo es ${SMMLV_INTEGRAL} SMMLV (${SMMLV_INTEGRAL * smmlv}, art. 132 CST). Corrige el salario o el tipo de salario en su expediente.`,
+    );
+  }
+  if (medio === MEDIO_TRANSFERENCIA) {
     const faltan = [
       !e.bank?.trim() && 'banco',
       !e.accountType && 'tipo de cuenta',
       !e.accountNumber?.trim() && 'número de cuenta',
     ].filter(Boolean);
     if (faltan.length > 0) {
-      bloqueos.push(`${quien}: el medio de pago es transferencia y falta ${faltan.join(', ')}. ${ficha}.`);
+      bloqueos.push(
+        `${quien}: la nómina se pagó por transferencia y en su expediente falta ${faltan.join(', ')}. ${ficha}.`,
+      );
     }
   }
 
@@ -403,8 +429,6 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
   const primero = `${periodo}-01`;
   const ultimo = ultimoDiaDelMes(periodo);
 
-  revisarTrabajador(e, periodo, bloqueos);
-
   // Corridas del trabajador en el mes.
   const delMes = entrada.slips.filter((s) => s.periodo === periodo && s.colilla.employeeId === e.id);
   const cerradas = delMes.filter((s) => s.estado === 'cerrada');
@@ -416,8 +440,52 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     if (borradores.length === 0) {
       bloqueos.push(`${quien}: no tiene ninguna corrida cerrada en ${periodo}; sin pagos en el mes no hay documento.`);
     }
+    revisarTrabajador(e, periodo, undefined, entrada.smmlv, bloqueos);
     return { ok: false, bloqueos };
   }
+
+  // Medio y fecha real del pago: los declara el negocio al cerrar cada corrida (decisión 1 del dueño); sin ellos no se consolida.
+  const finMesSiguiente = ultimoDiaDelMes(
+    new Date(Date.UTC(Number(periodo.slice(0, 4)), Number(periodo.slice(5, 7)), 1)).toISOString().slice(0, 7),
+  );
+  /** Cada egreso con lo que se pagó en él (pesos), para elegir el medio del nodo Pago. */
+  const pagos: (PagoCorrida & { valor: number })[] = [];
+  for (const c of cerradas) {
+    const p = c.pago;
+    if (!p?.medio || !p.fecha) {
+      bloqueos.push(
+        `${quien}: la corrida ${c.corridaId} de ${periodo} no tiene declarado ${[!p?.medio && 'el medio de pago', !p?.fecha && 'la fecha real de pago'].filter(Boolean).join(' ni ')}. Decláralo en Nómina → la corrida → «Pago de la nómina».`,
+      );
+    } else if (!(MEDIOS_PAGO_NOMINA as readonly string[]).includes(p.medio)) {
+      bloqueos.push(`${quien}: la corrida ${c.corridaId} declara un medio de pago «${p.medio}» que no es válido para nómina (efectivo, cheque, consignación o transferencia).`);
+    } else if (!YYYYMMDD.test(p.fecha)) {
+      bloqueos.push(`${quien}: la fecha de pago de la corrida ${c.corridaId} («${p.fecha}») no es YYYY-MM-DD.`);
+    } else if (p.fecha < primero) {
+      bloqueos.push(`${quien}: la fecha de pago de la corrida ${c.corridaId} (${p.fecha}) es anterior al inicio de ${periodo}. Corrígela en la corrida.`);
+    } else {
+      if (p.fecha > finMesSiguiente) {
+        advertencias.push(`${quien}: la corrida ${c.corridaId} se pagó el ${p.fecha}, después del mes siguiente a ${periodo}; confírmalo.`);
+      }
+      const bd = c.colilla.breakdown;
+      pagos.push({ ...p, valor: Math.max(0, cop(bd.devengados.total) - cop(bd.deducciones.total)) });
+    }
+  }
+  // El XSD admite un solo nodo Pago: manda el medio por el que se pagó MÁS en el mes (con empate, el último).
+  const porMedio = new Map<string, { valor: number; fecha: string }>();
+  for (const p of pagos) {
+    const m = porMedio.get(p.medio) ?? { valor: 0, fecha: '' };
+    porMedio.set(p.medio, { valor: m.valor + p.valor, fecha: p.fecha > m.fecha ? p.fecha : m.fecha });
+  }
+  const medio = [...porMedio.entries()].sort(
+    ([, a], [, b]) => b.valor - a.valor || b.fecha.localeCompare(a.fecha),
+  )[0]?.[0];
+  if (new Set(pagos.map((p) => p.medio)).size > 1) {
+    advertencias.push(
+      `${quien}: las corridas de ${periodo} se pagaron por medios distintos; el documento reporta el de mayor valor pagado (${NOMBRE_MEDIO[medio!] ?? medio}).`,
+    );
+  }
+  revisarTrabajador(e, periodo, medio, entrada.smmlv, bloqueos);
+
   const mes = { desde: primero, hasta: ultimo };
   const vistos = new Set<string>();
   for (const c of delMes) {
@@ -634,23 +702,9 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     }
   }
 
-  const medio = e.medioPago!;
   const conCuenta = medio === MEDIO_TRANSFERENCIA || (medio === MEDIO_CONSIGNACION && !!e.accountNumber?.trim());
-  const fechasPagos = [...entrada.pago.fechasPagos];
-  const malas = fechasPagos.filter((f) => !YYYYMMDD.test(f));
-  const finMesSiguiente = ultimoDiaDelMes(new Date(Date.UTC(Number(periodo.slice(0, 4)), Number(periodo.slice(5, 7)), 1)).toISOString().slice(0, 7));
-  if (malas.length > 0) {
-    bloqueos.push(`${quien}: fechas de pago inválidas (${malas.join(', ')}); deben ser YYYY-MM-DD.`);
-  } else if (fechasPagos.some((f) => f < primero)) {
-    bloqueos.push(`${quien}: hay una fecha de pago anterior al inicio de ${periodo} (${primero}). Corrígela en la corrida.`);
-  } else if (fechasPagos.some((f) => f > finMesSiguiente)) {
-    advertencias.push(`${quien}: hay una fecha de pago posterior al mes siguiente a ${periodo}; confírmala.`);
-  }
-  if (fechasPagos.length === 0) {
-    fechasPagos.push(ultimo);
-    advertencias.push(`${quien}: no hay fecha de pago registrada; se usó el último día del mes (${ultimo}).`);
-  }
-  if (bloqueos.length > 0) return { ok: false, bloqueos };
+  // Una FechaPago por egreso: las fechas distintas de las corridas, en orden.
+  const fechasPagos = [...new Set(pagos.map((p) => p.fecha))].sort();
 
   const desdeLiq = e.hireDate! > primero ? e.hireDate! : primero;
   const unaCorrida = cerradas.length === 1;
@@ -683,7 +737,7 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     },
     pago: {
       forma: '1',
-      metodo: medio,
+      metodo: medio!,
       ...(conCuenta
         ? {
             banco: e.bank?.trim() || undefined,

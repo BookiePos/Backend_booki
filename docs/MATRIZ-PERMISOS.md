@@ -244,6 +244,7 @@ limitado por sede: el cierre cancela los resultados de toda la empresa.
 | `GET /payroll/runs/:id` | `payroll.view` | ✓ | ✓ | · | · | ✓ |
 | `POST /payroll/runs/:id/recalc` | `payroll.manage` | ✓ | ✓ | · | · | · |
 | `POST /payroll/runs/:id/close` | `payroll.manage` | ✓ | ✓ | · | · | · |
+| `PUT /payroll/runs/:id/pago` | `payroll.manage` | ✓ | ✓ | · | · | · |
 | `DELETE /payroll/runs/:id` | `payroll.manage` | ✓ | ✓ | · | · | · |
 | `POST /payroll/runs/:id/slips/:employeeId/send` | `payroll.manage` | ✓ | ✓ | · | · | · |
 | `GET /payroll/deductions` | `payroll.view` o `payroll.deduction.approve` | ✓ | ✓ | ✓ | · | ✓ |
