@@ -8,7 +8,13 @@ import { validarXsdDian } from './__fixtures__/validar-xsd.test';
 import { CLIENTE_NIT, EMISOR_FISCAL, linea, PIN } from './__fixtures__/factura-de-prueba.test';
 import { codigoSeguridadNota, documentoNota, FACTURA_REFERIDA, type OpcionesNota } from './__fixtures__/nota-de-prueba.test';
 import { prepararNotaUbl, type DocumentoNotaParaUbl } from './nota-de-documento';
-import { armarNotaCreditoUbl, armarNotaDebitoUbl, type NotaUbl } from './nota-ubl';
+import {
+  armarNotaCreditoUbl,
+  armarNotaDebitoUbl,
+  CONCEPTOS_NOTA_CREDITO,
+  CONCEPTOS_NOTA_DEBITO,
+  type EntradaNota,
+} from './nota-ubl';
 import { DocumentoUblInvalidoError } from './xml-ubl';
 
 /**
@@ -184,7 +190,9 @@ describe('notas UBL 2.1 · contenido', () => {
   it('DiscrepancyResponse y BillingReference con número, CUFE y fecha de la factura', () => {
     expect(nc).toContain(`<cbc:ReferenceID>${FACTURA_REFERIDA.numero}</cbc:ReferenceID>`);
     expect(nc).toContain('<cbc:ResponseCode>2</cbc:ResponseCode>');
-    expect(nc).toContain('<cbc:Description>Corrección de la factura</cbc:Description>');
+    // CBF04/DBF04: el Description es el literal del catálogo; el motivo libre va en cbc:Note.
+    expect(nc).toContain(`<cbc:Description>${CONCEPTOS_NOTA_CREDITO['2']}</cbc:Description>`);
+    expect(nc).toContain('<cbc:Note>Corrección de la factura</cbc:Note>');
     expect(nc).toContain(`<cbc:UUID schemeName="CUFE-SHA384">${FACTURA_REFERIDA.cufe}</cbc:UUID>`);
     expect(nc).toContain(`<cbc:IssueDate>${FACTURA_REFERIDA.fecha}</cbc:IssueDate>`);
   });
@@ -230,6 +238,57 @@ describe('notas UBL 2.1 · contenido', () => {
   });
 });
 
+describe('notas UBL 2.1 · concepto, origen y esquema', () => {
+  const base = VARIANTES['NC anulación total con IVA']!;
+  const baseNd = VARIANTES['ND ajuste de precio con IVA']!;
+
+  it('el Description de cada concepto es el literal del catálogo, nunca el motivo libre', () => {
+    for (const [c, literal] of Object.entries(CONCEPTOS_NOTA_CREDITO)) {
+      const xml = armar({ ...base, discrepancyCode: c, reason: 'motivo libre del cajero' });
+      expect(xml).toContain(`<cbc:Description>${literal}</cbc:Description>`);
+      expect(xml).not.toContain('<cbc:Description>motivo libre');
+      expect(xml).toContain('<cbc:Note>motivo libre del cajero</cbc:Note>');
+    }
+    for (const [c, literal] of Object.entries(CONCEPTOS_NOTA_DEBITO)) {
+      expect(armar({ ...baseNd, discrepancyCode: c })).toContain(`<cbc:Description>${literal}</cbc:Description>`);
+    }
+  });
+
+  it('el concepto 4 de la nota débito es «Otros»', () => {
+    expect(CONCEPTOS_NOTA_DEBITO['4']).toBe('Otros');
+  });
+
+  it('el Note va antes de DocumentCurrencyCode (orden del XSD) en crédito y débito', () => {
+    for (const d of [base, baseNd]) {
+      expect(armar(d)).toMatch(/<\/cbc:IssueTime>(?:\s*<cbc:CreditNoteTypeCode>\d+<\/cbc:CreditNoteTypeCode>)?\s*<cbc:Note>[^<]*<\/cbc:Note>\s*<cbc:DocumentCurrencyCode>/);
+    }
+  });
+
+  it('el origen POS sale del tipo del documento referido y fija el esquema CUDE', () => {
+    const pos = armar({ ...base, referenceType: 'pos' });
+    expect(pos).toContain('<cbc:CreditNoteTypeCode>94</cbc:CreditNoteTypeCode>');
+    expect(pos).toContain(`<cbc:UUID schemeName="CUDE-SHA384">${FACTURA_REFERIDA.cufe}</cbc:UUID>`);
+    expect(armar({ ...base, referenceType: 'invoice' })).toContain('<cbc:CreditNoteTypeCode>91</cbc:CreditNoteTypeCode>');
+  });
+
+  it('un esquema que no coincide con el tipo del documento referido lanza', () => {
+    expect(() => armar({ ...base, referenceType: 'pos', referenceScheme: 'CUFE-SHA384' })).toThrow(/debe ser CUDE-SHA384/);
+    expect(() => armar({ ...base, referenceType: 'invoice', referenceScheme: 'CUDE-SHA384' })).toThrow(/debe ser CUFE-SHA384/);
+    // Sin tipo referido, un CUDE no convierte la nota en ajuste del POS en silencio.
+    expect(() => armar({ ...base, referenceScheme: 'CUDE-SHA384' })).toThrow(/debe ser CUFE-SHA384/);
+    expect(() => armar({ ...base, referenceType: 'credit_note' })).toThrow(/no puede corregir/);
+  });
+
+  it('el builder rechaza un esquema fuera de CUFE/CUDE y uno que no es del origen', () => {
+    const n = prepararNotaUbl(base, EMISOR_FISCAL);
+    const completa = { ...n, codigoSeguridadSoftware: codigoSeguridadNota(base.fullNumber) };
+    const conEsquema = (esquema: string) =>
+      ({ ...completa, referencia: { ...completa.referencia!, esquema } }) as unknown as EntradaNota;
+    expect(() => armarNotaCreditoUbl(conEsquema('"><x/>'))).toThrow(/algoritmo del código referido/);
+    expect(() => armarNotaCreditoUbl(conEsquema('CUDE-SHA384'))).toThrow(/CUFE-SHA384 para una factura/);
+  });
+});
+
 describe('notas UBL 2.1 · rechazos', () => {
   const base = VARIANTES['NC anulación total con IVA']!;
   const baseNd = VARIANTES['ND ajuste de precio con IVA']!;
@@ -268,7 +327,7 @@ describe('notas UBL 2.1 · rechazos', () => {
   });
   it('la nota de ajuste del POS siempre lleva referencia y su concepto 5 (otros) es válido', () => {
     const pos = VARIANTES['NC de ajuste del POS (94) anulación']!;
-    lanza({ ...pos, referenceNumber: undefined, period: { desde: '2026-10-01', hasta: '2026-10-30' } }, /referencia al documento POS/);
+    lanza({ ...pos, referenceNumber: undefined, period: { desde: '2026-10-01', hasta: '2026-10-30' } }, /siempre lleva la referencia al documento POS/);
     expect(() => armar({ ...pos, discrepancyCode: '5' })).not.toThrow();
     lanza({ ...pos, discrepancyCode: '6' }, /concepto de corrección/);
   });
@@ -290,6 +349,6 @@ describe('notas UBL 2.1 · rechazos', () => {
   it('el builder no acepta una nota por valor cero', () => {
     const n = { ...prepararNotaUbl(base, EMISOR_FISCAL), codigoSeguridadSoftware: codigoSeguridadNota(base.fullNumber) };
     const cero = { ...n, lineas: [{ ...n.lineas[0]!, base: 0, taxAmount: 0, total: 0 }], totales: { ...n.totales, taxableBase: 0, taxExclusiveAmount: 0, ivaTotal: 0, taxInclusiveAmount: 0, payableAmount: 0 } };
-    expect(() => armarNotaCreditoUbl(cero as Omit<NotaUbl, 'tipo'>)).toThrow(/valor cero/);
+    expect(() => armarNotaCreditoUbl(cero as EntradaNota)).toThrow(/valor cero/);
   });
 });

@@ -8,7 +8,7 @@ import {
   type DocumentoParaUbl,
   type EmisorParaUbl,
 } from './factura-de-documento';
-import { faltantesNota, type NotaUbl } from './nota-ubl';
+import { esquemaDeOrigen, faltantesNota, type NotaUbl } from './nota-ubl';
 import { assertTextoXml, DocumentoUblInvalidoError } from './xml-ubl';
 
 /**
@@ -27,8 +27,10 @@ export interface CamposNotaDocumento {
   referenceCufe?: string;
   /** YYYY-MM-DD de emisión del documento referido. */
   referenceIssueDate?: string;
-  /** Algoritmo del código referido; por defecto CUFE. */
-  referenceScheme?: 'CUFE-SHA384' | 'CUDE-SHA384';
+  /** Tipo del documento referido (el `type` del documento de `referenceId`): `pos` o `invoice`. */
+  referenceType?: string;
+  /** Algoritmo del código referido; debe coincidir con el tipo del documento referido. */
+  referenceScheme?: string;
   /** Periodo de una nota sin referencia. */
   period?: { desde: string; hasta: string };
 }
@@ -36,7 +38,7 @@ export interface CamposNotaDocumento {
 export type DocumentoNotaParaUbl = DocumentoParaUbl & CamposNotaDocumento;
 
 /** La nota lista para el builder, salvo el código de seguridad (que necesita el PIN). */
-export type NotaSinCodigo = Omit<NotaUbl, 'codigoSeguridadSoftware'>;
+export type NotaSinCodigo = NotaUbl extends infer T ? (T extends unknown ? Omit<T, 'codigoSeguridadSoftware'> : never) : never;
 
 export function prepararNotaUbl(doc: DocumentoNotaParaUbl, emisor: EmisorParaUbl): NotaSinCodigo {
   if (doc.type !== 'credit_note' && doc.type !== 'debit_note') {
@@ -49,10 +51,23 @@ export function prepararNotaUbl(doc: DocumentoNotaParaUbl, emisor: EmisorParaUbl
   const totalesDoc = totales(doc);
   const lineasDoc = lineas(doc);
   const tieneReferencia = Boolean(doc.referenceNumber?.trim());
-  const n: NotaSinCodigo = {
+  // Un POS se corrige con su nota de ajuste (94/93), no con la 91: lo decide el TIPO del documento referido.
+  if (tieneReferencia && doc.referenceType !== undefined && doc.referenceType !== 'pos' && doc.referenceType !== 'invoice') {
+    throw new DocumentoUblInvalidoError(`La nota no puede corregir un documento «${doc.referenceType}»`);
+  }
+  if (!tieneReferencia && doc.referenceType === 'pos') {
+    throw new DocumentoUblInvalidoError('La nota de ajuste del POS siempre lleva la referencia al documento POS');
+  }
+  const origen = doc.referenceType === 'pos' ? 'pos' : 'factura';
+  const esperado = esquemaDeOrigen(origen);
+  if (tieneReferencia && doc.referenceScheme !== undefined && doc.referenceScheme !== esperado) {
+    throw new DocumentoUblInvalidoError(
+      `El código del documento referido debe ser ${esperado} (${origen === 'pos' ? 'POS' : 'factura'}), no «${doc.referenceScheme}»`,
+    );
+  }
+  const n = {
     tipo: doc.type === 'credit_note' ? 'credito' : 'debito',
-    // Un código referido que es CUDE es el de un POS: se corrige con su nota de ajuste (94/93), no con la 91.
-    origen: doc.referenceScheme === 'CUDE-SHA384' ? 'pos' : 'factura',
+    origen,
     numero: doc.fullNumber,
     prefijo: doc.prefix || undefined,
     cude: doc.cufe,
@@ -73,11 +88,11 @@ export function prepararNotaUbl(doc: DocumentoNotaParaUbl, emisor: EmisorParaUbl
           numero: doc.referenceNumber!.trim(),
           cufe: doc.referenceCufe?.trim() ?? '',
           fecha: doc.referenceIssueDate ?? '',
-          esquema: doc.referenceScheme,
+          esquema: esperado,
         }
       : undefined,
     periodo: doc.period,
-  };
+  } as NotaSinCodigo;
   assertTextoXml(n, '');
   // Concepto, referencia y periodo se rechazan aquí, antes de leer el PIN (el código de seguridad aún no existe).
   const faltantes = faltantesNota({ ...n, codigoSeguridadSoftware: '0'.repeat(96) });

@@ -62,6 +62,7 @@ export function documentoNota(venta: VentaParaDocumento, o: OpcionesNota): Docum
     referenceNumber: sinRef ? undefined : FACTURA_REFERIDA.numero,
     referenceCufe: sinRef ? undefined : FACTURA_REFERIDA.cufe,
     referenceIssueDate: sinRef ? undefined : FACTURA_REFERIDA.fecha,
+    referenceType: sinRef ? undefined : o.pos ? 'pos' : 'invoice',
     referenceScheme: o.pos ? 'CUDE-SHA384' : undefined,
     period: o.periodo,
   };

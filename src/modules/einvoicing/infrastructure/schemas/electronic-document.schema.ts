@@ -298,8 +298,12 @@ export class ElectronicDocument {
   referenceIssueDate?: string;
 
   /** CUFE-SHA384 o CUDE-SHA384: algoritmo del código referido (por defecto CUFE). */
-  @Prop()
+  @Prop({ enum: ['CUFE-SHA384', 'CUDE-SHA384'] })
   referenceScheme?: string;
+
+  /** `type` del documento referido (`pos` o `invoice`): decide si la nota es de la factura o de ajuste del POS. */
+  @Prop({ enum: ['invoice', 'pos'] })
+  referenceType?: string;
 
   /** Periodo de una nota sin referencia (InvoicePeriod). */
   @Prop({ type: Object })

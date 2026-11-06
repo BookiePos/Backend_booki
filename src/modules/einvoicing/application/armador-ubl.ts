@@ -32,6 +32,11 @@ const MENSAJE_SIN_PIN = 'Falta configurar: el PIN del software de factura del em
  * no se loguea y ningún error lo cita (los mensajes son fijos o vienen del
  * builder, que nunca lo recibe).
  */
+/** Documento guardado que es nota crédito o débito (lleva los campos de la nota). */
+function esNota(doc: ElectronicDocumentDocument): doc is ElectronicDocumentDocument & DocumentoNotaParaUbl {
+  return doc.type === 'credit_note' || doc.type === 'debit_note';
+}
+
 @Injectable()
 export class ArmadorUblFactura implements ArmadorXmlDian {
   constructor(private readonly emisores: FiscalEmittersService) {}
@@ -59,8 +64,8 @@ export class ArmadorUblFactura implements ArmadorXmlDian {
       );
     }
 
-    if (doc.type === 'credit_note' || doc.type === 'debit_note') {
-      const nota = this.dominio(() => prepararNotaUbl(doc as unknown as DocumentoNotaParaUbl, datosEmisor));
+    if (esNota(doc)) {
+      const nota = this.dominio(() => prepararNotaUbl(doc, datosEmisor));
       const pin = await this.pin(emisor.id as string);
       const completa = {
         ...nota,

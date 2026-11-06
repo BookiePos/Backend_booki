@@ -57,7 +57,7 @@ export const CONCEPTOS_NOTA_DEBITO: Record<string, string> = {
   '1': 'Intereses',
   '2': 'Gastos por cobrar',
   '3': 'Cambio del valor',
-  '4': 'Otro',
+  '4': 'Otros',
 };
 
 /** Conceptos de la nota de ajuste crédito del POS (anexo DE v1.0 §16.6; 5 = Otros). A verificar contra el anexo. */
@@ -144,14 +144,21 @@ export interface ReferenciaNota {
   cufe: string;
   /** YYYY-MM-DD de emisión del documento corregido. */
   fecha: string;
-  /** Algoritmo del código referido. Por defecto CUFE (factura). */
-  esquema?: 'CUFE-SHA384' | 'CUDE-SHA384';
+  /** Algoritmo del código referido. Por defecto el del origen: CUFE (factura) o CUDE (POS). */
+  esquema?: EsquemaReferencia;
 }
 
-export interface NotaUbl {
+export type EsquemaReferencia = 'CUFE-SHA384' | 'CUDE-SHA384';
+export const ESQUEMAS_REFERENCIA: readonly EsquemaReferencia[] = ['CUFE-SHA384', 'CUDE-SHA384'];
+
+/** Algoritmo que corresponde al documento referido según el origen. */
+export const esquemaDeOrigen = (origen: 'factura' | 'pos' | undefined): EsquemaReferencia =>
+  origen === 'pos' ? 'CUDE-SHA384' : 'CUFE-SHA384';
+
+export type PeriodoNota = { desde: string; hasta: string };
+
+interface NotaBase {
   tipo: TipoNota;
-  /** Qué documento corrige: la factura (por defecto) o el documento equivalente POS. */
-  origen?: 'factura' | 'pos';
   /** Prefijo + número (cbc:ID). */
   numero: string;
   prefijo?: string;
@@ -172,18 +179,33 @@ export interface NotaUbl {
   lineas: LineaDocumento[];
   cargos: CargoDocumento[];
   totales: TotalesDocumento;
+  /**
+   * `codigo` va en `ResponseCode`; el `Description` es el texto LITERAL del catálogo
+   * (reglas CBF04/DBF04; a verificar en habilitación el largo mínimo de 20). `descripcion` es el
+   * motivo libre (obligatorio) y viaja en `cbc:Note`.
+   */
   concepto: { codigo: string; descripcion: string };
-  referencia?: ReferenciaNota;
-  /** Periodo (`InvoicePeriod`): obligatorio sin referencia. */
-  periodo?: { desde: string; hasta: string };
 }
+
+/**
+ * Qué corrige la nota: la factura o el POS (siempre con referencia, sin periodo), o una nota
+ * sin referencia (solo factura) que exige el periodo.
+ */
+export type NotaUbl = NotaBase &
+  (
+    | { origen?: 'factura' | 'pos'; referencia: ReferenciaNota; periodo?: undefined }
+    | { origen?: 'factura'; referencia?: undefined; periodo: PeriodoNota }
+  );
+
+/** Entrada de los armadores: la nota sin su tipo (se distribuye sobre la unión). */
+export type EntradaNota<T = NotaUbl> = T extends unknown ? Omit<T, 'tipo'> : never;
 
 const SHA384_HEX = /^[0-9a-f]{96}$/;
 const FECHA = /^\d{4}-\d{2}-\d{2}$/;
 
 /** CUDE de la nota con el PIN del software; los valores salen SOLO de las líneas y los cargos. */
 export function cudeDeNota(
-  n: Pick<NotaUbl, 'numero' | 'fecha' | 'hora' | 'tipoAmbiente' | 'emisor' | 'adquiriente' | 'lineas' | 'cargos'>,
+  n: Pick<NotaBase, 'numero' | 'fecha' | 'hora' | 'tipoAmbiente' | 'emisor' | 'adquiriente' | 'lineas' | 'cargos'>,
   softwarePin: string,
 ): string {
   const t = totalesUbl(n.lineas, n.cargos);
@@ -216,8 +238,13 @@ export function faltantesNota(n: NotaUbl): string[] {
     if (!r.numero?.trim()) fallas.push('número del documento referido');
     if (!SHA384_HEX.test(r.cufe ?? '')) fallas.push('CUFE/CUDE del documento referido (SHA-384 en hexadecimal)');
     if (!FECHA.test(r.fecha ?? '')) fallas.push('fecha del documento referido');
+    if (r.esquema !== undefined && !ESQUEMAS_REFERENCIA.includes(r.esquema)) {
+      fallas.push('algoritmo del código referido (CUFE-SHA384 o CUDE-SHA384)');
+    } else if (r.esquema !== undefined && r.esquema !== esquemaDeOrigen(n.origen)) {
+      fallas.push(`algoritmo del código referido (${esquemaDeOrigen(n.origen)} para ${n.origen === 'pos' ? 'un POS' : 'una factura'})`);
+    }
   } else {
-    if (n.origen === 'pos') fallas.push('referencia al documento POS (la nota de ajuste siempre la lleva)');
+    if ((n.origen as string | undefined) === 'pos') fallas.push('referencia al documento POS (la nota de ajuste siempre la lleva)');
     else if (n.tipo === 'credito' && codigo === CONCEPTO_NO_ADMITIDO_SIN_REFERENCIA) {
       fallas.push(`referencia a la factura (la anulación, concepto ${CONCEPTO_NO_ADMITIDO_SIN_REFERENCIA}, no puede ir sin ella)`);
     }
@@ -278,7 +305,7 @@ function armarNota(n: NotaUbl): string {
   <cac:BillingReference>
     <cac:InvoiceDocumentReference>
       <cbc:ID>${esc(n.referencia.numero)}</cbc:ID>
-      <cbc:UUID schemeName="${n.referencia.esquema ?? (n.origen === 'pos' ? 'CUDE-SHA384' : 'CUFE-SHA384')}">${n.referencia.cufe}</cbc:UUID>
+      <cbc:UUID schemeName="${esc(n.referencia.esquema ?? esquemaDeOrigen(n.origen))}">${n.referencia.cufe}</cbc:UUID>
       <cbc:IssueDate>${n.referencia.fecha}</cbc:IssueDate>
     </cac:InvoiceDocumentReference>
   </cac:BillingReference>`
@@ -299,6 +326,7 @@ function armarNota(n: NotaUbl): string {
       : `${cargos ? `${cargos.trimStart()}\n  ` : ''}${pago}${impuestos}
   ${monetario.replace(/LegalMonetaryTotal/g, 'RequestedMonetaryTotal')}`;
   const tipoCodigo = p.tipoCodigo ? `\n  <cbc:CreditNoteTypeCode>${p.tipoCodigo}</cbc:CreditNoteTypeCode>` : '';
+  const motivo = `\n  <cbc:Note>${esc(n.concepto.descripcion.trim())}</cbc:Note>`;
   const dianExt = dianExtensions({
     emisor: n.emisor,
     softwareId: n.softwareId,
@@ -326,12 +354,12 @@ function armarNota(n: NotaUbl): string {
   <cbc:ID>${esc(n.numero)}</cbc:ID>
   <cbc:UUID schemeID="${n.tipoAmbiente}" schemeName="CUDE-SHA384">${n.cude}</cbc:UUID>
   <cbc:IssueDate>${n.fecha}</cbc:IssueDate>
-  <cbc:IssueTime>${n.hora}</cbc:IssueTime>${tipoCodigo}
+  <cbc:IssueTime>${n.hora}</cbc:IssueTime>${tipoCodigo}${motivo}
   <cbc:DocumentCurrencyCode>COP</cbc:DocumentCurrencyCode>
   <cbc:LineCountNumeric>${n.lineas.length}</cbc:LineCountNumeric>${periodo}
   <cac:DiscrepancyResponse>${referenciaId}
     <cbc:ResponseCode>${n.concepto.codigo}</cbc:ResponseCode>
-    <cbc:Description>${esc(n.concepto.descripcion.trim())}</cbc:Description>
+    <cbc:Description>${esc(p.conceptos[n.concepto.codigo]!)}</cbc:Description>
   </cac:DiscrepancyResponse>${billing}
   ${parte('AccountingSupplierParty', n.emisor, n.prefijo)}
   ${parte('AccountingCustomerParty', n.adquiriente)}
@@ -341,21 +369,21 @@ function armarNota(n: NotaUbl): string {
 }
 
 /** XML UBL 2.1 de la nota crédito, SIN firmar. Lanza `DocumentoUblInvalidoError` si algo no cuadra. */
-export function armarNotaCreditoUbl(n: Omit<NotaUbl, 'tipo'>): string {
-  return armarNota({ ...n, tipo: 'credito' });
+export function armarNotaCreditoUbl(n: EntradaNota): string {
+  return armarNota({ ...n, tipo: 'credito' } as NotaUbl);
 }
 
 /** Nota de ajuste crédito (94) del documento equivalente POS, SIN firmar. */
-export function armarNotaAjusteCreditoPosUbl(n: Omit<NotaUbl, 'tipo' | 'origen'>): string {
-  return armarNota({ ...n, tipo: 'credito', origen: 'pos' });
+export function armarNotaAjusteCreditoPosUbl(n: EntradaNota): string {
+  return armarNota({ ...n, tipo: 'credito', origen: 'pos' } as NotaUbl);
 }
 
 /** Nota de ajuste débito (93) del documento equivalente POS, SIN firmar. */
-export function armarNotaAjusteDebitoPosUbl(n: Omit<NotaUbl, 'tipo' | 'origen'>): string {
-  return armarNota({ ...n, tipo: 'debito', origen: 'pos' });
+export function armarNotaAjusteDebitoPosUbl(n: EntradaNota): string {
+  return armarNota({ ...n, tipo: 'debito', origen: 'pos' } as NotaUbl);
 }
 
 /** XML UBL 2.1 de la nota débito, SIN firmar. Lanza `DocumentoUblInvalidoError` si algo no cuadra. */
-export function armarNotaDebitoUbl(n: Omit<NotaUbl, 'tipo'>): string {
-  return armarNota({ ...n, tipo: 'debito' });
+export function armarNotaDebitoUbl(n: EntradaNota): string {
+  return armarNota({ ...n, tipo: 'debito' } as NotaUbl);
 }
