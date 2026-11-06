@@ -186,6 +186,7 @@ describe('EinvoicingService.registerResolution · número inicial y prefijo', ()
   let mayor: number;
   let seqFijado: number | undefined;
   let guardada: any;
+  let audit: { record: ReturnType<typeof vi.fn> };
   let svc: EinvoicingService;
 
   beforeEach(() => {
@@ -217,8 +218,26 @@ describe('EinvoicingService.registerResolution · número inicial y prefijo', ()
       findOrFail: vi.fn(async () => sedeDoc),
       list: vi.fn(async () => []),
     };
-    svc = new EinvoicingService(model, counters, {} as any, sedes, {} as any, {} as any);
+    audit = { record: vi.fn(async () => undefined) };
+    svc = new EinvoicingService(model, counters, {} as any, sedes, {} as any, {} as any, audit as any);
     guardada = sedeDoc;
+  });
+
+  it('registrar una resolucion deja fila de auditoria sin la clave tecnica; una rechazada no', async () => {
+    await expect(svc.registerResolution(sedeId, { rangoDesde: 1, rangoHasta: 10 }, user)).rejects.toThrow();
+    expect(audit.record).not.toHaveBeenCalled();
+    await svc.registerResolution(
+      sedeId,
+      { numero: '18760000001', prefijo: 'fe', rangoDesde: 1, rangoHasta: 100, vigenciaHasta: '2099-12-31', claveTecnica: 'CLAVE-SECRETA-123' },
+      user,
+    );
+    const fila = audit.record.mock.calls[0]![0];
+    expect(fila).toMatchObject({
+      action: 'einvoicing.resolucion.registrada',
+      userEmail: 'a@b.co',
+      detail: { sedeId, tipoDocumento: 'invoice', numero: '18760000001', prefijo: 'FE', rangoHasta: '100', claveTecnicaNueva: 'true' },
+    });
+    expect(JSON.stringify(fila)).not.toContain('CLAVE-SECRETA-123');
   });
 
   it('rechaza sin vigenciaHasta y con una ya vencida', async () => {

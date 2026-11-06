@@ -467,25 +467,51 @@ export class FiscalEmittersService {
     motivo = 'firma',
   ): Promise<CertificadoCargado | null> {
     const e = await this.conSecretosOrFail(emisorId);
-    if (!e.certPath) return null;
     const id = e.id as string;
+    if (!e.certPath) {
+      await this.auditarUsoCertificado(id, motivo, 'sin_certificado');
+      return null;
+    }
     const password = descifrar(
       (e.get('certPasswordCifrada') as SecretoCifrado | undefined) ?? null,
       contextoSecreto(id, 'certPasswordCifrada'),
     );
-    if (password == null) return null;
+    if (password == null) {
+      await this.auditarUsoCertificado(id, motivo, 'sin_llave', e.certHuella);
+      return null;
+    }
     // La ruta se rearma desde el nombre con la empresa del contexto: un
     // `certPath` alterado no puede apuntar a la carpeta de otra empresa.
     const nombre = e.certPath.split('/').pop() ?? '';
-    const p12 = await this.storage.leerCertificado(id, nombre);
+    let p12: Buffer;
+    try {
+      p12 = await this.storage.leerCertificado(id, nombre);
+    } catch (err) {
+      await this.auditarUsoCertificado(id, motivo, 'lectura_fallida', e.certHuella);
+      throw err;
+    }
+    await this.auditarUsoCertificado(id, motivo, undefined, e.certHuella);
+    return new CertificadoCargado(p12, password);
+  }
+
+  /**
+   * Una fila por cada uso del .p12 (firmar, WS-Security) y por cada intento que
+   * no pudo usarlo. Solo emisor, huella y motivo: nunca la contraseña ni el archivo.
+   */
+  private async auditarUsoCertificado(
+    emisorId: string,
+    motivo: string,
+    fallo?: 'sin_certificado' | 'sin_llave' | 'lectura_fallida',
+    huella?: string,
+  ): Promise<void> {
     await this.audit.record({
       method: 'SERVER',
-      path: `/einvoicing/emisores/${id}/certificado`,
-      success: true,
-      action: 'einvoicing.certificado.usado',
-      detail: { emisorId: id, huella: e.certHuella ?? '', motivo: String(motivo).slice(0, 60) },
+      path: `/einvoicing/emisores/${emisorId}/certificado`,
+      success: !fallo,
+      action: fallo ? 'einvoicing.certificado.uso_fallido' : 'einvoicing.certificado.usado',
+      ...(fallo ? { error: fallo } : {}),
+      detail: { emisorId, huella: huella ?? '', motivo: String(motivo).slice(0, 60) },
     });
-    return new CertificadoCargado(p12, password);
   }
 
   /** Emisor de la sede para la pantalla, con su estado. Sin secretos. */

@@ -42,6 +42,7 @@ describe('EinvoicingService.createPosFromSale', () => {
   let model: any;
   let counters: any;
   let businesses: any;
+  let audit: { record: ReturnType<typeof vi.fn> };
   let svc: EinvoicingService;
 
   const sede = () => ({
@@ -110,6 +111,7 @@ describe('EinvoicingService.createPosFromSale', () => {
       refundDocument: vi.fn(async () => undefined),
       findById: vi.fn(async () => null),
     };
+    audit = { record: vi.fn(async () => undefined) };
     svc = new EinvoicingService(
       model,
       counters,
@@ -120,6 +122,7 @@ describe('EinvoicingService.createPosFromSale', () => {
         obtenerPorSede: async () => ({ id: 'e1', tipoAmbiente: '2' }),
         leerSecreto: vi.fn(async () => pin),
       } as any,
+      audit as any,
     );
   });
 
@@ -130,6 +133,23 @@ describe('EinvoicingService.createPosFromSale', () => {
     expect(counters.findOneAndUpdate).not.toHaveBeenCalled();
     expect(model.create).not.toHaveBeenCalled();
   };
+
+  it('la emision deja fila de auditoria con numero y CUDE, sin XML ni PIN; un rechazo previo no deja fila', async () => {
+    const doc: any = await emitir();
+    expect(audit.record).toHaveBeenCalledTimes(1);
+    const fila = audit.record.mock.calls[0]![0];
+    expect(fila).toMatchObject({
+      action: 'einvoicing.documento.emitido',
+      userEmail: 'cajero@x.co',
+      success: true,
+      detail: { documentoId: 'doc', tipo: 'pos', fullNumber: doc.fullNumber, cufe: doc.cufe, sedeId, tipoAmbiente: '2' },
+    });
+    expect(JSON.stringify(fila)).not.toContain('pin-software');
+    audit.record.mockClear();
+    pin = null;
+    await expect(emitir()).rejects.toThrow(MENSAJE_POS_SIN_PIN);
+    expect(audit.record).not.toHaveBeenCalled();
+  });
 
   it('sin resolución POS: 400 antes de cupo y folio', async () => {
     resolucionPos = undefined;
