@@ -91,6 +91,12 @@ export class DocLine {
    * el saldo acreditable de las notas siguientes.
    */
   @Prop() refKey?: string;
+  /**
+   * Solo en las notas de la Fase 6C (rebaja, ajuste de precio, descuentos
+   * comerciales y notas sin referencia): la línea acredita valor y no
+   * unidades; su cantidad es informativa y no cuenta en el tope de cantidad.
+   */
+  @Prop() sinCantidad?: boolean;
 }
 const DocLineSchema = SchemaFactory.createForClass(DocLine);
 

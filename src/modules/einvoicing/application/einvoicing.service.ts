@@ -57,6 +57,10 @@ import {
   type DocumentoDeVenta,
 } from '../domain/documento-venta';
 import {
+  CONCEPTOS_SIN_CANTIDAD,
+  CONCEPTOS_SOLO_FEV,
+  lineasSinReferencia,
+  saldoPorTributo,
   gruposDelDocumento,
   cargosDeDevolucion,
   lineasDeAnulacion,
@@ -69,10 +73,13 @@ import {
 } from '../domain/nota-de-venta';
 import type { CargoDocumento, LineaDocumento } from '../domain/documento-venta';
 import { totalesUbl } from '../domain/ubl/factura-ubl';
-import { esquemaDeOrigen } from '../domain/ubl/nota-ubl';
+import { CONCEPTOS_NOTA_CREDITO, esquemaDeOrigen } from '../domain/ubl/nota-ubl';
 import { cop } from '../../finance/domain/money.util';
 import { origenNotaAnulacion } from '../../sales/domain/documento-fiscal';
-import type { SolicitudNotaVenta } from '../../sales/application/emision-documento-fiscal.puerto';
+import type {
+  SolicitudNotaSinReferencia,
+  SolicitudNotaVenta,
+} from '../../sales/application/emision-documento-fiscal.puerto';
 import { hasCreditPart } from '../../sales/domain/sale-payments';
 import { causesInc } from '../../core-tax/domain/sale-tax';
 import type { BusinessType } from '../../control/domain/control.constants';
@@ -111,6 +118,17 @@ export const MENSAJE_SIN_DOCUMENTO_FISCAL =
 /** El documento fue rechazado: no existe ante la DIAN y no lleva nota. */
 export const MENSAJE_REFERIDO_RECHAZADO = (numero: string) =>
   `El documento ${numero} fue rechazado por la DIAN: no existe ante ella y no lleva nota.`;
+
+/** Conceptos que acepta la nota de una operación de venta (Fase 6B y 6C). */
+const CONCEPTOS_NOTA_VENTA: readonly string[] = ['1', '2', '3', '4', '5', '6'];
+
+/** La nota de ajuste del POS no tiene los descuentos comerciales 5 y 6 (anexo DE §16.6). */
+export const MENSAJE_CONCEPTO_SOLO_FEV = (numero: string) =>
+  `${numero} es un documento POS: su nota de ajuste no tiene los descuentos comerciales 5 y 6 (son de la factura electrónica). Registra la rebaja con el concepto 3.`;
+
+/** La nota sin referencia es solo de la FEV (Concepto DIAN 61 de 2025: el POS siempre lleva referencia). */
+export const MENSAJE_SIN_REFERENCIA_SIN_FACTURAS =
+  'El cliente no tiene facturas electrónicas válidas en ese periodo y sede: la nota sin referencia solo cubre facturas (un POS siempre se corrige con su nota de ajuste referida).';
 
 /** Lo que devuelve `emitirNotaDeVenta`. */
 export type ResultadoNotaDeVenta =
@@ -801,9 +819,10 @@ export class EinvoicingService {
     user: JwtUser,
   ): Promise<ResultadoNotaDeVenta> {
     if (!s.origen?.trim()) throw new BadRequestException('La nota necesita la operación que la origina');
-    if (s.concepto !== '1' && s.concepto !== '2') {
-      throw new BadRequestException('Concepto de la nota no admitido: 1 devolución o 2 anulación');
+    if (!CONCEPTOS_NOTA_VENTA.includes(s.concepto)) {
+      throw new BadRequestException('Concepto de la nota no admitido: 1 devolución, 2 anulación o 3 a 6 rebajas y descuentos');
     }
+    const sinCantidad = CONCEPTOS_SIN_CANTIDAD.includes(s.concepto);
     if (!s.motivo?.trim()) throw new BadRequestException('La nota necesita el motivo');
     const sale = await this.sales.getOrFail(s.saleId);
     const sedeId = this.saleSedeId(sale);
@@ -832,6 +851,11 @@ export class EinvoicingService {
       return { estado: 'sin_nota', motivo: MENSAJE_REFERIDO_RECHAZADO(referido.fullNumber) };
     }
     const referenceType: 'pos' | 'invoice' = referido.type === 'pos' ? 'pos' : 'invoice';
+    if (referenceType === 'pos' && CONCEPTOS_SOLO_FEV.includes(s.concepto)) {
+      // Anexo DE §16.6: la nota de ajuste del POS tiene 1–4 y 5 «Otros»; los
+      // descuentos comerciales 5 y 6 son de la NC de la FEV (tabla 13.2.4).
+      throw new BadRequestException(MENSAJE_CONCEPTO_SOLO_FEV(referido.fullNumber));
+    }
     if (!referido.cufe || !referido.issueDate) {
       throw new ConflictException(`El documento ${referido.fullNumber} no tiene CUFE/CUDE o fecha: no se puede referenciar.`);
     }
@@ -864,6 +888,20 @@ export class EinvoicingService {
           (referido.charges ?? []).map((c) => this.plano(c) as unknown as CargoDocumento),
           lineasPrevias,
         ));
+      } else if (sinCantidad) {
+        // Rebaja o descuento (Fase 6C): valor sin unidades y sin propina.
+        lineas = lineasDeDevolucion(
+          referidas,
+          lineasPrevias,
+          (s.lineas ?? []).map((l) => ({
+            refKey: l.productId,
+            qty: 0,
+            valor: cop(l.valor),
+            impuesto: cop(l.impuesto),
+          })),
+          { sinCantidad: true },
+        );
+        cargos = [];
       } else {
         lineas = lineasDeDevolucion(
           referidas,
@@ -893,7 +931,41 @@ export class EinvoicingService {
     if (totales.payableAmount <= 0) {
       return { estado: 'sin_nota', motivo: 'Lo devuelto no tiene valor: no hay nada que acreditar ante la DIAN.' };
     }
+    return this.emitirNota({
+      user,
+      sedeId,
+      origen: s.origen,
+      concepto: s.concepto,
+      motivo: s.motivo,
+      referido,
+      lineas,
+      cargos,
+      notaDeVenta: sale._id,
+    });
+  }
 
+  /**
+   * Numera, calcula el CUDE y guarda la nota crédito en `draft`: lo común a la
+   * nota de una operación de venta (con referencia) y a la nota sin referencia
+   * (Fase 6C). Falla cerrado: PIN, resolución y NIT antes de tomar folio.
+   */
+  private async emitirNota(o: {
+    user: JwtUser;
+    sedeId: string;
+    origen: string;
+    concepto: string;
+    motivo: string;
+    /** El documento que corrige; en la nota sin referencia, la última factura del periodo (solo da emisor y adquiriente). */
+    referido: ElectronicDocumentDocument;
+    sinReferencia?: { desde: string; hasta: string };
+    lineas: LineaReferida[];
+    cargos: CargoDocumento[];
+    notaDeVenta?: Types.ObjectId;
+  }): Promise<ResultadoNotaDeVenta & { estado: 'emitida' }> {
+    const { user, sedeId, referido, lineas, cargos } = o;
+    const s = { origen: o.origen, concepto: o.concepto, motivo: o.motivo };
+    const totales = totalesDeNota(lineas, cargos);
+    const referenceType: 'pos' | 'invoice' = referido.type === 'pos' ? 'pos' : 'invoice';
     const sede = await this.sedes.findOrFail(sedeId);
     // Numeración (§6): consecutivo interno, sin resolución obligatoria. La FEV
     // usa la resolución `credit_note` si la sede la registró; si no, `NC<n>`.
@@ -950,10 +1022,21 @@ export class EinvoicingService {
             softwarePin: pin,
             tipoAmbiente,
           });
+          // Sin referencia (Fase 6C, CustomizationID 22): sin BillingReference y con el periodo.
+          const referencia = o.sinReferencia
+            ? { period: o.sinReferencia }
+            : {
+                referenceNumber: referido.fullNumber,
+                referenceCufe: referido.cufe,
+                referenceId: referido._id,
+                referenceIssueDate: referido.issueDate,
+                referenceType,
+                referenceScheme: esquemaDeOrigen(referenceType === 'pos' ? 'pos' : 'factura'),
+              };
           return {
             type: 'credit_note',
             // Sin `saleId`: el índice `saleId_1_type_1` permitiría una sola nota por venta.
-            notaDeVenta: sale._id,
+            notaDeVenta: o.notaDeVenta,
             origenNota: s.origen,
             sedeId: referido.sedeId,
             prefix: prefix || undefined,
@@ -973,12 +1056,7 @@ export class EinvoicingService {
             resolution: resolucionNota ? this.buildResolution(resolucionNota) : undefined,
             reason: s.motivo.trim(),
             discrepancyCode: s.concepto,
-            referenceNumber: referido.fullNumber,
-            referenceCufe: referido.cufe,
-            referenceId: referido._id,
-            referenceIssueDate: referido.issueDate,
-            referenceType,
-            referenceScheme: esquemaDeOrigen(referenceType === 'pos' ? 'pos' : 'factura'),
+            ...referencia,
             tipoAmbiente,
             cufe: cude,
             qrUrl: dianVerificationUrl(cude, tipoAmbiente),
@@ -995,6 +1073,118 @@ export class EinvoicingService {
       if (yaGuardada) return { estado: 'emitida', nota: yaGuardada };
       throw err;
     }
+  }
+
+  /**
+   * Nota crédito SIN referencia de la FEV (Fase 6C; CustomizationID 22, art. 36
+   * par. 1 Res. 165/2023): el descuento por volumen o por pronto pago que
+   * cubre las facturas de un cliente en un periodo de máximo 30 días dentro de
+   * un mismo mes (`InvoicePeriod`). Nunca el concepto 2 (CBF03a) y nunca un
+   * POS (Concepto DIAN 61 de 2025: la nota de ajuste siempre lleva referencia).
+   *
+   * - Idempotente por `origen`, como la nota de una operación.
+   * - Tope por tributo (IVA, INC, sin impuesto) contra lo facturado al cliente
+   *   en el periodo menos las notas con referencia a esas facturas y las notas
+   *   sin referencia previas del cliente en ese mes (`saldoPorTributo`). 409.
+   * - Emisor y adquiriente: los de la última factura del periodo.
+   */
+  async emitirNotaSinReferencia(
+    s: SolicitudNotaSinReferencia,
+    user: JwtUser,
+  ): Promise<ElectronicDocumentDocument> {
+    if (!s.origen?.trim()) throw new BadRequestException('La nota necesita la operación que la origina');
+    if (!['3', '4', '5', '6'].includes(s.concepto)) {
+      throw new BadRequestException('La nota sin referencia admite los conceptos 3 a 6 (nunca la anulación).');
+    }
+    if (!s.motivo?.trim()) throw new BadRequestException('La nota necesita el motivo');
+    if (!s.docNumber?.trim()) throw new BadRequestException('El cliente no tiene documento de identificación.');
+    assertSedeAccess(user, s.sedeId);
+    const fecha = /^\d{4}-\d{2}-\d{2}$/;
+    if (!fecha.test(s.desde) || !fecha.test(s.hasta) || s.desde > s.hasta) {
+      throw new BadRequestException('El periodo de la nota no es válido (AAAA-MM-DD, inicio antes del fin).');
+    }
+    const dias = (Date.parse(`${s.hasta}T00:00:00Z`) - Date.parse(`${s.desde}T00:00:00Z`)) / 86_400_000 + 1;
+    if (dias > 30 || s.desde.slice(0, 7) !== s.hasta.slice(0, 7)) {
+      throw new BadRequestException('El periodo de la nota sin referencia es de máximo 30 días y dentro de un mismo mes.');
+    }
+    const monto = cop(s.monto);
+
+    const previa = await this.model.findOne({ origenNota: s.origen }).exec();
+    if (previa && previa.dianStatus !== 'rejected') return previa;
+    if (previa) {
+      await this.model
+        .updateOne(
+          { _id: previa._id, dianStatus: 'rejected', origenNota: s.origen },
+          { $set: { origenNota: `${s.origen}#rechazada:${String(previa._id)}` } },
+        )
+        .exec();
+    }
+
+    const sedeOid = new Types.ObjectId(s.sedeId);
+    const docNumber = s.docNumber.trim();
+    // El documento puede haberse congelado con o sin puntos y guion (NIT con DV aparte).
+    const docs = [...new Set([docNumber, docNumber.replace(/\D/g, '')].filter(Boolean))];
+    const facturas = await this.model
+      .find({
+        type: 'invoice',
+        sedeId: sedeOid,
+        'adquiriente.docNumber': { $in: docs },
+        issueDate: { $gte: s.desde, $lte: s.hasta },
+        dianStatus: { $ne: 'rejected' },
+      })
+      .sort({ issueDate: -1, createdAt: -1 })
+      .exec();
+    if (facturas.length === 0) throw new BadRequestException(MENSAJE_SIN_REFERENCIA_SIN_FACTURAS);
+    const conReferencia = await this.model
+      .find({
+        type: 'credit_note',
+        referenceId: { $in: facturas.map((f) => f._id) },
+        dianStatus: { $ne: 'rejected' },
+      })
+      .exec();
+    // Una NC por el total (anterior a la Fase 6B, sin `refKey`) ya acreditó su factura entera.
+    const lineasPrevias = (d: ElectronicDocumentDocument) =>
+      (d.lines ?? []).map((l) => this.plano(l) as unknown as LineaPrevia & { taxRate?: number });
+    const mes = s.desde.slice(0, 7);
+    const sinReferenciaPrevias = await this.model
+      .find({
+        type: 'credit_note',
+        sedeId: sedeOid,
+        referenceId: { $exists: false },
+        'adquiriente.docNumber': { $in: docs },
+        'period.desde': { $gte: `${mes}-01`, $lte: `${mes}-31` },
+        dianStatus: { $ne: 'rejected' },
+      })
+      .exec();
+    let lineas: LineaReferida[];
+    try {
+      lineas = lineasSinReferencia(
+        saldoPorTributo(
+          facturas.map((f) => (f.lines ?? []).map((l) => this.plano(l) as unknown as LineaDocumento)),
+          conReferencia.map(lineasPrevias),
+          sinReferenciaPrevias.map(lineasPrevias),
+        ),
+        monto,
+        CONCEPTOS_NOTA_CREDITO[s.concepto] ?? 'Descuento',
+      );
+    } catch (err) {
+      if (err instanceof TopeNotaExcedidoError || err instanceof NotaNoRelacionableError) {
+        throw new ConflictException(err.message);
+      }
+      throw err;
+    }
+    const r = await this.emitirNota({
+      user,
+      sedeId: s.sedeId,
+      origen: s.origen,
+      concepto: s.concepto,
+      motivo: s.motivo,
+      referido: facturas[0]!,
+      sinReferencia: { desde: s.desde, hasta: s.hasta },
+      lineas,
+      cargos: [],
+    });
+    return r.nota;
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────────

@@ -41,6 +41,11 @@ import {
   OfflineSaleClaimSchema,
 } from './infrastructure/schemas/offline-sale-claim.schema';
 import { SaleReturnsService } from './application/sale-returns.service';
+import { NotasSinReferenciaService } from './application/notas-sin-referencia.service';
+import {
+  NotaSinReferencia,
+  NotaSinReferenciaSchema,
+} from './infrastructure/schemas/nota-sin-referencia.schema';
 import { OrdersService } from './application/orders.service';
 import { DocumentoFiscalVentaService } from './application/documento-fiscal-venta.service';
 import { NotaFiscalVentaService } from './application/nota-fiscal-venta.service';
@@ -98,6 +103,8 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
       { name: Sale.name, schema: SaleSchema },
       { name: PlatformSettlement.name, schema: PlatformSettlementSchema },
       { name: SaleReturn.name, schema: SaleReturnSchema },
+      // Fase 6C: descuentos sin referencia (NC 22 de la FEV).
+      { name: NotaSinReferencia.name, schema: NotaSinReferenciaSchema },
       { name: Order.name, schema: OrderSchema },
       { name: Counter.name, schema: CounterSchema },
       { name: StockItem.name, schema: StockItemSchema },
@@ -123,6 +130,7 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
     DocumentoFiscalVentaService,
     // Fase 6B: la nota de la devolución y de la anulación, por el mismo puerto.
     NotaFiscalVentaService,
+    NotasSinReferenciaService,
     PlatformSettlementsService,
   ],
   exports: [SalesService, OrdersService, SaleReturnsService, DevolucionesVaradasBarrido],

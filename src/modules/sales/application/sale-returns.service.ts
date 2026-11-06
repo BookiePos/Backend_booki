@@ -11,8 +11,8 @@ import {
   FinanceReceivableDocument,
 } from '../../finance/infrastructure/schemas/finance-receivable.schema';
 import { NotaFiscalVentaService } from './nota-fiscal-venta.service';
-import type { NotaFiscalOperacion } from './emision-documento-fiscal.puerto';
-import { origenNotaDevolucion } from '../domain/documento-fiscal';
+import type { NotaFiscalOperacion, SolicitudNotaVenta } from './emision-documento-fiscal.puerto';
+import { origenNotaDevolucion, origenNotaRebaja } from '../domain/documento-fiscal';
 import { hasCreditPart, propinaCobrada } from '../domain/sale-payments';
 import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 import { InjectModel } from '@nestjs/mongoose';
@@ -23,6 +23,13 @@ import {
 } from '../infrastructure/schemas/sale-return.schema';
 import { SaleDocument } from '../infrastructure/schemas/sale.schema';
 import { CreateSaleReturnDto } from './dto/create-sale-return.dto';
+import { CreateSaleRebateDto } from './dto/create-sale-rebate.dto';
+import {
+  planDeRebaja,
+  RebajaInvalidaError,
+  type ProductoVendido,
+  type YaReconocido,
+} from '../domain/sale-rebate';
 import { SalesService } from './sales.service';
 import { StockService } from '../../inventory/application/stock.service';
 import { CatalogService } from '../../catalog/application/catalog.service';
@@ -115,8 +122,21 @@ export class SaleReturnsService {
     /** Reembolso de productos y propina ya devueltos (decisión 4). */
     refundTotal: number;
     tipRefund: number;
+    /** Rebajas posteriores ya reconocidas por producto (Fase 6C), aparte. */
+    rebated: Map<string, { amount: number; tax: number }>;
   }> {
-    const previas = await this.model.find({ saleId }).exec();
+    const todas = await this.model.find({ saleId }).exec();
+    // Las rebajas no devuelven unidades ni propina: van en su propio mapa y
+    // bajan lo pagado de la devolución que sigue (`refundForLine`).
+    const rebated = new Map<string, { amount: number; tax: number }>();
+    for (const r of todas.filter((x) => x.kind === 'rebaja')) {
+      for (const l of r.lines) {
+        const key = l.productId.toString();
+        const m = rebated.get(key) ?? { amount: 0, tax: 0 };
+        rebated.set(key, { amount: m.amount + (l.refund ?? 0), tax: m.tax + (l.refundTax ?? 0) });
+      }
+    }
+    const previas = todas.filter((x) => x.kind !== 'rebaja');
     const qty = new Map<string, number>();
     // La plata ya devuelta por línea: la última devolución salda exacto lo
     // que falte de lo pagado (ítem 1.11), sin pesos colgando.
@@ -141,7 +161,7 @@ export class SaleReturnsService {
         });
       }
     }
-    return { qty, money, components, refundTotal, tipRefund };
+    return { qty, money, components, refundTotal, tipRefund, rebated };
   }
 
   /**
@@ -249,7 +269,7 @@ export class SaleReturnsService {
     const llave = dto.idempotencyKey?.trim() || undefined;
     if (llave) {
       const previa = await this.model.findOne({ saleId: sale._id, idempotencyKey: llave }).exec();
-      if (previa) return this.reanudar(previa, sale, user, dto);
+      if (previa) return this.reanudar(previa, sale, user, mismaCarga(previa, dto));
     }
 
     // Fiado a un EMPLEADO (consumo descontado por nómina): no hay cartera que
@@ -276,6 +296,7 @@ export class SaleReturnsService {
         dto.lines,
         yaDevuelto.qty,
         yaDevuelto.money,
+        yaDevuelto.rebated,
       );
     } catch (err) {
       throw new BadRequestException(
@@ -372,7 +393,7 @@ export class SaleReturnsService {
       // Dos reintentos simultáneos con la misma llave: gana uno y el otro lo devuelve.
       if (llave && (err as { code?: number })?.code === 11000) {
         const ganadora = await this.model.findOne({ saleId: sale._id, idempotencyKey: llave }).exec();
-        if (ganadora) return this.reanudar(ganadora, sale, user, dto);
+        if (ganadora) return this.reanudar(ganadora, sale, user, mismaCarga(ganadora, dto));
       }
       throw err;
     }
@@ -403,9 +424,12 @@ export class SaleReturnsService {
     const despues = await this.alreadyReturned(sale._id);
     // La propina también: dos devoluciones a la vez la calculan sobre el mismo
     // «ya devuelto» y, entre las dos, no pueden pasar de la cobrada.
+    // Y la plata: una rebaja simultánea (Fase 6C) no puede sumarse a la
+    // devolución por encima de lo pagado del producto.
     const excede =
       [...despues.qty].some(([productId, qty]) => qty > (vendido.get(productId) ?? 0)) ||
-      despues.tipRefund > propinaCobrada(sale);
+      despues.tipRefund > propinaCobrada(sale) ||
+      excedePagado(sale, despues.money, despues.rebated);
     if (excede) {
       await this.model.deleteOne({ _id: registro._id }).exec();
       throw new ConflictException(
@@ -451,6 +475,163 @@ export class SaleReturnsService {
     // La caja no espera a la DIAN: la nota se transmite detrás de la respuesta.
     this.notas?.transmitirDetras(nota, user);
     return registro;
+  }
+
+  /**
+   * Rebaja o descuento POSTERIOR sobre una venta ya cobrada (Fase 6C): se le
+   * reconoce al cliente un menor valor sin que vuelva mercancía.
+   *
+   * Es una devolución sin unidades (`kind: 'rebaja'`) y por eso comparte con
+   * ella lo que ya se probó: el registro antes de mover nada, la llave
+   * idempotente, el turno, la cartera del fiado, la nota que falla cerrado
+   * (NC 91 o nota de ajuste 94, concepto 3–6), la salida de caja, el asiento
+   * (Db 4175 + 2408/2495, Cr medio, 1305 o 2805) y el barrido de varadas. No
+   * toca inventario ni costo, ni devuelve propina.
+   *
+   * Tope: lo pagado de cada producto menos lo devuelto y lo ya rebajado
+   * (`planDeRebaja`), revisado otra vez con el registro ya creado.
+   */
+  async createRebaja(
+    saleId: string,
+    dto: CreateSaleRebateDto,
+    user: JwtUser,
+  ): Promise<SaleReturnDocument> {
+    const sale = await this.sales.getOrFail(saleId);
+    const sedeId = this.sedeIdOf(sale);
+    assertSedeAccess(user, sedeId);
+    if (sale.status === 'void') {
+      throw new BadRequestException('La venta está anulada: no admite rebajas.');
+    }
+    if (sale.platform) {
+      throw new BadRequestException(
+        'Es un pedido de plataforma: las rebajas al cliente las maneja la plataforma.',
+      );
+    }
+    const llave = dto.idempotencyKey.trim();
+    const previa = await this.model.findOne({ saleId: sale._id, idempotencyKey: llave }).exec();
+    if (previa) return this.reanudar(previa, sale, user, mismaRebaja(previa, dto));
+
+    const fiada = hasCreditPart(sale);
+    const cxc = fiada ? await this.cuentaPorCobrar(sale) : null;
+    if (fiada && this.receivables && !cxc) {
+      throw new ConflictException(
+        'La venta se fió a un empleado (descuento por nómina): no admite rebajas. Anula la venta completa.',
+      );
+    }
+
+    const ya = await this.alreadyReturned(sale._id);
+    let plan: ReturnType<typeof planDeRebaja>;
+    try {
+      plan = planDeRebaja(this.vendidos(sale), reconocidoPorProducto(ya), {
+        total: dto.amount,
+        porProducto: dto.lines,
+      });
+    } catch (err) {
+      if (err instanceof RebajaInvalidaError) throw new BadRequestException(err.message);
+      throw err;
+    }
+    const porNombre = new Map(sale.lines.map((l) => [l.productId.toString(), l]));
+
+    let registro: SaleReturnDocument;
+    try {
+      registro = await this.model.create({
+        kind: 'rebaja',
+        concepto: dto.concepto,
+        idempotencyKey: llave,
+        saleId: sale._id,
+        saleNumber: sale.saleNumber,
+        sedeId: new Types.ObjectId(sedeId),
+        lines: plan.lines.map((l) => {
+          const vendida = porNombre.get(l.productId);
+          return {
+            productId: new Types.ObjectId(l.productId),
+            sku: vendida?.sku ?? '',
+            name: vendida?.name ?? '',
+            qty: 0,
+            refund: l.amount,
+            refundTax: l.tax,
+          };
+        }),
+        components: [],
+        wasteRecorded: false,
+        estado: 'en_curso',
+        procesandoHasta: new Date(Date.now() + SaleReturnsService.TURNO_MS),
+        carteraHecha: false,
+        // No vuelve mercancía: el paso de stock nace hecho.
+        stockHecho: true,
+        cajaHecha: false,
+        asientoHecho: false,
+        refundMethod: dto.refundMethod,
+        refundTotal: plan.amount,
+        refundTax: plan.tax,
+        tipRefund: 0,
+        note: dto.reason.trim(),
+        userId: user.userId,
+        userEmail: user.email,
+      });
+    } catch (err) {
+      if ((err as { code?: number })?.code === 11000) {
+        const ganadora = await this.model.findOne({ saleId: sale._id, idempotencyKey: llave }).exec();
+        if (ganadora) return this.reanudar(ganadora, sale, user, mismaRebaja(ganadora, dto));
+      }
+      throw err;
+    }
+
+    // Anulación, devolución u otra rebaja simultáneas: con el registro ya
+    // creado se vuelve a sumar todo; si pasa de lo pagado, esta se retira.
+    const ahora = await this.sales.getOrFail(saleId);
+    const despues = await this.alreadyReturned(sale._id);
+    if (ahora.status === 'void' || excedePagado(sale, despues.money, despues.rebated)) {
+      await this.model.deleteOne({ _id: registro._id }).exec();
+      throw new ConflictException(
+        ahora.status === 'void'
+          ? 'La venta se anuló mientras se registraba la rebaja.'
+          : 'Otra devolución o rebaja de esta venta se registró al mismo tiempo. Revisa lo ya reconocido e inténtalo de nuevo.',
+      );
+    }
+
+    // Cartera y nota ANTES de caja y libro, como en la devolución.
+    let abonoCartera = 0;
+    if (cxc && plan.amount > 0) {
+      try {
+        abonoCartera = await this.abonarCartera(sale, registro, plan.amount, user);
+      } catch (err) {
+        await this.model.deleteOne({ _id: registro._id }).exec();
+        throw err;
+      }
+    }
+    let nota: NotaFiscalOperacion | undefined;
+    if (this.notas) {
+      try {
+        nota = await this.notas.emitir(sale, this.solicitudNota(registro, sale), user);
+      } catch (err) {
+        if (abonoCartera > 0) await this.revertirAbono(sale, registro, abonoCartera);
+        await this.model.deleteOne({ _id: registro._id }).exec();
+        throw err;
+      }
+    }
+    registro.abonoCartera = abonoCartera;
+    if (nota) registro.notaFiscal = nota as unknown as Record<string, unknown>;
+    registro.carteraHecha = true;
+    const turno = registro.procesandoHasta ?? null;
+    try {
+      await registro.save();
+      await this.completar(registro, sale, user, 'caja');
+    } finally {
+      await this.soltarTurno(registro, turno);
+    }
+    this.notas?.transmitirDetras(nota, user);
+    return registro;
+  }
+
+  /** Lo vendido por producto (lo que pagó el cliente, neto del descuento). */
+  private vendidos(sale: SaleDocument): ProductoVendido[] {
+    return sale.lines.map((l) => ({
+      productId: l.productId.toString(),
+      qty: l.qty,
+      taxBase: l.taxBase,
+      taxAmount: l.taxAmount,
+    }));
   }
 
   /**
@@ -648,7 +829,7 @@ export class SaleReturnsService {
               sedeId,
               type: 'out',
               amount: enPlata,
-              reason: 'Devolución de venta',
+              reason: registro.kind === 'rebaja' ? 'Rebaja de venta' : 'Devolución de venta',
               note: `Venta ${sale.saleNumber}`,
             } as never,
             user,
@@ -726,7 +907,21 @@ export class SaleReturnsService {
   }
 
   /** Lo que la nota de la devolución acredita: los mismos valores que van al libro. */
-  private solicitudNota(registro: SaleReturnDocument, sale: SaleDocument) {
+  private solicitudNota(registro: SaleReturnDocument, sale: SaleDocument): Omit<SolicitudNotaVenta, 'saleId'> {
+    if (registro.kind === 'rebaja') {
+      // Rebaja (Fase 6C): sin unidades; la nota acredita el valor por producto.
+      return {
+        origen: origenNotaRebaja(registro._id.toString()),
+        concepto: registro.concepto ?? '3',
+        motivo: `Rebaja sobre la venta ${sale.saleNumber}: ${registro.note ?? ''}`.trim(),
+        lineas: registro.lines.map((l) => ({
+          productId: l.productId.toString(),
+          qty: 0,
+          valor: l.refund,
+          impuesto: l.refundTax ?? 0,
+        })),
+      };
+    }
     const motivo = [
       `Devolución de la venta ${sale.saleNumber} (${MOTIVO_DEVOLUCION[registro.reason] ?? registro.reason})`,
       registro.note,
@@ -764,11 +959,13 @@ export class SaleReturnsService {
     registro: SaleReturnDocument,
     sale: SaleDocument,
     user: JwtUser,
-    dto: CreateSaleReturnDto,
+    misma: boolean,
   ): Promise<SaleReturnDocument> {
-    if (!mismaCarga(registro, dto)) {
+    if (!misma) {
       throw new ConflictException(
-        'Esa llave ya se usó para otra devolución de esta venta, con otros productos, cantidades o medio de devolución. Revisa lo ya devuelto y usa una llave nueva.',
+        registro.kind === 'rebaja'
+          ? 'Esa llave ya se usó para otra operación de esta venta, con otro concepto, monto o medio. Revisa lo ya reconocido y usa una llave nueva.'
+          : 'Esa llave ya se usó para otra devolución de esta venta, con otros productos, cantidades o medio de devolución. Revisa lo ya devuelto y usa una llave nueva.',
       );
     }
     if (estaAbierta(registro)) return this.continuar(registro, sale, user, 'caja');
@@ -954,6 +1151,7 @@ export class SaleReturnsService {
       toReceivable: registro.abonoCartera ?? 0,
       // La propina devuelta sale de la 2380 (decisión 4).
       tip: registro.tipRefund ?? 0,
+      memo: registro.kind === 'rebaja' ? `Rebaja posterior de la venta ${sale.saleNumber}` : undefined,
       userEmail: registro.userEmail,
     });
   }
@@ -971,6 +1169,7 @@ function mismaCarga(registro: SaleReturnDocument, dto: CreateSaleReturnDto): boo
     return [...m].sort(([a], [b]) => a.localeCompare(b)).map(([k, q]) => `${k}:${q}`).join('|');
   };
   return (
+    registro.kind !== 'rebaja' &&
     registro.refundMethod === dto.refundMethod &&
     registro.restock === dto.restock &&
     registro.reason === dto.reason &&
@@ -1007,3 +1206,57 @@ const ESTADOS_ABIERTOS: ('en_curso' | 'pendiente_caja')[] = ['en_curso', 'pendie
 
 const estaAbierta = (r: { estado?: string }) =>
   (ESTADOS_ABIERTOS as string[]).includes(r.estado ?? '');
+
+/**
+ * ¿El reintento trae la misma rebaja? Concepto, medio y lo rebajado: el total
+ * si se pidió así, o el monto por producto.
+ */
+function mismaRebaja(registro: SaleReturnDocument, dto: CreateSaleRebateDto): boolean {
+  if (registro.kind !== 'rebaja') return false;
+  if (registro.concepto !== dto.concepto || registro.refundMethod !== dto.refundMethod) return false;
+  if (dto.amount !== undefined) return !dto.lines?.length && cop(dto.amount) === registro.refundTotal;
+  const huella = (ls: readonly { productId: unknown; amount: number }[]) => {
+    const m = new Map<string, number>();
+    for (const l of ls) m.set(String(l.productId), (m.get(String(l.productId)) ?? 0) + cop(l.amount));
+    return [...m].sort(([a], [b]) => a.localeCompare(b)).map(([k, q]) => `${k}:${q}`).join('|');
+  };
+  return huella(registro.lines.map((l) => ({ productId: l.productId, amount: l.refund }))) === huella(dto.lines ?? []);
+}
+
+/** Lo devuelto y lo rebajado por producto, en la forma de `planDeRebaja`. */
+function reconocidoPorProducto(ya: {
+  money: ReadonlyMap<string, { refund: number; refundTax: number }>;
+  rebated: ReadonlyMap<string, { amount: number; tax: number }>;
+}): Map<string, YaReconocido> {
+  const out = new Map<string, YaReconocido>();
+  for (const k of new Set([...ya.money.keys(), ...ya.rebated.keys()])) {
+    const m = ya.money.get(k);
+    const r = ya.rebated.get(k);
+    out.set(k, {
+      refund: m?.refund ?? 0,
+      refundTax: m?.refundTax ?? 0,
+      rebated: r?.amount ?? 0,
+      rebatedTax: r?.tax ?? 0,
+    });
+  }
+  return out;
+}
+
+/**
+ * ¿Lo devuelto más lo rebajado de algún producto pasa de lo que se pagó por
+ * él? Es la revisión de carrera entre devoluciones y rebajas simultáneas.
+ */
+function excedePagado(
+  sale: SaleDocument,
+  money: ReadonlyMap<string, { refund: number; refundTax: number }>,
+  rebated: ReadonlyMap<string, { amount: number; tax: number }>,
+): boolean {
+  const pagado = new Map<string, number>();
+  for (const l of sale.lines) {
+    const k = l.productId.toString();
+    pagado.set(k, (pagado.get(k) ?? 0) + cop(l.taxBase + l.taxAmount));
+  }
+  return [...pagado].some(
+    ([k, p]) => (money.get(k)?.refund ?? 0) + (rebated.get(k)?.amount ?? 0) > p,
+  );
+}

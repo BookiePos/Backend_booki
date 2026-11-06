@@ -1,4 +1,4 @@
-import { sumBy } from '../../finance/domain/money.util';
+import { cop, sumBy } from '../../finance/domain/money.util';
 import { primerTributo, type CargoDocumento, type LineaDocumento, type TotalesDocumento } from './documento-venta';
 
 /**
@@ -31,8 +31,18 @@ export class NotaNoRelacionableError extends Error {}
 /** Grupo del domicilio (línea propia del documento, sin producto). */
 export const GRUPO_DOMICILIO = 'domicilio';
 
-/** Concepto de la nota que emite BookiPos: 1 devolución parcial, 2 anulación (decisión 3: sin 3-6). */
-export type ConceptoNotaVenta = '1' | '2';
+/**
+ * Concepto de la nota que emite BookiPos: 1 devolución parcial, 2 anulación
+ * (Fase 6B); 3 rebaja, 4 ajuste de precio, 5 pronto pago y 6 volumen (Fase 6C,
+ * decisión del dueño del 2026-11-06). Del 3 al 6 no vuelven unidades.
+ */
+export type ConceptoNotaVenta = '1' | '2' | '3' | '4' | '5' | '6';
+
+/** Conceptos sin unidades: la línea acredita valor, no cantidad. */
+export const CONCEPTOS_SIN_CANTIDAD: readonly ConceptoNotaVenta[] = ['3', '4', '5', '6'];
+
+/** Conceptos que la nota de ajuste del POS no tiene (anexo DE §16.6: 1–4 y 5 «Otros»). */
+export const CONCEPTOS_SOLO_FEV: readonly ConceptoNotaVenta[] = ['5', '6'];
 
 /** Línea del documento referido con su grupo (producto de la venta o domicilio). */
 export type LineaReferida = LineaDocumento & { refKey: string };
@@ -40,6 +50,8 @@ export type LineaReferida = LineaDocumento & { refKey: string };
 /** Línea de una nota previa: sin `refKey` es una nota vieja por el total. */
 export type LineaPrevia = Pick<LineaDocumento, 'qty' | 'base' | 'taxScheme' | 'taxAmount'> & {
   refKey?: string;
+  /** Línea de una rebaja (Fase 6C): acredita valor, no unidades. */
+  sinCantidad?: boolean;
 };
 
 /** Lo que queda por acreditar de un grupo. */
@@ -65,7 +77,9 @@ const vacio = (): SaldoGrupo => ({ qty: 0, base: 0, iva: 0, inc: 0 });
 function sumar(m: Map<string, SaldoGrupo>, key: string, l: LineaPrevia, signo: 1 | -1) {
   const s = m.get(key) ?? vacio();
   const impuesto = l.taxScheme ? (l.taxAmount ?? 0) : 0;
-  s.qty += signo * l.qty;
+  // La rebaja (Fase 6C) no consume unidades: una devolución posterior de esas
+  // mismas unidades sigue cabiendo por cantidad (su valor ya está topado).
+  if (!l.sinCantidad) s.qty += signo * l.qty;
   s.base += signo * l.base;
   if (l.taxScheme === '01') s.iva += signo * impuesto;
   if (l.taxScheme === '04') s.inc += signo * impuesto;
@@ -105,7 +119,10 @@ export function lineasDeDevolucion(
   referidas: readonly LineaReferida[],
   previas: readonly (readonly LineaPrevia[])[],
   pedidas: readonly LineaPedida[],
-): LineaReferida[] {
+  /** Rebaja (conceptos 3–6): sin unidades; la línea va con cantidad 1 informativa. */
+  opts: { sinCantidad?: boolean } = {},
+): (LineaReferida & { sinCantidad?: boolean })[] {
+  const sinCantidad = opts.sinCantidad === true;
   if (pedidas.length === 0) throw new NotaNoRelacionableError('La nota no tiene líneas');
   const saldo = saldoAcreditable(referidas, previas);
   const usado = new Map<string, SaldoGrupo>();
@@ -114,7 +131,7 @@ export function lineasDeDevolucion(
     if (!ref) {
       throw new NotaNoRelacionableError('Un producto devuelto no está en el documento fiscal de la venta');
     }
-    if (!(p.qty > 0) || p.valor < 0 || p.impuesto < 0 || p.impuesto > p.valor) {
+    if ((!sinCantidad && !(p.qty > 0)) || p.valor < 0 || p.impuesto < 0 || p.impuesto > p.valor) {
       throw new NotaNoRelacionableError('La línea de la nota tiene valores inválidos');
     }
     const taxScheme = ref.taxScheme;
@@ -122,13 +139,14 @@ export function lineasDeDevolucion(
     // puede acreditar impuesto: va todo como base, igual que se facturó.
     const taxAmount = taxScheme ? p.impuesto : 0;
     const base = p.valor - taxAmount;
-    const linea: LineaReferida = {
+    const linea: LineaReferida & { sinCantidad?: boolean } = {
       refKey: p.refKey,
       code: ref.code,
       description: ref.description,
-      qty: p.qty,
-      unitCode: ref.unitCode,
-      unitPrice: ref.unitPrice,
+      // La rebaja no devuelve unidades: cantidad 1 y el precio es lo rebajado.
+      qty: sinCantidad ? 1 : p.qty,
+      unitCode: sinCantidad ? '94' : ref.unitCode,
+      unitPrice: sinCantidad ? base : ref.unitPrice,
       discountAmount: 0,
       base,
       taxScheme,
@@ -137,6 +155,7 @@ export function lineasDeDevolucion(
       ivaRate: taxScheme === '01' ? ref.taxRate : 0,
       ivaAmount: taxScheme === '01' ? taxAmount : 0,
       total: base + taxAmount,
+      ...(sinCantidad ? { sinCantidad: true } : {}),
     };
     // Dos pedidas del mismo grupo suman contra el mismo saldo.
     sumar(usado, p.refKey, linea, 1);
@@ -252,4 +271,105 @@ export function gruposDelDocumento(
     ...l,
     refKey: i < productosVenta.length ? productosVenta[i]! : GRUPO_DOMICILIO,
   }));
+}
+
+/** Grupo de tributo de una nota sin referencia: tributo y tarifa. */
+export interface SaldoTributo {
+  refKey: string;
+  taxScheme?: '01' | '04';
+  taxRate: number;
+  /** Lo que queda, con impuesto. */
+  valor: number;
+  impuesto: number;
+}
+
+/** Llave del grupo de tributo (nota sin referencia, Fase 6C). */
+export const grupoTributo = (l: { taxScheme?: string; taxRate?: number }): string =>
+  `tributo:${l.taxScheme ?? 'sin'}:${l.taxScheme ? (l.taxRate ?? 0) : 0}`;
+
+/**
+ * Saldo por tributo de las facturas de un cliente en un periodo, para la nota
+ * SIN referencia (Fase 6C, CustomizationID 22): lo facturado menos las notas
+ * con referencia a esas facturas y las notas sin referencia previas del
+ * cliente en el mismo mes. El INC de bolsas no entra (no se rebaja).
+ */
+export function saldoPorTributo(
+  facturas: readonly (readonly LineaDocumento[])[],
+  notasConReferencia: readonly (readonly LineaPrevia[])[],
+  notasSinReferencia: readonly (readonly LineaPrevia[])[],
+): SaldoTributo[] {
+  const m = new Map<string, SaldoTributo>();
+  const sumarT = (l: LineaPrevia & { taxRate?: number }, signo: 1 | -1) => {
+    const k = grupoTributo(l);
+    const scheme = l.taxScheme === '01' || l.taxScheme === '04' ? l.taxScheme : undefined;
+    const g = m.get(k) ?? { refKey: k, taxScheme: scheme, taxRate: scheme ? (l.taxRate ?? 0) : 0, valor: 0, impuesto: 0 };
+    const imp = scheme ? (l.taxAmount ?? 0) : 0;
+    g.valor += signo * (l.base + imp);
+    g.impuesto += signo * imp;
+    m.set(k, g);
+  };
+  for (const f of facturas) for (const l of f) sumarT(l, 1);
+  for (const n of [...notasConReferencia, ...notasSinReferencia]) for (const l of n) sumarT(l, -1);
+  return [...m.values()].map((g) => ({
+    ...g,
+    valor: Math.max(g.valor, 0),
+    impuesto: Math.min(Math.max(g.impuesto, 0), Math.max(g.valor, 0)),
+  }));
+}
+
+/**
+ * Líneas de la nota sin referencia: el monto se reparte entre los tributos en
+ * proporción a lo que queda de cada uno, y en cada uno el impuesto sale de su
+ * proporción (la parte que agota el saldo se lleva exacto lo que quedaba).
+ * Lanza `TopeNotaExcedidoError` si el monto pasa del saldo.
+ */
+export function lineasSinReferencia(
+  saldos: readonly SaldoTributo[],
+  monto: number,
+  descripcion: string,
+): (LineaReferida & { sinCantidad: true })[] {
+  const disponible = sumBy(saldos, (g) => g.valor);
+  if (!(monto > 0)) throw new NotaNoRelacionableError('La nota no tiene valor');
+  if (monto > disponible) {
+    throw new TopeNotaExcedidoError(
+      `El descuento ($${monto}) pasa de lo que queda por acreditar en las facturas del periodo ($${disponible}).`,
+    );
+  }
+  const grupos = saldos.filter((g) => g.valor > 0);
+  // Reparto entero que suma exacto `monto` (residuo en la última parte).
+  const sumW = sumBy(grupos, (g) => g.valor);
+  let acum = 0;
+  let asignado = 0;
+  const partes = grupos.map((g) => {
+    acum += g.valor;
+    const hasta = cop((monto * acum) / sumW);
+    const parte = hasta - asignado;
+    asignado = hasta;
+    return parte;
+  });
+  return grupos
+    .map((g, i) => {
+      const valor = Math.min(partes[i]!, g.valor);
+      const taxAmount =
+        valor === g.valor ? g.impuesto : Math.min(cop((valor * g.impuesto) / g.valor), g.impuesto);
+      const base = valor - taxAmount;
+      const tarifa = g.taxScheme ? ` (${g.taxScheme === '01' ? 'IVA' : 'INC'} ${g.taxRate} %)` : ' (sin impuesto)';
+      return {
+        refKey: g.refKey,
+        description: `${descripcion}${tarifa}`.slice(0, 300),
+        qty: 1,
+        unitCode: '94',
+        unitPrice: base,
+        discountAmount: 0,
+        base,
+        taxScheme: g.taxScheme,
+        taxRate: g.taxRate,
+        taxAmount,
+        ivaRate: g.taxScheme === '01' ? g.taxRate : 0,
+        ivaAmount: g.taxScheme === '01' ? taxAmount : 0,
+        total: valor,
+        sinCantidad: true as const,
+      };
+    })
+    .filter((l) => l.total > 0);
 }

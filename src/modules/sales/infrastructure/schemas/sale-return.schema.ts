@@ -84,14 +84,40 @@ export class SaleReturn {
   @Prop({ type: [SaleReturnComponentSchema], default: [] })
   components!: SaleReturnComponent[];
 
-  @Prop({ required: true, enum: RETURN_REASONS })
+  /**
+   * Devolución (vuelve mercancía) o rebaja posterior (Fase 6C: se reconoce un
+   * menor valor sin que vuelva nada). Sin el campo es una devolución. La
+   * rebaja lleva sus líneas con `qty` 0, sin componentes ni destino, y
+   * comparte con la devolución los pasos (cartera, nota, caja y libro), el
+   * turno, la idempotencia y el bloqueo de la anulación.
+   */
+  @Prop({ type: String, enum: ['devolucion', 'rebaja'] })
+  kind?: 'devolucion' | 'rebaja';
+
+  /** Concepto de la nota de la rebaja (3, 4, 5 o 6). Solo en la rebaja. */
+  @Prop({ type: String, enum: ['3', '4', '5', '6'] })
+  concepto?: '3' | '4' | '5' | '6';
+
+  @Prop({
+    type: String,
+    enum: RETURN_REASONS,
+    required(this: { kind?: string }) {
+      return this.kind !== 'rebaja';
+    },
+  })
   reason!: ReturnReason;
 
   /**
    * Qué se hizo con la mercancía. `inventory` la devuelve al estante;
    * `waste` la registra como merma, porque volvió pero ya no se puede vender.
    */
-  @Prop({ required: true, enum: RESTOCK_MODES })
+  @Prop({
+    type: String,
+    enum: RESTOCK_MODES,
+    required(this: { kind?: string }) {
+      return this.kind !== 'rebaja';
+    },
+  })
   restock!: RestockMode;
 
   /**

@@ -6,7 +6,10 @@ import type { SaleDocument } from '../infrastructure/schemas/sale.schema';
 import type { DocumentoFiscalVenta } from '../domain/documento-fiscal';
 import {
   EMISION_DOCUMENTO_FISCAL,
+  type EmisionNotaSinReferencia,
   type EmisionNotaVenta,
+  type NotaSinReferenciaEmitida,
+  type SolicitudNotaSinReferencia,
   type NotaFiscalOperacion,
   type SolicitudNotaVenta,
 } from './emision-documento-fiscal.puerto';
@@ -64,6 +67,21 @@ export class NotaFiscalVentaService {
       if (fiscal?.estado === 'pendiente_contingencia_07') return { ...r, motivo: MENSAJE_NOTA_CONTINGENCIA };
     }
     return r;
+  }
+
+  /**
+   * Nota crédito sin referencia (Fase 6C). Sin el módulo de facturación no hay
+   * nota y la operación no sigue: es un documento fiscal y nada más.
+   */
+  async emitirSinReferencia(
+    s: SolicitudNotaSinReferencia,
+    user: JwtUser,
+  ): Promise<NotaSinReferenciaEmitida> {
+    const puerto = this.puerto() as (EmisionNotaVenta & Partial<EmisionNotaSinReferencia>) | null;
+    if (!puerto?.emitirNotaSinReferencia) {
+      throw new ServiceUnavailableException('La facturación electrónica no está disponible: no se puede emitir la nota.');
+    }
+    return puerto.emitirNotaSinReferencia(s, user);
   }
 
   /** Transmite la nota detrás de la respuesta. Nunca lanza. */
