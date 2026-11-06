@@ -290,11 +290,10 @@ export class EinvoicingService {
       // Cupo del plan antes de quemar folio: si no hay cupo, 402 sin consumir nada.
       const origen = await this.consumeDocQuota();
       let number: number | undefined;
+      let creado: ElectronicDocumentDocument | undefined;
       try {
         number = await this.nextNumber(o.counterId, o.desde, o.hasta);
-        const creado = await this.model.create(o.construir(number));
-        await this.auditarEmision(creado, o.actor);
-        return creado;
+        creado = await this.model.create(o.construir(number));
       } catch (err) {
         await this.refundDocQuota(origen);
         const choque = tipoDeChoque(err);
@@ -321,6 +320,10 @@ export class EinvoicingService {
         }
         throw err;
       }
+      // Fuera del try: si la auditoría lanzara, el catch devolvería cupo y folio
+      // de un documento que YA existe.
+      await this.auditarEmision(creado, o.actor);
+      return creado;
     }
   }
 
