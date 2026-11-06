@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ForbiddenException,
   Controller,
   Get,
   Ip,
@@ -20,6 +21,9 @@ import { NominaPeriodoService } from '../application/nomina-periodo.service';
 import { HabilitacionNominaService } from '../application/habilitacion-nomina.service';
 import { AjusteNominaDto } from '../application/dto/ajuste-nomina.dto';
 import { EmitirPeriodoNominaDto } from '../application/dto/emitir-periodo-nomina.dto';
+import { DocumentoFeVistaService } from '../application/documento-fe-vista.service';
+import { RangosDianService } from '../application/rangos-dian.service';
+import { EnviarCorreoDto } from '../application/dto/enviar-correo.dto';
 import { EntregaDianService } from '../application/entrega-dian.service';
 import {
   CERT_MAX_BYTES,
@@ -46,6 +50,8 @@ export class EinvoicingController {
     private readonly certificados: CertificadoEmisorService,
     private readonly transmision: TransmisionDianService,
     private readonly entrega: EntregaDianService,
+    private readonly vista: DocumentoFeVistaService,
+    private readonly rangosDian: RangosDianService,
     private readonly nomina: NominaElectronicaService,
     private readonly periodos: NominaPeriodoService,
     private readonly habilitacionNomina: HabilitacionNominaService,
@@ -64,12 +70,47 @@ export class EinvoicingController {
   /** Registra o renueva la resolución de una sede, anclando el consecutivo. */
   @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
   @Post('resolutions/:sedeId')
-  registerResolution(
+  async registerResolution(
     @Param('sedeId') sedeId: string,
     @Body() dto: RegisterResolutionDto,
     @CurrentUser() user: JwtUser,
   ) {
-    return this.einvoicing.registerResolution(sedeId, dto, user);
+    const { traerClaveDeDian, ...datos } = dto;
+    if (traerClaveDeDian) {
+      // Registrar desde un rango de la DIAN: la clave la lee el servidor.
+      if (!user.permissions.includes(PERMISSIONS.EINVOICING_CONFIGURE)) {
+        throw new ForbiddenException('Traer la clave técnica de la DIAN requiere permiso de configuración.');
+      }
+      const rango = await this.rangosDian.claveTecnicaDe(
+        sedeId,
+        { numero: datos.numero, prefijo: datos.prefijo?.toUpperCase(), desde: datos.rangoDesde, hasta: datos.rangoHasta },
+        user,
+      );
+      if (!rango?.claveTecnica) {
+        throw new BadRequestException('La DIAN no devolvió ese rango. Vuelve a traer los rangos.');
+      }
+      // Manda lo que dijo la DIAN, no lo del DTO: número, prefijo, tramo y fechas.
+      datos.numero = rango.resolucion;
+      datos.prefijo = rango.prefijo;
+      datos.rangoDesde = rango.desde;
+      datos.rangoHasta = rango.hasta;
+      datos.fechaResolucion = rango.fechaResolucion;
+      datos.vigenciaDesde = rango.vigenciaDesde;
+      datos.vigenciaHasta = rango.vigenciaHasta;
+      datos.claveTecnica = rango.claveTecnica;
+    }
+    return this.einvoicing.registerResolution(sedeId, datos, user);
+  }
+
+  /**
+   * Rangos de numeración autorizados por la DIAN al emisor de la sede
+   * (`GetNumberingRange`, con su certificado). Solo lectura: nada se registra
+   * solo, y la clave técnica no viaja.
+   */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CONFIGURE)
+  @Get('sedes/:sedeId/rangos-dian')
+  rangosDeLaDian(@Param('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
+    return this.rangosDian.traer(sedeId, user);
   }
 
   /**
@@ -208,6 +249,27 @@ export class EinvoicingController {
   list(@Query('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
     if (!sedeId) throw new BadRequestException('sedeId es obligatorio');
     return this.einvoicing.list(sedeId, user);
+  }
+
+  /** Detalle para la pantalla: estado, motivos legibles, descargas disponibles y correo. */
+  @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
+  @Get('documentos/:id/detalle')
+  detalle(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.vista.detalle(id, user);
+  }
+
+  /** URLs firmadas de vida corta del XML firmado, el PDF y el ZIP (nunca se guardan). */
+  @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
+  @Get('documentos/:id/descargas')
+  descargas(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.vista.descargas(id, user);
+  }
+
+  /** Envía el ZIP al adquiriente (o al correo indicado). Solo documentos aceptados; con tope de envíos. */
+  @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
+  @Post('documentos/:id/correo')
+  enviarCorreo(@Param('id') id: string, @Body() dto: EnviarCorreoDto, @CurrentUser() user: JwtUser) {
+    return this.vista.enviarCorreo(id, dto.email, user);
   }
 
   @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)

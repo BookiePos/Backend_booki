@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -64,6 +65,15 @@ export class RegisterResolutionDto {
   @IsOptional()
   @Matches(YYYYMMDD, { message: 'vigenciaHasta debe ser YYYY-MM-DD' })
   vigenciaHasta?: string;
+
+  /**
+   * Obtener la clave técnica de la DIAN (`GetNumberingRange`) en el servidor,
+   * para el rango que coincide con numero/prefijo/rango. La clave nunca viaja
+   * al navegador. Exige `einvoicing.configure`.
+   */
+  @IsOptional()
+  @IsBoolean()
+  traerClaveDeDian?: boolean;
 
   /** Si no viene, se conserva la que ya tuviera la sede. */
   @IsOptional()

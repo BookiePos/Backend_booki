@@ -114,6 +114,7 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `DELETE /discounts/:id` | `pos.discount.authorize` | ✓ | ✓ | ✓ | · | · |
 | `GET /einvoicing/resolutions` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /einvoicing/resolutions/:sedeId` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
+| `GET /einvoicing/sedes/:sedeId/rangos-dian` | `einvoicing.configure` | ✓ | ✓ | · | · | · |
 | `GET /einvoicing/sedes/:sedeId/emisor` | `einvoicing.configure` | ✓ | ✓ | · | · | · |
 | `POST /einvoicing/sedes/:sedeId/emisor/certificado` | `einvoicing.certificate` | ✓ | · | · | · | · |
 | `PUT /einvoicing/sedes/:sedeId/emisor/factura` | `einvoicing.certificate` | ✓ | · | · | · | · |
@@ -127,6 +128,9 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `POST /einvoicing/nomina/:id/transmitir` | `payroll.einvoice` | ✓ | ✓ | · | · | · |
 | `GET /einvoicing/nomina/:id` | `payroll.einvoice` | ✓ | ✓ | · | · | · |
 | `GET /einvoicing` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
+| `GET /einvoicing/documentos/:id/detalle` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
+| `GET /einvoicing/documentos/:id/descargas` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
+| `POST /einvoicing/documentos/:id/correo` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /einvoicing/:id` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /einvoicing/from-sale` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /einvoicing/documentos/:id/transmitir` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |

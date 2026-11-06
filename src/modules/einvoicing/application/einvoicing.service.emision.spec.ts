@@ -221,39 +221,46 @@ describe('EinvoicingService.registerResolution · número inicial y prefijo', ()
     guardada = sedeDoc;
   });
 
+  it('rechaza sin vigenciaHasta y con una ya vencida', async () => {
+    await expect(svc.registerResolution(sedeId, { rangoDesde: 1, rangoHasta: 10 }, user)).rejects.toThrow(/vigencia final/);
+    await expect(
+      svc.registerResolution(sedeId, { rangoDesde: 1, rangoHasta: 10, vigenciaHasta: '2020-01-01' }, user),
+    ).rejects.toThrow(/venció/);
+  });
+
   it('por defecto arranca en el mayor emitido + 1 (o en el inicio del rango si es mayor)', async () => {
     mayor = 500;
-    await svc.registerResolution(sedeId, { prefijo: 'fe', rangoDesde: 1, rangoHasta: 2000 }, user);
+    await svc.registerResolution(sedeId, { prefijo: 'fe', rangoDesde: 1, rangoHasta: 2000, vigenciaHasta: '2099-12-31' }, user);
     expect(seqFijado).toBe(500); // próximo número = 501
     mayor = 500;
-    await svc.registerResolution(sedeId, { prefijo: 'fe', rangoDesde: 2001, rangoHasta: 4000 }, user);
+    await svc.registerResolution(sedeId, { prefijo: 'fe', rangoDesde: 2001, rangoHasta: 4000, vigenciaHasta: '2099-12-31' }, user);
     expect(seqFijado).toBe(0); // arranca en 2001
   });
 
   it('rechaza un empezarEn que ya fue emitido, con el último en el mensaje', async () => {
     mayor = 500;
     await expect(
-      svc.registerResolution(sedeId, { prefijo: 'FE', rangoDesde: 1, rangoHasta: 2000, empezarEn: 500 }, user),
+      svc.registerResolution(sedeId, { prefijo: 'FE', rangoDesde: 1, rangoHasta: 2000, vigenciaHasta: '2099-12-31', empezarEn: 500 }, user),
     ).rejects.toThrow(/último fue el 500/);
     expect(guardada.save).not.toHaveBeenCalled();
   });
 
   it('acepta un empezarEn posterior al último emitido', async () => {
     mayor = 500;
-    await svc.registerResolution(sedeId, { prefijo: 'FE', rangoDesde: 1, rangoHasta: 2000, empezarEn: 600 }, user);
+    await svc.registerResolution(sedeId, { prefijo: 'FE', rangoDesde: 1, rangoHasta: 2000, vigenciaHasta: '2099-12-31', empezarEn: 600 }, user);
     expect(seqFijado).toBe(599);
   });
 
   it('los tipos distintos de factura exigen prefijo', async () => {
     await expect(
-      svc.registerResolution(sedeId, { tipoDocumento: 'pos', rangoDesde: 1, rangoHasta: 10 }, user),
+      svc.registerResolution(sedeId, { tipoDocumento: 'pos', rangoDesde: 1, rangoHasta: 10, vigenciaHasta: '2099-12-31' }, user),
     ).rejects.toBeInstanceOf(BadRequestException);
-    await svc.registerResolution(sedeId, { tipoDocumento: 'pos', prefijo: 'pos', rangoDesde: 1, rangoHasta: 10 }, user);
+    await svc.registerResolution(sedeId, { tipoDocumento: 'pos', prefijo: 'pos', rangoDesde: 1, rangoHasta: 10, vigenciaHasta: '2099-12-31' }, user);
     expect(guardada.resolucionesFe[0]).toMatchObject({ tipoDocumento: 'pos', prefijo: 'POS' });
   });
 
   it('la factura puede seguir sin prefijo', async () => {
-    await svc.registerResolution(sedeId, { rangoDesde: 1, rangoHasta: 10 }, user);
+    await svc.registerResolution(sedeId, { rangoDesde: 1, rangoHasta: 10, vigenciaHasta: '2099-12-31' }, user);
     expect(guardada.resolucionFe.tipoDocumento).toBe('invoice');
   });
 });

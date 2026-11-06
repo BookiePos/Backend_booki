@@ -299,6 +299,7 @@ describe('mapeo de GetNumberingRange', () => {
     expect(r).toMatchObject({ ok: true, isValid: true, origen: 'dian', codigo: '100' });
     expect(r.rangos).toHaveLength(2);
     expect(r.rangos[0]).toMatchObject({ prefijo: 'SETP', desde: 990000000, hasta: 995000000, resolucion: '18760000000' });
+    expect(r.rangos[0]).toMatchObject({ fechaResolucion: '2019-01-19', vigenciaDesde: '2019-01-19', vigenciaHasta: '2030-01-19' });
     expect(r.rangos[0]!.claveTecnica).toBe(CLAVE_TECNICA_PRUEBA);
     // No enumerable: ni JSON, ni spread, ni inspección la muestran.
     expect(JSON.stringify(r)).not.toContain(CLAVE_TECNICA_PRUEBA);

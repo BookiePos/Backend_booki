@@ -872,6 +872,18 @@ export class EinvoicingService {
     const tipo = dto.tipoDocumento ?? TIPO_RESOLUCION_POR_DEFECTO;
     const previa = resolucionDeTipo(sede, tipo);
 
+    // Sin vigencia final no se puede saber cuándo deja de servir, y una vencida
+    // no sirve para emitir: ninguna se registra, venga de la DIAN o tecleada.
+    if (!dto.vigenciaHasta) {
+      throw new BadRequestException('La resolución necesita la fecha de vigencia final (vigenciaHasta).');
+    }
+    // Se compara como texto YYYY-MM-DD contra el día de hoy en Colombia: con
+    // `new Date('YYYY-MM-DD')` (UTC) una resolución salía vencida en su último día.
+    const hoyColombia = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
+    if (String(dto.vigenciaHasta).slice(0, 10) < hoyColombia) {
+      throw new BadRequestException('La resolución ya venció: no se puede registrar una vigencia pasada.');
+    }
+
     const prefijo = dto.prefijo?.toUpperCase() ?? '';
     // El consecutivo se comparte por (NIT, prefijo) entre todos los tipos: sin
     // prefijo propio, un POS o una nota chocarían con la factura.

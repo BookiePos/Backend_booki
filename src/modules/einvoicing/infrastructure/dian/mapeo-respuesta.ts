@@ -465,9 +465,24 @@ export function mapearRespuestaRangos(status: number, cuerpo: string): Respuesta
     }
     const prefijo = texto(n.Prefix) || undefined;
     const resolucion = texto(n.ResolutionNumber) || undefined;
+    const fecha = (v: unknown) => {
+      const t = texto(v)?.slice(0, 10);
+      return t && /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : undefined;
+    };
+    const fechaResolucion = fecha(n.ResolutionDate);
+    const vigenciaDesde = fecha(n.ValidDateFrom);
+    const vigenciaHasta = fecha(n.ValidDateTo);
     rangos.push(
       conClaveOculta(
-        { desde, hasta, ...(prefijo ? { prefijo } : {}), ...(resolucion ? { resolucion } : {}) },
+        {
+          desde,
+          hasta,
+          ...(prefijo ? { prefijo } : {}),
+          ...(resolucion ? { resolucion } : {}),
+          ...(fechaResolucion ? { fechaResolucion } : {}),
+          ...(vigenciaDesde ? { vigenciaDesde } : {}),
+          ...(vigenciaHasta ? { vigenciaHasta } : {}),
+        },
         texto(n.TechnicalKey) || undefined,
       ),
     );
