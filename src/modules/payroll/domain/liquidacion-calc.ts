@@ -25,10 +25,28 @@ export interface LiquidacionInput {
   salariosPendientes?: number;
   /** Días que faltaban para terminar el contrato (fijo / obra o labor). */
   diasFaltantesContrato?: number;
+  /**
+   * Desde cuándo se liquidan cesantías e intereses. Por defecto el mayor entre
+   * el ingreso y el 1 de enero del año del retiro: las de años anteriores ya se
+   * consignaron al fondo (Ley 50/1990 art. 99) y sus intereses se pagaron en
+   * enero (Ley 52/1975). Se sobrescribe si quedó algo sin consignar.
+   */
+  inicioCesantias?: string;
+  /** Días hábiles de vacaciones ya disfrutados (o compensados) en todo el contrato (CST arts. 186 y 189). */
+  vacacionesDisfrutadasDias?: number;
 }
 
 export interface LiquidacionBreakdown {
   diasLiquidados: number;
+  /** Días del semestre que paga la prima (nodo `Primas@Cantidad` de la nómina electrónica). */
+  diasPrima?: number;
+  /** Desde cuándo y cuántos días se liquidan cesantías e intereses. */
+  inicioCesantias?: string;
+  diasCesantias?: number;
+  /** Días hábiles de vacaciones: causados en el contrato, ya disfrutados y pendientes (los que se pagan). */
+  diasVacacionesCausados?: number;
+  vacacionesDisfrutadasDias?: number;
+  diasVacacionesPendientes?: number;
   salarioBase: number;
   auxilioTransporte: number;
   basePrestacional: number;
@@ -44,7 +62,40 @@ export interface LiquidacionBreakdown {
 
 const round = cop;
 
-/** Días entre dos fechas por el método comercial 360 (meses de 30 días). */
+/** ¿Es `f` (YYYY-MM-DD) el último día de su mes? */
+function esFinDeMes(f: string): boolean {
+  const [y, m, d] = f.split('-').map(Number);
+  return new Date(Date.UTC(y ?? 0, m ?? 1, 0)).getUTCDate() === d;
+}
+
+/**
+ * Días laborados entre dos fechas, CONTANDO AMBAS, por el método comercial
+ * 360: del 1 de enero al 20 de octubre son 290 y un año completo (1-ene a
+ * 31-dic) son 360. El último día de cualquier mes cuenta como 30 (también
+ * febrero). Es la cuenta de la liquidación de retiro.
+ */
+export function dias360Inclusivo(from: string, to: string): number {
+  if (to < from) return 0;
+  const [y1, m1, dd1] = from.split('-').map(Number);
+  const [y2, m2, dd2] = to.split('-').map(Number);
+  const d1 = Math.min(dd1 ?? 1, 30);
+  const d2 = esFinDeMes(to) ? 30 : Math.min(dd2 ?? 1, 30);
+  return Math.max(0, ((y2 ?? 0) - (y1 ?? 0)) * 360 + ((m2 ?? 0) - (m1 ?? 0)) * 30 + (d2 - d1) + 1);
+}
+
+/**
+ * Días que la nómina del mes del retiro puede pagar: del mayor entre el
+ * ingreso y el día 1 del mes, hasta el retiro, ambos incluidos (360). La usan
+ * el aviso al aprobar la liquidación y el bloqueo del consolidador, para que
+ * las dos comparen igual.
+ */
+export function diasPagablesHastaRetiro(hireDate: string | undefined, fechaRetiro: string): number {
+  const primero = `${fechaRetiro.slice(0, 7)}-01`;
+  const desde = hireDate && hireDate > primero ? hireDate : primero;
+  return fechaRetiro >= desde ? dias360Inclusivo(desde, fechaRetiro) : 0;
+}
+
+/** Días entre dos fechas por el método comercial 360 (meses de 30 días), sin contar el último. */
 export function dias360(from: string, to: string): number {
   const [y1, m1, dd1] = from.split('-').map(Number);
   const [y2, m2, dd2] = to.split('-').map(Number);
@@ -73,24 +124,37 @@ export function computeLiquidacion(
       : 0;
   const basePrestacional = salarioBase + auxilioTransporte;
 
-  const dias = dias360(input.fechaInicio, input.fechaFin);
+  const dias = dias360Inclusivo(input.fechaInicio, input.fechaFin);
 
-  // Cesantías, intereses y prima: el salario integral ya los incorpora.
-  const cesantias = integral ? 0 : round((basePrestacional * dias) / 360);
+  // Cesantías e intereses: solo las del año del retiro (las anteriores ya se
+  // consignaron al fondo). El salario integral ya los incorpora.
+  const anioRetiro = `${input.fechaFin.slice(0, 4)}-01-01`;
+  const inicioCesantias =
+    input.inicioCesantias ?? (input.fechaInicio > anioRetiro ? input.fechaInicio : anioRetiro);
+  const diasCesantias = dias360Inclusivo(inicioCesantias, input.fechaFin);
+  const cesantias = integral ? 0 : round((basePrestacional * diasCesantias) / 360);
   const interesesCesantias = integral
     ? 0
-    : round((cesantias * dias * 0.12) / 360);
+    : round((cesantias * diasCesantias * 0.12) / 360);
 
   // Prima proporcional del semestre en curso al momento del retiro.
   const [y, m] = input.fechaFin.split('-').map(Number);
   const semestreInicio = (m ?? 1) <= 6 ? `${y}-01-01` : `${y}-07-01`;
   const inicioPrima =
     input.fechaInicio > semestreInicio ? input.fechaInicio : semestreInicio;
-  const diasPrima = dias360(inicioPrima, input.fechaFin);
+  const diasPrima = dias360Inclusivo(inicioPrima, input.fechaFin);
   const prima = integral ? 0 : round((basePrestacional * diasPrima) / 360);
 
-  // Vacaciones proporcionales (base sin auxilio de transporte).
-  const vacaciones = round((salarioBase * dias) / 720);
+  // Vacaciones: 15 días hábiles por año de servicio (art. 186 CST), menos los
+  // ya disfrutados; se pagan los pendientes (art. 189), sin auxilio. Las
+  // compensadas al retiro no son base de salud ni pensión (art. 192 CST; las
+  // disfrutadas sí, Decreto 1406/1999 art. 40): a confirmar con concepto UGPP vigente.
+  const diasVacacionesCausados = redondearA((dias * 15) / 360, 2);
+  const disfrutadas = Math.max(0, input.vacacionesDisfrutadasDias ?? 0);
+  // El pago sale de los días exactos; los redondeados a 2 decimales son para mostrar y reportar.
+  const pendientesExactos = Math.max(0, (dias * 15) / 360 - disfrutadas);
+  const diasVacacionesPendientes = redondearA(pendientesExactos, 2);
+  const vacaciones = round((salarioBase * pendientesExactos) / 30);
 
   // Indemnización por despido sin justa causa (art. 64 CST).
   let indemnizacion = 0;
@@ -98,9 +162,11 @@ export function computeLiquidacion(
   if (input.motivo === 'sin_justa_causa') {
     const tipo = input.contractType ?? 'indefinido';
     if (tipo === 'fijo' || tipo === 'obra_labor') {
-      const faltantes = Math.max(input.diasFaltantesContrato ?? 0, 0);
+      const pedidos = Math.max(input.diasFaltantesContrato ?? 0, 0);
+      // Obra o labor: el tiempo que faltaba para terminarla, nunca menos de 15 días (art. 64 CST).
+      const faltantes = tipo === 'obra_labor' ? Math.max(pedidos, 15) : pedidos;
       indemnizacion = round(salarioDiario * faltantes);
-      detalleIndemnizacion = `${tipo === 'fijo' ? 'Término fijo' : 'Obra o labor'}: ${faltantes} días faltantes`;
+      detalleIndemnizacion = `${tipo === 'fijo' ? 'Término fijo' : 'Obra o labor'}: ${faltantes} días${tipo === 'obra_labor' && faltantes > pedidos ? ' (mínimo legal)' : ' faltantes'}`;
     } else {
       // Indefinido.
       const anios = dias / 360;
@@ -127,6 +193,12 @@ export function computeLiquidacion(
 
   return {
     diasLiquidados: dias,
+    diasPrima,
+    inicioCesantias,
+    diasCesantias,
+    diasVacacionesCausados,
+    ...(input.vacacionesDisfrutadasDias !== undefined ? { vacacionesDisfrutadasDias: disfrutadas } : {}),
+    diasVacacionesPendientes,
     salarioBase,
     auxilioTransporte,
     basePrestacional,

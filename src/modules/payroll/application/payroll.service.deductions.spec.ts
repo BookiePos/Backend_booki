@@ -51,7 +51,7 @@ describe('PayrollService.cancelSaleDeduction', () => {
       {} as any,
       {} as any,
       {} as any,
-      {} as any,
+      {} as any, {} as any,
     );
   }
 
@@ -131,7 +131,7 @@ describe('PayrollService.applyDeductionsToRun', () => {
       {} as any,
       {} as any,
       {} as any,
-      {} as any,
+      {} as any, {} as any,
     );
     return { service: service as any, deductions };
   }

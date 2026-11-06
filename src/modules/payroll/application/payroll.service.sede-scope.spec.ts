@@ -73,7 +73,7 @@ describe('PayrollService · alcance por sede', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
+      {} as never, {} as any,
     );
     return { service, runs, deductions, employees };
   }

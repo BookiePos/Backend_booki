@@ -19,6 +19,7 @@ import {
 import { PayrollHabilitacion, PayrollHabilitacionSchema } from './infrastructure/schemas/payroll-habilitacion.schema';
 import { PayrollRun, PayrollRunSchema } from '../payroll/infrastructure/schemas/payroll-run.schema';
 import { PayrollDeduction, PayrollDeductionSchema } from '../payroll/infrastructure/schemas/payroll-deduction.schema';
+import { PayrollLiquidacion, PayrollLiquidacionSchema } from '../payroll/infrastructure/schemas/payroll-liquidacion.schema';
 import { EmployeesModule } from '../employees/employees.module';
 import { NominaPeriodoService } from './application/nomina-periodo.service';
 import { HabilitacionNominaService } from './application/habilitacion-nomina.service';
@@ -65,6 +66,7 @@ import { ControlModule } from '../control/control.module';
       { name: EinvoicingHabilitacion.name, schema: EinvoicingHabilitacionSchema },
       { name: PayrollRun.name, schema: PayrollRunSchema },
       { name: PayrollDeduction.name, schema: PayrollDeductionSchema },
+      { name: PayrollLiquidacion.name, schema: PayrollLiquidacionSchema },
       { name: Counter.name, schema: CounterSchema },
       { name: FiscalEmitter.name, schema: FiscalEmitterSchema },
       { name: Sede.name, schema: SedeSchema },
