@@ -36,6 +36,11 @@ import {
   CounterDocument,
 } from '../../sales/infrastructure/schemas/counter.schema';
 import { fechaColombia, fechaDeReversa } from '../domain/fecha-contable';
+import {
+  ORIGEN_CIERRE,
+  ORIGENES_CIERRE,
+  SaldoResultado,
+} from '../domain/cierre-anual';
 
 /** Clave del consecutivo de asientos en `counters` (uno por empresa). */
 const CONTADOR_ASIENTOS = 'ledger:asiento';
@@ -327,6 +332,7 @@ export class LedgerService {
         `El origen «${sourceType}» lo usa el sistema; un asiento manual no puede llevarlo.`,
       );
     }
+    await this.assertAnioAbierto(dto.date);
     return this.escribir(
       {
         date: dto.date,
@@ -459,6 +465,7 @@ export class LedgerService {
     id: string,
     userEmail?: string,
     fechaPedida?: string,
+    opciones: { reabriendoCierre?: boolean } = {},
   ): Promise<JournalEntryDocument> {
     const original = await this.getEntry(id);
     if (original.reversalOf) {
@@ -467,8 +474,18 @@ export class LedgerService {
     if (original.reversedBy) {
       throw new AsientoYaReversadoException();
     }
+    // El cierre anual se deshace entero y en orden (traslado y cierre, con su
+    // propia fecha) desde «Reabrir el año»; reversar uno solo dejaría el año
+    // a medio cerrar y la reversa con fecha de hoy ensuciaría el año en curso.
+    const esCierre = ORIGENES_CIERRE.includes(original.sourceType);
+    if (esCierre && !opciones.reabriendoCierre) {
+      throw new BadRequestException(
+        'El cierre anual no se reversa asiento por asiento: usa «Reabrir el año» en Contabilidad.',
+      );
+    }
     const fecha = fechaDeReversa(original.date, fechaColombia(), fechaPedida);
     if ('error' in fecha) throw new BadRequestException(fecha.error);
+    if (!esCierre) await this.assertAnioAbierto(fecha.fecha);
     const contra = await this
       .crearConNumero({
         date: fecha.fecha,
@@ -529,6 +546,81 @@ export class LedgerService {
     return contra;
   }
 
+  // ── Cierre anual (R4, revisión contable 1.16) ───────────────────────────────
+
+  /** ¿El año tiene su asiento de cierre vivo? */
+  async anioCerrado(anio: number): Promise<boolean> {
+    return (await this.findBySource(ORIGEN_CIERRE, String(anio))) !== null;
+  }
+
+  /**
+   * Un año cerrado no recibe asientos manuales ni reversas con su fecha: el
+   * ajuste va al periodo abierto, o se reabre el año (que es una decisión
+   * explícita, con su rastro en el libro).
+   */
+  private async assertAnioAbierto(fecha: string): Promise<void> {
+    const anio = Number(fecha.slice(0, 4));
+    if (Number.isInteger(anio) && (await this.anioCerrado(anio))) {
+      throw new BadRequestException(
+        `El año ${anio} está cerrado: registra el ajuste con una fecha del periodo abierto o reabre el año en Contabilidad.`,
+      );
+    }
+  }
+
+  /**
+   * Saldo de cada cuenta de resultados (ingreso y gasto) por sede, con todo
+   * lo posteado hasta `hasta` inclusive. Lo usa el cierre anual: la sede de
+   * cada renglón se conserva para que los informes por sede sigan cuadrando.
+   */
+  async saldosDeResultado(hasta: string): Promise<SaldoResultado[]> {
+    await this.seedAccounts();
+    const grouped = (await this.entries
+      .aggregate([
+        { $match: { date: { $lte: hasta } } },
+        { $unwind: '$lines' },
+        {
+          $group: {
+            _id: { code: '$lines.accountCode', sede: '$lines.sedeId' },
+            debit: { $sum: '$lines.debit' },
+            credit: { $sum: '$lines.credit' },
+          },
+        },
+      ])
+      .exec()) as {
+      _id: { code: string; sede?: Types.ObjectId | null };
+      debit: number;
+      credit: number;
+    }[];
+    const tipos = new Map(
+      (await this.listAccounts()).map((a) => [a.code, a.type]),
+    );
+    const out: SaldoResultado[] = [];
+    for (const g of grouped) {
+      const type = tipos.get(g._id.code);
+      if (type !== 'income' && type !== 'expense') continue;
+      if (g.debit === g.credit) continue;
+      out.push({
+        code: g._id.code,
+        type,
+        sedeId: g._id.sede ? g._id.sede.toString() : null,
+        debit: g.debit,
+        credit: g.credit,
+      });
+    }
+    return out;
+  }
+
+  /** Años (YYYY) con algún asiento, de menor a mayor. */
+  async aniosConMovimiento(): Promise<number[]> {
+    const rows = (await this.entries
+      .aggregate([
+        { $group: { _id: { $substrBytes: ['$date', 0, 4] } } },
+        { $sort: { _id: 1 } },
+      ])
+      .exec()) as { _id: string }[];
+    return rows.map((r) => Number(r._id)).filter((n) => Number.isInteger(n));
+  }
+
   // ── Reportes base ────────────────────────────────────────────────────────────
 
   /** Balance de comprobación: débitos/créditos y saldo por cuenta en el rango. */
@@ -536,6 +628,8 @@ export class LedgerService {
     from?: string;
     to?: string;
     sedeId?: string;
+    /** Orígenes que no cuentan (el estado de resultados excluye el cierre anual). */
+    excluirOrigenes?: readonly string[];
   }): Promise<{
     from?: string;
     to?: string;
@@ -551,6 +645,9 @@ export class LedgerService {
       if (query.from) range.$gte = query.from;
       if (query.to) range.$lte = query.to;
       match.date = range;
+    }
+    if (query.excluirOrigenes?.length) {
+      match.sourceType = { $nin: [...query.excluirOrigenes] };
     }
     const pipeline: PipelineStage[] = [
       { $match: match },

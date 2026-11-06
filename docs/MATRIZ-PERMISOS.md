@@ -78,6 +78,9 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `POST /ledger/entries/:id/reverse` | `finance.manage` | ✓ | ✓ | ✓ | · | · |
 | `GET /ledger/trial-balance` | `finance.view` | ✓ | ✓ | ✓ | · | ✓ |
 | `GET /ledger/conciliacion` | `finance.view` | ✓ | ✓ | ✓ | · | ✓ |
+| `GET /ledger/cierres` | `finance.view` | ✓ | ✓ | ✓ | · | ✓ |
+| `POST /ledger/cierres/:anio` | `finance.manage` | ✓ | ✓ | ✓ | · | · |
+| `POST /ledger/cierres/:anio/reabrir` | `finance.manage` | ✓ | ✓ | ✓ | · | · |
 | `GET /params` | `params.manage` | ✓ | ✓ | ✓ | · | · |
 | `GET /params/resolve/:key` | `params.manage` | ✓ | ✓ | ✓ | · | · |
 | `POST /params` | `params.manage` | ✓ | ✓ | ✓ | · | · |

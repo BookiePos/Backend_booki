@@ -14,6 +14,8 @@ import {
   alcanceDeSedes,
   resolveSedeScope,
 } from '../../core-auth/domain/sede-access';
+import { ORIGENES_FUERA_DE_RESULTADOS } from '../../core-ledger/domain/cierre-anual';
+import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 import {
   RETURNS_FACET,
   RetornosFacet,
@@ -86,7 +88,13 @@ export class ReportsService {
     user: SedeScopeUser,
   ) {
     const sedes = resolveSedeScope(user, query.sedeId);
-    const tb = await this.balance({ from: query.from, to: query.to }, sedes);
+    // Sin el asiento de cierre anual: si entrara, el resultado de cualquier
+    // rango que incluya un 31 de diciembre cerrado saldría en cero.
+    const tb = await this.balance(
+      { from: query.from, to: query.to },
+      sedes,
+      ORIGENES_FUERA_DE_RESULTADOS,
+    );
     const income = this.linesOf(tb.rows, 'income');
     const expense = this.linesOf(tb.rows, 'expense');
     const totalIngresos = this.sum(income);
@@ -110,18 +118,26 @@ export class ReportsService {
     user: SedeScopeUser,
   ) {
     const sedes = resolveSedeScope(user, query.sedeId);
-    const tb = await this.balance({ to: query.to }, sedes);
+    const corte = query.to ?? fechaColombia();
+    const anioCorte = Number(corte.slice(0, 4));
+    const [tb, previo] = await Promise.all([
+      this.balance({ to: query.to }, sedes),
+      this.balance({ to: `${anioCorte - 1}-12-31` }, sedes),
+    ]);
     const activos = this.linesOf(tb.rows, 'asset');
     const pasivos = this.linesOf(tb.rows, 'liability');
     const patrimonio = this.linesOf(tb.rows, 'equity');
-    const income = this.sum(this.linesOf(tb.rows, 'income'));
-    const expense = this.sum(this.linesOf(tb.rows, 'expense'));
-    const resultadoEjercicio = income - expense;
+    const resultadoTotal = this.resultadoDe(tb.rows);
+    // R4 (revisión 1.16): lo de años anteriores que no se ha cerrado se
+    // presenta aparte; con los años cerrados es 0 y su utilidad ya está en la
+    // 3705. Antes todo caía en «Resultado del ejercicio».
+    const resultadoAnterioresSinCerrar = this.resultadoDe(previo.rows);
+    const resultadoEjercicio = resultadoTotal - resultadoAnterioresSinCerrar;
 
     const totalActivo = this.sum(activos);
     const totalPasivo = this.sum(pasivos);
-    // El resultado del ejercicio aún no cerrado suma al patrimonio.
-    const totalPatrimonio = this.sum(patrimonio) + resultadoEjercicio;
+    // El resultado aún no cerrado (del año y de anteriores) suma al patrimonio.
+    const totalPatrimonio = this.sum(patrimonio) + resultadoTotal;
     return {
       to: query.to ?? null,
       sedeId: query.sedeId ?? null,
@@ -132,6 +148,7 @@ export class ReportsService {
       totalPasivo,
       patrimonio,
       resultadoEjercicio,
+      resultadoAnterioresSinCerrar,
       totalPatrimonio,
       cuadra: totalActivo === totalPasivo + totalPatrimonio,
     };
@@ -150,8 +167,24 @@ export class ReportsService {
   private balance(
     query: { from?: string; to?: string },
     sedeIds: string[] | null,
+    excluirOrigenes?: readonly string[],
   ) {
-    return balancePorSedes((q) => this.ledger.trialBalance(q), query, sedeIds);
+    return balancePorSedes(
+      (q) =>
+        this.ledger.trialBalance(
+          excluirOrigenes ? { ...q, excluirOrigenes } : q,
+        ),
+      query,
+      sedeIds,
+    );
+  }
+
+  /** Ingresos − gastos de unas filas del balance de comprobación. */
+  private resultadoDe(rows: TrialBalanceRow[]): number {
+    return (
+      this.sum(this.linesOf(rows, 'income')) -
+      this.sum(this.linesOf(rows, 'expense'))
+    );
   }
 
   /** Ventas por día (operación): ingresos, tiquetes y ticket promedio. */

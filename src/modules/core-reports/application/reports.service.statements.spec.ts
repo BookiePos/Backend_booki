@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // SWC emite `Object` como metadata para los @Prop() con uniones de literales y
 // @nestjs/mongoose revienta al importar los esquemas. Mismo patrón que el resto
@@ -18,6 +18,7 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { ReportsService } from './reports.service';
 import { ROLES } from '../../core-auth/domain/roles';
+import { ORIGENES_FUERA_DE_RESULTADOS } from '../../core-ledger/domain/cierre-anual';
 
 const SEDE1 = '64b0000000000000000000a1';
 
@@ -39,6 +40,10 @@ const DUENO = { role: ROLES.OWNER, permissions: [], sedeIds: [] };
  *
  * El servicio se instancia DIRECTAMENTE con dependencias mockeadas. El
  * constructor es: (ledger, sales, saleReturns).
+ *
+ * El balance general pide DOS balances de comprobación: al corte y al 31 de
+ * diciembre anterior (lo de años anteriores sin cerrar, R4). El mock entrega
+ * `rows` al corte y `previo` (vacío por defecto: años ya cerrados) al otro.
  */
 describe('ReportsService · estados financieros', () => {
   let ledger: any;
@@ -69,14 +74,14 @@ describe('ReportsService · estados financieros', () => {
     fila('6135', 'Costo de venta', 'expense', 2_000_000),
   ];
 
-  function build(rows: any[] = BALANCE) {
+  function build(rows: any[] = BALANCE, previo: any[] = []) {
     ledger = {
-      trialBalance: vi.fn().mockResolvedValue({
-        rows,
+      trialBalance: vi.fn(async (q: { to?: string }) => ({
+        rows: q.to === '2025-12-31' ? previo : rows,
         totalDebit: 0,
         totalCredit: 0,
         balanced: true,
-      }),
+      })),
     };
     service = new ReportsService(ledger as never, {} as never, {} as never);
   }
@@ -146,6 +151,14 @@ describe('ReportsService · estados financieros', () => {
       expect(r.utilidadNeta).toBe(4_500_000);
     });
 
+    it('no cuenta el asiento de cierre anual: el resultado del año no sale en cero (R4)', async () => {
+      await service.incomeStatement({ from: '2025-01-01', to: '2025-12-31' }, DUENO);
+      const q = ledger.trialBalance.mock.calls[0][0];
+      expect(q.excluirOrigenes).toEqual(
+        expect.arrayContaining(['cierre_anual', 'reversal:cierre_anual']),
+      );
+    });
+
     it('sin movimiento en el periodo todo sale en cero, no falla', async () => {
       build([]);
 
@@ -169,11 +182,44 @@ describe('ReportsService · estados financieros', () => {
         from: '2026-01-01',
         to: '2026-03-31',
         sedeId: SEDE1,
+        excluirOrigenes: ORIGENES_FUERA_DE_RESULTADOS,
       });
     });
   });
 
   describe('balance general', () => {
+    // El corte por defecto es «hoy» en Colombia: se fija para que el 31 de
+    // diciembre anterior sea siempre 2025-12-31.
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-06-15T17:00:00Z'));
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('lo de años anteriores sin cerrar va aparte, sin cambiar el patrimonio (R4)', async () => {
+      // 2025 sin cerrar: utilidad de 1.500.000 que sigue en las cuentas 4 y 5.
+      build(BALANCE, [
+        fila('4135', 'Ingresos por ventas', 'income', 4_000_000),
+        fila('5105', 'Gastos de personal', 'expense', 2_500_000),
+      ]);
+      const r = await service.balanceSheet({}, DUENO);
+
+      expect(r.resultadoAnterioresSinCerrar).toBe(1_500_000);
+      expect(r.resultadoEjercicio).toBe(500_000);
+      expect(r.totalPatrimonio).toBe(6_000_000);
+      expect(r.cuadra).toBe(true);
+      expect(ledger.trialBalance).toHaveBeenCalledTimes(2);
+      expect(ledger.trialBalance).toHaveBeenCalledWith({ to: '2025-12-31' });
+    });
+
+    it('con los años anteriores cerrados no hay resultado anterior sin cerrar', async () => {
+      const r = await service.balanceSheet({ to: '2026-12-31' }, DUENO);
+      expect(r.resultadoAnterioresSinCerrar).toBe(0);
+      expect(r.resultadoEjercicio).toBe(2_000_000);
+    });
+
     it('cuadra: el activo es igual al pasivo más el patrimonio', async () => {
       const r = await service.balanceSheet({ to: '2026-12-31' }, DUENO);
 
@@ -316,6 +362,7 @@ describe('ReportsService · alcance por sede', () => {
       from: '2026-01-01',
       to: undefined,
       sedeId: S1,
+      excluirOrigenes: ORIGENES_FUERA_DE_RESULTADOS,
     });
     expect(r.totalIngresos).toBe(1_000);
   });
