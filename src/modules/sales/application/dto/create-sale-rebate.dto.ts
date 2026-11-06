@@ -4,7 +4,7 @@ import {
   IsArray,
   IsIn,
   IsMongoId,
-  IsNumber,
+  IsInt,
   IsOptional,
   IsPositive,
   IsString,
@@ -25,7 +25,8 @@ export class SaleRebateLineDto {
   @IsMongoId()
   productId!: string;
 
-  @IsNumber()
+  // COP entero (ítem 1.11): un monto con decimales es un 400, no un redondeo callado.
+  @IsInt()
   @IsPositive()
   amount!: number;
 }
@@ -41,7 +42,8 @@ export class CreateSaleRebateDto {
   concepto!: ConceptoRebaja;
 
   @IsOptional()
-  @IsNumber()
+  // COP entero (ítem 1.11): un monto con decimales es un 400, no un redondeo callado.
+  @IsInt()
   @IsPositive()
   amount?: number;
 
@@ -92,7 +94,8 @@ export class CreateNotaSinReferenciaDto {
   @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'hasta debe ser AAAA-MM-DD' })
   hasta!: string;
 
-  @IsNumber()
+  // COP entero (ítem 1.11): un monto con decimales es un 400, no un redondeo callado.
+  @IsInt()
   @IsPositive()
   amount!: number;
 

@@ -59,8 +59,12 @@ import {
 import {
   CONCEPTOS_SIN_CANTIDAD,
   CONCEPTOS_SOLO_FEV,
-  lineasSinReferencia,
-  saldoPorTributo,
+  asignacionComoPrevia,
+  repartoSinReferencia,
+  saldoAcreditable,
+  type AsignacionSinReferencia,
+  type SaldoGrupo,
+  type UnidadSinReferencia,
   gruposDelDocumento,
   cargosDeDevolucion,
   lineasDeAnulacion,
@@ -861,19 +865,26 @@ export class EinvoicingService {
     }
 
     const previas = await this.model
-      .find({ referenceId: referido._id, type: 'credit_note', dianStatus: { $ne: 'rejected' } })
+      .find({
+        type: 'credit_note',
+        dianStatus: { $ne: 'rejected' },
+        // Tope cruzado (Fase 6C): también lo que una nota sin referencia le asignó.
+        $or: [{ referenceId: referido._id }, { 'asignaciones.referenceId': referido._id }],
+      })
       .exec();
     // Una nota de antes de la Fase 6B (sin `refKey`) ya anuló el documento
     // entero ante la DIAN sin tocar el libro: es justo el hueco que deja la
     // venta con ingreso e IVA/INC vivos. Anular la venta ahora la reutiliza
     // como su nota de anulación en vez de emitir otra.
-    const legado = previas.find((p) => (p.lines ?? []).length === 0 || (p.lines ?? []).some((l) => !this.plano(l)?.refKey));
+    const legado = previas.find(
+      (p) =>
+        !(p.asignaciones ?? []).length &&
+        ((p.lines ?? []).length === 0 || (p.lines ?? []).some((l) => !this.plano(l)?.refKey)),
+    );
     if (s.concepto === '2' && legado) {
       return { estado: 'emitida', nota: legado };
     }
-    const lineasPrevias = previas.map((p) =>
-      (p.lines ?? []).map((l) => this.plano(l) as unknown as LineaPrevia),
-    );
+    const lineasPrevias = previas.map((p) => this.lineasPreviasDe(p, referido._id));
     let lineas: LineaReferida[];
     let cargos: CargoDocumento[];
     try {
@@ -961,6 +972,8 @@ export class EinvoicingService {
     lineas: LineaReferida[];
     cargos: CargoDocumento[];
     notaDeVenta?: Types.ObjectId;
+    /** Nota sin referencia: su reparto entre las facturas del periodo. */
+    asignaciones?: { referenceId: Types.ObjectId; saleId?: Types.ObjectId; refKey: string; taxScheme?: string; taxRate: number; base: number; taxAmount: number }[];
   }): Promise<ResultadoNotaDeVenta & { estado: 'emitida' }> {
     const { user, sedeId, referido, lineas, cargos } = o;
     const s = { origen: o.origen, concepto: o.concepto, motivo: o.motivo };
@@ -1024,7 +1037,7 @@ export class EinvoicingService {
           });
           // Sin referencia (Fase 6C, CustomizationID 22): sin BillingReference y con el periodo.
           const referencia = o.sinReferencia
-            ? { period: o.sinReferencia }
+            ? { period: o.sinReferencia, asignaciones: o.asignaciones }
             : {
                 referenceNumber: referido.fullNumber,
                 referenceCufe: referido.cufe,
@@ -1135,38 +1148,51 @@ export class EinvoicingService {
       .sort({ issueDate: -1, createdAt: -1 })
       .exec();
     if (facturas.length === 0) throw new BadRequestException(MENSAJE_SIN_REFERENCIA_SIN_FACTURAS);
-    const conReferencia = await this.model
-      .find({
-        type: 'credit_note',
-        referenceId: { $in: facturas.map((f) => f._id) },
-        dianStatus: { $ne: 'rejected' },
-      })
-      .exec();
-    // Una NC por el total (anterior a la Fase 6B, sin `refKey`) ya acreditó su factura entera.
-    const lineasPrevias = (d: ElectronicDocumentDocument) =>
-      (d.lines ?? []).map((l) => this.plano(l) as unknown as LineaPrevia & { taxRate?: number });
-    const mes = s.desde.slice(0, 7);
-    const sinReferenciaPrevias = await this.model
-      .find({
-        type: 'credit_note',
-        sedeId: sedeOid,
-        referenceId: { $exists: false },
-        'adquiriente.docNumber': { $in: docs },
-        'period.desde': { $gte: `${mes}-01`, $lte: `${mes}-31` },
-        dianStatus: { $ne: 'rejected' },
-      })
-      .exec();
-    let lineas: LineaReferida[];
+    // Unidades del reparto: lo que queda de cada producto (y del domicilio) de
+    // cada factura, descontando sus notas con referencia y lo que ya le
+    // asignaron notas sin referencia previas (tope cruzado).
+    const unidades: UnidadSinReferencia[] = [];
     try {
-      lineas = lineasSinReferencia(
-        saldoPorTributo(
-          facturas.map((f) => (f.lines ?? []).map((l) => this.plano(l) as unknown as LineaDocumento)),
-          conReferencia.map(lineasPrevias),
-          sinReferenciaPrevias.map(lineasPrevias),
-        ),
-        monto,
-        CONCEPTOS_NOTA_CREDITO[s.concepto] ?? 'Descuento',
-      );
+      for (const f of facturas) {
+        if (!f.saleId) continue;
+        const venta = await this.sales.getOrFail(f.saleId.toString());
+        const referidas = gruposDelDocumento(
+          (f.lines ?? []).map((l) => this.plano(l) as unknown as LineaDocumento),
+          venta.lines.map((l) => l.productId.toString()),
+          cop(venta.deliveryFee ?? 0) > 0,
+        );
+        let saldo: Map<string, SaldoGrupo>;
+        try {
+          saldo = saldoAcreditable(referidas, await this.previasDe(f._id));
+        } catch (err) {
+          // Ya anulada por una nota por el total (anterior a la 6B): no le queda nada.
+          if (err instanceof TopeNotaExcedidoError) continue;
+          throw err;
+        }
+        for (const r of referidas) {
+          const g = saldo.get(r.refKey);
+          if (!g || unidades.some((u) => u.referenceId === String(f._id) && u.refKey === r.refKey)) continue;
+          const scheme = r.taxScheme === '01' || r.taxScheme === '04' ? r.taxScheme : undefined;
+          const impuesto = Math.max(g.iva + g.inc, 0);
+          const valor = Math.max(g.base, 0) + impuesto;
+          unidades.push({
+            referenceId: String(f._id),
+            saleId: f.saleId.toString(),
+            refKey: r.refKey,
+            taxScheme: scheme,
+            taxRate: scheme ? (r.taxRate ?? 0) : 0,
+            valor,
+            impuesto: Math.min(impuesto, valor),
+          });
+        }
+      }
+    } catch (err) {
+      if (err instanceof NotaNoRelacionableError) throw new ConflictException(err.message);
+      throw err;
+    }
+    let reparto: ReturnType<typeof repartoSinReferencia>;
+    try {
+      reparto = repartoSinReferencia(unidades, monto, CONCEPTOS_NOTA_CREDITO[s.concepto] ?? 'Descuento');
     } catch (err) {
       if (err instanceof TopeNotaExcedidoError || err instanceof NotaNoRelacionableError) {
         throw new ConflictException(err.message);
@@ -1181,10 +1207,44 @@ export class EinvoicingService {
       motivo: s.motivo,
       referido: facturas[0]!,
       sinReferencia: { desde: s.desde, hasta: s.hasta },
-      lineas,
+      lineas: reparto.lineas,
       cargos: [],
+      asignaciones: reparto.asignaciones.map((a) => ({
+        ...a,
+        referenceId: new Types.ObjectId(a.referenceId),
+        saleId: a.saleId ? new Types.ObjectId(a.saleId) : undefined,
+      })),
     });
     return r.nota;
+  }
+
+  /**
+   * Lo que ya acreditaron otras notas a una factura: sus notas con referencia
+   * (líneas con `refKey`) y la parte que le asignaron las notas sin
+   * referencia (Fase 6C, tope cruzado). No rechazadas.
+   */
+  private async previasDe(facturaId: Types.ObjectId): Promise<LineaPrevia[][]> {
+    const notas = await this.model
+      .find({
+        type: 'credit_note',
+        dianStatus: { $ne: 'rejected' },
+        $or: [{ referenceId: facturaId }, { 'asignaciones.referenceId': facturaId }],
+      })
+      .exec();
+    return notas.map((p) => this.lineasPreviasDe(p, facturaId));
+  }
+
+  /** Las líneas de una nota que cuentan contra una factura. */
+  private lineasPreviasDe(p: ElectronicDocumentDocument, facturaId: Types.ObjectId): LineaPrevia[] {
+    // Una nota con referencia cuenta por sus líneas; una sin referencia, por
+    // la parte que le asignó a esta factura.
+    if (!(p.asignaciones ?? []).length) {
+      return (p.lines ?? []).map((l) => this.plano(l) as unknown as LineaPrevia);
+    }
+    return (p.asignaciones ?? [])
+      .map((a) => this.plano(a) as unknown as AsignacionSinReferencia & { referenceId: unknown })
+      .filter((a) => String(a.referenceId) === String(facturaId))
+      .map(asignacionComoPrevia);
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────────

@@ -68,6 +68,27 @@ export class NotaSinReferencia {
   @Prop({ default: false })
   asientoHecho!: boolean;
 
+  /**
+   * Lo que bajó la cartera viva del cliente (Cr 1305) antes de devolver el
+   * resto por el medio elegido, igual que la devolución de un fiado.
+   */
+  @Prop({ default: 0, min: 0 })
+  abonoCartera!: number;
+
+  /** La cartera ya se abonó (o no había): un reintento no vuelve a abonar. */
+  @Prop({ default: false })
+  carteraHecha!: boolean;
+
+  /**
+   * Reparto de la nota entre las ventas del periodo, por producto (tope
+   * cruzado): `alreadyReturned` lo suma a lo rebajado de cada venta.
+   */
+  @Prop({
+    type: [{ _id: false, saleId: { type: Types.ObjectId }, productId: String, amount: Number, tax: Number }],
+    default: [],
+  })
+  asignaciones!: { saleId: Types.ObjectId; productId: string; amount: number; tax: number }[];
+
   /** La nota crédito emitida (`NotaFiscalOperacion`). */
   @Prop({ type: Object })
   notaFiscal?: Record<string, unknown>;
@@ -86,5 +107,7 @@ NotaSinReferenciaSchema.index(
   { idempotencyKey: 1 },
   { name: 'nota_sin_referencia_idempotente', unique: true },
 );
-// Alerta de notas colgadas y barrido.
-NotaSinReferenciaSchema.index({ estado: 1, createdAt: 1 });
+// Barrido de varadas: las `en_curso` por antigüedad (las `pendiente_caja` las completa el cajero).
+NotaSinReferenciaSchema.index({ estado: 1, createdAt: 1 }, { partialFilterExpression: { estado: 'en_curso' } });
+// Tope cruzado: lo asignado a cada venta.
+NotaSinReferenciaSchema.index({ 'asignaciones.saleId': 1 });

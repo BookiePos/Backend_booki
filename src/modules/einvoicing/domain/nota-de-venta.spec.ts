@@ -7,6 +7,7 @@ import {
   lineasDeAnulacion,
   lineasDeDevolucion,
   NotaNoRelacionableError,
+  repartoSinReferencia,
   saldoAcreditable,
   TopeNotaExcedidoError,
   totalesDeNota,
@@ -170,5 +171,27 @@ describe('cargosDeDevolucion · propina de la devolución parcial (decisión 4)'
 
   it('un documento sin propina no admite acreditarla', () => {
     expect(() => cargosDeDevolucion([], [], 1)).toThrow(TopeNotaExcedidoError);
+  });
+});
+
+describe('repartoSinReferencia (Fase 6C)', () => {
+  const u = (referenceId: string, refKey: string, valor: number, impuesto: number, taxScheme?: '01' | '04', taxRate = 0) =>
+    ({ referenceId, refKey, valor, impuesto, taxScheme, taxRate });
+
+  it('reparte exacto entre facturas y productos; las líneas son la suma por tributo', () => {
+    const unidades = [u('f1', 'a', 10_001, 1_597, '01', 19), u('f2', 'b', 30_000, 2_222, '04', 8), u('f2', 'c', 999, 0)];
+    const r = repartoSinReferencia(unidades, 7_777, 'Descuento');
+    const total = r.asignaciones.reduce((t, a) => t + a.base + a.taxAmount, 0);
+    expect(total).toBe(7_777);
+    expect(r.lineas.reduce((t, l) => t + l.total, 0)).toBe(7_777);
+    for (const a of r.asignaciones) expect(Number.isInteger(a.base) && Number.isInteger(a.taxAmount)).toBe(true);
+    const iva = r.lineas.find((l) => l.taxScheme === '01')!;
+    expect(iva.taxAmount).toBe(r.asignaciones.filter((a) => a.taxScheme === '01').reduce((t, a) => t + a.taxAmount, 0));
+  });
+
+  it('agotar el saldo se lleva exacto el impuesto; pasarse es TopeNotaExcedidoError', () => {
+    const r = repartoSinReferencia([u('f1', 'a', 10_000, 1_597, '01', 19)], 10_000, 'D');
+    expect(r.asignaciones[0]).toMatchObject({ base: 8_403, taxAmount: 1_597 });
+    expect(() => repartoSinReferencia([u('f1', 'a', 10_000, 1_597, '01', 19)], 10_001, 'D')).toThrow(TopeNotaExcedidoError);
   });
 });

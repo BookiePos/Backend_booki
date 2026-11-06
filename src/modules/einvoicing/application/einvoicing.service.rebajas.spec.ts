@@ -174,6 +174,22 @@ describe('EinvoicingService · rebajas y notas sin referencia (Fase 6C)', () => 
     );
   });
 
+  it('tope cruzado: lo que una nota sin referencia le asignó a la factura cuenta contra la rebaja posterior', async () => {
+    // La sin referencia ya le asignó $6.000 (con $444 de INC) a las hamburguesas de esta factura.
+    previas = [
+      {
+        type: 'credit_note',
+        lines: [{ refKey: 'tributo:04:8', qty: 1, base: 9_000, taxScheme: '04', taxAmount: 720, sinCantidad: true }],
+        asignaciones: [{ referenceId: doc._id, refKey: HAMB.toString(), taxScheme: '04', taxRate: 8, base: 5_556, taxAmount: 444 }],
+      },
+    ];
+    await expect(rebaja('3', [{ productId: HAMB.toString(), qty: 0, valor: 24_001, impuesto: 1_778 }])).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    const r: any = await rebaja('3', [{ productId: HAMB.toString(), qty: 0, valor: 24_000, impuesto: 1_778 }]);
+    expect(r.nota.payableAmount).toBe(24_000);
+  });
+
   it('concepto desconocido: 400', async () => {
     await expect(rebaja('7')).rejects.toBeInstanceOf(BadRequestException);
   });
@@ -212,6 +228,11 @@ describe('EinvoicingService · rebajas y notas sin referencia (Fase 6C)', () => 
       // $30.000 con INC y $10.000 con IVA → $3.000 y $1.000, con su impuesto.
       const porTributo = Object.fromEntries(n.lines.map((l: any) => [l.taxScheme, [l.total, l.taxAmount]]));
       expect(porTributo).toEqual({ '04': [3_000, 222], '01': [1_000, 160] });
+      // El reparto queda guardado por factura y producto (tope cruzado).
+      expect(n.asignaciones.map((x: any) => [String(x.referenceId), x.refKey, x.base + x.taxAmount, x.taxAmount])).toEqual([
+        [String(facturas[0]._id), HAMB.toString(), 3_000, 222],
+        [String(facturas[0]._id), GAS.toString(), 1_000, 160],
+      ]);
       const u: any = ubl(n);
       expect(u.referencia).toBeUndefined();
       expect(u.periodo).toEqual({ desde: '2026-11-01', hasta: '2026-11-30' });

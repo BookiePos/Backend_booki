@@ -100,6 +100,24 @@ export class DocLine {
 }
 const DocLineSchema = SchemaFactory.createForClass(DocLine);
 
+/**
+ * Parte de una nota SIN referencia que le toca a un grupo (producto o
+ * domicilio) de una factura del periodo (Fase 6C). Con ella, las notas con
+ * referencia siguientes y las devoluciones y rebajas de esa venta descuentan
+ * lo ya acreditado (tope cruzado).
+ */
+@Schema({ _id: false })
+export class DocAsignacion {
+  @Prop({ type: Types.ObjectId, required: true }) referenceId!: Types.ObjectId;
+  @Prop({ type: Types.ObjectId }) saleId?: Types.ObjectId;
+  @Prop({ required: true }) refKey!: string;
+  @Prop() taxScheme?: string;
+  @Prop({ default: 0, min: 0 }) taxRate!: number;
+  @Prop({ required: true, min: 0 }) base!: number;
+  @Prop({ default: 0, min: 0 }) taxAmount!: number;
+}
+const DocAsignacionSchema = SchemaFactory.createForClass(DocAsignacion);
+
 /** Cargo o descuento de documento (AllowanceCharge). Hoy: la propina. */
 @Schema({ _id: false })
 export class DocCharge {
@@ -335,6 +353,10 @@ export class ElectronicDocument {
   /** Periodo de una nota sin referencia (InvoicePeriod). */
   @Prop({ type: Object })
   period?: { desde: string; hasta: string };
+
+  /** Nota sin referencia (Fase 6C): cómo se repartió entre las facturas del periodo. */
+  @Prop({ type: [DocAsignacionSchema], default: undefined })
+  asignaciones?: DocAsignacion[];
 
   // ── DIAN / proveedor tecnológico (se rellenan al validar) ────────────────────
   /** CUFE (facturas) / CUDE (notas). SHA-384 del Anexo 1.9. */

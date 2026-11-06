@@ -3,6 +3,7 @@ import { Types } from 'mongoose';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 
 vi.mock('./sale-returns.service', () => ({ SaleReturnsService: class {} }));
+vi.mock('./notas-sin-referencia.service', () => ({ NotasSinReferenciaService: class {} }));
 vi.mock('../../control/application/business.service', () => ({ BusinessService: class {} }));
 
 import { DevolucionesVaradasBarrido } from './devoluciones-varadas.barrido';
@@ -66,5 +67,26 @@ describe('DevolucionesVaradasBarrido', () => {
     const r = await barrido.barrer();
     expect(r.estado).toBe('error');
     expect(llamadas).toHaveBeenCalledTimes(2);
+  });
+
+  it('también termina los descuentos sin referencia varados (Fase 6C), en el contexto de cada empresa', async () => {
+    const empresas = [empresa(1)];
+    const vistas: (string | undefined)[] = [];
+    const returns = { completarVaradas: vi.fn(async () => ({ completadas: 0, pendientesCaja: 0, fallidas: 0, ocupadas: 0 })) };
+    const sinReferencia = {
+      completarVaradas: vi.fn(async () => {
+        vistas.push(TenantContext.current()?.dbName);
+        return { completadas: 1, pendientesCaja: 1, fallidas: 0 };
+      }),
+    };
+    const barrido = new DevolucionesVaradasBarrido(
+      { listActive: async () => empresas } as never,
+      returns as never,
+      sinReferencia as never,
+    );
+    const r = await barrido.barrer();
+    expect(vistas).toEqual(['biz_1']);
+    expect(r.estado).toBe('ok');
+    expect(r.cifras).toMatchObject({ completadas: 1, pendientesCaja: 1 });
   });
 });
