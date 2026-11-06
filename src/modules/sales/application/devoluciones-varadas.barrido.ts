@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { NotasSinReferenciaService } from './notas-sin-referencia.service';
 import { BusinessService } from '../../control/application/business.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import type { ResultadoBarrido } from '../../../shared/barridos/resultado-barrido';
@@ -33,6 +34,9 @@ export class DevolucionesVaradasBarrido {
   constructor(
     private readonly businesses: BusinessService,
     private readonly returns: SaleReturnsService,
+    /** Descuentos sin referencia varados (Fase 6C): mismo barrido, misma regla de caja. */
+    @Optional()
+    private readonly sinReferencia?: NotasSinReferenciaService,
   ) {}
 
   /** Nunca lanza: el fallo se devuelve para que `/cron/diario` lo vea. */
@@ -52,7 +56,17 @@ export class DevolucionesVaradasBarrido {
           const businessId = biz._id.toString();
           const r = await TenantContext.run(
             { businessId, dbName: biz.dbName, tipoNegocio: biz.tipoNegocio },
-            () => this.returns.completarVaradas(),
+            async () => {
+              const d = await this.returns.completarVaradas();
+              const n = this.sinReferencia
+                ? await this.sinReferencia.completarVaradas()
+                : { completadas: 0, pendientesCaja: 0, fallidas: 0 };
+              return {
+                completadas: d.completadas + n.completadas,
+                fallidas: d.fallidas + n.fallidas,
+                pendientesCaja: d.pendientesCaja + n.pendientesCaja,
+              };
+            },
           );
           completadas += r.completadas;
           sinTerminar += r.fallidas;

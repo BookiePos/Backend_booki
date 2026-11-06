@@ -9,10 +9,19 @@ import {
 import type {
   DocumentoFiscalEmitido,
   EmisionDocumentoFiscal,
+  ConceptoNota,
+  EmisionNotaSinReferencia,
   EmisionNotaVenta,
   NotaFiscalOperacion,
+  NotaSinReferenciaEmitida,
+  SolicitudNotaSinReferencia,
   SolicitudNotaVenta,
 } from '../../sales/application/emision-documento-fiscal.puerto';
+
+const CONCEPTOS: readonly ConceptoNota[] = ['1', '2', '3', '4', '5', '6'];
+/** El concepto guardado en la nota; uno desconocido se lee como devolución (1), como antes de la 6C. */
+const conceptoDe = (codigo?: string): ConceptoNota =>
+  CONCEPTOS.find((c) => c === codigo) ?? '1';
 
 /**
  * Implementación del puerto `EMISION_DOCUMENTO_FISCAL` que usa el cobro
@@ -20,7 +29,9 @@ import type {
  * la transmisión con `TransmisionDianService`.
  */
 @Injectable()
-export class EmisionDocumentoFiscalDian implements EmisionDocumentoFiscal, EmisionNotaVenta {
+export class EmisionDocumentoFiscalDian
+  implements EmisionDocumentoFiscal, EmisionNotaVenta, EmisionNotaSinReferencia
+{
   private readonly logger = new Logger(EmisionDocumentoFiscalDian.name);
 
   constructor(
@@ -59,8 +70,37 @@ export class EmisionDocumentoFiscalDian implements EmisionDocumentoFiscal, Emisi
       cude: n.cufe,
       referenceType: n.referenceType === 'pos' ? 'pos' : 'invoice',
       referenceNumber: n.referenceNumber,
-      concepto: n.discrepancyCode === '2' ? '2' : '1',
+      concepto: conceptoDe(n.discrepancyCode),
       dianStatus: n.dianStatus,
+    };
+  }
+
+  /** Nota sin referencia (Fase 6C). Lanza: la operación falla cerrado. */
+  async emitirNotaSinReferencia(
+    s: SolicitudNotaSinReferencia,
+    user: JwtUser,
+  ): Promise<NotaSinReferenciaEmitida> {
+    const n = await this.einvoicing.emitirNotaSinReferencia(s, user);
+    return {
+      estado: 'emitida',
+      documentoId: String(n._id),
+      fullNumber: n.fullNumber,
+      cude: n.cufe,
+      referenceType: 'invoice',
+      concepto: conceptoDe(n.discrepancyCode),
+      dianStatus: n.dianStatus,
+      total: n.payableAmount ?? n.total,
+      // Reparto por venta y producto (tope cruzado de devoluciones y rebajas).
+      asignaciones: (n.asignaciones ?? [])
+        .filter((a) => a.saleId)
+        .map((a) => ({
+          saleId: String(a.saleId),
+          productId: a.refKey,
+          valor: a.base + (a.taxAmount ?? 0),
+          impuesto: a.taxAmount ?? 0,
+        })),
+      iva: n.ivaTotal ?? 0,
+      inc: n.incTotal ?? 0,
     };
   }
 

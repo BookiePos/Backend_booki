@@ -82,6 +82,13 @@ export interface PriorReturn {
   refund?: number;
   /** IVA ya reversado de la línea (si se conoce). */
   refundTax?: number;
+  /**
+   * Rebajas posteriores ya reconocidas sobre la línea (Fase 6C), con y sin
+   * impuesto: bajan lo pagado de verdad, así la devolución que sigue no
+   * devuelve lo que ya se rebajó.
+   */
+  rebated?: number;
+  rebatedTax?: number;
 }
 
 /**
@@ -107,15 +114,20 @@ export function refundForLine(
 ): ReturnedLine {
   const parte = (monto: number, q: number) =>
     line.qty > 0 ? cop((monto * q) / line.qty) : 0;
-  const pagado = line.taxBase + line.taxAmount;
+  const pagadoBruto = line.taxBase + line.taxAmount;
   const hasta = prior.qty + qty;
-  const yaRefund = prior.refund ?? parte(pagado, prior.qty);
+  const yaRefund = prior.refund ?? parte(pagadoBruto, prior.qty);
   const yaTax = prior.refundTax ?? parte(line.taxAmount, prior.qty);
+  // Lo pagado neto de las rebajas (Fase 6C): la última devolución salda
+  // exacto pagado − rebajado − devuelto, y ninguna intermedia pasa de ahí.
+  const pagado = clampNonNegative(pagadoBruto - (prior.rebated ?? 0));
+  const impuesto = clampNonNegative(line.taxAmount - (prior.rebatedTax ?? 0));
+  const refund = clampNonNegative(parte(pagado, hasta) - yaRefund);
   return {
     productId: line.productId,
     qty,
-    refund: clampNonNegative(parte(pagado, hasta) - yaRefund),
-    refundTax: clampNonNegative(parte(line.taxAmount, hasta) - yaTax),
+    refund,
+    refundTax: Math.min(clampNonNegative(parte(impuesto, hasta) - yaTax), refund),
   };
 }
 
@@ -139,6 +151,7 @@ export function buildReturnPlan(
   requests: readonly ReturnRequest[],
   alreadyReturned: ReadonlyMap<string, number>,
   alreadyRefunded?: ReadonlyMap<string, { refund: number; refundTax: number }>,
+  alreadyRebated?: ReadonlyMap<string, { amount: number; tax: number }>,
 ): ReturnPlan {
   if (requests.length === 0) {
     throw new Error('No hay nada que devolver');
@@ -191,11 +204,14 @@ export function buildReturnPlan(
       );
     }
     const plata = alreadyRefunded?.get(productId);
+    const rebaja = alreadyRebated?.get(productId);
     lines.push(
       refundForLine(vendida, qty, {
         qty: yaDevuelto,
         refund: plata?.refund,
         refundTax: plata?.refundTax,
+        rebated: rebaja?.amount,
+        rebatedTax: rebaja?.tax,
       }),
     );
   }
