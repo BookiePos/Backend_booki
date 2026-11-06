@@ -145,6 +145,8 @@ function matrizMarkdown(): string {
     'pasan con sus permisos de código (un rol que nadie ha editado). Un rol editado',
     'en la empresa, o un usuario con permisos extra, puede salirse de esta tabla.',
     'Además del permiso, cada servicio limita por sede a quien no ve todas.',
+    'Las rutas `/ledger/cierres*` (cierre anual) se niegan del todo a quien está',
+    'limitado por sede: el cierre cancela los resultados de toda la empresa.',
     '',
     `| Endpoint | Exige | ${COLUMNAS.map((r) => nombre[r]).join(' | ')} |`,
     `|---|---|${COLUMNAS.map(() => ':-:').join('|')}|`,

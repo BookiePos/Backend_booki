@@ -85,7 +85,7 @@ describe('LedgerController · alcance por sede', () => {
         };
       }),
     };
-    ctrl = new LedgerController(ledger as never, {} as never);
+    ctrl = new LedgerController(ledger as never, {} as never, {} as never);
   });
 
   describe('listar asientos', () => {

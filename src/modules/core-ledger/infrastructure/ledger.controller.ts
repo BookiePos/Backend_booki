@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { LedgerService } from '../application/ledger.service';
 import { LedgerConciliacionService } from '../application/ledger-conciliacion.service';
+import { CierreAnualService } from '../application/cierre-anual.service';
 import {
   CreateAccountDto,
   CreateJournalEntryDto,
@@ -43,6 +44,7 @@ export class LedgerController {
   constructor(
     private readonly ledger: LedgerService,
     private readonly conciliacion: LedgerConciliacionService,
+    private readonly cierres: CierreAnualService,
   ) {}
 
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
@@ -163,6 +165,37 @@ export class LedgerController {
       this.conciliacion.listarAbiertos(),
     ]);
     return { total, items };
+  }
+
+  // ── Cierre anual (R4, revisión contable 1.16) ──────────────────────────────
+  // Es de toda la empresa (cancela las cuentas de resultados de todas las
+  // sedes), así que quien está limitado por sede no lo ve ni lo dispara.
+
+  @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @Get('cierres')
+  estadoCierres(@CurrentUser() user: JwtUser) {
+    this.assertEmpresaEntera(user);
+    return this.cierres.estado();
+  }
+
+  @RequirePermissions(PERMISSIONS.FINANCE_MANAGE)
+  @Post('cierres/:anio')
+  cerrarAnio(@Param('anio') anio: string, @CurrentUser() user: JwtUser) {
+    this.assertEmpresaEntera(user);
+    return this.cierres.cerrar(anio, user.email);
+  }
+
+  @RequirePermissions(PERMISSIONS.FINANCE_MANAGE)
+  @Post('cierres/:anio/reabrir')
+  reabrirAnio(@Param('anio') anio: string, @CurrentUser() user: JwtUser) {
+    this.assertEmpresaEntera(user);
+    return this.cierres.reabrir(anio, user.email);
+  }
+
+  private assertEmpresaEntera(user: JwtUser): void {
+    if (allowedSedeIds(user)) {
+      throw new ForbiddenException('El cierre anual es de toda la empresa');
+    }
   }
 
   /**

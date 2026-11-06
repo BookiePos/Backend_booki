@@ -2,6 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Sale, SaleDocument } from '../../sales/infrastructure/schemas/sale.schema';
+import {
+  SaleReturn,
+  SaleReturnDocument,
+} from '../../sales/infrastructure/schemas/sale-return.schema';
 import { BY_METHOD_PIPELINE } from './by-method.pipeline';
 import { LedgerService, TrialBalanceRow } from '../../core-ledger/application/ledger.service';
 import { balancePorSedes } from '../../core-ledger/domain/ledger-sede-scope';
@@ -10,7 +14,17 @@ import {
   alcanceDeSedes,
   resolveSedeScope,
 } from '../../core-auth/domain/sede-access';
-import { cop } from '../../finance/domain/money.util';
+import { ORIGENES_FUERA_DE_RESULTADOS } from '../../core-ledger/domain/cierre-anual';
+import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
+import {
+  RETURNS_FACET,
+  RetornosFacet,
+  netearVentas,
+} from './sales-returns.report';
+
+/** Colombia no tiene horario de verano: el desfase es fijo. */
+const TZ = 'America/Bogota';
+const OFFSET = '-05:00';
 
 /** Una línea (cuenta) de un estado financiero. */
 interface StatementLine {
@@ -33,6 +47,8 @@ export class ReportsService {
   constructor(
     private readonly ledger: LedgerService,
     @InjectModel(Sale.name) private readonly sales: Model<SaleDocument>,
+    @InjectModel(SaleReturn.name)
+    private readonly saleReturns: Model<SaleReturnDocument>,
   ) {}
 
   /** Catálogo de reportes disponibles (para la UI). */
@@ -59,7 +75,8 @@ export class ReportsService {
       {
         key: 'sales',
         name: 'Ventas por día',
-        description: 'Ingresos, tiquetes y ticket promedio.',
+        description:
+          'Ventas netas de devoluciones, tiquetes, ticket promedio y la cuenta de las devoluciones.',
         source: 'operación',
       },
     ];
@@ -71,7 +88,13 @@ export class ReportsService {
     user: SedeScopeUser,
   ) {
     const sedes = resolveSedeScope(user, query.sedeId);
-    const tb = await this.balance({ from: query.from, to: query.to }, sedes);
+    // Sin el asiento de cierre anual: si entrara, el resultado de cualquier
+    // rango que incluya un 31 de diciembre cerrado saldría en cero.
+    const tb = await this.balance(
+      { from: query.from, to: query.to },
+      sedes,
+      ORIGENES_FUERA_DE_RESULTADOS,
+    );
     const income = this.linesOf(tb.rows, 'income');
     const expense = this.linesOf(tb.rows, 'expense');
     const totalIngresos = this.sum(income);
@@ -95,18 +118,26 @@ export class ReportsService {
     user: SedeScopeUser,
   ) {
     const sedes = resolveSedeScope(user, query.sedeId);
-    const tb = await this.balance({ to: query.to }, sedes);
+    const corte = query.to ?? fechaColombia();
+    const anioCorte = Number(corte.slice(0, 4));
+    const [tb, previo] = await Promise.all([
+      this.balance({ to: query.to }, sedes),
+      this.balance({ to: `${anioCorte - 1}-12-31` }, sedes),
+    ]);
     const activos = this.linesOf(tb.rows, 'asset');
     const pasivos = this.linesOf(tb.rows, 'liability');
     const patrimonio = this.linesOf(tb.rows, 'equity');
-    const income = this.sum(this.linesOf(tb.rows, 'income'));
-    const expense = this.sum(this.linesOf(tb.rows, 'expense'));
-    const resultadoEjercicio = income - expense;
+    const resultadoTotal = this.resultadoDe(tb.rows);
+    // R4 (revisión 1.16): lo de años anteriores que no se ha cerrado se
+    // presenta aparte; con los años cerrados es 0 y su utilidad ya está en la
+    // 3705. Antes todo caía en «Resultado del ejercicio».
+    const resultadoAnterioresSinCerrar = this.resultadoDe(previo.rows);
+    const resultadoEjercicio = resultadoTotal - resultadoAnterioresSinCerrar;
 
     const totalActivo = this.sum(activos);
     const totalPasivo = this.sum(pasivos);
-    // El resultado del ejercicio aún no cerrado suma al patrimonio.
-    const totalPatrimonio = this.sum(patrimonio) + resultadoEjercicio;
+    // El resultado aún no cerrado (del año y de anteriores) suma al patrimonio.
+    const totalPatrimonio = this.sum(patrimonio) + resultadoTotal;
     return {
       to: query.to ?? null,
       sedeId: query.sedeId ?? null,
@@ -117,6 +148,7 @@ export class ReportsService {
       totalPasivo,
       patrimonio,
       resultadoEjercicio,
+      resultadoAnterioresSinCerrar,
       totalPatrimonio,
       cuadra: totalActivo === totalPasivo + totalPatrimonio,
     };
@@ -135,8 +167,24 @@ export class ReportsService {
   private balance(
     query: { from?: string; to?: string },
     sedeIds: string[] | null,
+    excluirOrigenes?: readonly string[],
   ) {
-    return balancePorSedes((q) => this.ledger.trialBalance(q), query, sedeIds);
+    return balancePorSedes(
+      (q) =>
+        this.ledger.trialBalance(
+          excluirOrigenes ? { ...q, excluirOrigenes } : q,
+        ),
+      query,
+      sedeIds,
+    );
+  }
+
+  /** Ingresos − gastos de unas filas del balance de comprobación. */
+  private resultadoDe(rows: TrialBalanceRow[]): number {
+    return (
+      this.sum(this.linesOf(rows, 'income')) -
+      this.sum(this.linesOf(rows, 'expense'))
+    );
   }
 
   /** Ventas por día (operación): ingresos, tiquetes y ticket promedio. */
@@ -151,123 +199,128 @@ export class ReportsService {
     }
     if (query.from || query.to) {
       const range: Record<string, Date> = {};
-      if (query.from) range.$gte = new Date(`${query.from}T00:00:00`);
-      if (query.to) range.$lte = new Date(`${query.to}T23:59:59.999`);
+      // Día de Colombia, no del servidor (Vercel corre en UTC: lo vendido
+      // después de las 7 p. m. caía en el día siguiente).
+      if (query.from) range.$gte = new Date(`${query.from}T00:00:00${OFFSET}`);
+      if (query.to) range.$lte = new Date(`${query.to}T23:59:59.999${OFFSET}`);
       match.createdAt = range;
     }
     // Un solo agregado con $facet: por día, por medio de pago, por sede y top
     // productos. Enriquece el reporte de ventas sin varias consultas.
-    const [facet] = (await this.sales
-      .aggregate([
-        { $match: match },
-        {
-          $facet: {
-            days: [
-              {
-                $group: {
-                  _id: {
-                    $dateToString: { format: '%Y-%m-%d', date: '$createdAt' },
+    // Devoluciones con la MISMA regla de sede y fechas, sin filtro de status:
+    // restan el día en que ocurren (R3, revisión 1.16).
+    const returnsMatch: Record<string, unknown> = { ...match };
+    delete returnsMatch.status;
+    const [[facet], [retornos]] = (await Promise.all([
+      this.sales
+        .aggregate([
+          { $match: match },
+          {
+            $facet: {
+              days: [
+                {
+                  $group: {
+                    _id: {
+                      $dateToString: {
+                        format: '%Y-%m-%d',
+                        date: '$createdAt',
+                        timezone: TZ,
+                      },
+                    },
+                    revenue: { $sum: '$total' },
+                    tax: { $sum: '$taxTotal' },
+                    tickets: { $sum: 1 },
                   },
-                  revenue: { $sum: '$total' },
-                  tax: { $sum: '$taxTotal' },
-                  tickets: { $sum: 1 },
                 },
-              },
-              { $sort: { _id: 1 } },
-            ],
-            // Cobro mixto (ítem 6.9): ver `BY_METHOD_PIPELINE`.
-            byMethod: BY_METHOD_PIPELINE,
-            bySede: [
-              {
-                $group: {
-                  _id: '$sedeId',
-                  revenue: { $sum: '$total' },
-                  tickets: { $sum: 1 },
+                { $sort: { _id: 1 } },
+              ],
+              // Cobro mixto (ítem 6.9): ver `BY_METHOD_PIPELINE`.
+              byMethod: BY_METHOD_PIPELINE,
+              bySede: [
+                {
+                  $group: {
+                    _id: '$sedeId',
+                    revenue: { $sum: '$total' },
+                    tickets: { $sum: 1 },
+                  },
                 },
-              },
-              { $sort: { revenue: -1 } },
-            ],
-            topProducts: [
-              { $unwind: '$lines' },
-              {
-                $group: {
-                  _id: '$lines.productId',
-                  name: { $first: '$lines.name' },
-                  qty: { $sum: '$lines.qty' },
-                  revenue: { $sum: '$lines.lineTotal' },
+                { $sort: { revenue: -1 } },
+              ],
+              topProducts: [
+                { $unwind: '$lines' },
+                {
+                  $group: {
+                    _id: '$lines.productId',
+                    name: { $first: '$lines.name' },
+                    qty: { $sum: '$lines.qty' },
+                    // Neto del descuento de línea: `lines.refund` ya va
+                    // descontado, así que restarlo de un bruto descuadraba.
+                    revenue: {
+                      $sum: {
+                        $subtract: [
+                          '$lines.lineTotal',
+                          { $ifNull: ['$lines.discountAmount', 0] },
+                        ],
+                      },
+                    },
+                  },
                 },
-              },
-              { $sort: { revenue: -1 } },
-              { $limit: 10 },
-            ],
-            totals: [
-              {
-                $group: {
-                  _id: null,
-                  revenue: { $sum: '$total' },
-                  tax: { $sum: '$taxTotal' },
-                  tickets: { $sum: 1 },
+                { $sort: { revenue: -1 } },
+                // Holgura para el neteo de devoluciones: el top 10 se recorta
+                // después de restarlas.
+                { $limit: 50 },
+              ],
+              totals: [
+                {
+                  $group: {
+                    _id: null,
+                    revenue: { $sum: '$total' },
+                    tax: { $sum: '$taxTotal' },
+                    tickets: { $sum: 1 },
+                  },
                 },
-              },
-            ],
+              ],
+            },
           },
-        },
-      ])
-      .exec()) as {
-      days: { _id: string; revenue: number; tax: number; tickets: number }[];
-      byMethod: {
-        _id: string;
-        revenue: number;
-        collected: number;
-        tickets: number;
-      }[];
-      bySede: { _id: Types.ObjectId; revenue: number; tickets: number }[];
-      topProducts: {
-        _id: Types.ObjectId;
-        name: string;
-        qty: number;
-        revenue: number;
-      }[];
-      totals: { revenue: number; tax: number; tickets: number }[];
-    }[];
+        ])
+        .exec(),
+      this.saleReturns
+        .aggregate([{ $match: returnsMatch }, { $facet: RETURNS_FACET }])
+        .exec(),
+    ])) as [
+      {
+        days: { _id: string; revenue: number; tax: number; tickets: number }[];
+        byMethod: {
+          _id: string;
+          revenue: number;
+          collected: number;
+          tickets: number;
+        }[];
+        bySede: { _id: Types.ObjectId; revenue: number; tickets: number }[];
+        topProducts: {
+          _id: Types.ObjectId;
+          name: string;
+          qty: number;
+          revenue: number;
+        }[];
+        totals: { revenue: number; tax: number; tickets: number }[];
+      }[],
+      RetornosFacet[],
+    ];
 
-    const days = (facet?.days ?? []).map((r) => ({
-      date: r._id,
-      revenue: r.revenue,
-      tax: r.tax,
-      tickets: r.tickets,
-      avgTicket: r.tickets ? cop(r.revenue / r.tickets) : 0,
-    }));
     const byMethod = (facet?.byMethod ?? []).map((r) => ({
       method: r._id ?? 'desconocido',
       revenue: r.revenue,
       collected: r.collected,
       tickets: r.tickets,
     }));
-    const bySede = (facet?.bySede ?? []).map((r) => ({
-      sedeId: r._id ? r._id.toString() : null,
-      revenue: r.revenue,
-      tickets: r.tickets,
-    }));
-    const topProducts = (facet?.topProducts ?? []).map((r) => ({
-      productId: r._id ? r._id.toString() : null,
-      name: r.name,
-      qty: r.qty,
-      revenue: r.revenue,
-    }));
-    const t = facet?.totals?.[0] ?? { revenue: 0, tax: 0, tickets: 0 };
+    const neto = netearVentas(facet, retornos);
     return {
       from: query.from,
       to: query.to,
       sedeId: query.sedeId ?? null,
-      days,
       byMethod,
-      bySede,
-      topProducts,
-      totalRevenue: t.revenue,
-      totalTax: t.tax,
-      totalTickets: t.tickets,
-      avgTicket: t.tickets ? cop(t.revenue / t.tickets) : 0,
+      ...neto,
     };
   }
 

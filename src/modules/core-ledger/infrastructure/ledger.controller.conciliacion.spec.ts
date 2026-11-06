@@ -39,7 +39,7 @@ describe('LedgerController · pendientes de conciliación', () => {
       contarAbiertos: vi.fn(async () => 2),
       listarAbiertos: vi.fn(async () => [{ sourceType: 'sale', sourceId: 'v1' }, { sourceType: 'expense', sourceId: 'g1' }]),
     };
-    return { conciliacion, c: new LedgerController({} as never, conciliacion as never) };
+    return { conciliacion, c: new LedgerController({} as never, conciliacion as never, {} as never) };
   }
 
   it('devuelve el total abierto y la lista', async () => {

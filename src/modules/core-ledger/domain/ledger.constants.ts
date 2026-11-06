@@ -125,6 +125,13 @@ export const ACC = {
    */
   MANO_OBRA_ABSORBIDA: '7205',
   COSTOS_INDIRECTOS_ABSORBIDOS: '7305',
+  /**
+   * Cierre anual (riesgo R4 de la revisión 1.16): las cuentas de resultados
+   * se cancelan contra la 3605 al 31 de diciembre, y la 3605 pasa a la 3705
+   * el 1 de enero. Ver `domain/cierre-anual.ts`.
+   */
+  RESULTADO_EJERCICIO: '3605',
+  RESULTADOS_ANTERIORES: '3705',
 } as const;
 
 export interface SeedAccount {
@@ -167,6 +174,7 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   // Patrimonio
   { code: '3105', name: 'Capital', type: 'equity' },
   { code: '3605', name: 'Resultado del ejercicio', type: 'equity' },
+  { code: '3705', name: 'Resultados de ejercicios anteriores', type: 'equity' },
   // Ingresos
   { code: '4135', name: 'Ingresos por ventas', type: 'income' },
   { code: '4295', name: 'Mayor valor cobrado en plataformas', type: 'income' },

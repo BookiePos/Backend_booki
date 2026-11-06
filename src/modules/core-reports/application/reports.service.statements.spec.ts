@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // SWC emite `Object` como metadata para los @Prop() con uniones de literales y
 // @nestjs/mongoose revienta al importar los esquemas. Mismo patrón que el resto
@@ -18,6 +18,7 @@ vi.mock('@nestjs/mongoose', async (importOriginal) => {
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { ReportsService } from './reports.service';
 import { ROLES } from '../../core-auth/domain/roles';
+import { ORIGENES_FUERA_DE_RESULTADOS } from '../../core-ledger/domain/cierre-anual';
 
 const SEDE1 = '64b0000000000000000000a1';
 
@@ -38,7 +39,11 @@ const DUENO = { role: ROLES.OWNER, permissions: [], sedeIds: [] };
  * crédito), que es como lo entrega el ledger.
  *
  * El servicio se instancia DIRECTAMENTE con dependencias mockeadas. El
- * constructor es: (ledger, sales).
+ * constructor es: (ledger, sales, saleReturns).
+ *
+ * El balance general pide DOS balances de comprobación: al corte y al 31 de
+ * diciembre anterior (lo de años anteriores sin cerrar, R4). El mock entrega
+ * `rows` al corte y `previo` (vacío por defecto: años ya cerrados) al otro.
  */
 describe('ReportsService · estados financieros', () => {
   let ledger: any;
@@ -69,16 +74,16 @@ describe('ReportsService · estados financieros', () => {
     fila('6135', 'Costo de venta', 'expense', 2_000_000),
   ];
 
-  function build(rows: any[] = BALANCE) {
+  function build(rows: any[] = BALANCE, previo: any[] = []) {
     ledger = {
-      trialBalance: vi.fn().mockResolvedValue({
-        rows,
+      trialBalance: vi.fn(async (q: { to?: string }) => ({
+        rows: q.to === '2025-12-31' ? previo : rows,
         totalDebit: 0,
         totalCredit: 0,
         balanced: true,
-      }),
+      })),
     };
-    service = new ReportsService(ledger as never, {} as never);
+    service = new ReportsService(ledger as never, {} as never, {} as never);
   }
 
   beforeEach(() => {
@@ -146,6 +151,14 @@ describe('ReportsService · estados financieros', () => {
       expect(r.utilidadNeta).toBe(4_500_000);
     });
 
+    it('no cuenta el asiento de cierre anual: el resultado del año no sale en cero (R4)', async () => {
+      await service.incomeStatement({ from: '2025-01-01', to: '2025-12-31' }, DUENO);
+      const q = ledger.trialBalance.mock.calls[0][0];
+      expect(q.excluirOrigenes).toEqual(
+        expect.arrayContaining(['cierre_anual', 'reversal:cierre_anual']),
+      );
+    });
+
     it('sin movimiento en el periodo todo sale en cero, no falla', async () => {
       build([]);
 
@@ -169,11 +182,44 @@ describe('ReportsService · estados financieros', () => {
         from: '2026-01-01',
         to: '2026-03-31',
         sedeId: SEDE1,
+        excluirOrigenes: ORIGENES_FUERA_DE_RESULTADOS,
       });
     });
   });
 
   describe('balance general', () => {
+    // El corte por defecto es «hoy» en Colombia: se fija para que el 31 de
+    // diciembre anterior sea siempre 2025-12-31.
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-06-15T17:00:00Z'));
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('lo de años anteriores sin cerrar va aparte, sin cambiar el patrimonio (R4)', async () => {
+      // 2025 sin cerrar: utilidad de 1.500.000 que sigue en las cuentas 4 y 5.
+      build(BALANCE, [
+        fila('4135', 'Ingresos por ventas', 'income', 4_000_000),
+        fila('5105', 'Gastos de personal', 'expense', 2_500_000),
+      ]);
+      const r = await service.balanceSheet({}, DUENO);
+
+      expect(r.resultadoAnterioresSinCerrar).toBe(1_500_000);
+      expect(r.resultadoEjercicio).toBe(500_000);
+      expect(r.totalPatrimonio).toBe(6_000_000);
+      expect(r.cuadra).toBe(true);
+      expect(ledger.trialBalance).toHaveBeenCalledTimes(2);
+      expect(ledger.trialBalance).toHaveBeenCalledWith({ to: '2025-12-31' });
+    });
+
+    it('con los años anteriores cerrados no hay resultado anterior sin cerrar', async () => {
+      const r = await service.balanceSheet({ to: '2026-12-31' }, DUENO);
+      expect(r.resultadoAnterioresSinCerrar).toBe(0);
+      expect(r.resultadoEjercicio).toBe(2_000_000);
+    });
+
     it('cuadra: el activo es igual al pasivo más el patrimonio', async () => {
       const r = await service.balanceSheet({ to: '2026-12-31' }, DUENO);
 
@@ -273,6 +319,7 @@ describe('ReportsService · alcance por sede', () => {
 
   let ledger: any;
   let sales: any;
+  let saleReturns: any;
   let service: ReportsService;
 
   beforeEach(() => {
@@ -291,7 +338,10 @@ describe('ReportsService · alcance por sede', () => {
     sales = {
       aggregate: vi.fn(() => ({ exec: async () => [] })),
     };
-    service = new ReportsService(ledger as never, sales as never);
+    saleReturns = {
+      aggregate: vi.fn(() => ({ exec: async () => [] })),
+    };
+    service = new ReportsService(ledger as never, sales as never, saleReturns as never);
   });
 
   it('pedir una sede ajena es 403 en los cuatro informes', async () => {
@@ -302,12 +352,18 @@ describe('ReportsService · alcance por sede', () => {
     await expect(service.salesReport({ sedeId: AJENA }, u)).rejects.toThrow(ForbiddenException);
     expect(ledger.trialBalance).not.toHaveBeenCalled();
     expect(sales.aggregate).not.toHaveBeenCalled();
+    expect(saleReturns.aggregate).not.toHaveBeenCalled();
   });
 
   it('sin sede, el gerente de una sede ve solo la suya, nunca la empresa', async () => {
     const r = await service.incomeStatement({ from: '2026-01-01' }, gerente([S1]));
 
-    expect(ledger.trialBalance).toHaveBeenCalledWith({ from: '2026-01-01', to: undefined, sedeId: S1 });
+    expect(ledger.trialBalance).toHaveBeenCalledWith({
+      from: '2026-01-01',
+      to: undefined,
+      sedeId: S1,
+      excluirOrigenes: ORIGENES_FUERA_DE_RESULTADOS,
+    });
     expect(r.totalIngresos).toBe(1_000);
   });
 
@@ -347,6 +403,7 @@ describe('ReportsService · alcance por sede', () => {
     await expect(service.salesReport({ sedeId: 'xx' }, DUENO)).rejects.toThrow(BadRequestException);
     expect(ledger.trialBalance).not.toHaveBeenCalled();
     expect(sales.aggregate).not.toHaveBeenCalled();
+    expect(saleReturns.aggregate).not.toHaveBeenCalled();
   });
 
   it('sin sedes asignadas no ve nada, en vez de ver toda la empresa', async () => {
@@ -361,6 +418,65 @@ describe('ReportsService · alcance por sede', () => {
 
     const match = sales.aggregate.mock.calls[0][0][0].$match;
     expect(match.sedeId.$in.map(String)).toEqual([S1, S2]);
+    // Las devoluciones, con la MISMA sede y sin filtro de status.
+    const ret = saleReturns.aggregate.mock.calls[0][0][0].$match;
+    expect(ret.sedeId.$in.map(String)).toEqual([S1, S2]);
+    expect(ret).not.toHaveProperty('status');
+  });
+
+  it('el top de productos va neto del descuento de línea, como el reembolso', async () => {
+    await service.salesReport({}, DUENO);
+
+    const facet = sales.aggregate.mock.calls[0][0][1].$facet;
+    const group = facet.topProducts.find((st: any) => st.$group).$group;
+    expect(group.revenue).toEqual({
+      $sum: {
+        $subtract: ['$lines.lineTotal', { $ifNull: ['$lines.discountAmount', 0] }],
+      },
+    });
+  });
+
+  it('ventas y devoluciones usan el mismo rango, en hora de Colombia', async () => {
+    await service.salesReport({ from: '2026-03-01', to: '2026-03-31' }, DUENO);
+
+    const v = sales.aggregate.mock.calls[0][0][0].$match;
+    const d = saleReturns.aggregate.mock.calls[0][0][0].$match;
+    expect(v.status).toBe('completed');
+    expect(v.createdAt.$gte.toISOString()).toBe('2026-03-01T05:00:00.000Z');
+    expect(v.createdAt.$lte.toISOString()).toBe('2026-04-01T04:59:59.999Z');
+    expect(d.createdAt).toEqual(v.createdAt);
+  });
+
+  it('el total del reporte de ventas va neto de devoluciones', async () => {
+    sales.aggregate.mockReturnValue({
+      exec: async () => [
+        {
+          days: [{ _id: '2026-03-02', revenue: 100_000, tax: 19_000, tickets: 4 }],
+          byMethod: [],
+          bySede: [],
+          topProducts: [],
+          totals: [{ revenue: 100_000, tax: 19_000, tickets: 4 }],
+        },
+      ],
+    });
+    saleReturns.aggregate.mockReturnValue({
+      exec: async () => [
+        {
+          days: [{ _id: '2026-03-02', amount: 20_000, tax: 3_800, count: 1 }],
+          bySede: [],
+          byMethod: [],
+          byReason: [],
+          products: [],
+          totals: [{ amount: 20_000, tax: 3_800, count: 1 }],
+        },
+      ],
+    });
+    const r = await service.salesReport({}, DUENO);
+    expect(r.totalGrossRevenue).toBe(100_000);
+    expect(r.totalReturns).toBe(20_000);
+    expect(r.totalRevenue).toBe(80_000);
+    expect(r.totalTax).toBe(15_200);
+    expect(r.avgTicket).toBe(20_000);
   });
 
   it('el reporte de ventas del dueño no lleva filtro de sede', async () => {

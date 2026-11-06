@@ -55,6 +55,9 @@ export const ORIGENES_AUTOMATICOS: readonly string[] = [
   'payroll_run',
   'reclasificacion_puc',
   'production_order',
+  // Cierre anual (R4, 1.16): solo por POST /ledger/cierres/:anio.
+  'cierre_anual',
+  'cierre_anual_traslado',
 ];
 
 export function esOrigenReservado(sourceType: string): boolean {

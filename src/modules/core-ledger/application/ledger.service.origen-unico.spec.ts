@@ -61,6 +61,9 @@ describe('LedgerService · un asiento vivo por origen', () => {
       create: vi.fn(() => Promise.resolve({})),
     };
     service = new LedgerService(accounts as never, entries as never, counters as never);
+    // Ningún año cerrado: estas pruebas no son del cierre anual y su `findOne`
+    // encadena respuestas que la consulta del cierre se comería.
+    vi.spyOn(service, 'anioCerrado').mockResolvedValue(false);
   });
 
   const venta = {

@@ -7,6 +7,8 @@ Cada fila es un endpoint con el permiso que exige y los roles de sistema que
 pasan con sus permisos de código (un rol que nadie ha editado). Un rol editado
 en la empresa, o un usuario con permisos extra, puede salirse de esta tabla.
 Además del permiso, cada servicio limita por sede a quien no ve todas.
+Las rutas `/ledger/cierres*` (cierre anual) se niegan del todo a quien está
+limitado por sede: el cierre cancela los resultados de toda la empresa.
 
 | Endpoint | Exige | Dueño | Administrador | Gerente | Cajero | Contador |
 |---|---|:-:|:-:|:-:|:-:|:-:|
@@ -78,6 +80,9 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `POST /ledger/entries/:id/reverse` | `finance.manage` | ✓ | ✓ | ✓ | · | · |
 | `GET /ledger/trial-balance` | `finance.view` | ✓ | ✓ | ✓ | · | ✓ |
 | `GET /ledger/conciliacion` | `finance.view` | ✓ | ✓ | ✓ | · | ✓ |
+| `GET /ledger/cierres` | `finance.view` | ✓ | ✓ | ✓ | · | ✓ |
+| `POST /ledger/cierres/:anio` | `finance.manage` | ✓ | ✓ | ✓ | · | · |
+| `POST /ledger/cierres/:anio/reabrir` | `finance.manage` | ✓ | ✓ | ✓ | · | · |
 | `GET /params` | `params.manage` | ✓ | ✓ | ✓ | · | · |
 | `GET /params/resolve/:key` | `params.manage` | ✓ | ✓ | ✓ | · | · |
 | `POST /params` | `params.manage` | ✓ | ✓ | ✓ | · | · |

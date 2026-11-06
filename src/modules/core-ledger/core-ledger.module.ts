@@ -20,6 +20,7 @@ import { CoreAuthModule } from '../core-auth/core-auth.module';
 import { LedgerService } from './application/ledger.service';
 import { LedgerPostingService } from './application/ledger-posting.service';
 import { LedgerConciliacionService } from './application/ledger-conciliacion.service';
+import { CierreAnualService } from './application/cierre-anual.service';
 import { LedgerController } from './infrastructure/ledger.controller';
 
 @Module({
@@ -33,7 +34,12 @@ import { LedgerController } from './infrastructure/ledger.controller';
     ]),
   ],
   controllers: [LedgerController],
-  providers: [LedgerService, LedgerPostingService, LedgerConciliacionService],
+  providers: [
+    LedgerService,
+    LedgerPostingService,
+    LedgerConciliacionService,
+    CierreAnualService,
+  ],
   exports: [LedgerService, LedgerPostingService, LedgerConciliacionService],
 })
 export class CoreLedgerModule {}

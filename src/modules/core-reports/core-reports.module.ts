@@ -2,6 +2,10 @@ import { Module } from '@nestjs/common';
 import { TenantMongooseModule } from '../../shared/tenancy/tenant-mongoose.module';
 import { Sale, SaleSchema } from '../sales/infrastructure/schemas/sale.schema';
 import {
+  SaleReturn,
+  SaleReturnSchema,
+} from '../sales/infrastructure/schemas/sale-return.schema';
+import {
   StockLot,
   StockLotSchema,
 } from '../inventory/infrastructure/schemas/stock-lot.schema';
@@ -33,6 +37,7 @@ import { ReportsController } from './infrastructure/reports.controller';
     // cacheada por empresa.
     TenantMongooseModule.forFeature([
       { name: Sale.name, schema: SaleSchema },
+      { name: SaleReturn.name, schema: SaleReturnSchema },
       { name: StockLot.name, schema: StockLotSchema },
       { name: StockMovement.name, schema: StockMovementSchema },
       { name: Product.name, schema: ProductSchema },
