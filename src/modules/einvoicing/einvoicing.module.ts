@@ -39,6 +39,7 @@ import {
   ProveedorTransmisorPorEmisor,
 } from './application/transmision-dian.puertos';
 import { ReconsultaDianService } from './application/reconsulta-dian.service';
+import { NotasColgadasBarrido } from './application/notas-colgadas.barrido';
 import { NominaElectronicaService } from './application/nomina-electronica.service';
 import { ArmadorUblFactura } from './application/armador-ubl';
 import { DocumentoFeVistaService } from './application/documento-fe-vista.service';
@@ -93,6 +94,7 @@ import { ControlModule } from '../control/control.module';
     HabilitacionNominaService,
     HabilitacionFacturaService,
     ReconsultaDianService,
+    NotasColgadasBarrido,
     { provide: PROVEEDOR_TRANSMISOR_NOMINA, useClass: ProveedorTransmisorNomina },
     // Fase 5B: entrega al adquiriente (PDF + AttachedDocument/ZIP) tras `accepted`.
     EntregaDianService,
@@ -110,6 +112,7 @@ import { ControlModule } from '../control/control.module';
     TransmisionDianService,
     NominaElectronicaService,
     ReconsultaDianService,
+    NotasColgadasBarrido,
   ],
 })
 export class EinvoicingModule {}

@@ -14,6 +14,7 @@ import { RecurringExpenseScheduler } from '../../finance/application/recurring-e
 import { CertificadoEmisorService } from '../../einvoicing/application/certificado-emisor.service';
 import { ReconsultaDianService } from '../../einvoicing/application/reconsulta-dian.service';
 import { DevolucionesVaradasBarrido } from '../../sales/application/devoluciones-varadas.barrido';
+import { NotasColgadasBarrido } from '../../einvoicing/application/notas-colgadas.barrido';
 import { secretoDeCronValido } from '../domain/cron-auth';
 import type { ResultadoBarrido } from '../../../shared/barridos/resultado-barrido';
 
@@ -46,6 +47,8 @@ export class CronController {
     private readonly certificados: CertificadoEmisorService,
     private readonly reconsultaDian: ReconsultaDianService,
     private readonly devoluciones: DevolucionesVaradasBarrido,
+    /** Alerta de notas en `draft` colgadas (Fase 6C). Al final: no mueve las pruebas. */
+    private readonly notasColgadas?: NotasColgadasBarrido,
   ) {}
 
   @Public()
@@ -73,6 +76,13 @@ export class CronController {
         hasta: inicio + PLAZO_BARRIDOS_MS,
       }),
     };
+    // Después de las devoluciones (que pueden emitir su nota): alerta de las
+    // notas que siguen en `draft` hace más de N min, por empresa (Fase 6C).
+    if (this.notasColgadas) {
+      tareas['notas-draft-colgadas'] = await this.notasColgadas.barrer({
+        hasta: inicio + PLAZO_BARRIDOS_MS,
+      });
+    }
     const ms = Date.now() - inicio;
     const fallidas = Object.entries(tareas)
       .filter(([, r]) => r.estado === 'error')

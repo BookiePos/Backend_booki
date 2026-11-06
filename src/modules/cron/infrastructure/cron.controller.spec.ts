@@ -36,6 +36,7 @@ describe('CronController.diario', () => {
   const certificados = { barrerVencimientos: vi.fn() };
   const reconsulta = { barrer: vi.fn() };
   const devoluciones = { barrer: vi.fn() };
+  const notasColgadas = { barrer: vi.fn() };
   const conSecreto = (secreto?: string) =>
     new CronController(
       { get: () => secreto } as never,
@@ -44,6 +45,7 @@ describe('CronController.diario', () => {
       certificados as never,
       { barrer: reconsulta.barrer } as never,
       devoluciones as never,
+      notasColgadas as never,
     );
 
   beforeEach(() => {
@@ -52,6 +54,16 @@ describe('CronController.diario', () => {
     recurrentes.sweep.mockResolvedValue(ok);
     certificados.barrerVencimientos.mockResolvedValue(ok);
     devoluciones.barrer.mockResolvedValue(ok);
+    notasColgadas.barrer.mockResolvedValue(ok);
+  });
+
+  it('corre la alerta de notas en draft colgadas (Fase 6C) y una alerta no pone el cron en rojo', async () => {
+    const alerta = { estado: 'ok', detalle: 'alerta: 2 nota(s) en draft', cifras: { colgadas: 2 } };
+    notasColgadas.barrer.mockResolvedValue(alerta);
+    const r = await conSecreto('s3cr3t').diario('Bearer s3cr3t');
+    expect(notasColgadas.barrer).toHaveBeenCalledTimes(1);
+    expect(r.ok).toBe(true);
+    expect(r.tareas['notas-draft-colgadas']).toEqual(alerta);
   });
 
   it('corre el barrido de devoluciones varadas (N2) y lo reporta', async () => {
