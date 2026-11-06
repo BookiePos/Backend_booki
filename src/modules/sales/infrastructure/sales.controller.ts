@@ -19,6 +19,7 @@ import {
   CreateSaleRebateDto,
 } from '../application/dto/create-sale-rebate.dto';
 import { NotasSinReferenciaService } from '../application/notas-sin-referencia.service';
+import { SaldoFavorService } from '../application/saldo-favor.service';
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
@@ -39,6 +40,7 @@ export class SalesController {
     private readonly offline: OfflineSalesService,
     private readonly documentoFiscal: DocumentoFiscalVentaService,
     private readonly sinReferencia: NotasSinReferenciaService,
+    private readonly saldoFavor: SaldoFavorService,
   ) {}
 
   /**
@@ -159,6 +161,23 @@ export class SalesController {
   stats(@Query('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
     if (!sedeId) throw new BadRequestException('sedeId es obligatorio');
     return this.sales.statsToday(sedeId, user);
+  }
+
+  /**
+   * (Antes de `:id`.) Reporte de la 2805 por tercero (Fase 6C): saldo a favor de cada cliente,
+   * lo que dice su auxiliar, lo que quedó sin tercero y el mayor de la 2805.
+   */
+  @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
+  @Get('saldos-favor')
+  saldosFavor() {
+    return this.saldoFavor.reporte();
+  }
+
+  /** Saldo a favor disponible de un cliente: el POS lo muestra antes de cobrar. */
+  @RequirePermissions(PERMISSIONS.POS_SELL)
+  @Get('saldos-favor/:customerId')
+  async saldoFavorDe(@Param('customerId') customerId: string) {
+    return { customerId, saldo: await this.saldoFavor.saldoDe(customerId) };
   }
 
   @RequirePermissions(PERMISSIONS.POS_SELL)

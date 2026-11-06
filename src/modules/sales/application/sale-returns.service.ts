@@ -11,6 +11,7 @@ import {
   FinanceReceivableDocument,
 } from '../../finance/infrastructure/schemas/finance-receivable.schema';
 import { NotaFiscalVentaService } from './nota-fiscal-venta.service';
+import { SaldoFavorService } from './saldo-favor.service';
 import type { NotaFiscalOperacion, SolicitudNotaVenta } from './emision-documento-fiscal.puerto';
 import { origenNotaDevolucion, origenNotaRebaja } from '../domain/documento-fiscal';
 import { hasCreditPart, propinaCobrada } from '../domain/sale-payments';
@@ -90,6 +91,9 @@ export class SaleReturnsService {
     /** Nota crédito / de ajuste de la devolución (Fase 6B). */
     @Optional()
     private readonly notas?: NotaFiscalVentaService,
+    /** Saldo a favor por cliente (Fase 6C): lo que la 2805 le acredita. */
+    @Optional()
+    private readonly saldoFavor?: SaldoFavorService,
   ) {}
 
   /** Devoluciones ya registradas de una venta, de la más reciente atrás. */
@@ -861,6 +865,10 @@ export class SaleReturnsService {
       // mismo criterio que el resto de asientos automáticos; un reintento no
       // lo arreglaría (el origen es el mismo) y sí dejaría la devolución
       // varada para siempre.
+      // El saldo a favor del cliente (Fase 6C) va con el asiento que acredita
+      // la 2805, y antes que él: es idempotente por devolución, así que un
+      // reintento no abona dos veces.
+      await this.abonarSaldoFavor(registro, sale);
       await this.postToLedger(registro, sale);
       registro.asientoHecho = true;
       await registro.save();
@@ -1019,6 +1027,30 @@ export class SaleReturnsService {
     }
     if (nota) this.notas?.transmitirDetras(nota, user);
     return registro;
+  }
+
+  /**
+   * Lo que el asiento acredita a la 2805 (devolución o rebaja `credit_note`,
+   * o cambio `none`: lo devuelto menos lo que bajó la cartera, más la
+   * propina), abonado al tercero de la venta. Sin tercero queda en el auxiliar
+   * sin cliente: se ve en el reporte, pero nadie lo puede gastar.
+   */
+  private async abonarSaldoFavor(registro: SaleReturnDocument, sale: SaleDocument): Promise<void> {
+    if (!this.saldoFavor) return;
+    if (registro.refundMethod !== 'credit_note' && registro.refundMethod !== 'none') return;
+    const amount =
+      clampNonNegative(registro.refundTotal - (registro.abonoCartera ?? 0)) + (registro.tipRefund ?? 0);
+    if (amount <= 0) return;
+    const deCxc = sale.customerId ? null : await this.cuentaPorCobrar(sale).catch(() => null);
+    await this.saldoFavor.abonar({
+      customerId: sale.customerId ?? deCxc?.customerId ?? null,
+      customerName: sale.customer?.name,
+      amount,
+      sourceType: 'sale_return',
+      sourceId: registro._id.toString(),
+      sedeId: registro.sedeId.toString(),
+      memo: `${registro.kind === 'rebaja' ? 'Rebaja' : 'Devolución'} de la venta ${sale.saleNumber}`,
+    });
   }
 
   /** CxC del fiado a cliente (la del empleado no deja CxC). */

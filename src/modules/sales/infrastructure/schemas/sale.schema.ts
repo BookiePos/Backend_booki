@@ -584,6 +584,14 @@ export class Sale {
   @Prop({ type: SaleCustomerSchema })
   customer?: SaleCustomer;
 
+  /**
+   * Cliente REGISTRADO de la venta (Fase 6C): el tercero del saldo a favor que
+   * deja una devolución o rebaja, y quien gasta el suyo con `saldo_favor`.
+   * Las ventas de antes no lo tienen.
+   */
+  @Prop({ type: Types.ObjectId, ref: 'Customer' })
+  customerId?: Types.ObjectId;
+
   /** Turno de caja; se llenará cuando exista el módulo de Caja. */
   @Prop({ type: Types.ObjectId })
   cajaSessionId?: Types.ObjectId;

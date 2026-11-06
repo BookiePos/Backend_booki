@@ -74,10 +74,12 @@ describe('SaleReturnsService · rebaja posterior (Fase 6C)', () => {
   let cxc: any;
   let puerto: any;
   let orden: string[];
+  let saldoFavor: any;
 
   function build(sale: any = venta(), conNotas = true) {
     registros = [];
     orden = [];
+    saldoFavor = { abonar: vi.fn(async () => void orden.push('saldo')) };
     model = {
       find: vi.fn((f: any = {}) => {
         const filtrados = () =>
@@ -179,6 +181,7 @@ describe('SaleReturnsService · rebaja posterior (Fase 6C)', () => {
       ledger as never,
       receivables as never,
       conNotas ? notas : undefined,
+      saldoFavor as never,
     );
   }
 
@@ -238,10 +241,31 @@ describe('SaleReturnsService · rebaja posterior (Fase 6C)', () => {
   });
 
   it('saldo a favor: no toca la caja y el asiento va con credit_note (2805)', async () => {
-    build();
-    await service.createRebaja(saleId.toString(), rebaja({ refundMethod: 'credit_note' }), user);
+    const CLIENTE = new Types.ObjectId();
+    build(venta({ customerId: CLIENTE, customer: { name: 'Ana' } }));
+    const r: any = await service.createRebaja(saleId.toString(), rebaja({ refundMethod: 'credit_note' }), user);
     expect(caja.movement).not.toHaveBeenCalled();
+    // Fase 6C: el tercero recibe el abono antes del asiento que acredita la 2805.
+    expect(orden).toEqual(['nota', 'saldo', 'libro']);
+    expect(saldoFavor.abonar).toHaveBeenCalledWith(
+      expect.objectContaining({ customerId: CLIENTE, amount: 4_000, sourceType: 'sale_return', sourceId: String(r._id) }),
+    );
     expect(ledger.postSaleReturn.mock.calls[0][0].refundMethod).toBe('credit_note');
+  });
+
+  it('en efectivo no abona saldo a favor', async () => {
+    build();
+    await service.createRebaja(saleId.toString(), rebaja(), user);
+    expect(saldoFavor.abonar).not.toHaveBeenCalled();
+  });
+
+  it('devolución a favor de una venta fiada sin tercero en la venta: el tercero sale de la CxC y solo el excedente', async () => {
+    build(venta({ payment: { method: 'credit' } }));
+    const CLIENTE = new Types.ObjectId();
+    cxc = { _id: new Types.ObjectId(), customerId: CLIENTE, amount: 40_000, paidAmount: 38_000, status: 'partial' };
+    await service.create(saleId.toString(), devolucion({ refundMethod: 'credit_note' }), user);
+    // Devuelve $15.000: $2.000 bajan la CxC y $13.000 quedan a favor.
+    expect(saldoFavor.abonar).toHaveBeenCalledWith(expect.objectContaining({ customerId: CLIENTE, amount: 13_000 }));
   });
 
   it('venta fiada: baja primero la CxC y solo el resto sale por el medio', async () => {

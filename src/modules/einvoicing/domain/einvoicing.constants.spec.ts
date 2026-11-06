@@ -27,7 +27,11 @@ describe('medio de pago del POS (Fase 7A)', () => {
     expect(pagoPosDian({ method: 'otro' })).toEqual({ formaPago: '1', medio: '1' });
   });
 
-  it('la factura de venta no cambia de tabla', () => {
-    expect(MEDIO_PAGO_BY_METHOD).toEqual({ cash: '10', card: '48', transfer: '42' });
+  it('la factura de venta no cambia de tabla (salvo el saldo a favor de la Fase 6C)', () => {
+    expect(MEDIO_PAGO_BY_METHOD).toEqual({ cash: '10', card: '48', transfer: '42', saldo_favor: 'ZZZ' });
+  });
+
+  it('saldo a favor (Fase 6C): de contado con ZZZ «Acuerdo mutuo»', () => {
+    expect(pagoPosDian({ method: 'saldo_favor' })).toEqual({ formaPago: '1', medio: 'ZZZ' });
   });
 });

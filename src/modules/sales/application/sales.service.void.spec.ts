@@ -75,6 +75,8 @@ describe('SalesService.void (anulación atómica)', () => {
   let cajaMovementModel: any;
   let service: SalesService;
 
+  const saldoFavor = { revertirConsumo: vi.fn().mockResolvedValue(undefined) };
+
   beforeEach(() => {
     saleModel = {
       findById: vi.fn().mockReturnValue({
@@ -127,6 +129,8 @@ describe('SalesService.void (anulación atómica)', () => {
       {} as any, // businesses: el giro viene en el contexto o no hay tenant
       saleReturnModel, // saleReturnModel
       cajaMovementModel, // cajaMovementModel
+      undefined, // notas
+      saldoFavor as never, // saldo a favor (Fase 6C)
     );
   });
 
@@ -152,6 +156,8 @@ describe('SalesService.void (anulación atómica)', () => {
     // Los pasos contables/tesorería también corren una sola vez.
     expect(ledgerPosting.reverseSale).toHaveBeenCalledTimes(1);
     expect(treasury.reverse).toHaveBeenCalledTimes(1);
+    // Fase 6C: lo que se pagó con saldo a favor vuelve al cliente.
+    expect(saldoFavor.revertirConsumo).toHaveBeenCalledWith(saleObjId.toString());
   });
 
   // ── 1.6 Anular un fiado ────────────────────────────────────────────────────

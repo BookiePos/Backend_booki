@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -12,6 +13,7 @@ import {
 } from '../infrastructure/schemas/nota-sin-referencia.schema';
 import { CreateNotaSinReferenciaDto } from './dto/create-sale-rebate.dto';
 import { NotaFiscalVentaService } from './nota-fiscal-venta.service';
+import { SaldoFavorService } from './saldo-favor.service';
 import { CajaService } from '../../caja/application/caja.service';
 import { CustomersService } from '../../customers/application/customers.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
@@ -49,6 +51,9 @@ export class NotasSinReferenciaService {
     private readonly notas: NotaFiscalVentaService,
     private readonly caja: CajaService,
     private readonly ledgerPosting: LedgerPostingService,
+    /** Saldo a favor por cliente (Fase 6C). */
+    @Optional()
+    private readonly saldoFavor?: SaldoFavorService,
   ) {}
 
   async list(sedeId: string, user: JwtUser): Promise<NotaSinReferenciaDocument[]> {
@@ -183,6 +188,18 @@ export class NotasSinReferenciaService {
       }
     }
     if (!registro.asientoHecho) {
+      // A favor: el cliente lo gasta en su próxima compra (idempotente).
+      if (registro.refundMethod === 'credit_note') {
+        await this.saldoFavor?.abonar({
+          customerId: registro.customerId,
+          customerName: registro.customerName,
+          amount: registro.amount,
+          sourceType: 'nota_sin_referencia',
+          sourceId: registro._id.toString(),
+          sedeId,
+          memo: `Descuento sin referencia (${registro.desde} a ${registro.hasta})`,
+        });
+      }
       await this.ledgerPosting.postSaleReturn({
         returnId: registro._id.toString(),
         saleNumber: '',

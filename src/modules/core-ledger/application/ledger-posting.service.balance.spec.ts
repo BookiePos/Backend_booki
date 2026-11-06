@@ -93,6 +93,27 @@ describe('LedgerPostingService · asientos automáticos', () => {
       expect(amountOn(ACC.INGRESOS_VENTAS, 'credit')).toBe(100_000);
     });
 
+    it('saldo a favor (Fase 6C): debita la 2805, no la caja; mixto con efectivo, cada uno a su cuenta', async () => {
+      await service.postSale({ ...base, paymentMethod: 'saldo_favor', total: 119_000, tax: 19_000, cogs: 0 });
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.ANTICIPOS_CLIENTES, 'debit')).toBe(119_000);
+      expect(amountOn(ACC.CAJA, 'debit')).toBe(0);
+      await service.postSale({
+        ...base,
+        saleId: 's2',
+        total: 119_000,
+        tax: 19_000,
+        cogs: 0,
+        payments: [
+          { method: 'saldo_favor', amount: 19_000 },
+          { method: 'cash', amount: 100_000 },
+        ],
+      } as never);
+      expect(side('debit')).toBe(side('credit'));
+      expect(amountOn(ACC.ANTICIPOS_CLIENTES, 'debit')).toBe(19_000);
+      expect(amountOn(ACC.CAJA, 'debit')).toBe(100_000);
+    });
+
     it('propina con tarjeta: entra a Bancos', async () => {
       await service.postSale({
         ...base,
