@@ -448,7 +448,8 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
   const finMesSiguiente = ultimoDiaDelMes(
     new Date(Date.UTC(Number(periodo.slice(0, 4)), Number(periodo.slice(5, 7)), 1)).toISOString().slice(0, 7),
   );
-  const pagos: PagoCorrida[] = [];
+  /** Cada egreso con lo que se pagó en él (pesos), para elegir el medio del nodo Pago. */
+  const pagos: (PagoCorrida & { valor: number })[] = [];
   for (const c of cerradas) {
     const p = c.pago;
     if (!p?.medio || !p.fecha) {
@@ -465,15 +466,22 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
       if (p.fecha > finMesSiguiente) {
         advertencias.push(`${quien}: la corrida ${c.corridaId} se pagó el ${p.fecha}, después del mes siguiente a ${periodo}; confírmalo.`);
       }
-      pagos.push(p);
+      const bd = c.colilla.breakdown;
+      pagos.push({ ...p, valor: Math.max(0, cop(bd.devengados.total) - cop(bd.deducciones.total)) });
     }
   }
-  // El XSD admite un solo nodo Pago: manda el medio del último egreso.
-  const ultimoPago = [...pagos].sort((a, b) => a.fecha.localeCompare(b.fecha))[pagos.length - 1];
-  const medio = ultimoPago?.medio;
+  // El XSD admite un solo nodo Pago: manda el medio por el que se pagó MÁS en el mes (con empate, el último).
+  const porMedio = new Map<string, { valor: number; fecha: string }>();
+  for (const p of pagos) {
+    const m = porMedio.get(p.medio) ?? { valor: 0, fecha: '' };
+    porMedio.set(p.medio, { valor: m.valor + p.valor, fecha: p.fecha > m.fecha ? p.fecha : m.fecha });
+  }
+  const medio = [...porMedio.entries()].sort(
+    ([, a], [, b]) => b.valor - a.valor || b.fecha.localeCompare(a.fecha),
+  )[0]?.[0];
   if (new Set(pagos.map((p) => p.medio)).size > 1) {
     advertencias.push(
-      `${quien}: las corridas de ${periodo} se pagaron por medios distintos; el documento reporta el del último pago (${NOMBRE_MEDIO[medio!] ?? medio}).`,
+      `${quien}: las corridas de ${periodo} se pagaron por medios distintos; el documento reporta el de mayor valor pagado (${NOMBRE_MEDIO[medio!] ?? medio}).`,
     );
   }
   revisarTrabajador(e, periodo, medio, entrada.smmlv, bloqueos);

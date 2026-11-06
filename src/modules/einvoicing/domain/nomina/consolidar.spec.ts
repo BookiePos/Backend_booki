@@ -276,7 +276,19 @@ describe('consolidarNominaMes: casos que pasan', () => {
     expect(r.modelo.pago.metodo).toBe('10');
   });
 
-  it('dos corridas con medios distintos: manda el del último pago y avisa', () => {
+  it('dos corridas con medios distintos: manda el de mayor valor pagado y avisa', () => {
+    const { modelo } = ok(
+      entrada({
+        slips: [
+          corrida({ corridaId: 'q1', dias: 15, bd: breakdown({ salario: 1_000_000 }), rango: { desde: '2026-10-01', hasta: '2026-10-15' }, pago: { medio: '10', fecha: '2026-10-15' } }),
+          corrida({ corridaId: 'q2', dias: 15, bd: breakdown({ salario: 500_000 }), rango: { desde: '2026-10-16', hasta: '2026-10-31' }, pago: { medio: '20', fecha: '2026-10-31' } }),
+        ],
+      }),
+    );
+    expect(modelo.pago.metodo).toBe('10');
+  });
+
+  it('dos corridas de igual valor con medios distintos: desempata el último pago y avisa', () => {
     const { modelo, advertencias } = ok(
       entrada({
         empleado: empleado({ bank: 'Bancolombia', accountType: 'ahorros', accountNumber: '123' }),
