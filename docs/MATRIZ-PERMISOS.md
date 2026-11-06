@@ -303,6 +303,7 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `GET /sales/:id` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /sales` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /sales/:id/returns` | `pos.refund` | ✓ | ✓ | ✓ | ✓ | · |
+| `POST /sales/returns/:id/completar` | `pos.refund` | ✓ | ✓ | ✓ | ✓ | · |
 | `GET /sales/:id/returns` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /sales/:id/void` | `pos.void.authorize` | ✓ | ✓ | ✓ | · | · |
 | `GET /sedes` | con sesión | ✓ | ✓ | ✓ | ✓ | ✓ |

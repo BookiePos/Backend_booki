@@ -139,6 +139,13 @@ export class SaleReturn {
   @Prop({ type: String, enum: ['en_curso', 'completa'] })
   estado?: 'en_curso' | 'completa';
 
+  /**
+   * Turno de quien la está completando (N1): mientras no venza, otra petición
+   * con la misma llave responde 409 en vez de mover stock y caja otra vez.
+   */
+  @Prop({ type: Date, default: null })
+  procesandoHasta?: Date | null;
+
   /** La cartera del fiado y la nota fiscal ya quedaron. */
   @Prop()
   carteraHecha?: boolean;
@@ -176,6 +183,8 @@ export class SaleReturn {
 export const SaleReturnSchema = SchemaFactory.createForClass(SaleReturn);
 
 SaleReturnSchema.index({ sedeId: 1, createdAt: -1 });
+// Barrido de devoluciones varadas (N2): solo las `en_curso`, por antigüedad.
+SaleReturnSchema.index({ estado: 1, createdAt: 1 }, { partialFilterExpression: { estado: 'en_curso' } });
 
 // Una devolución por llave del cliente: el reintento no devuelve dos veces.
 SaleReturnSchema.index(

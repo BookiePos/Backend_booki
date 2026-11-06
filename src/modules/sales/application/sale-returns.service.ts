@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   Logger,
+  NotFoundException,
   Optional,
 } from '@nestjs/common';
 import {
@@ -203,6 +204,11 @@ export class SaleReturnsService {
     return units;
   }
 
+  /** Cuánto dura el turno de quien completa una devolución (N1). */
+  static readonly TURNO_MS = 2 * 60 * 1000;
+  /** Antigüedad a partir de la cual el barrido toma una devolución varada (N2). */
+  static readonly VARADA_MS = 10 * 60 * 1000;
+
   async create(
     saleId: string,
     dto: CreateSaleReturnDto,
@@ -347,6 +353,9 @@ export class SaleReturnsService {
       wasteRecorded: false,
       // Pasos (D1): un reintento con la misma llave completa lo que falte.
       estado: 'en_curso',
+      // Nace con el turno de quien la crea (N1): un doble clic con la misma
+      // llave no puede entrar a completarla mientras esta petición sigue.
+      procesandoHasta: new Date(Date.now() + SaleReturnsService.TURNO_MS),
       carteraHecha: false,
       stockHecho: false,
       cajaHecha: false,
@@ -432,12 +441,105 @@ export class SaleReturnsService {
     registro.abonoCartera = abonoCartera;
     if (nota) registro.notaFiscal = nota as unknown as Record<string, unknown>;
     registro.carteraHecha = true;
-    await registro.save();
-
-    await this.completar(registro, sale, user);
+    try {
+      await registro.save();
+      await this.completar(registro, sale, user);
+    } finally {
+      await this.soltarTurno(registro);
+    }
     // La caja no espera a la DIAN: la nota se transmite detrás de la respuesta.
     this.notas?.transmitirDetras(nota, user);
     return registro;
+  }
+
+  /**
+   * Toma el turno de una devolución `en_curso` (N1): un `findOneAndUpdate`
+   * condicionado a que nadie lo tenga o a que el anterior ya venció. Devuelve
+   * el registro FRESCO (con las marcas que haya dejado otra petición) o
+   * `null` si otro lo tiene.
+   */
+  private async tomarTurno(id: Types.ObjectId): Promise<SaleReturnDocument | null> {
+    const ahora = new Date();
+    return this.model
+      .findOneAndUpdate(
+        {
+          _id: id,
+          estado: 'en_curso',
+          $or: [{ procesandoHasta: null }, { procesandoHasta: { $lt: ahora } }],
+        },
+        { $set: { procesandoHasta: new Date(ahora.getTime() + SaleReturnsService.TURNO_MS) } },
+        { new: true },
+      )
+      .exec();
+  }
+
+  /** Suelta el turno al terminar o al fallar. Si falla, el turno vence solo. */
+  private async soltarTurno(registro: SaleReturnDocument): Promise<void> {
+    try {
+      await this.model.updateOne({ _id: registro._id }, { $set: { procesandoHasta: null } }).exec();
+    } catch (err) {
+      this.logger.warn(
+        `No se pudo soltar el turno de la devolución ${registro._id.toString()} (vence solo): ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Completa a mano una devolución que quedó `en_curso` (N2): la que no trae
+   * llave no tiene cómo reintentarse desde la caja, y sus cantidades ya
+   * cuentan como devueltas. Una completa se devuelve tal cual.
+   */
+  async completarPendiente(returnId: string, user: JwtUser): Promise<SaleReturnDocument> {
+    const registro = Types.ObjectId.isValid(returnId)
+      ? await this.model.findById(returnId).exec()
+      : null;
+    if (!registro) throw new NotFoundException('Devolución no encontrada');
+    assertSedeAccess(user, registro.sedeId.toString());
+    if (registro.estado !== 'en_curso') return registro;
+    const sale = await this.sales.getOrFail(registro.saleId.toString());
+    return this.continuar(registro, sale, user);
+  }
+
+  /**
+   * Barrido de la empresa activa (N2): completa las devoluciones `en_curso`
+   * con más de `VARADA_MS`, respetando el turno de quien las esté
+   * procesando. Lo llama el cron diario dentro del contexto de cada empresa.
+   * Nunca lanza por una devolución: la que falla queda para el día siguiente.
+   */
+  async completarVaradas(
+    opts: { limite?: number; ahora?: Date } = {},
+  ): Promise<{ completadas: number; fallidas: number; ocupadas: number }> {
+    const ahora = opts.ahora ?? new Date();
+    const varadas = await this.model
+      .find({
+        estado: 'en_curso',
+        createdAt: { $lt: new Date(ahora.getTime() - SaleReturnsService.VARADA_MS) },
+        $or: [{ procesandoHasta: null }, { procesandoHasta: { $lt: ahora } }],
+      })
+      .sort({ createdAt: 1 })
+      .limit(opts.limite ?? 50)
+      .exec();
+    let completadas = 0;
+    let fallidas = 0;
+    let ocupadas = 0;
+    for (const r of varadas) {
+      try {
+        const sale = await this.sales.getOrFail(r.saleId.toString());
+        const hecha = await this.continuar(r, sale, usuarioDelRegistro(r));
+        if (hecha.estado === 'completa') completadas++;
+        else fallidas++;
+      } catch (err) {
+        if (err instanceof ConflictException) {
+          ocupadas++;
+          continue;
+        }
+        fallidas++;
+        this.logger.error(
+          `CONCILIAR: la devolución ${r._id.toString()} de la venta ${r.saleNumber} sigue en curso: ${(err as Error).message}`,
+        );
+      }
+    }
+    return { completadas, fallidas, ocupadas };
   }
 
   /**
@@ -545,6 +647,11 @@ export class SaleReturnsService {
     }
 
     if (!registro.asientoHecho) {
+      // N3: `postSaleReturn` no lanza si el posteo falla: `safePost` lo
+      // registra para conciliación y devuelve. La marca queda igual, con el
+      // mismo criterio que el resto de asientos automáticos; un reintento no
+      // lo arreglaría (el origen es el mismo) y sí dejaría la devolución
+      // varada para siempre.
       await this.postToLedger(registro, sale);
       registro.asientoHecho = true;
       await registro.save();
@@ -631,22 +738,53 @@ export class SaleReturnsService {
         'Esa llave ya se usó para otra devolución de esta venta, con otros productos, cantidades o medio de devolución. Revisa lo ya devuelto y usa una llave nueva.',
       );
     }
-    const enCurso = registro.estado === 'en_curso';
-    if (enCurso && !registro.carteraHecha) {
-      const cxc = hasCreditPart(sale) ? await this.cuentaPorCobrar(sale) : null;
-      if (cxc && registro.refundTotal > 0) {
-        registro.abonoCartera = await this.abonarCartera(sale, registro, registro.refundTotal, user);
-      }
-      registro.carteraHecha = true;
-      await registro.save();
-    }
-    let nota: NotaFiscalOperacion | undefined;
+    if (registro.estado === 'en_curso') return this.continuar(registro, sale, user);
+    // Completa (o de antes de los pasos): no se mueve nada; solo la nota, si
+    // no alcanzó a quedar (idempotente por devolución).
     if (this.notas && !registro.notaFiscal) {
-      nota = await this.notas.emitir(sale, this.solicitudNota(registro, sale), user);
+      const nota = await this.notas.emitir(sale, this.solicitudNota(registro, sale), user);
       registro.notaFiscal = nota as unknown as Record<string, unknown>;
       await registro.save();
+      this.notas.transmitirDetras(nota, user);
     }
-    if (enCurso) await this.completar(registro, sale, user);
+    return registro;
+  }
+
+  /**
+   * Termina una devolución `en_curso` con el turno tomado (N1), en el mismo
+   * orden que `create`: cartera, nota, stock, caja y libro. Sin turno, 409:
+   * otra petición la está completando.
+   */
+  private async continuar(
+    previo: SaleReturnDocument,
+    sale: SaleDocument,
+    user: JwtUser,
+  ): Promise<SaleReturnDocument> {
+    const registro = await this.tomarTurno(previo._id);
+    if (!registro) {
+      const ahora = await this.model.findById(previo._id).exec();
+      if (ahora && ahora.estado !== 'en_curso') return ahora;
+      throw new ConflictException('La devolución se está procesando; reintenta en unos segundos.');
+    }
+    let nota: NotaFiscalOperacion | undefined;
+    try {
+      if (!registro.carteraHecha) {
+        const cxc = hasCreditPart(sale) ? await this.cuentaPorCobrar(sale) : null;
+        if (cxc && registro.refundTotal > 0) {
+          registro.abonoCartera = await this.abonarCartera(sale, registro, registro.refundTotal, user);
+        }
+        registro.carteraHecha = true;
+        await registro.save();
+      }
+      if (this.notas && !registro.notaFiscal) {
+        nota = await this.notas.emitir(sale, this.solicitudNota(registro, sale), user);
+        registro.notaFiscal = nota as unknown as Record<string, unknown>;
+        await registro.save();
+      }
+      await this.completar(registro, sale, user);
+    } finally {
+      await this.soltarTurno(registro);
+    }
     if (nota) this.notas?.transmitirDetras(nota, user);
     return registro;
   }
@@ -803,4 +941,20 @@ function mismaCarga(registro: SaleReturnDocument, dto: CreateSaleReturnDto): boo
     registro.reason === dto.reason &&
     huella(registro.lines) === huella(dto.lines ?? [])
   );
+}
+
+/**
+ * Usuario con el que el barrido completa una devolución varada (N2): quien la
+ * registró, con acceso solo a la sede de la devolución. No lleva permisos: lo
+ * que falta (stock, caja, libro) no los pide.
+ */
+function usuarioDelRegistro(r: SaleReturnDocument): JwtUser {
+  return {
+    userId: r.userId,
+    email: r.userEmail,
+    name: r.userEmail,
+    role: 'system',
+    sedeIds: [r.sedeId.toString()],
+    permissions: [],
+  } as unknown as JwtUser;
 }

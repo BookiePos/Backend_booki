@@ -13,6 +13,7 @@ import { BillingScheduler } from '../../billing/application/billing.scheduler';
 import { RecurringExpenseScheduler } from '../../finance/application/recurring-expense.scheduler';
 import { CertificadoEmisorService } from '../../einvoicing/application/certificado-emisor.service';
 import { ReconsultaDianService } from '../../einvoicing/application/reconsulta-dian.service';
+import { DevolucionesVaradasBarrido } from '../../sales/application/devoluciones-varadas.barrido';
 import { secretoDeCronValido } from '../domain/cron-auth';
 import type { ResultadoBarrido } from '../../../shared/barridos/resultado-barrido';
 
@@ -44,6 +45,7 @@ export class CronController {
     private readonly recurrentes: RecurringExpenseScheduler,
     private readonly certificados: CertificadoEmisorService,
     private readonly reconsultaDian: ReconsultaDianService,
+    private readonly devoluciones: DevolucionesVaradasBarrido,
   ) {}
 
   @Public()
@@ -64,6 +66,10 @@ export class CronController {
       }),
       // Marca los certificados .p12 que vencen en 30 días o menos (Fase 3 FE).
       'certificados-fe': await this.certificados.barrerVencimientos({
+        hasta: inicio + PLAZO_BARRIDOS_MS,
+      }),
+      // Termina las devoluciones que quedaron a medias hace más de 10 min (N2).
+      'devoluciones-varadas': await this.devoluciones.barrer({
         hasta: inicio + PLAZO_BARRIDOS_MS,
       }),
     };

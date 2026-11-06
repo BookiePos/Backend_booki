@@ -46,6 +46,7 @@ import { DocumentoFiscalVentaService } from './application/documento-fiscal-vent
 import { NotaFiscalVentaService } from './application/nota-fiscal-venta.service';
 import { PackagingService } from './application/packaging.service';
 import { SalesController } from './infrastructure/sales.controller';
+import { DevolucionesVaradasBarrido } from './application/devoluciones-varadas.barrido';
 import { PlatformOrdersController } from './infrastructure/platform-orders.controller';
 import { PlatformOrdersService } from './application/platform-orders.service';
 import { PlatformSettlementsService } from './application/platform-settlements.service';
@@ -112,6 +113,7 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
   ],
   controllers: [SalesController, OrdersController, PlatformOrdersController],
   providers: [
+    DevolucionesVaradasBarrido,
     SalesService,
     OrdersService,
     SaleReturnsService,
@@ -123,6 +125,6 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
     NotaFiscalVentaService,
     PlatformSettlementsService,
   ],
-  exports: [SalesService, OrdersService, SaleReturnsService],
+  exports: [SalesService, OrdersService, SaleReturnsService, DevolucionesVaradasBarrido],
 })
 export class SalesModule {}

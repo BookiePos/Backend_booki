@@ -79,7 +79,19 @@ describe('SaleReturnsService · nota fiscal y fiado (Fase 6B)', () => {
     registros = [];
     orden = [];
     model = {
-      find: vi.fn(() => ({ sort: () => ({ exec: async () => registros }), exec: async () => registros })),
+      find: vi.fn((f: any = {}) => {
+        const filtrados = () =>
+          registros.filter(
+            (r) =>
+              (!f.estado || r.estado === f.estado) &&
+              (!f.createdAt || (r.createdAt && r.createdAt < f.createdAt.$lt)) &&
+              (!f.$or || !r.procesandoHasta || r.procesandoHasta < new Date()),
+          );
+        return {
+          sort: () => ({ exec: async () => filtrados(), limit: () => ({ exec: async () => filtrados() }) }),
+          exec: async () => filtrados(),
+        };
+      }),
       findOne: vi.fn((f: any) => ({
         exec: async () => registros.find((r) => r.idempotencyKey && r.idempotencyKey === f.idempotencyKey) ?? null,
       })),
@@ -88,6 +100,27 @@ describe('SaleReturnsService · nota fiscal y fiado (Fase 6B)', () => {
         registros.push(r);
         return r;
       }),
+      // Turno atómico (N1): lo toma quien encuentre la devolución en curso y
+      // sin turno vigente, como el `findOneAndUpdate` condicionado de Mongo.
+      findOneAndUpdate: vi.fn((f: any, upd: any) => ({
+        exec: async () => {
+          const r = registros.find((x) => String(x._id) === String(f._id));
+          if (!r || r.estado !== f.estado) return null;
+          if (r.procesandoHasta && r.procesandoHasta >= new Date()) return null;
+          Object.assign(r, upd.$set);
+          return r;
+        },
+      })),
+      updateOne: vi.fn((f: any, upd: any) => ({
+        exec: async () => {
+          const r = registros.find((x) => String(x._id) === String(f._id));
+          if (r) Object.assign(r, upd.$set);
+          return {};
+        },
+      })),
+      findById: vi.fn((id: any) => ({
+        exec: async () => registros.find((x) => String(x._id) === String(id)) ?? null,
+      })),
       deleteOne: vi.fn((f: any) => ({
         exec: async () => {
           registros = registros.filter((r) => String(r._id) !== String(f._id));
@@ -397,6 +430,114 @@ describe('SaleReturnsService · nota fiscal y fiado (Fase 6B)', () => {
       expect(caja.movement).not.toHaveBeenCalled();
       expect(ledger.postSaleReturn.mock.calls[0][0].toReceivable).toBe(15_000);
       expect(r.estado).toBe('completa');
+    });
+  });
+
+  describe('turno de la devolución (N1)', () => {
+    it('doble clic con la misma llave: stock y caja se mueven una sola vez y el segundo recibe 409', async () => {
+      build();
+      let soltar!: () => void;
+      const enStock = new Promise<void>((ok) => {
+        stock.reverseSale.mockImplementationOnce(
+          () => new Promise<void>((fin) => {
+            soltar = fin;
+            ok();
+          }),
+        );
+      });
+      const primera = service.create(saleId.toString(), devolucion({ idempotencyKey: 'k-n1' }), user);
+      await enStock;
+      await expect(
+        service.create(saleId.toString(), devolucion({ idempotencyKey: 'k-n1' }), user),
+      ).rejects.toMatchObject({ status: 409, message: expect.stringContaining('se está procesando') });
+      soltar();
+      const r: any = await primera;
+      expect(r.estado).toBe('completa');
+      expect(stock.reverseSale).toHaveBeenCalledTimes(1);
+      expect(caja.movement).toHaveBeenCalledTimes(1);
+      expect(ledger.postSaleReturn).toHaveBeenCalledTimes(1);
+      expect(r.procesandoHasta).toBeNull();
+    });
+
+    it('al fallar suelta el turno: el reintento entra enseguida', async () => {
+      build();
+      stock.reverseSale.mockRejectedValueOnce(new Error('kárdex caído'));
+      await expect(service.create(saleId.toString(), devolucion({ idempotencyKey: 'k-n1b' }), user)).rejects.toThrow();
+      expect(registros[0].procesandoHasta).toBeNull();
+      const r: any = await service.create(saleId.toString(), devolucion({ idempotencyKey: 'k-n1b' }), user);
+      expect(r.estado).toBe('completa');
+    });
+
+    it('un turno vencido (la petición murió) se puede retomar', async () => {
+      build();
+      ledger.postSaleReturn.mockRejectedValueOnce(new Error('libro caído'));
+      await expect(service.create(saleId.toString(), devolucion({ idempotencyKey: 'k-n1c' }), user)).rejects.toThrow();
+      // Como si la petición hubiera muerto sin soltarlo, hace rato.
+      registros[0].procesandoHasta = new Date(Date.now() - 1_000);
+      const r: any = await service.create(saleId.toString(), devolucion({ idempotencyKey: 'k-n1c' }), user);
+      expect(r.estado).toBe('completa');
+      expect(stock.reverseSale).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('devoluciones varadas (N2)', () => {
+    /** Devolución sin llave que falló en el stock hace `minutos`. */
+    async function varada(minutos: number) {
+      stock.reverseSale.mockRejectedValueOnce(new Error('kárdex caído'));
+      await expect(service.create(saleId.toString(), devolucion(), user)).rejects.toThrow();
+      const r = registros[registros.length - 1];
+      r.createdAt = new Date(Date.now() - minutos * 60_000);
+      return r;
+    }
+
+    it('el barrido completa las de más de 10 min y deja las recientes', async () => {
+      build();
+      const vieja = await varada(30);
+      expect(vieja.estado).toBe('en_curso');
+      const res = await service.completarVaradas();
+      expect(res).toEqual({ completadas: 1, fallidas: 0, ocupadas: 0 });
+      expect(vieja.estado).toBe('completa');
+      expect(stock.reverseSale).toHaveBeenCalledTimes(2);
+      // Completa como quien la registró, con acceso a su sede.
+      expect(caja.movement.mock.calls[0][1]).toMatchObject({ email: user.email, sedeIds: [sedeId.toString()] });
+    });
+
+    it('no toca una reciente ni una con el turno vigente', async () => {
+      build();
+      const reciente = await varada(2);
+      const otra = await varada(30);
+      otra.procesandoHasta = new Date(Date.now() + 60_000);
+      const res = await service.completarVaradas();
+      expect(res.completadas).toBe(0);
+      expect(reciente.estado).toBe('en_curso');
+      expect(otra.estado).toBe('en_curso');
+    });
+
+    it('la que vuelve a fallar se cuenta y el barrido sigue', async () => {
+      build();
+      await varada(30);
+      stock.reverseSale.mockRejectedValueOnce(new Error('sigue caído'));
+      const res = await service.completarVaradas();
+      expect(res).toEqual({ completadas: 0, fallidas: 1, ocupadas: 0 });
+    });
+
+    it('POST /sales/returns/:id/completar la termina a mano', async () => {
+      build();
+      const r = await varada(1);
+      const hecha: any = await service.completarPendiente(String(r._id), user);
+      expect(hecha.estado).toBe('completa');
+      expect(ledger.postSaleReturn).toHaveBeenCalledTimes(1);
+      // Una completa se devuelve tal cual, sin mover nada.
+      await service.completarPendiente(String(r._id), user);
+      expect(stock.reverseSale).toHaveBeenCalledTimes(2);
+    });
+
+    it('completar a mano exige acceso a la sede y responde 404 si no existe', async () => {
+      build();
+      const r = await varada(1);
+      const ajeno = { ...user, sedeIds: [new Types.ObjectId().toString()] } as unknown as JwtUser;
+      await expect(service.completarPendiente(String(r._id), ajeno)).rejects.toMatchObject({ status: 403 });
+      await expect(service.completarPendiente(new Types.ObjectId().toString(), user)).rejects.toMatchObject({ status: 404 });
     });
   });
 
