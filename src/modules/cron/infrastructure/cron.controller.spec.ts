@@ -35,6 +35,7 @@ describe('CronController.diario', () => {
   const recurrentes = { sweep: vi.fn() };
   const certificados = { barrerVencimientos: vi.fn() };
   const reconsulta = { barrer: vi.fn() };
+  const devoluciones = { barrer: vi.fn() };
   const conSecreto = (secreto?: string) =>
     new CronController(
       { get: () => secreto } as never,
@@ -42,6 +43,7 @@ describe('CronController.diario', () => {
       recurrentes as never,
       certificados as never,
       { barrer: reconsulta.barrer } as never,
+      devoluciones as never,
     );
 
   beforeEach(() => {
@@ -49,6 +51,18 @@ describe('CronController.diario', () => {
     billing.sweep.mockResolvedValue(ok);
     recurrentes.sweep.mockResolvedValue(ok);
     certificados.barrerVencimientos.mockResolvedValue(ok);
+    devoluciones.barrer.mockResolvedValue(ok);
+  });
+
+  it('corre el barrido de devoluciones varadas (N2) y lo reporta', async () => {
+    const r = await conSecreto('s3cr3t').diario('Bearer s3cr3t');
+    expect(devoluciones.barrer).toHaveBeenCalledTimes(1);
+    expect(r.tareas['devoluciones-varadas']).toEqual(ok);
+  });
+
+  it('si quedan devoluciones sin terminar, el cron sale en rojo', async () => {
+    devoluciones.barrer.mockResolvedValue({ estado: 'error', detalle: '1 devolución(es) siguen en curso' });
+    await expect(conSecreto('s3cr3t').diario('Bearer s3cr3t')).rejects.toMatchObject({ status: 500 });
   });
 
   it('con el secreto correcto corre los dos barridos', async () => {
@@ -120,6 +134,7 @@ describe('CronController.dianReconsulta', () => {
       { sweep: vi.fn() } as never,
       { barrerVencimientos: vi.fn() } as never,
       reconsulta as never,
+      { barrer: vi.fn() } as never,
     );
 
   beforeEach(() => {

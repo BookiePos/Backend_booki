@@ -85,6 +85,13 @@ export const ACC = {
    */
   DEDUCCIONES_NOMINA_TERCEROS: '2370',
   SALARIOS_POR_PAGAR: '2505',
+  /**
+   * Saldo a favor del cliente de contado (PUC 2805, anticipos y avances
+   * recibidos): la devolución con `credit_note`/`none` de una venta pagada no
+   * saca plata hoy y queda debiéndole al cliente (decisión 5 del dueño,
+   * 2026-11-06). El fiado, en cambio, baja la 1305.
+   */
+  ANTICIPOS_CLIENTES: '2805',
   /** Cesantías, intereses, prima y vacaciones causadas (PUC 2610). */
   PROVISIONES_LABORALES: '2610',
   /**
@@ -170,6 +177,7 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
   { code: '2495', name: 'Impuesto nacional al consumo por pagar', type: 'liability' },
   { code: '249510', name: 'INC de bolsas plásticas por pagar', type: 'liability' },
   { code: '2505', name: 'Salarios por pagar', type: 'liability' },
+  { code: '2805', name: 'Anticipos y avances recibidos', type: 'liability' },
   { code: '2610', name: 'Para obligaciones laborales', type: 'liability' },
   // Patrimonio
   { code: '3105', name: 'Capital', type: 'equity' },

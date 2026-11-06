@@ -9,6 +9,9 @@ import {
 import type {
   DocumentoFiscalEmitido,
   EmisionDocumentoFiscal,
+  EmisionNotaVenta,
+  NotaFiscalOperacion,
+  SolicitudNotaVenta,
 } from '../../sales/application/emision-documento-fiscal.puerto';
 
 /**
@@ -17,7 +20,7 @@ import type {
  * la transmisión con `TransmisionDianService`.
  */
 @Injectable()
-export class EmisionDocumentoFiscalDian implements EmisionDocumentoFiscal {
+export class EmisionDocumentoFiscalDian implements EmisionDocumentoFiscal, EmisionNotaVenta {
   private readonly logger = new Logger(EmisionDocumentoFiscalDian.name);
 
   constructor(
@@ -41,6 +44,23 @@ export class EmisionDocumentoFiscalDian implements EmisionDocumentoFiscal {
       cude: doc.cufe,
       qrUrl: doc.qrUrl,
       dianStatus: doc.dianStatus,
+    };
+  }
+
+  /** Nota de una devolución o anulación (Fase 6B). Lanza: la operación falla cerrado. */
+  async emitirNota(s: SolicitudNotaVenta, user: JwtUser): Promise<NotaFiscalOperacion> {
+    const r = await this.einvoicing.emitirNotaDeVenta(s, user);
+    if (r.estado === 'sin_nota') return { estado: 'sin_nota', motivo: r.motivo };
+    const n = r.nota;
+    return {
+      estado: 'emitida',
+      documentoId: String(n._id),
+      fullNumber: n.fullNumber,
+      cude: n.cufe,
+      referenceType: n.referenceType === 'pos' ? 'pos' : 'invoice',
+      referenceNumber: n.referenceNumber,
+      concepto: n.discrepancyCode === '2' ? '2' : '1',
+      dianStatus: n.dianStatus,
     };
   }
 

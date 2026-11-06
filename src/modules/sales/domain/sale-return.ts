@@ -98,7 +98,7 @@ export interface PriorReturn {
  * $9.999, y la última salda exacto el saldo de la línea aunque las anteriores
  * se hayan calculado con otra regla (ventas viejas con centavos).
  *
- * La propina no entra: se cobró encima del total y ya se repartió.
+ * La propina no entra aquí: va aparte, en proporción (`propinaDeDevolucion`).
  */
 export function refundForLine(
   line: SoldLine,
@@ -208,6 +208,35 @@ export function buildReturnPlan(
     refundTotal: lines.reduce((s, l) => s + l.refund, 0),
     refundTax: lines.reduce((s, l) => s + l.refundTax, 0),
   };
+}
+
+/**
+ * Propina que vuelve en una devolución parcial (decisión 4 del dueño,
+ * 2026-11-06): en proporción a lo devuelto de los productos.
+ *
+ * Mismo redondeo acumulado que el reembolso (ítem 1.11): cada devolución
+ * lleva la propina de lo devuelto HASTA ella menos la que ya volvió. Cuando lo
+ * devuelto alcanza lo vendido vuelve la propina entera, así tres devoluciones
+ * de un tercio de una propina de $1.000 suman $1.000 y no $999.
+ *
+ * - `propina`: la que entró con el cobro (`propinaCobrada`).
+ * - `vendido`: lo pagado por los productos (Σ base + impuesto de las líneas).
+ * - `devueltoAntes` / `devueltoAhora`: reembolso de productos antes y en esta.
+ * - `propinaAntes`: propina que ya volvió en devoluciones anteriores.
+ */
+export function propinaDeDevolucion(p: {
+  propina: number;
+  vendido: number;
+  devueltoAntes: number;
+  devueltoAhora: number;
+  propinaAntes: number;
+}): number {
+  const propina = clampNonNegative(cop(p.propina));
+  if (propina <= 0 || !(p.vendido > 0)) return 0;
+  const acumulado = clampNonNegative(p.devueltoAntes + p.devueltoAhora);
+  const hasta =
+    acumulado >= p.vendido ? propina : Math.min(cop((propina * acumulado) / p.vendido), propina);
+  return clampNonNegative(hasta - cop(p.propinaAntes));
 }
 
 /**

@@ -52,7 +52,12 @@ export function prepararNotaUbl(doc: DocumentoNotaParaUbl, emisor: EmisorParaUbl
   const lineasDoc = lineas(doc);
   const tieneReferencia = Boolean(doc.referenceNumber?.trim());
   // Un POS se corrige con su nota de ajuste (94/93), no con la 91: lo decide el TIPO del documento referido.
-  if (tieneReferencia && doc.referenceType !== undefined && doc.referenceType !== 'pos' && doc.referenceType !== 'invoice') {
+  // Fase 6B: con referencia, el tipo del documento referido es obligatorio. Sin él no se sabe si la nota es
+  // la 91 de la factura o la 94 del POS, y adivinar «factura» mandaría a la DIAN una 91 sobre un CUDE de POS.
+  if (tieneReferencia && !doc.referenceType) {
+    throw new DocumentoUblInvalidoError('La nota no dice qué documento corrige (factura o POS): falta el tipo del documento referido');
+  }
+  if (tieneReferencia && doc.referenceType !== 'pos' && doc.referenceType !== 'invoice') {
     throw new DocumentoUblInvalidoError(`La nota no puede corregir un documento «${doc.referenceType}»`);
   }
   if (!tieneReferencia && doc.referenceType === 'pos') {

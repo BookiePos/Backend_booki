@@ -261,22 +261,26 @@ describe('devoluciones sucesivas · ni un peso perdido (ítem 1.16 a)', () => {
     const devuelto = m.registros.reduce((s, r) => s + r.refundTotal, 0);
     expect(devuelto).toBe(m.venta.total);
 
-    // 2. La caja: entró total + propina y salió lo devuelto. Queda la propina,
-    //    que es del personal y no se devuelve con la mercancía.
-    const neto = m.caja.reduce((s, c) => s + (c.type === 'in' ? c.amount : -c.amount), 0);
-    expect(neto).toBe(PROPINA);
-    expect(devuelto + neto).toBe(m.venta.total + PROPINA);
+    // 2. La propina vuelve en proporción (decisión 4) y, devuelto todo, vuelve
+    //    entera: la suma de los pedazos es la propina, sin pesos colgando.
+    const propinaDevuelta = m.registros.reduce((s, r) => s + r.tipRefund, 0);
+    expect(propinaDevuelta).toBe(PROPINA);
+    for (const r of m.registros) expect(Number.isInteger(r.tipRefund)).toBe(true);
 
-    // 3. El libro: cada asiento cuadra, y cuenta por cuenta queda solo la
-    //    propina (Caja contra 2380). Ingreso neto, IVA, INC, costo e inventario
-    //    vuelven a cero.
+    // 3. La caja: entró total + propina y salió todo. Queda en cero.
+    const neto = m.caja.reduce((s, c) => s + (c.type === 'in' ? c.amount : -c.amount), 0);
+    expect(neto).toBe(0);
+    expect(devuelto + propinaDevuelta).toBe(m.venta.total + PROPINA);
+
+    // 4. El libro: cada asiento cuadra, y cuenta por cuenta todo vuelve a
+    //    cero, la Caja y la 2380 incluidas.
     for (const a of m.asientos) {
       const d = a.lines.reduce((s, l) => s + (l.debit ?? 0), 0);
       const c = a.lines.reduce((s, l) => s + (l.credit ?? 0), 0);
       expect(d).toBe(c);
     }
-    expect(saldo(m.asientos, ACC.CAJA)).toBe(PROPINA);
-    expect(saldo(m.asientos, ACC.PROPINAS_POR_PAGAR)).toBe(-PROPINA);
+    expect(saldo(m.asientos, ACC.CAJA)).toBe(0);
+    expect(saldo(m.asientos, ACC.PROPINAS_POR_PAGAR)).toBe(0);
     expect(
       saldo(m.asientos, ACC.INGRESOS_VENTAS) + saldo(m.asientos, ACC.DEVOLUCIONES_VENTAS),
     ).toBe(0);
@@ -304,13 +308,19 @@ describe('devoluciones sucesivas · ni un peso perdido (ítem 1.16 a)', () => {
     // ser créditos) más lo devuelto es el total de la venta, peso por peso.
     expect(devuelto - queda).toBe(m.venta.total);
 
-    // La caja solo devolvió el efectivo: la nota a favor quedó en Clientes.
+    // La caja solo devolvió el efectivo (con su propina): el saldo a favor de
+    // una venta de contado queda en la 2805, no en Clientes (decisión 5).
     const efectivo = m.registros
       .filter((r) => r.refundMethod === 'cash')
-      .reduce((s, r) => s + r.refundTotal, 0);
+      .reduce((s, r) => s + r.refundTotal + r.tipRefund, 0);
     expect(saldo(m.asientos, ACC.CAJA)).toBe(m.venta.total + PROPINA - efectivo);
     const nota = m.registros.find((r) => r.refundMethod === 'credit_note')!;
-    expect(saldo(m.asientos, ACC.CLIENTES)).toBe(-nota.refundTotal);
+    expect(saldo(m.asientos, ACC.ANTICIPOS_CLIENTES)).toBe(-(nota.refundTotal + nota.tipRefund));
+    expect(saldo(m.asientos, ACC.CLIENTES)).toBe(0);
+    // La 2380 bajó exacto por la propina devuelta.
+    const propinaDevuelta = m.registros.reduce((s, r) => s + r.tipRefund, 0);
+    expect(propinaDevuelta).toBeGreaterThan(0);
+    expect(saldo(m.asientos, ACC.PROPINAS_POR_PAGAR)).toBe(-(PROPINA - propinaDevuelta));
   });
 
   it('el costo devuelto en pedazos suma exacto el costo de la venta', async () => {

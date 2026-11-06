@@ -5,7 +5,12 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { NotaFiscalVentaService } from './nota-fiscal-venta.service';
+import type { NotaFiscalOperacion } from './emision-documento-fiscal.puerto';
+import { origenNotaAnulacion } from '../domain/documento-fiscal';
+import { MENSAJE_FUERA_DE_SEMANA_POS, puedeAnularPos } from '../domain/ventana-anulacion';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Sale, SaleDocument } from '../infrastructure/schemas/sale.schema';
@@ -255,6 +260,12 @@ export class SalesService {
      */
     @InjectModel(CajaMovement.name)
     private readonly cajaMovementModel: Model<CajaMovementDocument>,
+    /**
+     * Nota crédito / de ajuste de la anulación (Fase 6B). Opcional y al final
+     * para no mover los parámetros de las pruebas que construyen el servicio.
+     */
+    @Optional()
+    private readonly notas?: NotaFiscalVentaService,
   ) {}
 
   /**
@@ -1560,7 +1571,11 @@ export class SalesService {
    * Anula una venta: la marca como 'void' y devuelve al inventario lo que
    * consumió (componentes de la venta; en ventas antiguas, las líneas).
    */
-  async void(id: string, user: JwtUser): Promise<SaleDocument> {
+  async void(
+    id: string,
+    user: JwtUser,
+    opts: { motivo?: string } = {},
+  ): Promise<SaleDocument> {
     // Carga previa solo para validar el acceso por sede (y devolver 404 si no
     // existe). La anulación real se "toma" con un flip atómico más abajo.
     const existing = await this.getOrFail(id);
@@ -1568,6 +1583,21 @@ export class SalesService {
       existing.sedeId as unknown as { _id: Types.ObjectId }
     )._id.toString();
     assertSedeAccess(user, sedeId);
+
+    // Un POS solo se anula en la misma semana calendario de la venta
+    // (decisión 6 del dueño); después, la corrección es una devolución con
+    // su nota de ajuste.
+    if (
+      !puedeAnularPos(
+        {
+          fecha: existing.soldAt ?? (existing as unknown as { createdAt?: Date }).createdAt ?? new Date(),
+          documentoFiscal: existing.documentoFiscal,
+        },
+        new Date(),
+      )
+    ) {
+      throw new BadRequestException(MENSAJE_FUERA_DE_SEMANA_POS);
+    }
 
     // Con devoluciones previas, anular revertiría otra vez el stock y el
     // ingreso de lo ya devuelto. Se rechaza en vez de anular solo el saldo: la
@@ -1678,6 +1708,32 @@ export class SalesService {
       throw err;
     }
 
+    /*
+     * Nota de anulación (concepto 2, Fase 6B) ANTES de revertir nada. Falla
+     * cerrado: sin PIN, sin resolución o con notas previas, la venta vuelve a
+     * como estaba y no se movió nada. Si algo de abajo aborta la anulación, la
+     * nota queda en `draft` sin transmitir (la DIAN no la ve) y el reintento la
+     * reutiliza por su llave `anulacion:<venta>`.
+     */
+    let nota: NotaFiscalOperacion | undefined;
+    if (this.notas) {
+      try {
+        nota = await this.notas.emitir(
+          sale,
+          {
+            origen: origenNotaAnulacion(sale._id.toString()),
+            concepto: '2',
+            motivo: opts.motivo?.trim() || `Anulación de la venta ${sale.saleNumber}`,
+          },
+          user,
+        );
+      } catch (err) {
+        await this.restoreCredit(sale, fiado);
+        await deshacerFlip();
+        throw err;
+      }
+    }
+
     // A partir de aquí somos los dueños del flip: revertimos stock una sola vez.
     const source = sale.components.length > 0 ? sale.components : sale.lines;
     const units = source.map((x) => ({
@@ -1748,6 +1804,18 @@ export class SalesService {
             `CONCILIAR: la venta ${sale._id.toString()} se anuló pero sus faltantes siguen pendientes: ${err.message}`,
           ),
         );
+    }
+    if (nota) {
+      await this.saleModel
+        .updateOne({ _id: sale._id }, { $set: { notaAnulacion: nota } })
+        .exec()
+        .catch((err: Error) =>
+          this.logger.error(
+            `La venta ${sale._id.toString()} se anuló con su nota ${nota?.fullNumber ?? ''} pero no se guardó la referencia: ${err.message}`,
+          ),
+        );
+      // La caja no espera a la DIAN: la nota se transmite detrás de la respuesta.
+      this.notas?.transmitirDetras(nota, user);
     }
     return this.getOrFail(sale.id);
   }

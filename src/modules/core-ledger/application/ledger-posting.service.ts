@@ -340,8 +340,13 @@ export class LedgerPostingService {
    * la plata.
    *
    * `credit_note` y `none` no sacan plata hoy —una queda a favor del cliente y
-   * la otra es un cambio por otro producto—, así que la contrapartida es
-   * Clientes: lo que el negocio le queda debiendo.
+   * la otra es un cambio por otro producto—, así que la contrapartida es el
+   * pasivo 2805 (anticipos y avances recibidos): lo que el negocio le queda
+   * debiendo (decisión 5 del dueño, 2026-11-06). La parte que bajó la cartera
+   * de un fiado va a la 1305 (`toReceivable`).
+   *
+   * La propina devuelta (`tip`, decisión 4) sale del pasivo 2380 —nunca fue
+   * ingreso— y se le devuelve al cliente por el mismo medio que el resto.
    *
    * El costo solo se deshace si la mercancía VOLVIÓ al inventario. Si se fue a
    * merma, el inventario se perdió igual y el costo de venta se queda.
@@ -358,10 +363,19 @@ export class LedgerPostingService {
     consumptionTax?: number;
     cogs: number;
     refundMethod: string;
+    /**
+     * Parte de lo devuelto que bajó la cuenta por cobrar de una venta fiada
+     * (Fase 6B): va a crédito de la 1305, no por el medio de `refundMethod`.
+     */
+    toReceivable?: number;
+    /** Propina que vuelve con la devolución (decisión 4): débito a la 2380. */
+    tip?: number;
     userEmail?: string;
   }): Promise<void> {
     const total = cop(input.refundTotal);
-    if (total <= 0 && input.cogs <= 0) return;
+    const cartera = Math.min(Math.max(cop(input.toReceivable ?? 0), 0), Math.max(total, 0));
+    const tip = Math.max(cop(input.tip ?? 0), 0);
+    if (total <= 0 && input.cogs <= 0 && tip <= 0) return;
     const tax = cop(input.tax);
     const inc = cop(input.consumptionTax ?? 0);
     const income = total - tax - inc;
@@ -369,12 +383,22 @@ export class LedgerPostingService {
 
     const contrapartida =
       input.refundMethod === 'credit_note' || input.refundMethod === 'none'
-        ? ACC.CLIENTES
+        ? ACC.ANTICIPOS_CLIENTES
         : this.funding(input.refundMethod);
 
     const lines: PostLine[] = [];
+    // A crédito: la 1305 por lo que bajó la cartera y el medio de devolución
+    // (o la 2805) por el resto más la propina devuelta.
+    if (cartera > 0) {
+      lines.push({ accountCode: ACC.CLIENTES, credit: cartera, sedeId: input.sedeId });
+    }
+    if (total - cartera + tip > 0) {
+      lines.push({ accountCode: contrapartida, credit: total - cartera + tip, sedeId: input.sedeId });
+    }
+    if (tip > 0) {
+      lines.push({ accountCode: ACC.PROPINAS_POR_PAGAR, debit: tip, sedeId: input.sedeId });
+    }
     if (total > 0) {
-      lines.push({ accountCode: contrapartida, credit: total, sedeId: input.sedeId });
       if (income > 0) {
         // 4175 y no 4135: la devolución resta del ingreso pero se ve aparte.
         lines.push({

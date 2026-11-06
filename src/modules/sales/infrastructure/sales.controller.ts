@@ -191,6 +191,18 @@ export class SalesController {
     return this.returns.create(id, dto, user);
   }
 
+  /**
+   * Completa a mano una devolución que quedó a medias (N2): stock, caja o
+   * libro fallaron y no hay llave con qué reintentarla desde la caja. Mismo
+   * permiso que registrar la devolución. Idempotente; 409 si otra petición la
+   * está completando.
+   */
+  @RequirePermissions(PERMISSIONS.POS_REFUND)
+  @Post('returns/:id/completar')
+  completarDevolucion(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.returns.completarPendiente(id, user);
+  }
+
   /** Lo que ya se devolvió de esta venta (para no devolver dos veces). */
   @RequirePermissions(PERMISSIONS.POS_SELL)
   @Get(':id/returns')

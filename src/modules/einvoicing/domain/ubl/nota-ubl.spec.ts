@@ -343,6 +343,9 @@ describe('notas UBL 2.1 · rechazos', () => {
   it('totales que no son la suma de las líneas lanzan', () => {
     lanza({ ...base, payableAmount: (base.payableAmount ?? 0) + 1 }, /no cuadra/);
   });
+  it('con referencia, el tipo del documento referido es obligatorio (Fase 6B)', () => {
+    expect(() => prepararNotaUbl({ ...base, referenceType: undefined }, EMISOR_FISCAL)).toThrow(/tipo del documento referido/);
+  });
   it('una nota que no es nota no se prepara', () => {
     expect(() => prepararNotaUbl({ ...base, type: 'invoice' }, EMISOR_FISCAL)).toThrow(/notas crédito y débito/);
   });

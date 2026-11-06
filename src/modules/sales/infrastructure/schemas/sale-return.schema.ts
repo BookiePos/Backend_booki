@@ -113,8 +113,67 @@ export class SaleReturn {
   @Prop({ default: 0, min: 0 })
   refundTax!: number;
 
+  /**
+   * Propina devuelta, APARTE de `refundTotal` (decisión 4 del dueño): en
+   * proporción a lo devuelto, con redondeo acumulado. Sale de la 2380 y se
+   * devuelve por el mismo medio que el resto.
+   */
+  @Prop({ default: 0, min: 0 })
+  tipRefund!: number;
+
   @Prop({ trim: true })
   note?: string;
+
+  /**
+   * Llave idempotente del cliente (Fase 6B): reintentar la misma devolución
+   * devuelve este registro y su nota, no otra devolución.
+   */
+  @Prop({ trim: true })
+  idempotencyKey?: string;
+
+  /**
+   * Pasos de la devolución (D1). Nace `en_curso` y pasa a `completa` cuando
+   * stock, caja y libro quedaron. `pendiente_caja` (N6): solo falta la salida
+   * de efectivo, que el barrido no anota; la completa el cajero con
+   * `POST /sales/returns/:id/completar`. Las devoluciones de antes no lo tienen: se
+   * tratan como completas y un reintento no las vuelve a mover.
+   */
+  @Prop({ type: String, enum: ['en_curso', 'pendiente_caja', 'completa'] })
+  estado?: 'en_curso' | 'pendiente_caja' | 'completa';
+
+  /**
+   * Turno de quien la está completando (N1): mientras no venza, otra petición
+   * con la misma llave responde 409 en vez de mover stock y caja otra vez.
+   */
+  @Prop({ type: Date, default: null })
+  procesandoHasta?: Date | null;
+
+  /** La cartera del fiado y la nota fiscal ya quedaron. */
+  @Prop()
+  carteraHecha?: boolean;
+
+  /** La mercancía volvió al inventario (y la merma, si aplica, se intentó). */
+  @Prop()
+  stockHecho?: boolean;
+
+  /** La salida de efectivo quedó en la caja (o no había efectivo que sacar). */
+  @Prop()
+  cajaHecha?: boolean;
+
+  /** El asiento de la devolución quedó en el libro. */
+  @Prop()
+  asientoHecho?: boolean;
+
+  /**
+   * Parte del reembolso que bajó la cuenta por cobrar de la venta fiada en vez
+   * de devolverse en plata (Cr 1305 en el asiento).
+   */
+  @Prop({ default: 0, min: 0 })
+  abonoCartera!: number;
+
+  /** Nota crédito / de ajuste de la devolución, o por qué no la lleva (`NotaFiscalOperacion`). */
+  @Prop({ type: Object })
+  notaFiscal?: Record<string, unknown>;
 
   @Prop({ required: true, trim: true })
   userId!: string;
@@ -126,3 +185,11 @@ export class SaleReturn {
 export const SaleReturnSchema = SchemaFactory.createForClass(SaleReturn);
 
 SaleReturnSchema.index({ sedeId: 1, createdAt: -1 });
+// Barrido de devoluciones varadas (N2): solo las `en_curso`, por antigüedad.
+SaleReturnSchema.index({ estado: 1, createdAt: 1 }, { partialFilterExpression: { estado: 'en_curso' } });
+
+// Una devolución por llave del cliente: el reintento no devuelve dos veces.
+SaleReturnSchema.index(
+  { saleId: 1, idempotencyKey: 1 },
+  { name: 'devolucion_idempotente', unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } },
+);

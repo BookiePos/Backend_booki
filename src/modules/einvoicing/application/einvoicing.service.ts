@@ -1,9 +1,11 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import {
@@ -54,7 +56,23 @@ import {
   DocumentoDescuadradoError,
   type DocumentoDeVenta,
 } from '../domain/documento-venta';
-import { aCentavos } from '../domain/redondeo';
+import {
+  gruposDelDocumento,
+  cargosDeDevolucion,
+  lineasDeAnulacion,
+  lineasDeDevolucion,
+  NotaNoRelacionableError,
+  TopeNotaExcedidoError,
+  totalesDeNota,
+  type LineaPrevia,
+  type LineaReferida,
+} from '../domain/nota-de-venta';
+import type { CargoDocumento, LineaDocumento } from '../domain/documento-venta';
+import { totalesUbl } from '../domain/ubl/factura-ubl';
+import { esquemaDeOrigen } from '../domain/ubl/nota-ubl';
+import { cop } from '../../finance/domain/money.util';
+import { origenNotaAnulacion } from '../../sales/domain/documento-fiscal';
+import type { SolicitudNotaVenta } from '../../sales/application/emision-documento-fiscal.puerto';
 import { hasCreditPart } from '../../sales/domain/sale-payments';
 import { causesInc } from '../../core-tax/domain/sale-tax';
 import type { BusinessType } from '../../control/domain/control.constants';
@@ -80,6 +98,24 @@ import {
   TIPO_RESOLUCION_POR_DEFECTO,
   type TipoResolucion,
 } from '../domain/resolucion-tipos';
+
+/** Prefijo de la nota crédito de la FEV sin resolución propia (§6 del estudio de la Fase 6). */
+export const PREFIJO_NOTA_CREDITO = 'NC';
+/** Prefijo de la nota de ajuste crédito del POS: distinto del de la NC para que el número nunca choque. */
+export const PREFIJO_AJUSTE_POS = 'NAC';
+
+/** La venta no tiene documento fiscal: la operación sigue sin nota. */
+export const MENSAJE_SIN_DOCUMENTO_FISCAL =
+  'La venta no tiene documento electrónico (POS ni factura): la operación no lleva nota ante la DIAN.';
+
+/** El documento fue rechazado: no existe ante la DIAN y no lleva nota. */
+export const MENSAJE_REFERIDO_RECHAZADO = (numero: string) =>
+  `El documento ${numero} fue rechazado por la DIAN: no existe ante ella y no lleva nota.`;
+
+/** Lo que devuelve `emitirNotaDeVenta`. */
+export type ResultadoNotaDeVenta =
+  | { estado: 'emitida'; nota: ElectronicDocumentDocument }
+  | { estado: 'sin_nota'; motivo: string };
 
 /** Rechazo de la nota cuando el emisor no tiene PIN: sin él no hay CUDE. */
 export const MENSAJE_NOTA_SIN_PIN =
@@ -677,42 +713,208 @@ export class EinvoicingService {
     throw new ConflictException(MENSAJE_EXCLUSION_POS_FEV[tipo]);
   }
 
-  /** Genera la nota crédito que anula/corrige una factura ya emitida. */
+  /**
+   * Anula la factura o el POS con su nota (concepto 2). Desde la Fase 6B ya no
+   * emite una nota suelta: anula la VENTA (`SalesService.void`), que reversa
+   * stock, caja, fiado y libro y emite la nota en la misma operación. Antes la
+   * DIAN veía la factura anulada y el libro conservaba el ingreso y el IVA/INC.
+   *
+   * Si la venta ya estaba anulada (anulaciones anteriores a la Fase 6B, que no
+   * emitían documento), solo falta el documento: se emite la nota sin tocar el
+   * libro, que ya se reversó.
+   */
   async createCreditNote(
-    invoiceId: string,
+    documentoId: string,
     reason: string,
     user: JwtUser,
   ): Promise<ElectronicDocumentDocument> {
-    const invoice = await this.getOrFail(invoiceId);
-    const sedeId = invoice.sedeId.toString();
+    const doc = await this.getOrFail(documentoId);
+    assertSedeAccess(user, doc.sedeId.toString());
+    if (doc.type !== 'invoice' && doc.type !== 'pos') {
+      throw new BadRequestException('Solo se anula una factura de venta o un documento POS');
+    }
+    if (!doc.saleId) {
+      throw new BadRequestException('El documento no está ligado a una venta: no se puede anular desde aquí.');
+    }
+    if (doc.dianStatus === 'rejected') {
+      throw new BadRequestException(MENSAJE_REFERIDO_RECHAZADO(doc.fullNumber));
+    }
+    const saleId = doc.saleId.toString();
+    // Todo lo que impide la nota se revisa ANTES de anular la venta.
+    const referido = await this.documentoReferido(doc.saleId);
+    if (!referido || String(referido._id) !== String(doc._id)) {
+      throw new ConflictException('Ese documento ya no es el documento fiscal vigente de la venta.');
+    }
+    const origen = origenNotaAnulacion(saleId);
+    const sale = await this.sales.getOrFail(saleId);
+    if (sale.status !== 'void') {
+      // Anular la venta es más que emitir la nota: exige el mismo permiso que
+      // la anulación desde la caja, para que `einvoicing.void` no la salte.
+      if (!user.permissions?.includes(PERMISSIONS.POS_VOID_AUTHORIZE)) {
+        throw new ForbiddenException('Anular la venta exige el permiso de autorizar anulaciones del POS.');
+      }
+      await this.sales.void(saleId, user, { motivo: reason });
+    } else {
+      const r = await this.emitirNotaDeVenta({ saleId, origen, concepto: '2', motivo: reason }, user);
+      if (r.estado !== 'emitida') throw new BadRequestException(r.motivo);
+      return r.nota;
+    }
+    const nota = await this.model.findOne({ origenNota: origen }).select(SIN_APPLICATION_RESPONSE).exec();
+    if (!nota) {
+      throw new ConflictException('La venta se anuló pero su nota no quedó registrada: revísalo en el detalle de la venta.');
+    }
+    return nota;
+  }
+
+  /**
+   * Documento fiscal vigente de la venta: el que tiene la llave de exclusión
+   * (`ventaFiscal`, Fase 7) o, en las facturas anteriores, el `invoice`/`pos`
+   * con su `saleId`.
+   */
+  private async documentoReferido(saleId: Types.ObjectId): Promise<ElectronicDocumentDocument | null> {
+    const vigente = await this.model.findOne({ ventaFiscal: saleId }).exec();
+    if (vigente) return vigente;
+    return this.model
+      .findOne({ saleId, type: { $in: [...TIPOS_EXCLUYENTES_POR_VENTA] } })
+      .sort({ createdAt: -1 })
+      .exec();
+  }
+
+  /**
+   * Nota crédito (FEV → 91) o nota de ajuste crédito (POS → 94) de una
+   * devolución (concepto 1) o de una anulación (concepto 2) de la venta
+   * (Fase 6B, `documentacion/fe-fase6-notas.md` §2, §4 y §5).
+   *
+   * - Idempotente por OPERACIÓN (`origen`): el reintento devuelve la misma nota.
+   *   Una nota rechazada por la DIAN libera la llave y se emite otra.
+   * - `referenceType` sale SIEMPRE del `type` del documento referido.
+   * - Tope en el servidor (`nota-de-venta.ts`): por grupo y con cantidad, base,
+   *   IVA e INC por separado, contra las notas previas no rechazadas. 409.
+   * - Falla cerrado: tope, PIN, resolución y NIT se revisan ANTES de cobrar
+   *   cupo o tomar folio. Quien llama no mueve stock, caja ni libro si esto lanza.
+   * - Sin documento fiscal (o rechazado) no hay nota: `sin_nota` con el motivo.
+   * - CUDE con los valores DE LA NOTA y el PIN (§2.3). Solo crea la nota en
+   *   `draft`: la transmisión va aparte y detrás de la respuesta.
+   */
+  async emitirNotaDeVenta(
+    s: SolicitudNotaVenta,
+    user: JwtUser,
+  ): Promise<ResultadoNotaDeVenta> {
+    if (!s.origen?.trim()) throw new BadRequestException('La nota necesita la operación que la origina');
+    if (s.concepto !== '1' && s.concepto !== '2') {
+      throw new BadRequestException('Concepto de la nota no admitido: 1 devolución o 2 anulación');
+    }
+    if (!s.motivo?.trim()) throw new BadRequestException('La nota necesita el motivo');
+    const sale = await this.sales.getOrFail(s.saleId);
+    const sedeId = this.saleSedeId(sale);
     assertSedeAccess(user, sedeId);
-    if (invoice.type !== 'invoice') {
-      throw new BadRequestException('Solo se puede anular una factura de venta');
+
+    const previaMisma = await this.model.findOne({ origenNota: s.origen }).exec();
+    if (previaMisma && previaMisma.dianStatus !== 'rejected') {
+      return { estado: 'emitida', nota: previaMisma };
+    }
+    if (previaMisma) {
+      // La DIAN rechazó la nota de esta operación: queda como historia y su
+      // llave se libera para la nota que la reemplaza.
+      await this.model
+        .updateOne(
+          { _id: previaMisma._id, dianStatus: 'rejected', origenNota: s.origen },
+          { $set: { origenNota: `${s.origen}#rechazada:${String(previaMisma._id)}` } },
+        )
+        .exec();
+    }
+
+    const referido = await this.documentoReferido(sale._id);
+    if (!referido) {
+      return { estado: 'sin_nota', motivo: MENSAJE_SIN_DOCUMENTO_FISCAL };
+    }
+    if (referido.dianStatus === 'rejected') {
+      return { estado: 'sin_nota', motivo: MENSAJE_REFERIDO_RECHAZADO(referido.fullNumber) };
+    }
+    const referenceType: 'pos' | 'invoice' = referido.type === 'pos' ? 'pos' : 'invoice';
+    if (!referido.cufe || !referido.issueDate) {
+      throw new ConflictException(`El documento ${referido.fullNumber} no tiene CUFE/CUDE o fecha: no se puede referenciar.`);
+    }
+
+    const previas = await this.model
+      .find({ referenceId: referido._id, type: 'credit_note', dianStatus: { $ne: 'rejected' } })
+      .exec();
+    // Una nota de antes de la Fase 6B (sin `refKey`) ya anuló el documento
+    // entero ante la DIAN sin tocar el libro: es justo el hueco que deja la
+    // venta con ingreso e IVA/INC vivos. Anular la venta ahora la reutiliza
+    // como su nota de anulación en vez de emitir otra.
+    const legado = previas.find((p) => (p.lines ?? []).length === 0 || (p.lines ?? []).some((l) => !this.plano(l)?.refKey));
+    if (s.concepto === '2' && legado) {
+      return { estado: 'emitida', nota: legado };
+    }
+    const lineasPrevias = previas.map((p) =>
+      (p.lines ?? []).map((l) => this.plano(l) as unknown as LineaPrevia),
+    );
+    let lineas: LineaReferida[];
+    let cargos: CargoDocumento[];
+    try {
+      const referidas = gruposDelDocumento(
+        (referido.lines ?? []).map((l) => this.plano(l) as unknown as LineaDocumento),
+        sale.lines.map((l) => l.productId.toString()),
+        cop(sale.deliveryFee ?? 0) > 0,
+      );
+      if (s.concepto === '2') {
+        ({ lineas, cargos } = lineasDeAnulacion(
+          referidas,
+          (referido.charges ?? []).map((c) => this.plano(c) as unknown as CargoDocumento),
+          lineasPrevias,
+        ));
+      } else {
+        lineas = lineasDeDevolucion(
+          referidas,
+          lineasPrevias,
+          (s.lineas ?? []).map((l) => ({
+            refKey: l.productId,
+            qty: l.qty,
+            valor: cop(l.valor),
+            impuesto: cop(l.impuesto),
+          })),
+        );
+        // La propina devuelta (decisión 4) viaja como cargo, topada contra la
+        // facturada menos la que acreditaron las notas previas.
+        cargos = cargosDeDevolucion(
+          (referido.charges ?? []).map((c) => this.plano(c) as unknown as CargoDocumento),
+          previas.map((p) => (p.charges ?? []).map((c) => this.plano(c) as unknown as CargoDocumento)),
+          cop(s.propina ?? 0),
+        );
+      }
+    } catch (err) {
+      if (err instanceof TopeNotaExcedidoError || err instanceof NotaNoRelacionableError) {
+        throw new ConflictException(err.message);
+      }
+      throw err;
+    }
+    const totales = totalesDeNota(lineas, cargos);
+    if (totales.payableAmount <= 0) {
+      return { estado: 'sin_nota', motivo: 'Lo devuelto no tiene valor: no hay nada que acreditar ante la DIAN.' };
     }
 
     const sede = await this.sedes.findOrFail(sedeId);
+    // Numeración (§6): consecutivo interno, sin resolución obligatoria. La FEV
+    // usa la resolución `credit_note` si la sede la registró; si no, `NC<n>`.
+    // El POS lleva su prefijo propio `NAC<n>` para no chocar con la NC.
+    const resolucionNota = referenceType === 'invoice' ? resolucionDeTipo(sede, 'credit_note') : undefined;
+    if (resolucionNota) this.assertResolucionVigente(resolucionNota, 'credit_note');
+    const prefix = resolucionNota
+      ? (resolucionNota.prefijo ?? '')
+      : referenceType === 'pos'
+        ? PREFIJO_AJUSTE_POS
+        : PREFIJO_NOTA_CREDITO;
+    const counterId = resolucionNota
+      ? contadorDeResolucion('credit_note', sedeId, prefix)
+      : `${referenceType === 'pos' ? 'nac' : 'nc'}:${sedeId}`;
 
-    // Resolución propia de nota crédito si la sede la tiene registrada. Si no,
-    // se conserva el comportamiento de siempre: numeración libre `NC<n>` (contador
-    // `nc:<sede>`, sin rango ni vigencia). La clave técnica ya no se pide: el
-    // CUDE va con el PIN del software (ver abajo).
-    const resolucionNota = resolucionDeTipo(sede, 'credit_note');
-    if (resolucionNota) {
-      this.assertResolucionVigente(resolucionNota, 'credit_note');
-    }
+    // El emisor se congela con el documento referido; los viejos no traen `nitNorm`.
+    const emisorReferido = this.plano(referido.emisor);
+    const nitReferido = emisorReferido?.nit as string | undefined;
+    const emisor = { ...emisorReferido, nitNorm: normalizarNit(nitReferido) };
+    const nitOfe = this.nitParaCodigo(nitReferido ?? sede.nit);
 
-    const prefix = resolucionNota ? (resolucionNota.prefijo ?? '') : 'NC';
-    // El emisor se congela con la factura; las facturas viejas no traen
-    // `nitNorm`, así que se calcula aquí para que la nota entre al índice.
-    const emisorFactura = this.plano(invoice.emisor);
-    const nitFactura = emisorFactura?.nit as string | undefined;
-    const emisor = { ...emisorFactura, nitNorm: normalizarNit(nitFactura) };
-    const nitOfe = this.nitParaCodigo(nitFactura ?? sede.nit);
-
-    // La nota lleva CUDE, con el PIN del software del emisor (anexo FEV 1.9
-    // §11.1.4), nunca con la clave técnica de la resolución. Sin PIN no se
-    // emite: igual que la factura sin clave técnica, se rechaza antes de
-    // cobrar cupo o gastar folio.
     const emisorFiscal = await this.emisores.obtenerPorSede(sedeId);
     const tipoAmbiente = this.ambienteDe(emisorFiscal);
     const pin = emisorFiscal
@@ -720,82 +922,79 @@ export class EinvoicingService {
       : null;
     if (!pin) throw new BadRequestException(MENSAJE_NOTA_SIN_PIN);
 
-    // Una nota crédito también es un documento electrónico: cuenta al cupo
-    // (dentro de `emitir`, antes de quemar folio).
-    return this.emitir({
-      actor: user,
-      counterId: resolucionNota
-        ? contadorDeResolucion('credit_note', sedeId, prefix)
-        : `nc:${sedeId}`,
-      desde: resolucionNota?.rangoDesde ?? 1,
-      hasta: resolucionNota?.rangoHasta,
-      prefix,
-      nit: nitFactura,
-      existente: () =>
-        this.model.findOne({ saleId: invoice.saleId, type: 'credit_note' }).exec(),
-      construir: (number) => {
-        const fullNumber = `${prefix}${number}`;
-        const { issueDate, issueTime } = this.now();
-        // Los valores son los de la factura tal como se guardó: un documento
-        // viejo no se recalcula (su INC, si lo tenía, quedó en `ivaTotal`).
-        // `aCentavos` conserva los centavos que traiga una factura vieja.
-        const cude = calcularCude({
-          numero: fullNumber,
-          fecha: issueDate,
-          hora: issueTime,
-          valorBruto: aCentavos(invoice.taxableBase ?? 0),
-          impuestos: {
-            '01': aCentavos(invoice.ivaTotal ?? 0),
-            '04': aCentavos(invoice.incTotal ?? 0),
-            '03': aCentavos(invoice.icaTotal ?? 0),
-          },
-          valorTotal: aCentavos(invoice.payableAmount ?? invoice.total),
-          nitEmisor: nitOfe,
-          numAdquiriente: this.numeroAdquiriente(invoice.adquiriente),
-          softwarePin: pin,
-          tipoAmbiente,
-        });
-        return {
-          type: 'credit_note',
-          saleId: invoice.saleId,
-          sedeId: invoice.sedeId,
-          prefix: prefix || undefined,
-          number,
-          fullNumber,
-          issueDate,
-          issueTime,
-          emisor,
-          adquiriente: invoice.adquiriente,
-          lines: invoice.lines,
-          charges: invoice.charges,
-          taxableBase: invoice.taxableBase,
-          taxExclusiveAmount: invoice.taxExclusiveAmount,
-          ivaTotal: invoice.ivaTotal,
-          incTotal: invoice.incTotal,
-          icaTotal: invoice.icaTotal,
-          bagTaxTotal: invoice.bagTaxTotal,
-          taxInclusiveAmount: invoice.taxInclusiveAmount,
-          chargeTotal: invoice.chargeTotal,
-          payableAmount: invoice.payableAmount,
-          discountTotal: invoice.discountTotal,
-          total: invoice.total,
-          formaPago: invoice.formaPago,
-          medioPago: invoice.medioPago,
-          resolution: resolucionNota
-            ? this.buildResolution(resolucionNota)
-            : invoice.resolution,
-          reason,
-          referenceNumber: invoice.fullNumber,
-          referenceCufe: invoice.cufe,
-          referenceId: invoice._id,
-          tipoAmbiente,
-          cufe: cude,
-          qrUrl: dianVerificationUrl(cude, tipoAmbiente),
-          dianStatus: 'draft',
-          createdByEmail: user.email,
-        };
-      },
-    });
+    // Fecha y hora UNA vez: un reintento por choque de número no las cambia.
+    const { issueDate, issueTime } = this.now();
+    const valores = totalesUbl(lineas, cargos);
+    const numAdquiriente = this.numeroAdquiriente(this.plano(referido.adquiriente) as { docType?: string; docNumber?: string });
+    const existente = () => this.model.findOne({ origenNota: s.origen }).exec();
+    try {
+      const nota = await this.emitir({
+        actor: user,
+        counterId,
+        desde: resolucionNota?.rangoDesde ?? 1,
+        hasta: resolucionNota?.rangoHasta,
+        prefix,
+        nit: nitReferido,
+        existente,
+        construir: (number) => {
+          const fullNumber = `${prefix}${number}`;
+          const cude = calcularCude({
+            numero: fullNumber,
+            fecha: issueDate,
+            hora: issueTime,
+            valorBruto: valores.lineExtension,
+            impuestos: { '01': valores.iva, '04': valores.inc, '03': 0 },
+            valorTotal: valores.payable,
+            nitEmisor: nitOfe,
+            numAdquiriente,
+            softwarePin: pin,
+            tipoAmbiente,
+          });
+          return {
+            type: 'credit_note',
+            // Sin `saleId`: el índice `saleId_1_type_1` permitiría una sola nota por venta.
+            notaDeVenta: sale._id,
+            origenNota: s.origen,
+            sedeId: referido.sedeId,
+            prefix: prefix || undefined,
+            number,
+            fullNumber,
+            issueDate,
+            issueTime,
+            emisor,
+            adquiriente: referido.adquiriente,
+            lines: lineas,
+            charges: cargos.length ? cargos : undefined,
+            ...totales,
+            discountTotal: 0,
+            total: totales.payableAmount,
+            formaPago: referido.formaPago,
+            medioPago: referido.medioPago,
+            resolution: resolucionNota ? this.buildResolution(resolucionNota) : undefined,
+            reason: s.motivo.trim(),
+            discrepancyCode: s.concepto,
+            referenceNumber: referido.fullNumber,
+            referenceCufe: referido.cufe,
+            referenceId: referido._id,
+            referenceIssueDate: referido.issueDate,
+            referenceType,
+            referenceScheme: esquemaDeOrigen(referenceType === 'pos' ? 'pos' : 'factura'),
+            tipoAmbiente,
+            cufe: cude,
+            qrUrl: dianVerificationUrl(cude, tipoAmbiente),
+            dianStatus: 'draft',
+            createdByEmail: user.email,
+          };
+        },
+      });
+      return { estado: 'emitida', nota };
+    } catch (err) {
+      // Si la nota alcanzó a guardarse (falló algo después, p. ej. la
+      // auditoría), la operación la tiene: no se emite otra en el reintento.
+      const yaGuardada = await existente().catch(() => null);
+      if (yaGuardada) return { estado: 'emitida', nota: yaGuardada };
+      throw err;
+    }
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────────

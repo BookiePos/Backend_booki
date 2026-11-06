@@ -682,6 +682,13 @@ export class Sale {
    */
   @Prop({ type: SaleDocumentoFiscalSchema })
   documentoFiscal?: SaleDocumentoFiscal;
+
+  /**
+   * Nota crédito (FEV) o de ajuste (POS) con la que se anuló la venta (Fase 6B),
+   * o por qué no la lleva. Ver `NotaFiscalOperacion`.
+   */
+  @Prop({ type: Object })
+  notaAnulacion?: Record<string, unknown>;
 }
 
 export const SaleSchema = SchemaFactory.createForClass(Sale);

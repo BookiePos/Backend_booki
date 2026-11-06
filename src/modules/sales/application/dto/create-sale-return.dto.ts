@@ -8,6 +8,7 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  MaxLength,
   ValidateNested,
 } from 'class-validator';
 import {
@@ -55,4 +56,13 @@ export class CreateSaleReturnDto {
   @IsOptional()
   @IsString()
   note?: string;
+
+  /**
+   * Llave del cliente para reintentar sin duplicar (Fase 6B): la misma llave
+   * en la misma venta devuelve la devolución ya registrada y su nota fiscal.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  idempotencyKey?: string;
 }
