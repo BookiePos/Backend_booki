@@ -12,6 +12,7 @@ import {
 import { TransmisionDianService } from './transmision-dian.service';
 import { NominaElectronicaService } from './nomina-electronica.service';
 import { HabilitacionNominaService } from './habilitacion-nomina.service';
+import { HabilitacionFacturaService } from './habilitacion-factura.service';
 
 /** Plazo por defecto si quien llama no pasa `hasta` (la función dura 300 s). */
 const PRESUPUESTO_MS = 240_000;
@@ -23,7 +24,7 @@ const PRESUPUESTO_MS = 240_000;
  * Recorre todas las empresas activas y, DENTRO de `TenantContext.run` de cada
  * una (sin él los modelos y el bucket no saben a qué base ir), reconsulta:
  * facturas/POS/notas en `sent`, nómina en `sent` y los sets de habilitación de
- * nómina en curso. Es el camino de «sistema»: sin usuario, con auditoría SYSTEM.
+ * nómina y de factura/POS en curso. Es el camino de «sistema»: sin usuario, con auditoría SYSTEM.
  * Un fallo en una empresa no frena a las demás; nunca se rechaza por red: lo que
  * no sale queda en `sent` y se reintenta en la siguiente corrida.
  */
@@ -37,6 +38,7 @@ export class ReconsultaDianService {
     private readonly transmision: TransmisionDianService,
     private readonly nomina: NominaElectronicaService,
     private readonly habilitacion: HabilitacionNominaService,
+    private readonly habilitacionFactura: HabilitacionFacturaService,
   ) {}
 
   async barrer(
@@ -65,8 +67,10 @@ export class ReconsultaDianService {
                 // En serie por empresa: comparten el cupo de tiempo y la base.
                 const f = await this.transmision.reconsultarPendientes(limite, o);
                 const n = await this.nomina.reconsultarPendientes(limite, o);
-                const s = await this.habilitacion.avanzarEnCurso(limite, o);
-                return { f, n, s };
+                const sn = await this.habilitacion.avanzarEnCurso(limite, o);
+                // Sets de habilitación de factura/POS en curso, con el mismo plazo `hasta`.
+                const sf = await this.habilitacionFactura.avanzarEnCurso(limite, o);
+                return { f, n, s: sumarCifras(sn, sf) };
               },
             );
             facturas = sumarCifras(facturas, r.f);

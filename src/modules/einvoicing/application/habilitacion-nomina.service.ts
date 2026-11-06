@@ -212,6 +212,11 @@ export class HabilitacionNominaService {
           error = r.error;
         }
       }
+      // Set de nómina aceptado: enciende `habilitadoNomina` (idempotente). Sin esto la nómina no podía
+      // pasar a producción nunca, porque `estadoNomina` ya no lee el `habilitado` de factura.
+      if (set.testSetId === base.testSetId && resumenSetNomina(set).aprobada) {
+        await this.emisores.marcarSetAprobado(base.emisorId, 'ne', ahora);
+      }
     } finally {
       // Siempre se guarda lo avanzado y se suelta el bloqueo (un envío hecho no se puede perder).
       await this.model
@@ -318,7 +323,7 @@ export class HabilitacionNominaService {
       const destino = this.destino(r);
       if (trackId || destino === 'sent') {
         // En vuelo: con trackId se consulta por él; sin respuesta, por su CUNE. Nunca se reenvía.
-        set = this.poner(set, i, { ...enviado, estado: 'enviado', trackId, mensaje: null });
+        set = this.poner(set, i, { ...enviado, estado: 'enviado', trackId, mensaje: null, enviadoAt: ahora.toISOString() });
       } else if (destino === 'accepted') {
         set = this.poner(set, i, { ...enviado, estado: 'aceptado', mensaje: null });
       } else {
@@ -388,7 +393,8 @@ export class HabilitacionNominaService {
       if (destino === 'accepted') actual = this.poner(actual, i, { ...d, estado: 'aceptado', mensaje: null });
       else if (destino === 'rejected') actual = this.poner(actual, i, { ...d, estado: 'rechazado', mensaje: this.texto(r) });
       else if (
-        d.estado === 'enviando' &&
+        // Un envío sin trackId (timeout de SendTestSetAsync) nunca avanzaría por GetStatusZip: se trata como enviando.
+        (d.estado === 'enviando' || (d.estado === 'enviado' && !d.trackId)) &&
         r.codigo === 'NO_RECIBIDO_DIAN' &&
         (!d.enviadoAt || ahora.getTime() - new Date(d.enviadoAt).getTime() > UMBRAL_REENVIO_MS)
       ) {

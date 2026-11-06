@@ -96,9 +96,13 @@ export class FiscalEmitter {
   @Prop({ type: String, enum: TIPOS_AMBIENTE, default: TIPO_AMBIENTE_POR_DEFECTO })
   tipoAmbiente!: string;
 
-  /** Lo enciende BookiPos tras pasar el set de pruebas, nunca el negocio. */
+  /** Factura y POS: lo enciende BookiPos tras el veredicto del set de pruebas, nunca el negocio. */
   @Prop({ type: Boolean, default: false })
   habilitado!: boolean;
+
+  /** Igual que `habilitado` pero para la nómina electrónica: el set de factura no lo enciende. */
+  @Prop({ type: Boolean, default: false })
+  habilitadoNomina?: boolean;
 
   // ── Credenciales DIAN de factura ────────────────────────────────────────────
   /** SoftwareID que asigna la DIAN. No es secreto: viaja en el XML. */
@@ -110,6 +114,14 @@ export class FiscalEmitter {
 
   @Prop({ type: String, trim: true })
   facturaTestSetId?: string;
+
+  /** Cuándo la DIAN aceptó el set de pruebas de la factura (lo marca la habilitación automática). */
+  @Prop({ type: Date })
+  facturaSetAprobadoAt?: Date;
+
+  /** Cuándo la DIAN aceptó el set de pruebas del documento equivalente POS. */
+  @Prop({ type: Date })
+  posSetAprobadoAt?: Date;
 
   // ── Credenciales DIAN de nómina (Fase 8), aparte de las de factura ─────────
   @Prop({ type: String, trim: true })

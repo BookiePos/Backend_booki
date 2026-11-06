@@ -113,6 +113,11 @@ export interface EstadoNomina extends EmisorTransmision {
   faltaParaTransmitir: string[];
 }
 
+/** Lo que el emisor tiene para el set de pruebas de la FACTURA (ver `estadoFactura`). */
+export interface EstadoFactura extends EstadoConfiguracion {
+  testSetId?: string;
+}
+
 const SELECT_SECRETOS = '+facturaPin +nominaPin +certPasswordCifrada';
 
 function isDuplicateKeyError(err: unknown): boolean {
@@ -274,7 +279,8 @@ export class FiscalEmittersService {
     return {
       certificadoVigente: base.certificadoVigente,
       tipoAmbiente: base.tipoAmbiente,
-      habilitado: base.habilitado,
+      // Nómina lee SU indicador: aprobar el set de factura no basta para transmitir nómina en producción.
+      habilitado: e.habilitadoNomina === true,
       softwareId,
       tienePin,
       testSetId,
@@ -284,6 +290,36 @@ export class FiscalEmittersService {
         tienePin,
       }),
     };
+  }
+
+  /**
+   * Estado para habilitar la FACTURA: el de `estadoConfiguracion` más el valor del
+   * TestSetId (no es secreto). Nunca mira las credenciales de nómina.
+   */
+  async estadoFactura(emisorId: string, ahora: Date = new Date()): Promise<EstadoFactura> {
+    const base = await this.estadoConfiguracion(emisorId, ahora);
+    const e = await this.conSecretosOrFail(emisorId);
+    return { ...base, testSetId: e.facturaTestSetId?.trim() || undefined };
+  }
+
+  /**
+   * Marca que la DIAN aceptó el set de pruebas. Con la FACTURA deja el emisor «listo
+   * para producción» (`habilitado`, que el gate exige): NO cambia `tipoAmbiente`, pasar
+   * a producción es una decisión del dueño. Con el POS solo anota la fecha. Idempotente;
+   * solo actúa en ambiente de habilitación.
+   *
+   * INDICADORES: `habilitado` es el de FACTURA y POS (comparten SoftwareID/PIN y gate); la
+   * NÓMINA tiene el suyo, `habilitadoNomina`, que enciende la habilitación de nómina (`'ne'`)
+   * cuando todos los documentos de su set quedan aceptados.
+   */
+  async marcarSetAprobado(emisorId: string, clase: 'fe' | 'pos' | 'ne', ahora: Date = new Date()): Promise<void> {
+    const set =
+      clase === 'fe'
+        ? { habilitado: true, facturaSetAprobadoAt: ahora }
+        : clase === 'ne'
+          ? { habilitadoNomina: true }
+          : { posSetAprobadoAt: ahora };
+    await this.model.updateOne({ _id: this.oid(emisorId), tipoAmbiente: '2' }, { $set: set }).exec();
   }
 
   /**
