@@ -289,6 +289,22 @@ export class ElectronicDocument {
   @Prop({ type: Types.ObjectId, ref: 'ElectronicDocument' })
   referenceId?: Types.ObjectId;
 
+  /** Código del concepto de corrección (DiscrepancyResponse/ResponseCode): crédito 1-6, débito 1-4. */
+  @Prop()
+  discrepancyCode?: string;
+
+  /** YYYY-MM-DD de emisión del documento referido (BillingReference). */
+  @Prop()
+  referenceIssueDate?: string;
+
+  /** CUFE-SHA384 o CUDE-SHA384: algoritmo del código referido (por defecto CUFE). */
+  @Prop()
+  referenceScheme?: string;
+
+  /** Periodo de una nota sin referencia (InvoicePeriod). */
+  @Prop({ type: Object })
+  period?: { desde: string; hasta: string };
+
   // ── DIAN / proveedor tecnológico (se rellenan al validar) ────────────────────
   /** CUFE (facturas) / CUDE (notas). SHA-384 del Anexo 1.9. */
   @Prop()

@@ -4,6 +4,8 @@ import { armarFacturaUbl, codigoSeguridadSoftware } from '../domain/ubl/factura-
 import { prepararFacturaUbl, type DocumentoParaUbl, type EmisorParaUbl } from '../domain/ubl/factura-de-documento';
 import { prepararPosUbl, type DocumentoPosParaUbl } from '../domain/ubl/pos-de-documento';
 import { armarPosUbl } from '../domain/ubl/pos-ubl';
+import { prepararNotaUbl, type DocumentoNotaParaUbl } from '../domain/ubl/nota-de-documento';
+import { armarNotaCreditoUbl, armarNotaDebitoUbl } from '../domain/ubl/nota-ubl';
 import { DocumentoUblInvalidoError } from '../domain/ubl/xml-ubl';
 import { FiscalEmittersService } from './fiscal-emitters.service';
 import { MENSAJE_BUILDER_PENDIENTE, type ArmadorXmlDian } from './transmision-dian.puertos';
@@ -22,7 +24,9 @@ const MENSAJE_SIN_PIN = 'Falta configurar: el PIN del software de factura del em
  *   (caja, fabricante, pagos, correo del emisor) antes del PIN. Usa el SoftwareID
  *   y el PIN de factura del emisor: `fiscal_emitters` no separa un registro del
  *   POS (a confirmar en habilitación).
- * - Los demás tipos (notas, nómina) siguen en 501 hasta sus fases.
+ * - Notas crédito y débito (`credit_note`/`debit_note`, Fase 6A): `prepararNotaUbl` valida concepto,
+ *   referencia y cuadre antes del PIN. Sin InvoiceControl; el CUDE ya viene en el documento.
+ * - Los demás tipos (nómina) siguen en 501 hasta sus fases.
  *
  * El PIN solo se usa para el `SoftwareSecurityCode` y no sale de este método:
  * no se loguea y ningún error lo cita (los mensajes son fijos o vienen del
@@ -33,7 +37,7 @@ export class ArmadorUblFactura implements ArmadorXmlDian {
   constructor(private readonly emisores: FiscalEmittersService) {}
 
   async armar(doc: ElectronicDocumentDocument): Promise<string> {
-    if (doc.type !== 'invoice' && doc.type !== 'pos') throw new NotImplementedException(MENSAJE_BUILDER_PENDIENTE);
+    if (!['invoice', 'pos', 'credit_note', 'debit_note'].includes(doc.type)) throw new NotImplementedException(MENSAJE_BUILDER_PENDIENTE);
 
     const emisor = await this.emisores.obtenerPorSede(doc.sedeId.toString());
     if (!emisor) throw new BadRequestException(MENSAJE_SIN_EMISOR);
@@ -53,6 +57,16 @@ export class ArmadorUblFactura implements ArmadorXmlDian {
       return this.dominio(() =>
         armarPosUbl({ ...pos, codigoSeguridadSoftware: codigoSeguridadSoftware(pos.softwareId, pin, pos.numero) }),
       );
+    }
+
+    if (doc.type === 'credit_note' || doc.type === 'debit_note') {
+      const nota = this.dominio(() => prepararNotaUbl(doc as unknown as DocumentoNotaParaUbl, datosEmisor));
+      const pin = await this.pin(emisor.id as string);
+      const completa = {
+        ...nota,
+        codigoSeguridadSoftware: codigoSeguridadSoftware(nota.softwareId, pin, nota.numero),
+      };
+      return this.dominio(() => (doc.type === 'credit_note' ? armarNotaCreditoUbl(completa) : armarNotaDebitoUbl(completa)));
     }
 
     const factura = this.dominio(() => prepararFacturaUbl(doc as unknown as DocumentoParaUbl, datosEmisor));
