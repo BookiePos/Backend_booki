@@ -177,6 +177,88 @@ describe('LedgerPostingService · asientos automáticos', () => {
       expect(amountOn(ACC.INGRESOS_VENTAS, 'debit')).toBe(0);
     });
 
+    describe('devolución de una venta fiada (Fase 6B)', () => {
+      const dev = {
+        returnId: 'r-fiado',
+        saleNumber: 'FV-000002',
+        date: '2026-11-06',
+        sedeId: SEDE,
+        refundTotal: 15_000,
+        tax: 799,
+        consumptionTax: 741,
+        cogs: 6_000,
+      };
+
+      it('toda a la cartera: Cr 1305 por el total, nada a Caja, y cuadra', async () => {
+        await service.postSaleReturn({ ...dev, refundMethod: 'cash', toReceivable: 15_000 });
+        expect(side('debit')).toBe(side('credit'));
+        expect(amountOn(ACC.CLIENTES, 'credit')).toBe(15_000);
+        expect(amountOn(ACC.CAJA, 'credit')).toBe(0);
+        expect(amountOn(ACC.DEVOLUCIONES_VENTAS, 'debit')).toBe(13_460);
+        expect(amountOn(ACC.IVA_POR_PAGAR, 'debit')).toBe(799);
+        expect(amountOn(ACC.INC_POR_PAGAR, 'debit')).toBe(741);
+        expect(amountOn(ACC.INVENTARIO, 'debit')).toBe(6_000);
+        expect(amountOn(ACC.COSTO_VENTA, 'credit')).toBe(6_000);
+      });
+
+      it('con abonos: la cartera hasta su saldo y el resto por Caja, y cuadra', async () => {
+        await service.postSaleReturn({ ...dev, refundMethod: 'cash', toReceivable: 10_000 });
+        expect(side('debit')).toBe(side('credit'));
+        expect(amountOn(ACC.CLIENTES, 'credit')).toBe(10_000);
+        expect(amountOn(ACC.CAJA, 'credit')).toBe(5_000);
+      });
+
+      it('transferencia con abono a cartera: 1305 + Bancos, y cuadra', async () => {
+        await service.postSaleReturn({ ...dev, refundMethod: 'transfer', toReceivable: 4_000 });
+        expect(side('debit')).toBe(side('credit'));
+        expect(amountOn(ACC.CLIENTES, 'credit')).toBe(4_000);
+        expect(amountOn(ACC.BANCOS, 'credit')).toBe(11_000);
+      });
+
+      it('saldo a favor con cartera: la cartera baja la 1305 y el excedente queda en la 2805 (decisión 5)', async () => {
+        await service.postSaleReturn({ ...dev, refundMethod: 'credit_note', toReceivable: 4_000 });
+        expect(side('debit')).toBe(side('credit'));
+        expect(amountOn(ACC.CLIENTES, 'credit')).toBe(4_000);
+        expect(amountOn(ACC.ANTICIPOS_CLIENTES, 'credit')).toBe(11_000);
+      });
+
+      it('saldo a favor de una venta de CONTADO: crédito a la 2805, nunca a la 1305 (decisión 5)', async () => {
+        await service.postSaleReturn({ ...dev, refundMethod: 'credit_note' });
+        expect(side('debit')).toBe(side('credit'));
+        expect(amountOn(ACC.ANTICIPOS_CLIENTES, 'credit')).toBe(15_000);
+        expect(lines().some((l) => l.accountCode === ACC.CLIENTES)).toBe(false);
+      });
+
+      it('un cambio por otro producto (none) también queda en la 2805', async () => {
+        await service.postSaleReturn({ ...dev, refundMethod: 'none' });
+        expect(amountOn(ACC.ANTICIPOS_CLIENTES, 'credit')).toBe(15_000);
+      });
+
+      it('la propina devuelta debita la 2380 y sale por el medio elegido (decisión 4)', async () => {
+        await service.postSaleReturn({ ...dev, refundMethod: 'cash', tip: 1_234 });
+        expect(side('debit')).toBe(side('credit'));
+        expect(amountOn(ACC.PROPINAS_POR_PAGAR, 'debit')).toBe(1_234);
+        expect(amountOn(ACC.CAJA, 'credit')).toBe(15_000 + 1_234);
+        // La propina no toca el ingreso ni los impuestos.
+        expect(lines().some((l) => l.accountCode === ACC.PROPINAS_POR_PAGAR && l.credit)).toBe(false);
+      });
+
+      it('con cartera y propina: la 1305 por la cartera, Caja por el resto más la propina, y cuadra', async () => {
+        await service.postSaleReturn({ ...dev, refundMethod: 'cash', toReceivable: 4_000, tip: 500 });
+        expect(side('debit')).toBe(side('credit'));
+        expect(amountOn(ACC.CLIENTES, 'credit')).toBe(4_000);
+        expect(amountOn(ACC.CAJA, 'credit')).toBe(11_000 + 500);
+        expect(amountOn(ACC.PROPINAS_POR_PAGAR, 'debit')).toBe(500);
+      });
+
+      it('una cartera mayor que lo devuelto se acota al total, y cuadra', async () => {
+        await service.postSaleReturn({ ...dev, refundMethod: 'cash', toReceivable: 99_000 });
+        expect(side('debit')).toBe(side('credit'));
+        expect(amountOn(ACC.CLIENTES, 'credit')).toBe(15_000);
+        expect(amountOn(ACC.CAJA, 'credit')).toBe(0);
+      });
+    });
+
     it('sin IVA no abre el renglón de impuesto y el ingreso es el total', async () => {
       await service.postSale({ ...base, total: 50_000, tax: 0, cogs: 0 });
 
