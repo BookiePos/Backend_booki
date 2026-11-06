@@ -107,6 +107,16 @@ describe('netearVentas', () => {
     ]);
   });
 
+  it('un producto con descuento devuelto entero queda en neto 0', () => {
+    // Bruto 10.000 con 1.000 de descuento: la faceta de ventas ya entrega
+    // 9.000 (lineTotal − discountAmount) y el reembolso es esos mismos 9.000.
+    const out = netearVentas(
+      { ...ventas, topProducts: [{ _id: P2, name: 'Café', qty: 1, revenue: 9_000 }] },
+      { products: [{ _id: P2, name: 'Café', qty: 1, refund: 9_000 }] },
+    );
+    expect(out.topProducts[0]).toMatchObject({ qty: 0, revenue: 0, returned: 9_000 });
+  });
+
   it('el top se recorta a 10 después de netear', () => {
     const id0 = new Types.ObjectId();
     const muchos = Array.from({ length: 15 }, (_, i) => ({

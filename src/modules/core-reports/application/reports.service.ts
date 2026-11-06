@@ -253,7 +253,16 @@ export class ReportsService {
                     _id: '$lines.productId',
                     name: { $first: '$lines.name' },
                     qty: { $sum: '$lines.qty' },
-                    revenue: { $sum: '$lines.lineTotal' },
+                    // Neto del descuento de línea: `lines.refund` ya va
+                    // descontado, así que restarlo de un bruto descuadraba.
+                    revenue: {
+                      $sum: {
+                        $subtract: [
+                          '$lines.lineTotal',
+                          { $ifNull: ['$lines.discountAmount', 0] },
+                        ],
+                      },
+                    },
                   },
                 },
                 { $sort: { revenue: -1 } },

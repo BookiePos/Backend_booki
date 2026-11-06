@@ -424,6 +424,18 @@ describe('ReportsService · alcance por sede', () => {
     expect(ret).not.toHaveProperty('status');
   });
 
+  it('el top de productos va neto del descuento de línea, como el reembolso', async () => {
+    await service.salesReport({}, DUENO);
+
+    const facet = sales.aggregate.mock.calls[0][0][1].$facet;
+    const group = facet.topProducts.find((st: any) => st.$group).$group;
+    expect(group.revenue).toEqual({
+      $sum: {
+        $subtract: ['$lines.lineTotal', { $ifNull: ['$lines.discountAmount', 0] }],
+      },
+    });
+  });
+
   it('ventas y devoluciones usan el mismo rango, en hora de Colombia', async () => {
     await service.salesReport({ from: '2026-03-01', to: '2026-03-31' }, DUENO);
 
