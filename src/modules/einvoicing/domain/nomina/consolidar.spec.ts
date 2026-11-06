@@ -8,6 +8,7 @@ import {
   type DeduccionConsolidar,
   type EntradaConsolidar,
   type EmpleadoConsolidar,
+  type LiquidacionConsolidar,
   type ResultadoConsolidar,
 } from './consolidar';
 import type { ContextoNomina, DocumentoNe, EmisionNe } from './modelo';
@@ -116,6 +117,7 @@ const corrida = (o: OpcionesCorrida = {}): CorridaColilla => ({
   sedeId: o.sedeId,
   estado: o.estado ?? 'cerrada',
   rango: o.rango,
+  pago: 'pago' in o ? o.pago : { medio: '10', fecha: '2026-10-31' },
   colilla: {
     employeeId: 'emp1',
     diasTrabajados: o.dias ?? 30,
@@ -130,7 +132,6 @@ const entrada = (o: Partial<EntradaConsolidar> = {}): EntradaConsolidar => ({
   empleador: { municipioDane: '05001', direccion: 'Calle 10 # 20-30' },
   slips: [corrida()],
   deducciones: [],
-  pago: { fechasPagos: ['2026-10-31'] },
   ...o,
 });
 
@@ -242,16 +243,15 @@ describe('consolidarNominaMes: casos que pasan', () => {
     const { modelo } = ok(
       entrada({
         slips: [
-          corrida({ corridaId: 'q1', bd: a, dias: 15, rango: { desde: '2026-10-01', hasta: '2026-10-15' } }),
+          corrida({ corridaId: 'q1', bd: a, dias: 15, rango: { desde: '2026-10-01', hasta: '2026-10-15' }, pago: { medio: '10', fecha: '2026-10-15' } }),
           corrida({ corridaId: 'q2', bd: b, dias: 15, rango: { desde: '2026-10-16', hasta: '2026-10-31' } }),
         ],
-        pago: { fechasPagos: ['2026-10-15', '2026-10-31'] },
       }),
     );
     expect(modelo.periodoNomina).toBe('4');
     expect(modelo.devengados.basico).toEqual({ dias: 30, sueldo: 150_000_000 });
     expect(modelo.devengados.horas).toEqual([{ tipo: 'HED', cantidad: 4, porcentaje: 25, pago: 3_500_000 }]);
-    expect(modelo.fechasPagos).toHaveLength(2);
+    expect(modelo.fechasPagos).toEqual(['2026-10-15', '2026-10-31']);
     await verificar(modelo, a.devengados.total + b.devengados.total, a.deducciones.total + b.deducciones.total);
   }, 60_000);
 
@@ -269,12 +269,38 @@ describe('consolidarNominaMes: casos que pasan', () => {
     expect(modelo.devengados.horas.map((x) => x.porcentaje)).toEqual([80, 90]);
   });
 
-  it('ingreso a mitad de mes y fecha de pago ausente (advertencia)', () => {
-    const r = ok(entrada({ empleado: empleado({ hireDate: '2026-10-16' }), pago: { fechasPagos: [] } }));
+  it('ingreso a mitad de mes; la fecha de pago es la declarada en el cierre', () => {
+    const r = ok(entrada({ empleado: empleado({ hireDate: '2026-10-16' }), slips: [corrida({ pago: { medio: '10', fecha: '2026-11-03' } })] }));
     expect(r.modelo.periodo.fechaLiquidacionInicio).toBe('2026-10-16');
     expect(r.modelo.periodo.tiempoLaborado).toBe(15);
-    expect(r.modelo.fechasPagos).toEqual(['2026-10-31']);
-    expect(r.advertencias.join(' ')).toMatch(/fecha de pago/);
+    expect(r.modelo.fechasPagos).toEqual(['2026-11-03']);
+    expect(r.modelo.pago.metodo).toBe('10');
+  });
+
+  it('dos corridas con medios distintos: manda el de mayor valor pagado y avisa', () => {
+    const { modelo } = ok(
+      entrada({
+        slips: [
+          corrida({ corridaId: 'q1', dias: 15, bd: breakdown({ salario: 1_000_000 }), rango: { desde: '2026-10-01', hasta: '2026-10-15' }, pago: { medio: '10', fecha: '2026-10-15' } }),
+          corrida({ corridaId: 'q2', dias: 15, bd: breakdown({ salario: 500_000 }), rango: { desde: '2026-10-16', hasta: '2026-10-31' }, pago: { medio: '20', fecha: '2026-10-31' } }),
+        ],
+      }),
+    );
+    expect(modelo.pago.metodo).toBe('10');
+  });
+
+  it('dos corridas de igual valor con medios distintos: desempata el último pago y avisa', () => {
+    const { modelo, advertencias } = ok(
+      entrada({
+        empleado: empleado({ bank: 'Bancolombia', accountType: 'ahorros', accountNumber: '123' }),
+        slips: [
+          corrida({ corridaId: 'q1', dias: 15, bd: breakdown({ salario: 750_000 }), rango: { desde: '2026-10-01', hasta: '2026-10-15' }, pago: { medio: '10', fecha: '2026-10-15' } }),
+          corrida({ corridaId: 'q2', dias: 15, bd: breakdown({ salario: 750_000 }), rango: { desde: '2026-10-16', hasta: '2026-10-31' }, pago: { medio: '47', fecha: '2026-10-31' } }),
+        ],
+      }),
+    );
+    expect(modelo.pago.metodo).toBe('47');
+    expect(advertencias.join()).toMatch(/medios distintos/);
   });
 
   it('municipio del emisor como respaldo, con advertencia; segundo apellido partido', () => {
@@ -291,7 +317,12 @@ describe('consolidarNominaMes: casos que pasan', () => {
   });
 
   it('transferencia lleva banco, tipo y número de cuenta', () => {
-    const r = ok(entrada({ empleado: empleado({ medioPago: '47', bank: 'Bancolombia', accountType: 'ahorros', accountNumber: '123456789' }) }));
+    const r = ok(
+      entrada({
+        empleado: empleado({ bank: 'Bancolombia', accountType: 'ahorros', accountNumber: '123456789' }),
+        slips: [corrida({ pago: { medio: '47', fecha: '2026-10-31' } })],
+      }),
+    );
     expect(r.modelo.pago).toEqual({ forma: '1', metodo: '47', banco: 'Bancolombia', tipoCuenta: 'ahorros', numeroCuenta: '123456789' });
   });
 
@@ -319,6 +350,101 @@ describe('consolidarNominaMes: casos que pasan', () => {
   }, 60_000);
 });
 
+describe('consolidarNominaMes: retiro en el mes (decisión 4 del dueño)', () => {
+  const liq = (o: Partial<LiquidacionConsolidar> = {}): LiquidacionConsolidar => ({
+    id: 'liq1',
+    fechaRetiro: '2026-10-20',
+    diasLiquidados: 980,
+    diasPrima: 110,
+    diasVacacionesPendientes: 40.83,
+    salarioBase: 1_500_000,
+    cesantias: 4_083_333,
+    interesesCesantias: 1_333_889,
+    prima: 458_333,
+    vacaciones: 2_041_667,
+    indemnizacion: 1_000_000,
+    salariosPendientes: 0,
+    pago: { medio: '10', fecha: '2026-10-25' },
+    ...o,
+  });
+  // Colilla del mes del retiro: 20 días, con salud y pensión (el último sueldo ya no va como «salarios pendientes»).
+  const bd20 = () => breakdown({ salario: 1_000_000 });
+  const retiro = (l: LiquidacionConsolidar | undefined, e: Partial<EmpleadoConsolidar> = {}) =>
+    entrada({
+      empleado: empleado({ terminationDate: '2026-10-20', ...e }),
+      slips: [corrida({ dias: 20, bd: bd20(), pago: { medio: '10', fecha: '2026-10-20' } })],
+      ...(l ? { liquidacion: l } : {}),
+    });
+
+  it('lleva cesantías, intereses, prima, vacaciones compensadas e indemnización, y pasa el XSD', async () => {
+    const l = liq();
+    const { modelo, advertencias } = ok(retiro(l));
+    expect(advertencias.join()).toMatch(/401-3 ET/);
+    expect(modelo.periodo).toMatchObject({
+      fechaRetiro: '2026-10-20',
+      fechaLiquidacionFin: '2026-10-20',
+    });
+    expect(modelo.devengados.basico.dias).toBe(20);
+    expect(modelo.devengados.cesantias).toEqual({ pago: 408_333_300, porcentaje: 12, intereses: 133_388_900 });
+    expect(modelo.devengados.primas).toEqual({ dias: 110, pago: 45_833_300 });
+    expect(modelo.devengados.vacacionesCompensadas).toEqual([{ dias: 41, pago: 204_166_700 }]);
+    expect(modelo.devengados.indemnizacion).toBe(100_000_000);
+    expect(modelo.fechasPagos).toEqual(['2026-10-20', '2026-10-25']);
+    const dev = bd20().devengados.total + l.cesantias + l.interesesCesantias + l.prima + l.vacaciones + l.indemnizacion;
+    await verificar(modelo, dev, bd20().deducciones.total);
+  }, 60_000);
+
+  it('la fecha de retiro de la liquidación debe ser la del expediente', () => {
+    expect(bloqueos(retiro(liq(), { terminationDate: '2026-10-19' })).join()).toMatch(/liquidación aprobada es de un retiro el 2026-10-20/);
+  });
+
+  it('salarios pendientes en la liquidación bloquean (el último sueldo va en la colilla)', () => {
+    expect(bloqueos(retiro(liq({ salariosPendientes: 300_000 }))).join()).toMatch(/salarios pendientes/);
+  });
+
+  it('liquidación sin pago válido o con importes no enteros bloquea', () => {
+    expect(bloqueos(retiro(liq({ pago: undefined }))).join()).toMatch(/medio y una fecha de pago válidos/);
+    expect(bloqueos(retiro(liq({ prima: 10.5 }))).join()).toMatch(/pesos enteros/);
+    expect(bloqueos(retiro(liq({ diasPrima: undefined }))).join()).toMatch(/días del semestre/);
+  });
+
+  it('vacaciones: los días pendientes (causados menos disfrutados), al menos 1 si hay pago', () => {
+    const { modelo } = ok(retiro(liq({ diasVacacionesPendientes: 0.42, vacaciones: 21_000 })));
+    expect(modelo.devengados.vacacionesCompensadas).toEqual([{ dias: 1, pago: 2_100_000 }]);
+    const sin = ok(retiro(liq({ diasVacacionesPendientes: 0, vacaciones: 0 })));
+    expect(sin.modelo.devengados.vacacionesCompensadas).toEqual([]);
+    expect(bloqueos(retiro(liq({ diasVacacionesPendientes: undefined }))).join()).toMatch(/vacaciones pendientes/);
+  });
+
+  it('sin indemnización no avisa de la 401-3; salario alto avisa de la 206-4 (con UVT)', () => {
+    const r = ok(retiro(liq({ indemnizacion: 0 })));
+    expect(r.advertencias.join()).not.toMatch(/401-3/);
+    const alto = ok({ ...retiro(liq({ indemnizacion: 0, salarioBase: 30_000_000 }), { salary: 30_000_000 }), uvt: 52_374 });
+    expect(alto.advertencias.join()).toMatch(/206 num. 4 ET/);
+    expect(ok({ ...retiro(liq({ indemnizacion: 0 })), uvt: 52_374 }).advertencias.join()).not.toMatch(/206/);
+  });
+
+  it('206-4 ET: promedio de 6 meses con horas extra que cruzan el tope avisa; sin variables no', () => {
+    // Tope: 350 × 52.374 = 18.330.900. Salario pactado de 10 millones, pero un mes con horas extra lo sube.
+    const base = { ...retiro(liq({ indemnizacion: 0, salarioBase: 10_000_000 }), { salary: 10_000_000 }), uvt: 52_374 };
+    const cruza = ok({ ...base, devengadoUltimos6Meses: [10_000_000, 30_000_000] }); // promedio 20.000.000
+    expect(cruza.advertencias.join()).toMatch(/promedio de 20000000 en los últimos 2 mes/);
+    expect(ok({ ...base, devengadoUltimos6Meses: [10_000_000, 12_000_000] }).advertencias.join()).not.toMatch(/206/);
+    // Sin colillas: el salario pactado es el piso.
+    expect(ok(base).advertencias.join()).not.toMatch(/206/);
+  });
+
+  it('corrida cerrada antes del retiro con más días que los trabajados: bloquea', () => {
+    const e = entrada({
+      empleado: empleado({ terminationDate: '2026-10-20' }),
+      slips: [corrida({ dias: 30, pago: { medio: '10', fecha: '2026-10-31' } })],
+      liquidacion: liq(),
+    });
+    expect(bloqueos(e).join()).toMatch(/le pagan 30 días y el retiro fue el 2026-10-20 \(20 días\)/);
+    expect(bloqueos(e).join()).toMatch(/deducción o un ajuste del empleado/);
+  });
+});
+
 describe('consolidarNominaMes: bloqueos por trabajador', () => {
   const caso = (nombre: string, e: Partial<EmpleadoConsolidar>, patron: RegExp) =>
     it(nombre, () => expect(bloqueos(entrada({ empleado: empleado(e) })).join('\n')).toMatch(patron));
@@ -331,12 +457,25 @@ describe('consolidarNominaMes: bloqueos por trabajador', () => {
   caso('falta el tipo de contrato DIAN', { tipoContratoDian: undefined }, /tipo de contrato DIAN/);
   caso('falta la fecha de ingreso', { hireDate: undefined }, /fecha de ingreso/);
   caso('falta el salario', { salary: undefined }, /salario/);
-  caso('falta el medio de pago', { medioPago: undefined }, /medio de pago/);
-  caso('transferencia sin datos de cuenta', { medioPago: '47' }, /banco, tipo de cuenta, número de cuenta/);
+  it('corrida cerrada sin pago declarado: dice qué falta', () => {
+    expect(bloqueos(entrada({ slips: [corrida({ pago: undefined })] })).join()).toMatch(/el medio de pago ni la fecha real de pago/);
+    expect(bloqueos(entrada({ slips: [corrida({ pago: { medio: '10', fecha: '' } })] })).join()).toMatch(/no tiene declarado la fecha real de pago/);
+  });
+  it('medio de pago no admitido para nómina', () => {
+    expect(bloqueos(entrada({ slips: [corrida({ pago: { medio: '48', fecha: '2026-10-31' } })] })).join()).toMatch(/no es válido para nómina/);
+  });
+  it('transferencia sin datos de cuenta', () => {
+    const b = bloqueos(entrada({ slips: [corrida({ pago: { medio: '47', fecha: '2026-10-31' } })] }));
+    expect(b.join()).toMatch(/banco, tipo de cuenta, número de cuenta/);
+  });
+  it('salario integral por debajo de 13 SMMLV bloquea (art. 132 CST)', () => {
+    const e = empleado({ salaryType: 'integral', salary: 20_000_000 });
+    expect(bloqueos(entrada({ empleado: e, smmlv: 1_750_905 })).join()).toMatch(/13 SMMLV/);
+  });
   caso('docTypeDian no coincide con docType', { docType: 'CE', docTypeDian: '13' }, /no coincide con el código DIAN 13/);
   caso('tipoContratoDian no coincide con contractType', { contractType: 'fijo', tipoContratoDian: '2' }, /no coincide con el código DIAN 2/);
   caso('prestación de servicios no va en nómina electrónica', { contractType: 'prestacion_servicios' }, /prestación de servicios/);
-  caso('retiro en el mes: pendiente de decisión del dueño', { terminationDate: '2026-10-20' }, /tarea 11/);
+  caso('retiro en el mes sin liquidación aprobada', { terminationDate: '2026-10-20' }, /no tiene liquidación de retiro aprobada/);
 
   it('sin municipio propio ni del emisor', () => {
     const b = bloqueos(entrada({ empleado: empleado({ municipioDaneTrabajo: undefined }), empleador: {} }));
@@ -344,7 +483,7 @@ describe('consolidarNominaMes: bloqueos por trabajador', () => {
   });
 
   it('junta varios bloqueos del mismo trabajador', () => {
-    const b = bloqueos(entrada({ empleado: empleado({ docTypeDian: undefined, salary: undefined, medioPago: undefined }) }));
+    const b = bloqueos(entrada({ empleado: empleado({ docTypeDian: undefined, salary: undefined, hireDate: undefined }) }));
     expect(b.length).toBeGreaterThanOrEqual(3);
   });
 
@@ -528,9 +667,99 @@ describe('consolidarNominaMes: correcciones de revisión', () => {
   });
 
   it('fecha de pago anterior al periodo bloquea; muy posterior avisa', () => {
-    expect(bloqueos(entrada({ pago: { fechasPagos: ['2026-09-30'] } })).join()).toMatch(/anterior al inicio/);
-    const r = ok(entrada({ pago: { fechasPagos: ['2026-12-15'] } }));
-    expect(r.advertencias.join()).toMatch(/posterior al mes siguiente/);
-    expect(ok(entrada({ pago: { fechasPagos: ['2026-11-05'] } })).advertencias).toEqual([]);
+    const conPago = (fecha: string) => entrada({ slips: [corrida({ pago: { medio: '10', fecha } })] });
+    expect(bloqueos(conPago('2026-09-30')).join()).toMatch(/anterior al inicio/);
+    const r = ok(conPago('2026-12-15'));
+    expect(r.advertencias.join()).toMatch(/después del mes siguiente/);
+    expect(ok(conPago('2026-11-05')).advertencias).toEqual([]);
+  });
+});
+
+describe('consolidarNominaMes: novedades del mes (decisión 3 del dueño)', () => {
+  const lineas = [
+    { tipo: 'vacaciones', fechaInicio: '2026-10-01', fechaFin: '2026-10-05', dias: 5, valor: 250_000, pagador: 'empleador' },
+    { tipo: 'incapacidad_comun', fechaInicio: '2026-10-06', fechaFin: '2026-10-08', dias: 3, valor: 100_000, pagador: 'eps' },
+    { tipo: 'incapacidad_laboral', fechaInicio: '2026-10-09', fechaFin: '2026-10-09', dias: 1, valor: 50_000, pagador: 'arl' },
+    { tipo: 'licencia_paternidad', fechaInicio: '2026-10-10', fechaFin: '2026-10-11', dias: 2, valor: 100_000, pagador: 'eps' },
+    { tipo: 'licencia_remunerada', fechaInicio: '2026-10-12', fechaFin: '2026-10-12', dias: 1, valor: 50_000, pagador: 'empleador' },
+    { tipo: 'licencia_no_remunerada', fechaInicio: '2026-10-13', fechaFin: '2026-10-14', dias: 2, valor: 0, pagador: 'ninguno' },
+  ];
+  const conNovedades = (ls = lineas) => {
+    const pago = ls.reduce((s, l) => s + l.valor, 0);
+    const bd = breakdown({ salario: 800_000, ibc: 800_000 + pago, extra: { ausencias: pago, ausenciaDetalle: ls } as unknown as Record<string, number> });
+    bd.devengados.total += pago;
+    bd.netoPagar += pago;
+    return bd;
+  };
+
+  it('van a VacacionesComunes, Incapacidades (tipo 1 y 3) y Licencias MP, R y NR, y pasan el XSD', async () => {
+    const bd = conNovedades();
+    const { modelo } = ok(entrada({ slips: [corrida({ bd, dias: 16 })] }));
+    const d = modelo.devengados;
+    expect(d.basico.dias).toBe(16);
+    expect(d.vacacionesComunes).toEqual([{ dias: 5, pago: 25_000_000, fechaInicio: '2026-10-01', fechaFin: '2026-10-05' }]);
+    expect(d.incapacidades.map((i) => [i.tipo, i.dias, i.pago])).toEqual([
+      [1, 3, 10_000_000],
+      [3, 1, 5_000_000],
+    ]);
+    expect(d.licenciasMP).toEqual([{ dias: 2, pago: 10_000_000, fechaInicio: '2026-10-10', fechaFin: '2026-10-11' }]);
+    expect(d.licenciasR).toEqual([{ dias: 1, pago: 5_000_000, fechaInicio: '2026-10-12', fechaFin: '2026-10-12' }]);
+    expect(d.licenciasNR).toEqual([{ dias: 2, fechaInicio: '2026-10-13', fechaFin: '2026-10-14' }]);
+    const r = await verificar(modelo, bd.devengados.total, bd.deducciones.total);
+    expect(r.xml).toContain('<LicenciaNR FechaInicio="2026-10-13" FechaFin="2026-10-14" Cantidad="2"');
+  }, 60_000);
+
+  it('D7: con incapacidades o licencias avisa del tratamiento en retención (ET 206)', () => {
+    const { advertencias } = ok(entrada({ slips: [corrida({ bd: conNovedades(), dias: 16 })] }));
+    expect(advertencias.join()).toMatch(/retención en la fuente está a confirmar con el contador \(ET 206\)/);
+    const soloVac = conNovedades([lineas[0]!]);
+    expect(ok(entrada({ slips: [corrida({ bd: soloVac, dias: 25 })] })).advertencias.join()).not.toMatch(/ET 206/);
+  });
+
+  it('D5: el 4 % de pensión de la licencia no remunerada va como OtraDeduccion y pasa el XSD', async () => {
+    const bd = conNovedades();
+    bd.deducciones.pensionLicenciaNR = 40_000;
+    bd.deducciones.total += 40_000;
+    bd.netoPagar -= 40_000;
+    const { modelo } = ok(entrada({ slips: [corrida({ bd, dias: 16 })] }));
+    expect(modelo.deducciones.otras).toEqual([4_000_000]);
+    await verificar(modelo, bd.devengados.total, bd.deducciones.total);
+  }, 60_000);
+
+  it('solo licencia no remunerada: el 4 % sin pago se recorta (arrastre) y no queda comprobante negativo', () => {
+    const lnr = { tipo: 'licencia_no_remunerada', fechaInicio: '2026-10-01', fechaFin: '2026-10-31', dias: 30, valor: 0, pagador: 'ninguno' };
+    const bd = breakdown({ salario: 0, ibc: 0, salud: 0, pension: 0, extra: { ausencias: 0, ausenciaDetalle: [lnr] } as unknown as Record<string, number> });
+    bd.deducciones.pensionLicenciaNR = 60_000;
+    bd.deducciones.total += 60_000;
+    bd.netoPagar -= 60_000;
+    const r = ok(entrada({ slips: [corrida({ bd, dias: 0 })] }));
+    expect(r.modelo.deducciones.otras).toEqual([]);
+    expect(r.recorte).toMatchObject({ otras: 60_000, total: 60_000 });
+    expect(r.modelo.devengados.licenciasNR).toEqual([{ dias: 30, fechaInicio: '2026-10-01', fechaFin: '2026-10-31' }]);
+  });
+
+  it('licencia no remunerada parcial: el 4 % sale como OtraDeduccion en el XML', async () => {
+    const lnr = { tipo: 'licencia_no_remunerada', fechaInicio: '2026-10-11', fechaFin: '2026-10-30', dias: 20, valor: 0, pagador: 'ninguno' };
+    const bd = breakdown({ salario: 500_000, extra: { ausencias: 0, ausenciaDetalle: [lnr] } as unknown as Record<string, number> });
+    bd.deducciones.pensionLicenciaNR = 40_000;
+    bd.deducciones.total += 40_000;
+    bd.netoPagar -= 40_000;
+    const { modelo } = ok(entrada({ slips: [corrida({ bd, dias: 10 })] }));
+    const r = await verificar(modelo, bd.devengados.total, bd.deducciones.total);
+    expect(modelo.deducciones.otras).toEqual([4_000_000]);
+    expect(r.xml).toContain('<OtrasDeducciones><OtraDeduccion');
+    expect(r.xml).toContain('40000.00');
+  }, 60_000);
+
+  it('el detalle de novedades debe sumar lo pagado', () => {
+    const bd = conNovedades();
+    bd.devengados.ausencias = (bd.devengados.ausencias ?? 0) + 1;
+    bd.devengados.total += 1;
+    expect(bloqueos(entrada({ slips: [corrida({ bd, dias: 16 })] })).join()).toMatch(/no suma lo pagado/);
+  });
+
+  it('una novedad sin fechas válidas bloquea', () => {
+    const bd = conNovedades([{ ...lineas[0]!, fechaFin: 'x' }]);
+    expect(bloqueos(entrada({ slips: [corrida({ bd, dias: 25 })] })).join()).toMatch(/no tiene tipo, días o fechas válidos/);
   });
 });

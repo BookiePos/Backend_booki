@@ -62,6 +62,8 @@ describe('nómina · un arrastre vivo por corrida y empleado', () => {
       {} as never,
       { postPayrollRun: async () => undefined } as never,
       {} as never,
+      {} as never,
+    { find: () => ({ exec: async () => [] }) } as never,
     );
   });
   afterAll(async () => {

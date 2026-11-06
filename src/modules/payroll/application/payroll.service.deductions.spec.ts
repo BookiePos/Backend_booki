@@ -51,7 +51,8 @@ describe('PayrollService.cancelSaleDeduction', () => {
       {} as any,
       {} as any,
       {} as any,
-      {} as any,
+      {} as any, {} as any,
+    { find: () => ({ exec: async () => [] }) } as any,
     );
   }
 
@@ -131,7 +132,8 @@ describe('PayrollService.applyDeductionsToRun', () => {
       {} as any,
       {} as any,
       {} as any,
-      {} as any,
+      {} as any, {} as any,
+    { find: () => ({ exec: async () => [] }) } as any,
     );
     return { service: service as any, deductions };
   }

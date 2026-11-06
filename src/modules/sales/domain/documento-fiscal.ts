@@ -67,5 +67,11 @@ export function modoPosDe(
 /** Llave idempotente de la nota de una devolución (Fase 6B): una nota por devolución. */
 export const origenNotaDevolucion = (returnId: string): string => `devolucion:${returnId}`;
 
+/** Llave idempotente de la nota de una rebaja posterior (Fase 6C): una por rebaja. */
+export const origenNotaRebaja = (rebajaId: string): string => `rebaja:${rebajaId}`;
+
+/** Llave idempotente de la nota sin referencia (Fase 6C): una por operación. */
+export const origenNotaSinReferencia = (id: string): string => `sin_referencia:${id}`;
+
 /** Llave idempotente de la nota de una anulación (Fase 6B): una por venta. */
 export const origenNotaAnulacion = (saleId: string): string => `anulacion:${saleId}`;

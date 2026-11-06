@@ -370,6 +370,13 @@ export class LedgerPostingService {
     toReceivable?: number;
     /** Propina que vuelve con la devolución (decisión 4): débito a la 2380. */
     tip?: number;
+    /** Rebaja posterior (Fase 6C): mismo asiento, otra glosa. */
+    memo?: string;
+    /**
+     * Origen del asiento: `sale_return` (devolución o rebaja de una venta) o
+     * `nota_sin_referencia` (descuento sobre varias facturas, Fase 6C).
+     */
+    sourceType?: 'sale_return' | 'nota_sin_referencia';
     userEmail?: string;
   }): Promise<void> {
     const total = cop(input.refundTotal);
@@ -429,9 +436,9 @@ export class LedgerPostingService {
 
     await this.safePost({
       date: input.date,
-      sourceType: 'sale_return',
+      sourceType: input.sourceType ?? 'sale_return',
       sourceId: input.returnId,
-      memo: `Devolución de la venta ${input.saleNumber}`,
+      memo: input.memo ?? `Devolución de la venta ${input.saleNumber}`,
       lines,
       userEmail: input.userEmail,
     });

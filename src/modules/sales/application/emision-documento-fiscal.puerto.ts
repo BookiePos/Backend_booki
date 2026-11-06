@@ -35,6 +35,9 @@ export interface EmisionDocumentoFiscal {
   transmitir(documentoId: string, user: JwtUser): Promise<void>;
 }
 
+/** Concepto de corrección de la nota crédito (DiscrepancyResponse). */
+export type ConceptoNota = '1' | '2' | '3' | '4' | '5' | '6';
+
 /** Una línea devuelta que la nota acredita: los valores del plan de la devolución. */
 export interface LineaNotaSolicitada {
   productId: string;
@@ -52,8 +55,11 @@ export interface LineaNotaSolicitada {
 export interface SolicitudNotaVenta {
   saleId: string;
   origen: string;
-  /** 1 devolución parcial, 2 anulación. */
-  concepto: '1' | '2';
+  /**
+   * 1 devolución parcial, 2 anulación; 3 rebaja, 4 ajuste de precio, 5 pronto
+   * pago y 6 volumen (Fase 6C: sin unidades, `qty` 0; 5 y 6 solo en la FEV).
+   */
+  concepto: ConceptoNota;
   motivo: string;
   /** Solo en la devolución. */
   lineas?: LineaNotaSolicitada[];
@@ -79,7 +85,7 @@ export interface NotaFiscalOperacion {
   /** `type` del documento referido: `pos` → nota de ajuste 94; `invoice` → nota crédito 91. */
   referenceType?: 'pos' | 'invoice';
   referenceNumber?: string;
-  concepto?: '1' | '2';
+  concepto?: ConceptoNota;
   dianStatus?: string;
   /** Por qué no lleva nota, en lenguaje de la caja. */
   motivo?: string;
@@ -94,5 +100,46 @@ export interface EmisionNotaVenta {
    */
   emitirNota(s: SolicitudNotaVenta, user: JwtUser): Promise<NotaFiscalOperacion>;
   /** Transmite a la DIAN. Nunca lanza: un fallo lo deja para la reconsulta. */
+  transmitir(documentoId: string, user: JwtUser): Promise<void>;
+}
+
+/**
+ * Nota crédito SIN referencia (FEV, CustomizationID 22; Fase 6C): descuento
+ * que cubre las facturas de un cliente en un periodo de máximo 30 días dentro
+ * de un mismo mes. El tope y el reparto por tributo los hace facturación.
+ */
+export interface SolicitudNotaSinReferencia {
+  origen: string;
+  sedeId: string;
+  /** Documento del adquiriente (cédula o NIT, sin DV) de las facturas del periodo. */
+  docNumber: string;
+  concepto: Exclude<ConceptoNota, '1' | '2'>;
+  motivo: string;
+  desde: string;
+  hasta: string;
+  /** Monto con impuesto. */
+  monto: number;
+}
+
+/** La nota sin referencia emitida, con lo que lleva al libro. */
+export interface NotaSinReferenciaEmitida extends NotaFiscalOperacion {
+  estado: 'emitida';
+  documentoId: string;
+  /** Lo acreditado, con impuesto (= `monto`). */
+  total: number;
+  iva: number;
+  inc: number;
+  /**
+   * Cómo se repartió entre las ventas del periodo, por producto (`productId`
+   * es el grupo del documento: producto o `domicilio`). Las devoluciones y
+   * rebajas de esas ventas lo descuentan (tope cruzado).
+   */
+  asignaciones: { saleId: string; productId: string; valor: number; impuesto: number }[];
+}
+
+/** Puerto de la nota sin referencia (lo implementa el mismo adaptador). */
+export interface EmisionNotaSinReferencia {
+  /** FALLA CERRADO: 400 sin facturas en el periodo, 409 por encima del tope. */
+  emitirNotaSinReferencia(s: SolicitudNotaSinReferencia, user: JwtUser): Promise<NotaSinReferenciaEmitida>;
   transmitir(documentoId: string, user: JwtUser): Promise<void>;
 }

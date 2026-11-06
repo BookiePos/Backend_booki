@@ -47,4 +47,15 @@ export class LiquidacionDto {
   @IsNumber()
   @Min(0)
   diasFaltantesContrato?: number;
+
+  /** Desde cuándo liquidar cesantías (por defecto, max(ingreso, 1-ene del año del retiro)). */
+  @IsOptional()
+  @Matches(YYYYMMDD, { message: 'inicioCesantias debe ser YYYY-MM-DD' })
+  inicioCesantias?: string;
+
+  /** Días hábiles de vacaciones ya disfrutados en el contrato; obligatorio para aprobar la liquidación. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  vacacionesDisfrutadasDias?: number;
 }

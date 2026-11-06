@@ -15,6 +15,8 @@ import { PreviewPayrollDto } from '../application/dto/preview-payroll.dto';
 import { CreateRunDto } from '../application/dto/create-run.dto';
 import { CreateDeductionDto } from '../application/dto/deduction.dto';
 import { LiquidacionDto } from '../application/dto/liquidacion.dto';
+import { CerrarRunDto, PagoNominaDto } from '../application/dto/pago-nomina.dto';
+import { CrearNovedadDto } from '../application/dto/novedad.dto';
 import { DeductionStatus } from '../infrastructure/schemas/payroll-deduction.schema';
 import {
   RequireAnyPermission,
@@ -69,6 +71,55 @@ export class PayrollController {
     return this.payroll.liquidacion(dto, user);
   }
 
+  /** Novedades de ausencia: vacaciones, incapacidades y licencias (decisión 3 del dueño). */
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('novedades')
+  crearNovedad(@Body() dto: CrearNovedadDto, @CurrentUser() user: JwtUser) {
+    return this.payroll.crearNovedad(dto, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)
+  @Get('novedades')
+  listarNovedades(
+    @Query('employeeId') employeeId: string | undefined,
+    @Query('periodo') periodo: string | undefined,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.payroll.listarNovedades({ employeeId, periodo }, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('novedades/:id/anular')
+  anularNovedad(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.payroll.anularNovedad(id, user);
+  }
+
+  /** Guarda la liquidación de retiro como borrador (decisión 4 del dueño). */
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('liquidaciones')
+  guardarLiquidacion(@Body() dto: LiquidacionDto, @CurrentUser() user: JwtUser) {
+    return this.payroll.guardarLiquidacion(dto, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)
+  @Get('liquidaciones')
+  listarLiquidaciones(@Query('employeeId') employeeId: string | undefined, @CurrentUser() user: JwtUser) {
+    return this.payroll.listarLiquidaciones(employeeId, user);
+  }
+
+  /** Aprueba la liquidación con el medio y la fecha real del pago: es la que reporta la nómina electrónica. */
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('liquidaciones/:id/aprobar')
+  aprobarLiquidacion(@Param('id') id: string, @Body() dto: PagoNominaDto, @CurrentUser() user: JwtUser) {
+    return this.payroll.aprobarLiquidacion(id, dto, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('liquidaciones/:id/anular')
+  anularLiquidacion(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.payroll.anularLiquidacion(id, user);
+  }
+
   @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
   @Post('runs')
   createRun(@Body() dto: CreateRunDto, @CurrentUser() user: JwtUser) {
@@ -95,8 +146,15 @@ export class PayrollController {
 
   @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
   @Post('runs/:id/close')
-  closeRun(@Param('id') id: string, @CurrentUser() user: JwtUser) {
-    return this.payroll.closeRun(id, user);
+  closeRun(@Param('id') id: string, @Body() dto: CerrarRunDto, @CurrentUser() user: JwtUser) {
+    return this.payroll.closeRun(id, user, dto);
+  }
+
+  /** Medio y fecha real del pago de una corrida cerrada (nómina electrónica). */
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Put('runs/:id/pago')
+  declararPago(@Param('id') id: string, @Body() dto: PagoNominaDto, @CurrentUser() user: JwtUser) {
+    return this.payroll.declararPago(id, dto, user);
   }
 
   @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)

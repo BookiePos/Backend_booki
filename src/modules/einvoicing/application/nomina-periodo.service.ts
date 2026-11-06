@@ -4,6 +4,10 @@ import { Model, Types } from 'mongoose';
 import { PayrollEDocument, type PayrollEDocumentDocument } from '../infrastructure/schemas/payroll-e-document.schema';
 import { PayrollRun, type PayrollRunDocument } from '../../payroll/infrastructure/schemas/payroll-run.schema';
 import { PayrollDeduction, type PayrollDeductionDocument } from '../../payroll/infrastructure/schemas/payroll-deduction.schema';
+import {
+  PayrollLiquidacion,
+  type PayrollLiquidacionDocument,
+} from '../../payroll/infrastructure/schemas/payroll-liquidacion.schema';
 import { Sede, type SedeDocument } from '../../sedes/infrastructure/schemas/sede.schema';
 import { EmployeesService } from '../../employees/application/employees.service';
 import { FiscalEmittersService } from './fiscal-emitters.service';
@@ -21,6 +25,8 @@ import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { allowedSedeIds, assertSedeAccess } from '../../core-auth/domain/sede-access';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { AuditService } from '../../core-audit/application/audit.service';
+import { ParamsService } from '../../core-params/application/params.service';
+import { DEFAULT_PAYROLL_SETTINGS } from '../../payroll/domain/payroll.constants';
 
 /**
  * Lote de emisión por llamada. Cada documento firma y sale a la red (hasta
@@ -81,6 +87,10 @@ interface ContextoPeriodo {
   veTodas: boolean;
   empleados: Map<string, EmpleadoConsolidar & { sedeId?: string }>;
   corridas: LeanRun[];
+  /** SMMLV vigente al cierre del mes (core-params), para el mínimo del salario integral. */
+  smmlv: number;
+  /** UVT vigente al cierre del mes (core-params), para el aviso de retención de cesantías. */
+  uvt: number;
 }
 
 interface LeanRun {
@@ -89,6 +99,8 @@ interface LeanRun {
   coverage: string;
   status: string;
   sedeId?: Types.ObjectId;
+  /** Medio y fecha real del pago declarados al cerrar (decisión 1 del dueño). */
+  pago?: { medio?: string; fecha?: string };
   slips: {
     employeeId: string;
     employeeName?: string;
@@ -123,6 +135,8 @@ export class NominaPeriodoService {
     private readonly emisores: FiscalEmittersService,
     private readonly nomina: NominaElectronicaService,
     private readonly audit: AuditService,
+    private readonly params: ParamsService,
+    @InjectModel(PayrollLiquidacion.name) private readonly liquidaciones: Model<PayrollLiquidacionDocument>,
   ) {}
 
   // ── Pre-vuelo ─────────────────────────────────────────────────────────────
@@ -379,7 +393,10 @@ export class NominaPeriodoService {
         .filter((sl) => sl.sedeEfectiva !== undefined && sedesEmisor.includes(sl.sedeEfectiva));
       if (slips.length > 0) corridas.push({ ...run, slips });
     }
-    return { periodo, sedeId, emisor, empleador: empleador.empleador, sedes, sedesEmisor, veTodas, empleados, corridas };
+    const finMes = new Date(Date.UTC(Number(periodo.slice(0, 4)), Number(periodo.slice(5, 7)), 0)).toISOString().slice(0, 10);
+    const smmlv = await this.params.number('nomina.salario_minimo', DEFAULT_PAYROLL_SETTINGS.smmlv, { date: finMes });
+    const uvt = await this.params.number('fiscal.uvt', DEFAULT_PAYROLL_SETTINGS.uvt, { date: finMes });
+    return { periodo, sedeId, emisor, empleador: empleador.empleador, sedes, sedesEmisor, veTodas, empleados, corridas, smmlv, uvt };
   }
 
   /** Contexto para ajustar un documento ya emitido: el de su mes. */
@@ -446,6 +463,7 @@ export class NominaPeriodoService {
         cobertura: run.coverage === 'sede' ? 'sede' : 'all',
         sedeId: run.sedeId ? String(run.sedeId) : undefined,
         estado: run.status === 'cerrada' ? 'cerrada' : 'borrador',
+        ...(run.pago?.medio || run.pago?.fecha ? { pago: { medio: run.pago.medio ?? '', fecha: run.pago.fecha ?? '' } } : {}),
         colilla: {
           employeeId: slip.employeeId,
           employeeName: slip.employeeName,
@@ -468,16 +486,71 @@ export class NominaPeriodoService {
       status: f.status,
       appliedRunId: f.appliedRunId ? String(f.appliedRunId) : undefined,
     }));
+    // Liquidación de retiro APROBADA cuyo retiro cae en el mes (decisión 4 del dueño).
+    const finMes = new Date(Date.UTC(Number(ctx.periodo.slice(0, 4)), Number(ctx.periodo.slice(5, 7)), 0)).toISOString().slice(0, 10);
+    const liq = (await this.liquidaciones
+      .findOne({ employeeId: id, estado: 'aprobada', fechaRetiro: { $gte: `${ctx.periodo}-01`, $lte: finMes } })
+      .lean()
+      .exec()) as unknown as (PayrollLiquidacion & { _id: Types.ObjectId }) | null;
+    const devengadoUltimos6Meses = liq ? await this.devengadoUltimos6Meses(id, ctx.periodo) : undefined;
     const entrada: EntradaConsolidar = {
       periodo: ctx.periodo,
       empleado,
       empleador: { razonSocial: ctx.emisor.razonSocial, municipioDane: ctx.emisor.municipioDane, direccion: ctx.emisor.direccion },
       slips,
       deducciones,
-      pago: { fechasPagos: [] },
+      smmlv: ctx.smmlv,
+      uvt: ctx.uvt,
+      ...(devengadoUltimos6Meses ? { devengadoUltimos6Meses } : {}),
+      ...(liq
+        ? {
+            liquidacion: {
+              id: String(liq._id),
+              fechaRetiro: liq.fechaRetiro,
+              diasLiquidados: liq.breakdown.diasLiquidados,
+              diasPrima: liq.breakdown.diasPrima,
+              diasVacacionesPendientes: liq.breakdown.diasVacacionesPendientes,
+              salarioBase: liq.salarioBase,
+              cesantias: liq.breakdown.cesantias,
+              interesesCesantias: liq.breakdown.interesesCesantias,
+              prima: liq.breakdown.prima,
+              vacaciones: liq.breakdown.vacaciones,
+              indemnizacion: liq.breakdown.indemnizacion,
+              salariosPendientes: liq.breakdown.salariosPendientes,
+              pago: liq.pago,
+            },
+          }
+        : {}),
     };
     const r = consolidarNominaMes(entrada);
     return r.ok ? { ok: true as const, modelo: r.modelo as DocumentoNe, advertencias: r.advertencias } : { ok: false as const, bloqueos: r.bloqueos };
+  }
+
+  /**
+   * Devengado total del empleado por mes en las corridas CERRADAS de los últimos
+   * 6 meses (incluido `periodo`): base del promedio del art. 206-4 ET. Solo
+   * cuentan las corridas de la empresa (tenant); un mes con dos corridas suma.
+   */
+  private async devengadoUltimos6Meses(employeeId: string, periodo: string): Promise<number[]> {
+    const y = Number(periodo.slice(0, 4));
+    const m = Number(periodo.slice(5, 7));
+    const meses = Array.from({ length: 6 }, (_, i) => {
+      const d = new Date(Date.UTC(y, m - 1 - i, 1));
+      return d.toISOString().slice(0, 7);
+    });
+    const corridas = (await this.runs
+      .find({ period: { $in: meses }, status: 'cerrada', 'slips.employeeId': employeeId })
+      .lean()
+      .exec()) as unknown as LeanRun[];
+    const porMes = new Map<string, number>();
+    for (const r of corridas) {
+      for (const sl of r.slips) {
+        if (sl.employeeId !== employeeId) continue;
+        const total = (sl.breakdown as unknown as { devengados?: { total?: number } })?.devengados?.total ?? 0;
+        porMes.set(r.period, (porMes.get(r.period) ?? 0) + total);
+      }
+    }
+    return [...porMes.values()];
   }
 
   private emision(ctx: ContextoPeriodo): EmisionNe {

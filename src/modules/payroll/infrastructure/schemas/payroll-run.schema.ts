@@ -87,6 +87,25 @@ export class PayrollTotals {
 }
 const PayrollTotalsSchema = SchemaFactory.createForClass(PayrollTotals);
 
+/** Medio y fecha real del pago de la corrida, declarados por el negocio (nómina electrónica, decisión 1 del dueño). */
+@Schema({ _id: false })
+export class PayrollRunPago {
+  /** Código DIAN 5.3.3.2: 10 efectivo, 20 cheque, 42 consignación, 47 transferencia. */
+  @Prop({ required: true, enum: ['10', '20', '42', '47'] })
+  medio!: string;
+
+  /** YYYY-MM-DD: el día real del egreso. */
+  @Prop({ required: true })
+  fecha!: string;
+
+  @Prop({ trim: true })
+  declaradoPor?: string;
+
+  @Prop()
+  declaradoEn?: Date;
+}
+export const PayrollRunPagoSchema = SchemaFactory.createForClass(PayrollRunPago);
+
 /**
  * Corrida de nómina de un período (mes) sobre un conjunto de empleados. Guarda
  * cada desprendible calculado y los totales, como comprobante del período.
@@ -114,6 +133,10 @@ export class PayrollRun {
   /** Fecha en que se cerró la nómina (queda como comprobante del período). */
   @Prop()
   closedAt?: Date;
+
+  /** Pago declarado (al cerrar o después). Sin él la nómina electrónica del mes no se consolida. */
+  @Prop({ type: PayrollRunPagoSchema })
+  pago?: PayrollRunPago;
 
   @Prop({ type: [PayrollSlipSchema], default: [] })
   slips!: PayrollSlip[];

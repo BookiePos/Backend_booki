@@ -251,7 +251,12 @@ describe('EinvoicingService · notas de la venta (Fase 6B)', () => {
 
   it('las notas previas se buscan del mismo documento y sin las rechazadas', async () => {
     await devolucion();
-    expect(model.find).toHaveBeenCalledWith({ referenceId: doc._id, type: 'credit_note', dianStatus: { $ne: 'rejected' } });
+    // Fase 6C: también las notas sin referencia que le asignaron parte (tope cruzado).
+    expect(model.find).toHaveBeenCalledWith({
+      type: 'credit_note',
+      dianStatus: { $ne: 'rejected' },
+      $or: [{ referenceId: doc._id }, { 'asignaciones.referenceId': doc._id }],
+    });
   });
 
   it('anulación con una NC vieja por el total (antes de la Fase 6B): la reutiliza, no emite otra', async () => {

@@ -14,6 +14,11 @@ import { PackagingSuggestionDto } from '../application/dto/packaging-suggestion.
 import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
 import { SaleReturnsService } from '../application/sale-returns.service';
 import { CreateSaleReturnDto } from '../application/dto/create-sale-return.dto';
+import {
+  CreateNotaSinReferenciaDto,
+  CreateSaleRebateDto,
+} from '../application/dto/create-sale-rebate.dto';
+import { NotasSinReferenciaService } from '../application/notas-sin-referencia.service';
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
@@ -33,6 +38,7 @@ export class SalesController {
     private readonly packaging: PackagingService,
     private readonly offline: OfflineSalesService,
     private readonly documentoFiscal: DocumentoFiscalVentaService,
+    private readonly sinReferencia: NotasSinReferenciaService,
   ) {}
 
   /**
@@ -201,6 +207,42 @@ export class SalesController {
   @Post('returns/:id/completar')
   completarDevolucion(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.returns.completarPendiente(id, user);
+  }
+
+  /**
+   * Rebaja o descuento POSTERIOR sobre la venta (Fase 6C): menor valor sin que
+   * vuelva mercancía, con su NC 91 o nota de ajuste 94 (conceptos 3–6).
+   *
+   * Va con el permiso de autorizar anulaciones y no con el de devolver: en la
+   * devolución la mercancía vuelve y se cuenta; aquí sale plata (o baja la
+   * cartera) sin nada físico que lo respalde, y eso lo autoriza un supervisor.
+   */
+  @RequirePermissions(PERMISSIONS.POS_VOID_AUTHORIZE)
+  @Post(':id/rebajas')
+  createRebaja(
+    @Param('id') id: string,
+    @Body() dto: CreateSaleRebateDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.returns.createRebaja(id, dto, user);
+  }
+
+  /**
+   * Descuento SIN referencia (Fase 6C, NC 22 de la FEV): volumen o pronto
+   * pago sobre las facturas de un cliente en un periodo. Mismo permiso que la
+   * rebaja, por la misma razón.
+   */
+  @RequirePermissions(PERMISSIONS.POS_VOID_AUTHORIZE)
+  @Post('rebajas/sin-referencia')
+  createSinReferencia(@Body() dto: CreateNotaSinReferenciaDto, @CurrentUser() user: JwtUser) {
+    return this.sinReferencia.create(dto, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.POS_VOID_AUTHORIZE)
+  @Get('rebajas/sin-referencia')
+  listSinReferencia(@Query('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
+    if (!sedeId) throw new BadRequestException('sedeId es obligatorio');
+    return this.sinReferencia.list(sedeId, user);
   }
 
   /** Lo que ya se devolvió de esta venta (para no devolver dos veces). */

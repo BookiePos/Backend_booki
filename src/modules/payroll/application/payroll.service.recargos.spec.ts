@@ -47,6 +47,7 @@ function armar(opts: {
   empleado?: Record<string, unknown>;
   /** Por defecto la empresa ya respondió la exoneración (ítem 1.15). */
   exoneracionConfirmada?: boolean;
+  novedades?: Record<string, unknown>[];
 }) {
   const settings = {
     findOne: () =>
@@ -98,7 +99,8 @@ function armar(opts: {
     {} as any,
     params as any,
     ledgerPosting as any,
-    {} as any,
+    {} as any, {} as any,
+    { find: () => ({ exec: async () => opts.novedades ?? [] }) } as any,
   );
   return { service, created, attendance, ledgerPosting };
 }
@@ -387,5 +389,50 @@ describe('PayrollService.createRun · descanso remunerado (ítem 1.19)', () => {
     expect(slip.diasTrabajados).toBe(30);
     expect(slip.alertas).toHaveLength(1);
     expect(slip.alertas[0]).toContain('1 turno(s) sin salida');
+  });
+});
+
+describe('PayrollService.createRun · retiro en el mes (decisión 4 del dueño)', () => {
+  it('el retirado del mes entra con los días hasta el retiro y con salud y pensión', async () => {
+    const turnos: { employeeId: string; workDate: string; checkIn: string; checkOut: string }[] = [
+      { employeeId: 'e1', workDate: '2026-08-31', checkIn: '08:00', checkOut: '15:00' },
+    ];
+    for (let d = 1; d <= 30; d++) {
+      const fecha = `2026-09-${String(d).padStart(2, '0')}`;
+      if (new Date(`${fecha}T12:00:00Z`).getUTCDay() === 0) continue;
+      turnos.push({ employeeId: 'e1', workDate: fecha, checkIn: '08:00', checkOut: '15:00' });
+    }
+    const empleado = { ...EMP, status: 'retirado', terminationDate: '2026-09-12' };
+    const { service, created } = armar({ turnos, empleado });
+    await service.createRun({ period: '2026-09' } as any, USER);
+    const slip = (created[0]!.slips as any[])[0];
+    // Del 1 al 12 (sábado): 11 días con turno + el domingo 6 ganado = 12. Nada después del retiro.
+    expect(slip.diasTrabajados).toBe(12);
+    expect(slip.breakdown.deducciones.salud).toBeGreaterThan(0);
+    expect(slip.breakdown.deducciones.pension).toBeGreaterThan(0);
+  });
+});
+
+describe('PayrollService.createRun · novedades (decisión 3 del dueño)', () => {
+  it('vacaciones del 1 al 15: no cuentan como trabajados aunque haya turno, y se pagan como vacaciones', async () => {
+    const turnos: { employeeId: string; workDate: string; checkIn: string; checkOut: string }[] = [
+      { employeeId: 'e1', workDate: '2026-08-31', checkIn: '08:00', checkOut: '15:00' },
+    ];
+    for (let d = 1; d <= 30; d++) {
+      const fecha = `2026-09-${String(d).padStart(2, '0')}`;
+      if (new Date(`${fecha}T12:00:00Z`).getUTCDay() === 0) continue;
+      turnos.push({ employeeId: 'e1', workDate: fecha, checkIn: '08:00', checkOut: '15:00' });
+    }
+    const novedades = [{ _id: 'n1', employeeId: 'e1', tipo: 'vacaciones', fechaInicio: '2026-09-01', fechaFin: '2026-09-15', diasHabiles: 13, estado: 'activa' }];
+    const { service, created } = armar({ turnos, novedades });
+    await service.createRun({ period: '2026-09' } as any, USER);
+    const slip = (created[0]!.slips as any[])[0];
+    expect(slip.diasTrabajados).toBe(15);
+    expect(slip.breakdown.devengados.ausenciaDetalle).toEqual([
+      expect.objectContaining({ tipo: 'vacaciones', fechaInicio: '2026-09-01', fechaFin: '2026-09-15', dias: 15, pagador: 'empleador' }),
+    ]);
+    // Salario de 15 días + 15 días de vacaciones = el mes; el IBC lleva las vacaciones.
+    expect(slip.breakdown.devengados.salario + slip.breakdown.devengados.ausencias).toBe(EMP.salary);
+    expect(slip.breakdown.ibc).toBeGreaterThanOrEqual(EMP.salary);
   });
 });

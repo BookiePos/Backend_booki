@@ -48,6 +48,8 @@ export const INDICE_UNA_REVERSA = {
 export const ORIGENES_AUTOMATICOS: readonly string[] = [
   'sale',
   'sale_return',
+  // Nota crédito sin referencia (Fase 6C): descuento sobre varias facturas.
+  'nota_sin_referencia',
   'expense',
   'payable_payment',
   'receivable_payment',
