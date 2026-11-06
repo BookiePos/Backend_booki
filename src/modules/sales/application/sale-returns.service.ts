@@ -204,8 +204,8 @@ export class SaleReturnsService {
     return units;
   }
 
-  /** Cuánto dura el turno de quien completa una devolución (N1). */
-  static readonly TURNO_MS = 2 * 60 * 1000;
+  /** Cuánto dura el turno de quien completa una devolución (N1, N5). */
+  static readonly TURNO_MS = 5 * 60 * 1000;
   /** Antigüedad a partir de la cual el barrido toma una devolución varada (N2). */
   static readonly VARADA_MS = 10 * 60 * 1000;
 
@@ -441,11 +441,12 @@ export class SaleReturnsService {
     registro.abonoCartera = abonoCartera;
     if (nota) registro.notaFiscal = nota as unknown as Record<string, unknown>;
     registro.carteraHecha = true;
+    const turno = registro.procesandoHasta ?? null;
     try {
       await registro.save();
-      await this.completar(registro, sale, user);
+      await this.completar(registro, sale, user, 'caja');
     } finally {
-      await this.soltarTurno(registro);
+      await this.soltarTurno(registro, turno);
     }
     // La caja no espera a la DIAN: la nota se transmite detrás de la respuesta.
     this.notas?.transmitirDetras(nota, user);
@@ -464,7 +465,7 @@ export class SaleReturnsService {
       .findOneAndUpdate(
         {
           _id: id,
-          estado: 'en_curso',
+          estado: { $in: ESTADOS_ABIERTOS },
           $or: [{ procesandoHasta: null }, { procesandoHasta: { $lt: ahora } }],
         },
         { $set: { procesandoHasta: new Date(ahora.getTime() + SaleReturnsService.TURNO_MS) } },
@@ -473,10 +474,17 @@ export class SaleReturnsService {
       .exec();
   }
 
-  /** Suelta el turno al terminar o al fallar. Si falla, el turno vence solo. */
-  private async soltarTurno(registro: SaleReturnDocument): Promise<void> {
+  /**
+   * Suelta el turno al terminar o al fallar, solo si sigue siendo el PROPIO
+   * (N5): si el de esta petición venció y otra lo tomó, soltarlo a ciegas le
+   * quitaría el turno a la otra. Si falla, el turno vence solo.
+   */
+  private async soltarTurno(registro: SaleReturnDocument, turno: Date | null): Promise<void> {
+    if (!turno) return;
     try {
-      await this.model.updateOne({ _id: registro._id }, { $set: { procesandoHasta: null } }).exec();
+      await this.model
+        .updateOne({ _id: registro._id, procesandoHasta: turno }, { $set: { procesandoHasta: null } })
+        .exec();
     } catch (err) {
       this.logger.warn(
         `No se pudo soltar el turno de la devolución ${registro._id.toString()} (vence solo): ${(err as Error).message}`,
@@ -485,9 +493,12 @@ export class SaleReturnsService {
   }
 
   /**
-   * Completa a mano una devolución que quedó `en_curso` (N2): la que no trae
-   * llave no tiene cómo reintentarse desde la caja, y sus cantidades ya
-   * cuentan como devueltas. Una completa se devuelve tal cual.
+   * Completa a mano una devolución que quedó `en_curso` o `pendiente_caja`
+   * (N2, N6): la que no trae llave no tiene cómo reintentarse desde la caja, y
+   * sus cantidades ya cuentan como devueltas. Es el ÚNICO camino que anota la
+   * salida de efectivo de una devolución varada: lo hace el cajero con su
+   * caja abierta, y sin caja abierta responde 409. Una completa se devuelve
+   * tal cual.
    */
   async completarPendiente(returnId: string, user: JwtUser): Promise<SaleReturnDocument> {
     const registro = Types.ObjectId.isValid(returnId)
@@ -495,9 +506,9 @@ export class SaleReturnsService {
       : null;
     if (!registro) throw new NotFoundException('Devolución no encontrada');
     assertSedeAccess(user, registro.sedeId.toString());
-    if (registro.estado !== 'en_curso') return registro;
+    if (!estaAbierta(registro)) return registro;
     const sale = await this.sales.getOrFail(registro.saleId.toString());
-    return this.continuar(registro, sale, user);
+    return this.continuar(registro, sale, user, 'caja_estricta');
   }
 
   /**
@@ -508,7 +519,7 @@ export class SaleReturnsService {
    */
   async completarVaradas(
     opts: { limite?: number; ahora?: Date } = {},
-  ): Promise<{ completadas: number; fallidas: number; ocupadas: number }> {
+  ): Promise<{ completadas: number; pendientesCaja: number; fallidas: number; ocupadas: number }> {
     const ahora = opts.ahora ?? new Date();
     const varadas = await this.model
       .find({
@@ -520,13 +531,18 @@ export class SaleReturnsService {
       .limit(opts.limite ?? 50)
       .exec();
     let completadas = 0;
+    let pendientesCaja = 0;
     let fallidas = 0;
     let ocupadas = 0;
     for (const r of varadas) {
       try {
         const sale = await this.sales.getOrFail(r.saleId.toString());
-        const hecha = await this.continuar(r, sale, usuarioDelRegistro(r));
+        // Sin caja (N6): la caja abierta HOY no es la del turno de la
+        // devolución; anotar ahí la salida descuadraría su arqueo. Stock y
+        // libro sí; la caja queda `pendiente_caja` para el endpoint manual.
+        const hecha = await this.continuar(r, sale, usuarioDelRegistro(r), 'sin_caja');
         if (hecha.estado === 'completa') completadas++;
+        else if (hecha.estado === 'pendiente_caja') pendientesCaja++;
         else fallidas++;
       } catch (err) {
         if (err instanceof ConflictException) {
@@ -539,7 +555,7 @@ export class SaleReturnsService {
         );
       }
     }
-    return { completadas, fallidas, ocupadas };
+    return { completadas, pendientesCaja, fallidas, ocupadas };
   }
 
   /**
@@ -564,6 +580,7 @@ export class SaleReturnsService {
     registro: SaleReturnDocument,
     sale: SaleDocument,
     user: JwtUser,
+    caja: ModoCaja,
   ): Promise<void> {
     const sedeId = registro.sedeId.toString();
 
@@ -621,7 +638,10 @@ export class SaleReturnsService {
         clampNonNegative(registro.refundTotal - (registro.abonoCartera ?? 0)) +
         (registro.tipRefund ?? 0);
       let hecha = true;
-      if (registro.refundMethod === 'cash' && enPlata > 0) {
+      if (registro.refundMethod === 'cash' && enPlata > 0 && caja === 'sin_caja') {
+        // El barrido no toca la caja (N6): queda para el cajero.
+        hecha = false;
+      } else if (registro.refundMethod === 'cash' && enPlata > 0) {
         try {
           await this.caja.movement(
             {
@@ -634,6 +654,14 @@ export class SaleReturnsService {
             user,
           );
         } catch (err) {
+          if (caja === 'caja_estricta') {
+            if (err instanceof NotFoundException) {
+              throw new ConflictException(
+                'No hay una caja abierta en la sede: ábrela para registrar la salida del efectivo de esta devolución.',
+              );
+            }
+            throw err;
+          }
           hecha = false;
           this.logger.warn(
             `No se pudo registrar en caja la devolución de la venta ${sale.saleNumber}: ${(err as Error).message}`,
@@ -659,6 +687,11 @@ export class SaleReturnsService {
 
     if (registro.stockHecho && registro.cajaHecha && registro.asientoHecho) {
       registro.estado = 'completa';
+      await registro.save();
+    } else if (registro.stockHecho && registro.asientoHecho && registro.estado !== 'pendiente_caja') {
+      // Solo falta la salida de efectivo (N6): queda a la vista y fuera del
+      // barrido, que no la puede anotar. La completa el cajero a mano.
+      registro.estado = 'pendiente_caja';
       await registro.save();
     }
   }
@@ -738,7 +771,7 @@ export class SaleReturnsService {
         'Esa llave ya se usó para otra devolución de esta venta, con otros productos, cantidades o medio de devolución. Revisa lo ya devuelto y usa una llave nueva.',
       );
     }
-    if (registro.estado === 'en_curso') return this.continuar(registro, sale, user);
+    if (estaAbierta(registro)) return this.continuar(registro, sale, user, 'caja');
     // Completa (o de antes de los pasos): no se mueve nada; solo la nota, si
     // no alcanzó a quedar (idempotente por devolución).
     if (this.notas && !registro.notaFiscal) {
@@ -759,13 +792,15 @@ export class SaleReturnsService {
     previo: SaleReturnDocument,
     sale: SaleDocument,
     user: JwtUser,
+    caja: ModoCaja,
   ): Promise<SaleReturnDocument> {
     const registro = await this.tomarTurno(previo._id);
     if (!registro) {
       const ahora = await this.model.findById(previo._id).exec();
-      if (ahora && ahora.estado !== 'en_curso') return ahora;
+      if (ahora && !estaAbierta(ahora)) return ahora;
       throw new ConflictException('La devolución se está procesando; reintenta en unos segundos.');
     }
+    const turno = registro.procesandoHasta ?? null;
     let nota: NotaFiscalOperacion | undefined;
     try {
       if (!registro.carteraHecha) {
@@ -781,9 +816,9 @@ export class SaleReturnsService {
         registro.notaFiscal = nota as unknown as Record<string, unknown>;
         await registro.save();
       }
-      await this.completar(registro, sale, user);
+      await this.completar(registro, sale, user, caja);
     } finally {
-      await this.soltarTurno(registro);
+      await this.soltarTurno(registro, turno);
     }
     if (nota) this.notas?.transmitirDetras(nota, user);
     return registro;
@@ -958,3 +993,17 @@ function usuarioDelRegistro(r: SaleReturnDocument): JwtUser {
     permissions: [],
   } as unknown as JwtUser;
 }
+
+/**
+ * Qué hace `completar` con la salida de efectivo (N6):
+ * - `caja`: la anota y, si falla, sigue (la devolución queda `pendiente_caja`).
+ * - `caja_estricta`: el cajero a mano; sin caja abierta, 409.
+ * - `sin_caja`: el barrido; no la toca.
+ */
+type ModoCaja = 'caja' | 'caja_estricta' | 'sin_caja';
+
+/** Estados en los que la devolución todavía tiene pasos por hacer. */
+const ESTADOS_ABIERTOS: ('en_curso' | 'pendiente_caja')[] = ['en_curso', 'pendiente_caja'];
+
+const estaAbierta = (r: { estado?: string }) =>
+  (ESTADOS_ABIERTOS as string[]).includes(r.estado ?? '');

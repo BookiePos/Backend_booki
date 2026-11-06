@@ -133,11 +133,13 @@ export class SaleReturn {
 
   /**
    * Pasos de la devolución (D1). Nace `en_curso` y pasa a `completa` cuando
-   * stock, caja y libro quedaron. Las devoluciones de antes no lo tienen: se
+   * stock, caja y libro quedaron. `pendiente_caja` (N6): solo falta la salida
+   * de efectivo, que el barrido no anota; la completa el cajero con
+   * `POST /sales/returns/:id/completar`. Las devoluciones de antes no lo tienen: se
    * tratan como completas y un reintento no las vuelve a mover.
    */
-  @Prop({ type: String, enum: ['en_curso', 'completa'] })
-  estado?: 'en_curso' | 'completa';
+  @Prop({ type: String, enum: ['en_curso', 'pendiente_caja', 'completa'] })
+  estado?: 'en_curso' | 'pendiente_caja' | 'completa';
 
   /**
    * Turno de quien la está completando (N1): mientras no venza, otra petición

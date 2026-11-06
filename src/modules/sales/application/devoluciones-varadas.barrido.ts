@@ -9,7 +9,11 @@ import { SaleReturnsService } from './sale-returns.service';
 const PRESUPUESTO_MS = 200_000;
 
 /**
- * Barrido de devoluciones varadas (N2 de la revisión del PR #125).
+ * Barrido de devoluciones varadas (N2 y N6 de la revisión del PR #125).
+ *
+ * Completa stock y libro, NUNCA la caja: la caja abierta hoy no es la del
+ * turno de la devolución. Lo que solo espera la salida de efectivo queda
+ * `pendiente_caja` y se reporta como «pendientes de caja: N», sin error.
  *
  * Una devolución que falló a mitad (stock, caja o libro) queda `en_curso`, y
  * sus cantidades ya cuentan como devueltas. La caja todavía no envía la llave
@@ -41,6 +45,7 @@ export class DevolucionesVaradasBarrido {
       const empresas = await this.businesses.listActive();
       let completadas = 0;
       let sinTerminar = 0;
+      let pendientesCaja = 0;
       const { procesadas, pendientes, fallidas } = await recorrerEmpresas(
         empresas,
         async (biz) => {
@@ -51,9 +56,10 @@ export class DevolucionesVaradasBarrido {
           );
           completadas += r.completadas;
           sinTerminar += r.fallidas;
-          if (r.completadas + r.fallidas > 0) {
+          pendientesCaja += r.pendientesCaja;
+          if (r.completadas + r.fallidas + r.pendientesCaja > 0) {
             this.logger.log(
-              `Empresa ${businessId}: ${r.completadas} devolución(es) completada(s), ${r.fallidas} sin terminar.`,
+              `Empresa ${businessId}: ${r.completadas} devolución(es) completada(s), ${r.pendientesCaja} pendiente(s) de caja, ${r.fallidas} sin terminar.`,
             );
           }
         },
@@ -64,6 +70,7 @@ export class DevolucionesVaradasBarrido {
         procesadas,
         pendientes,
         completadas,
+        pendientesCaja,
         sinTerminar,
         fallidas: fallidas.length,
       };
@@ -75,7 +82,11 @@ export class DevolucionesVaradasBarrido {
         ].filter(Boolean);
         return { estado: 'error', detalle: partes.join('; '), cifras };
       }
-      return { estado: 'ok', cifras };
+      // Las pendientes de caja no son un error del cron (N6): las completa el
+      // cajero a mano. Se reportan para que se vean.
+      return pendientesCaja > 0
+        ? { estado: 'ok', detalle: `pendientes de caja: ${pendientesCaja}`, cifras }
+        : { estado: 'ok', cifras };
     } catch (err) {
       const detalle = err instanceof Error ? err.message : String(err);
       this.logger.error(`Fallo en el barrido de devoluciones varadas: ${detalle}`);
