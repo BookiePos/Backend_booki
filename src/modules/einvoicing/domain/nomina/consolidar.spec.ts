@@ -116,6 +116,7 @@ const corrida = (o: OpcionesCorrida = {}): CorridaColilla => ({
   sedeId: o.sedeId,
   estado: o.estado ?? 'cerrada',
   rango: o.rango,
+  pago: 'pago' in o ? o.pago : { medio: '10', fecha: '2026-10-31' },
   colilla: {
     employeeId: 'emp1',
     diasTrabajados: o.dias ?? 30,
@@ -130,7 +131,6 @@ const entrada = (o: Partial<EntradaConsolidar> = {}): EntradaConsolidar => ({
   empleador: { municipioDane: '05001', direccion: 'Calle 10 # 20-30' },
   slips: [corrida()],
   deducciones: [],
-  pago: { fechasPagos: ['2026-10-31'] },
   ...o,
 });
 
@@ -242,16 +242,15 @@ describe('consolidarNominaMes: casos que pasan', () => {
     const { modelo } = ok(
       entrada({
         slips: [
-          corrida({ corridaId: 'q1', bd: a, dias: 15, rango: { desde: '2026-10-01', hasta: '2026-10-15' } }),
+          corrida({ corridaId: 'q1', bd: a, dias: 15, rango: { desde: '2026-10-01', hasta: '2026-10-15' }, pago: { medio: '10', fecha: '2026-10-15' } }),
           corrida({ corridaId: 'q2', bd: b, dias: 15, rango: { desde: '2026-10-16', hasta: '2026-10-31' } }),
         ],
-        pago: { fechasPagos: ['2026-10-15', '2026-10-31'] },
       }),
     );
     expect(modelo.periodoNomina).toBe('4');
     expect(modelo.devengados.basico).toEqual({ dias: 30, sueldo: 150_000_000 });
     expect(modelo.devengados.horas).toEqual([{ tipo: 'HED', cantidad: 4, porcentaje: 25, pago: 3_500_000 }]);
-    expect(modelo.fechasPagos).toHaveLength(2);
+    expect(modelo.fechasPagos).toEqual(['2026-10-15', '2026-10-31']);
     await verificar(modelo, a.devengados.total + b.devengados.total, a.deducciones.total + b.deducciones.total);
   }, 60_000);
 
@@ -269,12 +268,26 @@ describe('consolidarNominaMes: casos que pasan', () => {
     expect(modelo.devengados.horas.map((x) => x.porcentaje)).toEqual([80, 90]);
   });
 
-  it('ingreso a mitad de mes y fecha de pago ausente (advertencia)', () => {
-    const r = ok(entrada({ empleado: empleado({ hireDate: '2026-10-16' }), pago: { fechasPagos: [] } }));
+  it('ingreso a mitad de mes; la fecha de pago es la declarada en el cierre', () => {
+    const r = ok(entrada({ empleado: empleado({ hireDate: '2026-10-16' }), slips: [corrida({ pago: { medio: '10', fecha: '2026-11-03' } })] }));
     expect(r.modelo.periodo.fechaLiquidacionInicio).toBe('2026-10-16');
     expect(r.modelo.periodo.tiempoLaborado).toBe(15);
-    expect(r.modelo.fechasPagos).toEqual(['2026-10-31']);
-    expect(r.advertencias.join(' ')).toMatch(/fecha de pago/);
+    expect(r.modelo.fechasPagos).toEqual(['2026-11-03']);
+    expect(r.modelo.pago.metodo).toBe('10');
+  });
+
+  it('dos corridas con medios distintos: manda el del último pago y avisa', () => {
+    const { modelo, advertencias } = ok(
+      entrada({
+        empleado: empleado({ bank: 'Bancolombia', accountType: 'ahorros', accountNumber: '123' }),
+        slips: [
+          corrida({ corridaId: 'q1', dias: 15, bd: breakdown({ salario: 750_000 }), rango: { desde: '2026-10-01', hasta: '2026-10-15' }, pago: { medio: '10', fecha: '2026-10-15' } }),
+          corrida({ corridaId: 'q2', dias: 15, bd: breakdown({ salario: 750_000 }), rango: { desde: '2026-10-16', hasta: '2026-10-31' }, pago: { medio: '47', fecha: '2026-10-31' } }),
+        ],
+      }),
+    );
+    expect(modelo.pago.metodo).toBe('47');
+    expect(advertencias.join()).toMatch(/medios distintos/);
   });
 
   it('municipio del emisor como respaldo, con advertencia; segundo apellido partido', () => {
@@ -291,7 +304,12 @@ describe('consolidarNominaMes: casos que pasan', () => {
   });
 
   it('transferencia lleva banco, tipo y número de cuenta', () => {
-    const r = ok(entrada({ empleado: empleado({ medioPago: '47', bank: 'Bancolombia', accountType: 'ahorros', accountNumber: '123456789' }) }));
+    const r = ok(
+      entrada({
+        empleado: empleado({ bank: 'Bancolombia', accountType: 'ahorros', accountNumber: '123456789' }),
+        slips: [corrida({ pago: { medio: '47', fecha: '2026-10-31' } })],
+      }),
+    );
     expect(r.modelo.pago).toEqual({ forma: '1', metodo: '47', banco: 'Bancolombia', tipoCuenta: 'ahorros', numeroCuenta: '123456789' });
   });
 
@@ -331,8 +349,21 @@ describe('consolidarNominaMes: bloqueos por trabajador', () => {
   caso('falta el tipo de contrato DIAN', { tipoContratoDian: undefined }, /tipo de contrato DIAN/);
   caso('falta la fecha de ingreso', { hireDate: undefined }, /fecha de ingreso/);
   caso('falta el salario', { salary: undefined }, /salario/);
-  caso('falta el medio de pago', { medioPago: undefined }, /medio de pago/);
-  caso('transferencia sin datos de cuenta', { medioPago: '47' }, /banco, tipo de cuenta, número de cuenta/);
+  it('corrida cerrada sin pago declarado: dice qué falta', () => {
+    expect(bloqueos(entrada({ slips: [corrida({ pago: undefined })] })).join()).toMatch(/el medio de pago ni la fecha real de pago/);
+    expect(bloqueos(entrada({ slips: [corrida({ pago: { medio: '10', fecha: '' } })] })).join()).toMatch(/no tiene declarado la fecha real de pago/);
+  });
+  it('medio de pago no admitido para nómina', () => {
+    expect(bloqueos(entrada({ slips: [corrida({ pago: { medio: '48', fecha: '2026-10-31' } })] })).join()).toMatch(/no es válido para nómina/);
+  });
+  it('transferencia sin datos de cuenta', () => {
+    const b = bloqueos(entrada({ slips: [corrida({ pago: { medio: '47', fecha: '2026-10-31' } })] }));
+    expect(b.join()).toMatch(/banco, tipo de cuenta, número de cuenta/);
+  });
+  it('salario integral por debajo de 13 SMMLV bloquea (art. 132 CST)', () => {
+    const e = empleado({ salaryType: 'integral', salary: 20_000_000 });
+    expect(bloqueos(entrada({ empleado: e, smmlv: 1_750_905 })).join()).toMatch(/13 SMMLV/);
+  });
   caso('docTypeDian no coincide con docType', { docType: 'CE', docTypeDian: '13' }, /no coincide con el código DIAN 13/);
   caso('tipoContratoDian no coincide con contractType', { contractType: 'fijo', tipoContratoDian: '2' }, /no coincide con el código DIAN 2/);
   caso('prestación de servicios no va en nómina electrónica', { contractType: 'prestacion_servicios' }, /prestación de servicios/);
@@ -344,7 +375,7 @@ describe('consolidarNominaMes: bloqueos por trabajador', () => {
   });
 
   it('junta varios bloqueos del mismo trabajador', () => {
-    const b = bloqueos(entrada({ empleado: empleado({ docTypeDian: undefined, salary: undefined, medioPago: undefined }) }));
+    const b = bloqueos(entrada({ empleado: empleado({ docTypeDian: undefined, salary: undefined, hireDate: undefined }) }));
     expect(b.length).toBeGreaterThanOrEqual(3);
   });
 
@@ -528,9 +559,10 @@ describe('consolidarNominaMes: correcciones de revisión', () => {
   });
 
   it('fecha de pago anterior al periodo bloquea; muy posterior avisa', () => {
-    expect(bloqueos(entrada({ pago: { fechasPagos: ['2026-09-30'] } })).join()).toMatch(/anterior al inicio/);
-    const r = ok(entrada({ pago: { fechasPagos: ['2026-12-15'] } }));
-    expect(r.advertencias.join()).toMatch(/posterior al mes siguiente/);
-    expect(ok(entrada({ pago: { fechasPagos: ['2026-11-05'] } })).advertencias).toEqual([]);
+    const conPago = (fecha: string) => entrada({ slips: [corrida({ pago: { medio: '10', fecha } })] });
+    expect(bloqueos(conPago('2026-09-30')).join()).toMatch(/anterior al inicio/);
+    const r = ok(conPago('2026-12-15'));
+    expect(r.advertencias.join()).toMatch(/después del mes siguiente/);
+    expect(ok(conPago('2026-11-05')).advertencias).toEqual([]);
   });
 });

@@ -42,6 +42,7 @@ import { ArmadorUblFactura } from './application/armador-ubl';
 import { DocumentoFeVistaService } from './application/documento-fe-vista.service';
 import { RangosDianService } from './application/rangos-dian.service';
 import { CoreAuthModule } from '../core-auth/core-auth.module';
+import { CoreParamsModule } from '../core-params/core-params.module';
 import { EntregaDianService } from './application/entrega-dian.service';
 import { EmisionDocumentoFiscalDian } from './application/emision-documento-fiscal.adaptador';
 import { EMISION_DOCUMENTO_FISCAL } from '../sales/application/emision-documento-fiscal.puerto';
@@ -72,6 +73,7 @@ import { ControlModule } from '../control/control.module';
     StorageModule,
     CoreAuditModule,
     CoreAuthModule,
+    CoreParamsModule,
   ],
   controllers: [EinvoicingController],
   providers: [

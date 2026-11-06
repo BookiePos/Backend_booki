@@ -75,6 +75,7 @@ function armar(corridas: any[], docs: any[] = [], sedesEmisor: Types.ObjectId[] 
     { obtenerPorSede: async () => EMISOR } as any,
     { emitir } as any,
     { record: async (r: any) => auditoria.push(r) } as any,
+    { number: async (_k: string, fallback: number) => fallback } as any,
   );
   return { s, emitir, auditoria, consultas };
 }
@@ -98,6 +99,19 @@ describe('NominaPeriodoService.preparar', () => {
     expect(ana).toMatchObject({ ok: true, advertencias: ['aviso'], bloqueos: [] });
     expect(beto).toMatchObject({ ok: false, bloqueos: ['falta EPS'] });
     expect(emitir).not.toHaveBeenCalled();
+  });
+
+  it('pasa al consolidador el pago declarado en el cierre de cada corrida y el SMMLV del mes', async () => {
+    const r1 = { ...run('cerrada', [[E1, 'Ana']]), pago: { medio: '47', fecha: '2026-10-31' } };
+    const { s } = armar([r1]);
+    await dentro(() => s.preparar('2026-10', SEDE.toString(), owner));
+    const e = consolidar.mock.calls[0]![0] as any;
+    expect(e.slips[0].pago).toEqual({ medio: '47', fecha: '2026-10-31' });
+    expect(e.smmlv).toBeGreaterThan(0);
+    consolidar.mockClear();
+    const { s: s2 } = armar([run('cerrada', [[E1, 'Ana']])]);
+    await dentro(() => s2.preparar('2026-10', SEDE.toString(), owner));
+    expect((consolidar.mock.calls[0]![0] as any).slips[0].pago).toBeUndefined();
   });
 
   it('marca el documento existente del trabajador', async () => {
