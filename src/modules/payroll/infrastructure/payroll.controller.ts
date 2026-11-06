@@ -16,6 +16,7 @@ import { CreateRunDto } from '../application/dto/create-run.dto';
 import { CreateDeductionDto } from '../application/dto/deduction.dto';
 import { LiquidacionDto } from '../application/dto/liquidacion.dto';
 import { CerrarRunDto, PagoNominaDto } from '../application/dto/pago-nomina.dto';
+import { CrearNovedadDto } from '../application/dto/novedad.dto';
 import { DeductionStatus } from '../infrastructure/schemas/payroll-deduction.schema';
 import {
   RequireAnyPermission,
@@ -68,6 +69,29 @@ export class PayrollController {
   @Post('liquidacion')
   liquidacion(@Body() dto: LiquidacionDto, @CurrentUser() user: JwtUser) {
     return this.payroll.liquidacion(dto, user);
+  }
+
+  /** Novedades de ausencia: vacaciones, incapacidades y licencias (decisión 3 del dueño). */
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('novedades')
+  crearNovedad(@Body() dto: CrearNovedadDto, @CurrentUser() user: JwtUser) {
+    return this.payroll.crearNovedad(dto, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)
+  @Get('novedades')
+  listarNovedades(
+    @Query('employeeId') employeeId: string | undefined,
+    @Query('periodo') periodo: string | undefined,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.payroll.listarNovedades({ employeeId, periodo }, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('novedades/:id/anular')
+  anularNovedad(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.payroll.anularNovedad(id, user);
   }
 
   /** Guarda la liquidación de retiro como borrador (decisión 4 del dueño). */

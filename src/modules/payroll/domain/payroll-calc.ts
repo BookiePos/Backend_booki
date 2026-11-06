@@ -17,6 +17,8 @@ import {
   RecargoFactores,
 } from './payroll.constants';
 
+import type { AusenciaLinea, AusenciasLiquidadas } from './novedades-calc';
+
 export type SalaryType = 'ordinario' | 'integral';
 export type ArlLevel = 'I' | 'II' | 'III' | 'IV' | 'V';
 
@@ -55,6 +57,11 @@ export interface PayrollInput {
    * (`fechaCorteDePeriodo`); sin ella se usa hoy en Colombia.
    */
   fechaCorte?: string;
+  /**
+   * Vacaciones, incapacidades y licencias del mes ya liquidadas
+   * (`liquidarAusencias`). Sus días NO van en `diasTrabajados`.
+   */
+  ausencias?: AusenciasLiquidadas;
 }
 
 export interface RecargoLinea {
@@ -79,6 +86,9 @@ export interface PayrollBreakdown {
     bonificacionSalarial: number;
     bonificacionNoSalarial: number;
     comisiones: number;
+    /** Pago de vacaciones disfrutadas, incapacidades y licencias remuneradas del mes. */
+    ausencias?: number;
+    ausenciaDetalle?: AusenciaLinea[];
     total: number;
   };
   ibc: number;
@@ -311,17 +321,25 @@ export function computeSlip(
       ? round(s.auxilioTransporte * factorDias)
       : 0;
 
+  // Vacaciones, incapacidades y licencias remuneradas: no son salario, pero sí
+  // base de salud y pensión (Decreto 1406/1999 art. 40) y cuentan como tiempo
+  // para prestaciones. La no remunerada suspende el contrato (art. 51 CST).
+  const aus = input.ausencias;
+  const pagoAusencias = aus?.totalRemunerado ?? 0;
+  const diasRemunerados = Math.min(aus?.diasRemunerados ?? 0, Math.max(0, DIAS_MES - dias));
+  const factorCotizado = (dias + diasRemunerados) / DIAS_MES;
+
   // Ingreso constitutivo de salario (para IBC y prestaciones).
   const devengoSalarial =
     salario + recargos + horasExtra + bonificacionSalarial + comisiones;
 
   const totalDevengado =
-    devengoSalarial + auxilioTransporte + bonificacionNoSalarial;
+    devengoSalarial + pagoAusencias + auxilioTransporte + bonificacionNoSalarial;
 
   // IBC.
-  const ibcBase = integral ? salario * s.integralIbcFactor : devengoSalarial;
+  const ibcBase = integral ? (salario + pagoAusencias) * s.integralIbcFactor : devengoSalarial + pagoAusencias;
   const ibcMax = s.ibcMaxSmmlv * s.smmlv;
-  const ibcMin = s.ibcMinSmmlv * s.smmlv * factorDias;
+  const ibcMin = s.ibcMinSmmlv * s.smmlv * factorCotizado;
   const ibc = round(Math.min(Math.max(ibcBase, ibcMin), ibcMax));
 
   // Deducciones del trabajador.
@@ -365,7 +383,9 @@ export function computeSlip(
     input.salarioBase < s.exoneracionSmmlv * s.smmlv;
   const arlRate = input.arlRiskLevel ? s.arlRates[input.arlRiskLevel] : 0;
   const apSalud = exonera ? 0 : round(ibc * s.saludEmpleador);
-  const apPension = round(ibc * s.pensionEmpleador);
+  // Licencia no remunerada: solo el aporte a pensión del empleador sobre el
+  // salario de esos días (Decreto 1406/1999 art. 71; A CONFIRMAR con el contador).
+  const apPension = round(ibc * s.pensionEmpleador) + round((aus?.basePensionNoRemunerada ?? 0) * s.pensionEmpleador);
   const apArl = round(ibc * arlRate);
   const apCcf = round(ibc * s.ccf);
   const apSena = exonera ? 0 : round(ibc * s.sena);
@@ -373,7 +393,10 @@ export function computeSlip(
   const aportesTotal = apSalud + apPension + apArl + apCcf + apSena + apIcbf;
 
   // Provisiones prestacionales.
-  const baseCesPrima = integral ? 0 : devengoSalarial + auxilioTransporte;
+  // Los días de vacaciones, incapacidad y licencia remunerada cuentan para
+  // prestaciones con el salario de esos días (no con lo que pagó la EPS/ARL).
+  const salarioAusencias = round(input.salarioBase * (diasRemunerados / DIAS_MES));
+  const baseCesPrima = integral ? 0 : devengoSalarial + salarioAusencias + auxilioTransporte;
   const cesantias = round(baseCesPrima * s.cesantias);
   const interesesCesantias = round(cesantias * s.interesesCesantias);
   const prima = round(baseCesPrima * s.prima);
@@ -381,7 +404,7 @@ export function computeSlip(
   // extras ni trabajo en días de descanso obligatorio (art. 192 CST). Las
   // extras dominicales ya van dentro de `horasExtra`.
   const vacaciones = round(
-    (devengoSalarial - horasExtra - recargosDescanso) * s.vacaciones,
+    (devengoSalarial + salarioAusencias - horasExtra - recargosDescanso) * s.vacaciones,
   );
   const provisionesTotal = cesantias + interesesCesantias + prima + vacaciones;
 
@@ -400,6 +423,7 @@ export function computeSlip(
       bonificacionSalarial,
       bonificacionNoSalarial,
       comisiones,
+      ...(aus && aus.lineas.length > 0 ? { ausencias: pagoAusencias, ausenciaDetalle: aus.lineas } : {}),
       total: totalDevengado,
     },
     ibc,

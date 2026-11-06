@@ -47,6 +47,17 @@ import {
   PayrollLiquidacion,
   type PayrollLiquidacionDocument,
 } from '../infrastructure/schemas/payroll-liquidacion.schema';
+import {
+  PayrollNovedad,
+  type PayrollNovedadDocument,
+} from '../infrastructure/schemas/payroll-novedad.schema';
+import {
+  liquidarAusencias,
+  vacacionesDisfrutadasDeNovedades,
+  type NovedadAusencia,
+  type TipoNovedad,
+} from '../domain/novedades-calc';
+import type { CrearNovedadDto } from './dto/novedad.dto';
 import { diasPagablesHastaRetiro } from '../domain/liquidacion-calc';
 import { buildPayslipPdf, type PayslipNominaElectronica } from './payslip-pdf';
 import {
@@ -119,6 +130,15 @@ function conAvisos<T>(doc: T, advertencias: string[]): ConAvisos<T> {
   return { ...plano, advertencias };
 }
 
+/** Todas las fechas (YYYY-MM-DD) de los tramos de ausencia. */
+function fechasDe(lineas: { fechaInicio: string; fechaFin: string }[]): string[] {
+  const out: string[] = [];
+  for (const l of lineas) {
+    for (let d = l.fechaInicio; d <= l.fechaFin; d = sumarDiasIso(d, 1)) out.push(d);
+  }
+  return out;
+}
+
 /** Una liquidación se guarda cerca del retiro: hasta este margen hacia el futuro (preaviso corto). */
 const MARGEN_RETIRO_FUTURO_DIAS = 30;
 
@@ -169,6 +189,8 @@ export class PayrollService {
     private readonly nominaElectronica: Model<PayrollEDocumentDocument>,
     @InjectModel(PayrollLiquidacion.name)
     private readonly liquidaciones: Model<PayrollLiquidacionDocument>,
+    @InjectModel(PayrollNovedad.name)
+    private readonly novedades: Model<PayrollNovedadDocument>,
   ) {}
 
   /** Genera el comprobante (PDF) de un desprendible y lo envía al correo del empleado. */
@@ -680,6 +702,16 @@ export class PayrollService {
       })
       .select('employeeId workDate checkIn checkOut')
       .exec();
+    // Vacaciones, incapacidades y licencias activas que tocan el mes (decisión 3 del dueño).
+    const novs = await this.novedades
+      .find({ employeeId: { $in: emps.map((e) => e.id) }, estado: 'activa', fechaInicio: { $lte: to }, fechaFin: { $gte: from } })
+      .exec();
+    const novsByEmp = new Map<string, NovedadAusencia[]>();
+    for (const n of novs) {
+      const arr = novsByEmp.get(n.employeeId) ?? [];
+      arr.push({ id: String(n._id), tipo: n.tipo, fechaInicio: n.fechaInicio, fechaFin: n.fechaFin, diasPreviosProrroga: n.diasPreviosProrroga, diasHabiles: n.diasHabiles });
+      novsByEmp.set(n.employeeId, arr);
+    }
     const recsByEmp = new Map<
       string,
       { workDate: string; checkIn?: string; checkOut?: string }[]
@@ -697,7 +729,12 @@ export class PayrollService {
       // salud, pensión y retención como cualquier colilla (decisión 4 del
       // dueño): ni turnos ni descansos remunerados después de esa fecha.
       const hasta = e.terminationDate && e.terminationDate >= from && e.terminationDate < to ? e.terminationDate : to;
-      const registros = (recsByEmp.get(e.id) ?? []).filter((r) => r.workDate <= hasta);
+      // Ausencias del mes: sus días salen de los trabajados (un turno marcado en
+      // vacaciones o incapacidad no se paga dos veces) y se pagan por su regla.
+      const novsEmp = (novsByEmp.get(e.id) ?? []).map((n) => ({ ...n, fechaFin: n.fechaFin < hasta ? n.fechaFin : hasta }));
+      const ausencias = liquidarAusencias(novsEmp.filter((n) => n.fechaInicio <= n.fechaFin), period, e.salary ?? 0, s.smmlv);
+      const enAusencia = (d: string) => ausencias.lineas.some((l) => d >= l.fechaInicio && d <= l.fechaFin);
+      const registros = (recsByEmp.get(e.id) ?? []).filter((r) => r.workDate <= hasta && !enAusencia(r.workDate));
       const turnos = classifyTurnos(registros, {
         desde: from,
         jornadaSemanal: (f) => jornadaSemanalVigente(f, s),
@@ -720,18 +757,25 @@ export class PayrollService {
         // Basta la entrada: olvidar la salida no quita el día ni el descanso de
         // la semana; solo deja sin horas extra ni recargos (classifyTurnos), y
         // la colilla lo avisa.
-        diasTrabajados: Math.min(
-          DIAS_MES,
-          diasALiquidar(
-            new Set(registros.filter((r) => r.checkIn).map((r) => r.workDate)),
-            from,
-            hasta,
-            s.diasLaborablesSemana ?? 6,
-          ),
+        // Los días de ausencia cuentan como presentes para ganar el descanso de
+        // la semana (una ausencia justificada no lo hace perder, art. 173 CST) y
+        // luego se restan: se pagan por su propia regla.
+        diasTrabajados: Math.max(
+          0,
+          Math.min(
+            DIAS_MES,
+            diasALiquidar(
+              new Set([...registros.filter((r) => r.checkIn).map((r) => r.workDate), ...fechasDe(ausencias.lineas)]),
+              from,
+              hasta,
+              s.diasLaborablesSemana ?? 6,
+            ),
+          ) - ausencias.diasRemunerados - ausencias.diasNoRemunerados,
         ),
         arlRiskLevel: e.arlRiskLevel as ArlLevel | undefined,
         novedades: Object.keys(novedades).length > 0 ? novedades : undefined,
         fechaCorte: fechaCorteDePeriodo(period),
+        ...(ausencias.lineas.length > 0 ? { ausencias } : {}),
       };
       const breakdown = computeSlip(input, s);
       return {
@@ -998,6 +1042,8 @@ export class PayrollService {
     };
     breakdown: LiquidacionBreakdown;
     advertencias: string[];
+    /** Días de vacaciones disfrutados según las novedades registradas, para precargar el dato. */
+    sugerencias?: { vacacionesDisfrutadasDias: number };
   }> {
     if (user && dto.employeeId) await this.empleadoEnAlcance(dto.employeeId, user);
     const s = await this.parametrosEn(dto.fechaFin);
@@ -1066,7 +1112,152 @@ export class PayrollService {
       },
       breakdown: computeLiquidacion(input, s),
       advertencias: dto.employeeId ? await this.avisoVariables(dto.employeeId, dto.fechaFin) : [],
+      ...(dto.employeeId ? await this.sugerenciaVacaciones(dto.employeeId, fechaInicio, dto.fechaFin) : {}),
     };
+  }
+
+  /**
+   * Suma los días hábiles de las vacaciones registradas como novedad entre el
+   * ingreso y el retiro. Es una sugerencia: las disfrutadas antes de usar
+   * BookiPos no están registradas.
+   */
+  private async sugerenciaVacaciones(
+    employeeId: string,
+    desde: string,
+    hasta: string,
+  ): Promise<{ sugerencias?: { vacacionesDisfrutadasDias: number } }> {
+    const vac = await this.novedades
+      .find({ employeeId, estado: 'activa', tipo: 'vacaciones', fechaInicio: { $gte: desde, $lte: hasta } })
+      .exec();
+    if (vac.length === 0) return {};
+    return {
+      sugerencias: {
+        vacacionesDisfrutadasDias: vacacionesDisfrutadasDeNovedades(
+          vac.map((n) => ({ tipo: n.tipo, fechaInicio: n.fechaInicio, fechaFin: n.fechaFin, diasHabiles: n.diasHabiles })),
+        ),
+      },
+    };
+  }
+
+  // ─── Novedades: vacaciones, incapacidades y licencias (decisión 3) ────────
+
+  /** Meses (YYYY-MM) que toca un rango de fechas. */
+  private mesesDe(desde: string, hasta: string): string[] {
+    const meses: string[] = [];
+    let y = Number(desde.slice(0, 4));
+    let m = Number(desde.slice(5, 7));
+    const fin = hasta.slice(0, 7);
+    for (;;) {
+      const p = `${y}-${String(m).padStart(2, '0')}`;
+      meses.push(p);
+      if (p >= fin || meses.length > 24) break;
+      m += 1;
+      if (m > 12) {
+        m = 1;
+        y += 1;
+      }
+    }
+    return meses;
+  }
+
+  /** Una corrida CERRADA ya liquidó al empleado en alguno de esos meses: la novedad no se puede tocar. */
+  private async assertMesesAbiertos(employeeId: string, desde: string, hasta: string): Promise<void> {
+    const cerrada = await this.runs
+      .findOne({ period: { $in: this.mesesDe(desde, hasta) }, status: 'cerrada', 'slips.employeeId': employeeId })
+      .select('period')
+      .exec();
+    if (cerrada) {
+      throw new ConflictException(
+        `La nómina de ${cerrada.period} ya está cerrada con este empleado: la novedad cambiaría lo que ya se pagó. Regístrala como ajuste con el contador.`,
+      );
+    }
+  }
+
+  /**
+   * Registra una novedad. Valida fechas, que no se cruce con otra activa del
+   * mismo empleado y que la nómina de esos meses siga abierta (una corrida en
+   * borrador se recalcula para tomarla).
+   */
+  async crearNovedad(dto: CrearNovedadDto, user: SedeScopeUser & { email?: string }): Promise<PayrollNovedadDocument> {
+    await this.empleadoEnAlcance(dto.employeeId, user);
+    const valida = (f: string) => {
+      const d = new Date(`${f}T00:00:00Z`);
+      return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === f;
+    };
+    if (!valida(dto.fechaInicio) || !valida(dto.fechaFin)) throw new BadRequestException('Las fechas de la novedad no son válidas.');
+    if (dto.fechaFin < dto.fechaInicio) throw new BadRequestException('La fecha final no puede ser anterior a la inicial.');
+    if (this.mesesDe(dto.fechaInicio, dto.fechaFin).length > 12) {
+      throw new BadRequestException('Una novedad no puede pasar de 12 meses; regístrala por tramos (prórrogas).');
+    }
+    const tipo = dto.tipo as TipoNovedad;
+    if (tipo === 'vacaciones' && !dto.diasHabiles) {
+      throw new BadRequestException('Indica los días hábiles de vacaciones que disfruta (los descuenta la liquidación de retiro).');
+    }
+    if (dto.diasPreviosProrroga !== undefined && tipo !== 'incapacidad_comun') {
+      throw new BadRequestException('Los días previos de prórroga solo aplican a la incapacidad común.');
+    }
+    const cruce = await this.novedades
+      .findOne({ employeeId: dto.employeeId, estado: 'activa', fechaInicio: { $lte: dto.fechaFin }, fechaFin: { $gte: dto.fechaInicio } })
+      .exec();
+    if (cruce) {
+      throw new ConflictException(`Se cruza con otra novedad (${cruce.tipo} del ${cruce.fechaInicio} al ${cruce.fechaFin}). Anúlala o ajusta las fechas.`);
+    }
+    await this.assertMesesAbiertos(dto.employeeId, dto.fechaInicio, dto.fechaFin);
+    const emp = await this.employees.findById(dto.employeeId).select('sedeId firstName lastName').exec();
+    return this.novedades.create({
+      employeeId: dto.employeeId,
+      employeeName: emp ? `${emp.firstName} ${emp.lastName}`.trim() : undefined,
+      sedeId: emp?.sedeId,
+      tipo,
+      fechaInicio: dto.fechaInicio,
+      fechaFin: dto.fechaFin,
+      ...(dto.diasPreviosProrroga !== undefined ? { diasPreviosProrroga: dto.diasPreviosProrroga } : {}),
+      ...(tipo === 'vacaciones' ? { diasHabiles: dto.diasHabiles } : {}),
+      observacion: dto.observacion,
+      estado: 'activa',
+      creadaPor: user.email,
+    });
+  }
+
+  /** Lista por empleado y/o periodo, solo de empleados de las sedes del usuario (su sede actual). */
+  async listarNovedades(
+    filtros: { employeeId?: string; periodo?: string },
+    user?: SedeScopeUser,
+  ): Promise<PayrollNovedadDocument[]> {
+    const filtro: Record<string, unknown> = {};
+    if (filtros.employeeId) filtro.employeeId = filtros.employeeId;
+    if (filtros.periodo) {
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(filtros.periodo)) throw new BadRequestException('periodo debe ser YYYY-MM');
+      filtro.fechaInicio = { $lte: fechaCorteDePeriodo(filtros.periodo) };
+      filtro.fechaFin = { $gte: `${filtros.periodo}-01` };
+    }
+    const sedes = user ? allowedSedeIds(user) : null;
+    if (sedes) {
+      const visibles = await this.employees
+        .find({ sedeId: { $in: sedes.map((id) => new Types.ObjectId(id)) } })
+        .select('_id')
+        .exec();
+      const ids = visibles.map((e) => String(e._id));
+      filtro.employeeId = filtros.employeeId ? (ids.includes(filtros.employeeId) ? filtros.employeeId : { $in: [] }) : { $in: ids };
+    }
+    return this.novedades.find(filtro).sort({ fechaInicio: -1 }).limit(200).exec();
+  }
+
+  /** Anula una novedad (atómico). No se puede si la nómina de esos meses ya se cerró con el empleado. */
+  async anularNovedad(id: string, user?: SedeScopeUser & { email?: string }): Promise<PayrollNovedadDocument> {
+    const nov = Types.ObjectId.isValid(id) ? await this.novedades.findById(id).exec() : null;
+    if (!nov) throw new NotFoundException('Novedad no encontrada');
+    if (user) await this.empleadoEnAlcance(nov.employeeId, user);
+    await this.assertMesesAbiertos(nov.employeeId, nov.fechaInicio, nov.fechaFin);
+    const anulada = await this.novedades
+      .findOneAndUpdate(
+        { _id: nov._id, estado: 'activa' },
+        { $set: { estado: 'anulada', anuladaPor: user?.email, anuladaEn: new Date() } },
+        { new: true },
+      )
+      .exec();
+    if (!anulada) throw new ConflictException('La novedad ya está anulada.');
+    return anulada;
   }
 
   /**

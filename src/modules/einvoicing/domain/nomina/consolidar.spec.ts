@@ -674,3 +674,50 @@ describe('consolidarNominaMes: correcciones de revisión', () => {
     expect(ok(conPago('2026-11-05')).advertencias).toEqual([]);
   });
 });
+
+describe('consolidarNominaMes: novedades del mes (decisión 3 del dueño)', () => {
+  const lineas = [
+    { tipo: 'vacaciones', fechaInicio: '2026-10-01', fechaFin: '2026-10-05', dias: 5, valor: 250_000, pagador: 'empleador' },
+    { tipo: 'incapacidad_comun', fechaInicio: '2026-10-06', fechaFin: '2026-10-08', dias: 3, valor: 100_000, pagador: 'eps' },
+    { tipo: 'incapacidad_laboral', fechaInicio: '2026-10-09', fechaFin: '2026-10-09', dias: 1, valor: 50_000, pagador: 'arl' },
+    { tipo: 'licencia_paternidad', fechaInicio: '2026-10-10', fechaFin: '2026-10-11', dias: 2, valor: 100_000, pagador: 'eps' },
+    { tipo: 'licencia_remunerada', fechaInicio: '2026-10-12', fechaFin: '2026-10-12', dias: 1, valor: 50_000, pagador: 'empleador' },
+    { tipo: 'licencia_no_remunerada', fechaInicio: '2026-10-13', fechaFin: '2026-10-14', dias: 2, valor: 0, pagador: 'ninguno' },
+  ];
+  const conNovedades = (ls = lineas) => {
+    const pago = ls.reduce((s, l) => s + l.valor, 0);
+    const bd = breakdown({ salario: 800_000, ibc: 800_000 + pago, extra: { ausencias: pago, ausenciaDetalle: ls } as unknown as Record<string, number> });
+    bd.devengados.total += pago;
+    bd.netoPagar += pago;
+    return bd;
+  };
+
+  it('van a VacacionesComunes, Incapacidades (tipo 1 y 3) y Licencias MP, R y NR, y pasan el XSD', async () => {
+    const bd = conNovedades();
+    const { modelo } = ok(entrada({ slips: [corrida({ bd, dias: 16 })] }));
+    const d = modelo.devengados;
+    expect(d.basico.dias).toBe(16);
+    expect(d.vacacionesComunes).toEqual([{ dias: 5, pago: 25_000_000, fechaInicio: '2026-10-01', fechaFin: '2026-10-05' }]);
+    expect(d.incapacidades.map((i) => [i.tipo, i.dias, i.pago])).toEqual([
+      [1, 3, 10_000_000],
+      [3, 1, 5_000_000],
+    ]);
+    expect(d.licenciasMP).toEqual([{ dias: 2, pago: 10_000_000, fechaInicio: '2026-10-10', fechaFin: '2026-10-11' }]);
+    expect(d.licenciasR).toEqual([{ dias: 1, pago: 5_000_000, fechaInicio: '2026-10-12', fechaFin: '2026-10-12' }]);
+    expect(d.licenciasNR).toEqual([{ dias: 2, fechaInicio: '2026-10-13', fechaFin: '2026-10-14' }]);
+    const r = await verificar(modelo, bd.devengados.total, bd.deducciones.total);
+    expect(r.xml).toContain('<LicenciaNR FechaInicio="2026-10-13" FechaFin="2026-10-14" Cantidad="2"');
+  }, 60_000);
+
+  it('el detalle de novedades debe sumar lo pagado', () => {
+    const bd = conNovedades();
+    bd.devengados.ausencias = (bd.devengados.ausencias ?? 0) + 1;
+    bd.devengados.total += 1;
+    expect(bloqueos(entrada({ slips: [corrida({ bd, dias: 16 })] })).join()).toMatch(/no suma lo pagado/);
+  });
+
+  it('una novedad sin fechas válidas bloquea', () => {
+    const bd = conNovedades([{ ...lineas[0]!, fechaFin: 'x' }]);
+    expect(bloqueos(entrada({ slips: [corrida({ bd, dias: 25 })] })).join()).toMatch(/no tiene tipo, días o fechas válidos/);
+  });
+});

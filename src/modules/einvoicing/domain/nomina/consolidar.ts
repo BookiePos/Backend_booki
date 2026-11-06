@@ -14,9 +14,10 @@
  * Qué NO entra: aportes del empleador y provisiones (no son pagos al
  * trabajador). Retiro: la liquidación APROBADA del mes aporta cesantías,
  * intereses, prima, vacaciones compensadas e indemnización (decisión 4 del
- * dueño); sin ella, quien se retira en el mes se bloquea. Vacaciones,
- * incapacidades, licencias y el pago semestral de prima o la consignación de
- * cesantías no se inventan: si aparecen en la colilla, el trabajador se bloquea.
+ * dueño); sin ella, quien se retira en el mes se bloquea. Las novedades de la
+ * colilla (`ausenciaDetalle`, decisión 3) van a VacacionesComunes,
+ * Incapacidades y Licencias (MP, R y NR). El pago semestral de prima o la
+ * consignación de cesantías no se inventan: si aparecen, el trabajador se bloquea.
  *
  * Pago: el medio y la fecha REAL de cada egreso los declara el negocio al
  * cerrar la corrida (`PayrollRun.pago`, decisión 1 del dueño, tarea 11). Una
@@ -35,7 +36,7 @@ import { MEDIOS_PAGO_NOMINA, NOMBRE_MEDIO_PAGO } from '../../../payroll/domain/p
 import { diasPagablesHastaRetiro } from '../../../payroll/domain/liquidacion-calc';
 import type { Centavos } from '../redondeo';
 import { centavosDeCop } from '../redondeo';
-import type { DeduccionesNe, DevengadosNe, DocumentoNe, HoraNe, TipoHoraNe } from './modelo';
+import type { DeduccionesNe, DevengadosNe, DiasPagoNe, DocumentoNe, HoraNe, TipoHoraNe } from './modelo';
 
 // ── Entradas ─────────────────────────────────────────────────────────────────
 
@@ -209,10 +210,28 @@ const DEVENGADOS_CONOCIDOS = new Set([
   'bonificacionSalarial',
   'bonificacionNoSalarial',
   'comisiones',
+  'ausencias',
+  'ausenciaDetalle',
   'total',
 ]);
 
 const MEDIO_TRANSFERENCIA = '47';
+/** Tipo de incapacidad de la tabla 5.5.6: 1 común, 2 profesional, 3 laboral. */
+const TIPO_INCAPACIDAD: Record<string, 1 | 2 | 3> = {
+  incapacidad_comun: 1,
+  incapacidad_profesional: 2,
+  incapacidad_laboral: 3,
+};
+const TIPO_AUSENCIA_CONOCIDO = new Set([
+  'vacaciones',
+  'incapacidad_comun',
+  'incapacidad_profesional',
+  'incapacidad_laboral',
+  'licencia_maternidad',
+  'licencia_paternidad',
+  'licencia_remunerada',
+  'licencia_no_remunerada',
+]);
 const MEDIO_CONSIGNACION = '42';
 const NOMBRE_MEDIO: Record<string, string> = NOMBRE_MEDIO_PAGO;
 /** Mínimo del salario integral en SMMLV (art. 132 CST). */
@@ -344,6 +363,15 @@ function revisarTrabajador(
   }
 }
 
+/** Nodos con fechas, días y pago (VacacionesComunes, LicenciaMP, LicenciaR) de las novedades de las colillas. */
+function nodosAusencia(colillas: ColillaConsolidar[], tipos: string[]): DiasPagoNe[] {
+  return colillas.flatMap((c) =>
+    (c.breakdown.devengados.ausenciaDetalle ?? [])
+      .filter((l) => tipos.includes(l.tipo) && l.valor > 0)
+      .map((l) => ({ dias: l.dias, pago: centavosDeCop(l.valor), fechaInicio: l.fechaInicio, fechaFin: l.fechaFin })),
+  );
+}
+
 // ── Revisión de cada colilla ────────────────────────────────────────────────
 
 function revisarColilla(c: CorridaColilla, quien: string, bloqueos: string[]): boolean {
@@ -374,6 +402,7 @@ function revisarColilla(c: CorridaColilla, quien: string, bloqueos: string[]): b
     dev.bonificacionSalarial,
     dev.bonificacionNoSalarial,
     dev.comisiones,
+    dev.ausencias ?? 0,
   ]);
   if (sumaDev !== cop(dev.total)) {
     bloqueos.push(`${donde}: los devengados no cuadran entre sí (${sumaDev} ≠ ${dev.total}). Revisa o recalcula la corrida.`);
@@ -402,6 +431,8 @@ function revisarColilla(c: CorridaColilla, quien: string, bloqueos: string[]): b
     ['bonificación salarial', dev.bonificacionSalarial],
     ['bonificación no salarial', dev.bonificacionNoSalarial],
     ['comisiones', dev.comisiones],
+    ['vacaciones, incapacidades y licencias', dev.ausencias ?? 0],
+    ...(dev.ausenciaDetalle ?? []).map((l): [string, number] => [`novedad ${l.tipo} ${l.fechaInicio}`, l.valor]),
     ['total devengado', dev.total],
     ['IBC', b.ibc],
     ['salud', ded.salud],
@@ -416,6 +447,17 @@ function revisarColilla(c: CorridaColilla, quien: string, bloqueos: string[]): b
   const malos = importes.filter(([, v]) => !Number.isInteger(v) || v < 0).map(([k, v]) => `${k} (${String(v)})`);
   if (malos.length > 0) {
     bloqueos.push(`${donde}: importes que no son pesos enteros no negativos: ${malos.join(', ')}. Revisa o recalcula la corrida.`);
+  }
+  const detalleAus = sumCop((dev.ausenciaDetalle ?? []).map((l) => l.valor));
+  if (detalleAus !== cop(dev.ausencias ?? 0)) {
+    bloqueos.push(
+      `${donde}: el detalle de vacaciones, incapacidades y licencias (${detalleAus}) no suma lo pagado (${dev.ausencias ?? 0}). Recalcula la corrida.`,
+    );
+  }
+  for (const l of dev.ausenciaDetalle ?? []) {
+    if (!TIPO_AUSENCIA_CONOCIDO.has(l.tipo) || !Number.isInteger(l.dias) || l.dias <= 0 || !YYYYMMDD.test(l.fechaInicio) || !YYYYMMDD.test(l.fechaFin)) {
+      bloqueos.push(`${donde}: la novedad «${l.tipo}» del ${l.fechaInicio} no tiene tipo, días o fechas válidos. Revísala y recalcula la corrida.`);
+    }
   }
   if (!Number.isInteger(c.colilla.diasTrabajados) || c.colilla.diasTrabajados < 0) {
     bloqueos.push(`${donde}: los días trabajados (${c.colilla.diasTrabajados}) deben ser un entero no negativo.`);
@@ -687,10 +729,26 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     basico: { dias, sueldo: centavosDeCop(sum((b) => b.devengados.salario)) },
     ...(auxilio > 0 ? { transporte: { auxilio: centavosDeCop(auxilio) } } : {}),
     horas,
-    vacacionesComunes: [],
+    vacacionesComunes: nodosAusencia(colillas, ['vacaciones']),
     vacacionesCompensadas: [],
-    incapacidades: [],
-    licenciasMP: [],
+    incapacidades: colillas.flatMap((c) =>
+      (c.breakdown.devengados.ausenciaDetalle ?? [])
+        .filter((l) => TIPO_INCAPACIDAD[l.tipo] && l.valor > 0)
+        .map((l) => ({
+          dias: l.dias,
+          pago: centavosDeCop(l.valor),
+          fechaInicio: l.fechaInicio,
+          fechaFin: l.fechaFin,
+          tipo: TIPO_INCAPACIDAD[l.tipo]!,
+        })),
+    ),
+    licenciasMP: nodosAusencia(colillas, ['licencia_maternidad', 'licencia_paternidad']),
+    licenciasR: nodosAusencia(colillas, ['licencia_remunerada']),
+    licenciasNR: colillas.flatMap((c) =>
+      (c.breakdown.devengados.ausenciaDetalle ?? [])
+        .filter((l) => l.tipo === 'licencia_no_remunerada')
+        .map((l) => ({ dias: l.dias, fechaInicio: l.fechaInicio, fechaFin: l.fechaFin })),
+    ),
     bonificaciones:
       bonS > 0 || bonNS > 0
         ? [{ ...(bonS > 0 ? { s: centavosDeCop(bonS) } : {}), ...(bonNS > 0 ? { ns: centavosDeCop(bonNS) } : {}) }]
@@ -707,9 +765,14 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     // con el contador (pago de más) y una nueva corrida o ajuste.
     if (e.hireDate && YYYYMMDD.test(e.hireDate)) {
       const tope = diasPagablesHastaRetiro(e.hireDate, liq.fechaRetiro);
-      if (dias > tope) {
+      // Los días de vacaciones, incapacidad y licencia también son días pagados del mes.
+      const diasAusencia = colillas.reduce(
+        (s, c) => s + (c.breakdown.devengados.ausenciaDetalle ?? []).reduce((t, l) => t + l.dias, 0),
+        0,
+      );
+      if (dias + diasAusencia > tope) {
         bloqueos.push(
-          `${quien}: las corridas de ${periodo} le pagan ${dias} días y el retiro fue el ${liq.fechaRetiro} (${tope} días). La corrida se cerró antes de aprobar la liquidación y no se puede reportar así. Registra con el contador el pago de más (${dias - tope} días) como una deducción o un ajuste del empleado; para la próxima, aprueba la liquidación ANTES de cerrar la corrida del mes.`,
+          `${quien}: las corridas de ${periodo} le pagan ${dias + diasAusencia} días y el retiro fue el ${liq.fechaRetiro} (${tope} días). La corrida se cerró antes de aprobar la liquidación y no se puede reportar así. Registra con el contador el pago de más (${dias + diasAusencia - tope} días) como una deducción o un ajuste del empleado; para la próxima, aprueba la liquidación ANTES de cerrar la corrida del mes.`,
         );
       }
     }
@@ -926,6 +989,10 @@ export function totalesDeModelo(m: DocumentoNe): { devengados: Centavos; deducci
     (d.cesantias ? d.cesantias.pago + d.cesantias.intereses : 0) +
     (d.primas?.pago ?? 0) +
     d.vacacionesCompensadas.reduce((s, v) => s + v.pago, 0) +
+    d.vacacionesComunes.reduce((s, v) => s + v.pago, 0) +
+    d.incapacidades.reduce((s, v) => s + v.pago, 0) +
+    d.licenciasMP.reduce((s, v) => s + v.pago, 0) +
+    (d.licenciasR ?? []).reduce((s, v) => s + v.pago, 0) +
     (d.indemnizacion ?? 0);
   const x = m.deducciones;
   const ded =

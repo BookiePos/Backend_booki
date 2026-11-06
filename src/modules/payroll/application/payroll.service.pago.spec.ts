@@ -38,6 +38,7 @@ function armar(status: string) {
     {} as any,
     ledgerPosting as any,
     {} as any, {} as any,
+    { find: () => ({ exec: async () => [] }) } as any,
   );
   return { service, run };
 }

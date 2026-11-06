@@ -55,6 +55,7 @@ function armar(liqInicial?: any, errorAlAprobar?: unknown, empleadosVisibles: st
   const service = new PayrollService(
     {} as any, runs as any, employees as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any,
     liquidaciones as any,
+    { find: () => ({ exec: async () => [] }) } as any,
   );
   vi.spyOn(service, 'liquidacion').mockResolvedValue({
     input: { employeeId: EMP, employeeName: 'Ana', salarioBase: 1_500_000, salaryType: 'ordinario', contractType: 'indefinido', fechaInicio: '2024-02-01', fechaFin: '2026-10-20', motivo: 'renuncia' },

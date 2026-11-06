@@ -228,7 +228,18 @@ function devengadosXml(d: DevengadosNe, dev: Sumador): string {
           });
         }),
     ),
-    grupo('Licencias', diasPago('LicenciaMP', d.licenciasMP, true)),
+    grupo('Licencias', [
+      ...diasPago('LicenciaMP', d.licenciasMP, true),
+      ...diasPago('LicenciaR', d.licenciasR ?? [], true),
+      // La no remunerada no lleva Pago: se escribe si tiene días.
+      ...(d.licenciasNR ?? [])
+        .filter((v) => v.dias > 0)
+        .map((v) => {
+          assertFecha(v.fechaInicio, 'FechaInicio de LicenciaNR');
+          assertFecha(v.fechaFin, 'FechaFin de LicenciaNR');
+          return el('LicenciaNR', { FechaInicio: v.fechaInicio, FechaFin: v.fechaFin, Cantidad: entero(v.dias, 'Días de LicenciaNR') });
+        }),
+    ]),
     grupo('Bonificaciones', salariales('Bonificacion', 'BonificacionS', 'BonificacionNS', d.bonificaciones, dev)),
     grupo('Auxilios', salariales('Auxilio', 'AuxilioS', 'AuxilioNS', d.auxilios, dev)),
     grupo(

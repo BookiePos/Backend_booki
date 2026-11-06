@@ -136,6 +136,7 @@ function armar(o: {
     params as any,
     ledgerPosting as any,
     nominaElectronica as any, {} as any,
+    { find: () => ({ exec: async () => [] }) } as any,
   );
   return { service, settings, runs, deductions, mail, ledgerPosting, settingsDoc, nominaElectronica };
 }
