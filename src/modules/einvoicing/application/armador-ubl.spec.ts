@@ -31,10 +31,11 @@ import {
   SOFTWARE_ID,
 } from '../domain/ubl/__fixtures__/factura-de-prueba.test';
 import { documentoPos } from '../domain/ubl/__fixtures__/pos-de-prueba.test';
+import { documentoNota } from '../domain/ubl/__fixtures__/nota-de-prueba.test';
 
 /**
  * El armador real de la Fase 5A en el puerto `ArmadorXmlDian`: arma la factura
- * de venta; los demás tipos siguen en 501. Un documento que no cuadra o con
+ * de venta, el POS y las notas; la nómina sigue en 501. Un documento que no cuadra o con
  * datos incompletos se rechaza ANTES de leer el PIN y de firmar.
  */
 describe('ArmadorUblFactura', () => {
@@ -98,7 +99,37 @@ describe('ArmadorUblFactura', () => {
     });
   });
 
-  it.each(['credit_note', 'debit_note', 'payroll'])('%s sigue en 501 sin tocar el emisor', async (type) => {
+  describe('notas crédito y débito (Fase 6A)', () => {
+    const nota = (type: 'credit_note' | 'debit_note') =>
+      ({
+        ...documentoNota(
+          { lines: [linea({ name: 'Camisa', precio: 119_000, impuesto: 19_000, rate: 19 })], total: 119_000 },
+          { tipo: type, concepto: type === 'credit_note' ? '2' : '3', cliente: CLIENTE_NIT },
+        ),
+        sedeId: { toString: () => 'sede-1' },
+      }) as unknown as ElectronicDocumentDocument;
+
+    it.each(['credit_note', 'debit_note'] as const)('%s ya no da 501: arma, firma y verifica', async (type) => {
+      const d = nota(type);
+      const xml = await armador.armar(d);
+      expect(xml).toContain(type === 'credit_note' ? '<CreditNote ' : '<DebitNote ');
+      expect(xml).toContain(`<cbc:UUID schemeID="2" schemeName="CUDE-SHA384">${d.cufe}</cbc:UUID>`);
+      expect(xml).toContain(`>${codigoSeguridadSoftware(SOFTWARE_ID, PIN, d.fullNumber)}</sts:SoftwareSecurityCode>`);
+      expect(xml).not.toContain(PIN);
+      expect(verificarFirma(firmarXml(xml, { p12: p12DePrueba(), password: 'clave-de-prueba' }))).toEqual({ valida: true });
+    });
+
+    it('sin concepto o sin referencia es 400 y no lee el PIN', async () => {
+      const d = nota('credit_note');
+      for (const cambio of [{ discrepancyCode: undefined }, { referenceNumber: undefined }, { reason: '' }]) {
+        const err = await armador.armar({ ...d, ...cambio } as unknown as ElectronicDocumentDocument).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(BadRequestException);
+      }
+      expect(emisores.leerSecreto).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each(['payroll'])('%s sigue en 501 sin tocar el emisor', async (type) => {
     await expect(armador.armar({ ...doc(), type } as unknown as ElectronicDocumentDocument)).rejects.toThrow(
       NotImplementedException,
     );

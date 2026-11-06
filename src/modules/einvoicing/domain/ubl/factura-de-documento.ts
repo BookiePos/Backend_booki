@@ -218,7 +218,7 @@ export const CONSUMIDOR_FINAL_UBL: ParteUbl = {
   tributo: 'ZZ',
 };
 
-function adquirienteUbl(doc: DocumentoParaUbl): ParteUbl {
+export function adquirienteUbl(doc: DocumentoParaUbl): ParteUbl {
   const a = doc.adquiriente;
   if (!a?.docNumber?.trim() || a.docNumber.trim() === CONSUMIDOR_FINAL_NIT) {
     return { ...CONSUMIDOR_FINAL_UBL, responsabilidades: [...CONSUMIDOR_FINAL_UBL.responsabilidades] };

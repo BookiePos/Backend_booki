@@ -307,11 +307,17 @@ function validar(f: FacturaUbl, perfil: PerfilInvoice, pagos: readonly PagoUbl[]
 
 // ── Piezas del XML ───────────────────────────────────────────────────────────
 
-function dianExtensions(f: FacturaUbl): string {
+/** Lo que `sts:DianExtensions` lee del documento. Las notas no llevan resolución (sin `InvoiceControl`). */
+export type DatosDianExtensions = Pick<
+  FacturaUbl,
+  'emisor' | 'softwareId' | 'codigoSeguridadSoftware' | 'tipoAmbiente' | 'cufe'
+> & { resolucion?: ResolucionUbl };
+
+export function dianExtensions(f: DatosDianExtensions): string {
   const r = f.resolucion;
-  const prefijo = r.prefijo ? `\n              <sts:Prefix>${esc(r.prefijo)}</sts:Prefix>` : '';
-  return `<sts:DianExtensions>
-          <sts:InvoiceControl>
+  const prefijo = r?.prefijo ? `\n              <sts:Prefix>${esc(r.prefijo)}</sts:Prefix>` : '';
+  const control = r
+    ? `<sts:InvoiceControl>
             <sts:InvoiceAuthorization>${esc(r.numero)}</sts:InvoiceAuthorization>
             <sts:AuthorizationPeriod>
               <cbc:StartDate>${esc(r.desde)}</cbc:StartDate>
@@ -322,7 +328,10 @@ function dianExtensions(f: FacturaUbl): string {
               <sts:To>${r.rangoHasta}</sts:To>
             </sts:AuthorizedInvoices>
           </sts:InvoiceControl>
-          <sts:InvoiceSource>
+          `
+    : '';
+  return `<sts:DianExtensions>
+          ${control}<sts:InvoiceSource>
             <cbc:IdentificationCode ${LISTA_PAISES}>CO</cbc:IdentificationCode>
           </sts:InvoiceSource>
           <sts:SoftwareProvider>
@@ -363,7 +372,7 @@ function direccion(d: DireccionUbl, tag: 'Address' | 'RegistrationAddress', sang
     .join(`\n${sangria}`);
 }
 
-function parte(
+export function parte(
   rol: 'AccountingSupplierParty' | 'AccountingCustomerParty',
   p: ParteUbl,
   prefijo?: string,
@@ -428,7 +437,7 @@ function parte(
   </cac:${rol}>`;
 }
 
-function medioDePago(p: PagoUbl): string {
+export function medioDePago(p: PagoUbl): string {
   const vence = p.vence
     ? `
     <cbc:PaymentDueDate>${esc(p.vence)}</cbc:PaymentDueDate>`
@@ -440,7 +449,7 @@ function medioDePago(p: PagoUbl): string {
 }
 
 /** Cargos de documento (la propina): no gravados, suman al PayableAmount. */
-function cargosXml(cargos: readonly CargoDocumento[], base: Centavos): string {
+export function cargosXml(cargos: readonly CargoDocumento[], base: Centavos): string {
   return cargos
     .map((c, i) => {
       const valor = centavos(c.amount, `Cargo ${i + 1}`);
@@ -462,7 +471,7 @@ function cargosXml(cargos: readonly CargoDocumento[], base: Centavos): string {
     .join('');
 }
 
-function subtotalAdValorem(codigo: '01' | '04', base: Centavos, impuesto: Centavos, tarifa: number, s: string): string {
+export function subtotalAdValorem(codigo: '01' | '04', base: Centavos, impuesto: Centavos, tarifa: number, s: string): string {
   return `<cac:TaxSubtotal>
 ${s}  <cbc:TaxableAmount ${monto(base)}</cbc:TaxableAmount>
 ${s}  <cbc:TaxAmount ${monto(impuesto)}</cbc:TaxAmount>
@@ -482,7 +491,7 @@ ${s}</cac:TaxSubtotal>`;
  * no hay base en pesos. Es el mismo 0 que `primerTributo` suma al
  * TaxExclusiveAmount (FAU04) por una línea que solo trae el 22.
  */
-function subtotalBolsa(unidades: number, porUnidad: Centavos, impuesto: Centavos, s: string): string {
+export function subtotalBolsa(unidades: number, porUnidad: Centavos, impuesto: Centavos, s: string): string {
   return `<cac:TaxSubtotal>
 ${s}  <cbc:TaxableAmount ${monto(0)}</cbc:TaxableAmount>
 ${s}  <cbc:TaxAmount ${monto(impuesto)}</cbc:TaxAmount>
@@ -497,7 +506,7 @@ ${s}  </cac:TaxCategory>
 ${s}</cac:TaxSubtotal>`;
 }
 
-function taxTotal(total: Centavos, subtotales: string[], s: string): string {
+export function taxTotal(total: Centavos, subtotales: string[], s: string): string {
   return `<cac:TaxTotal>
 ${s}  <cbc:TaxAmount ${monto(total)}</cbc:TaxAmount>
 ${s}  ${subtotales.join(`\n${s}  `)}
@@ -505,7 +514,7 @@ ${s}</cac:TaxTotal>`;
 }
 
 /** TaxTotal de la cabecera: uno por tributo (01, 04, 22), con un TaxSubtotal por tarifa. */
-function taxTotalesCabecera(lineas: readonly LineaDocumento[]): string {
+export function taxTotalesCabecera(lineas: readonly LineaDocumento[]): string {
   const bloques: string[] = [];
   for (const codigo of ['01', '04'] as const) {
     const porTarifa = new Map<number, { base: Centavos; impuesto: Centavos }>();
@@ -552,7 +561,7 @@ function taxTotalesCabecera(lineas: readonly LineaDocumento[]): string {
   return bloques.map((b) => `\n  ${b}`).join('');
 }
 
-function legalMonetaryTotal(t: TotalesUbl, conCargos: boolean): string {
+export function legalMonetaryTotal(t: TotalesUbl, conCargos: boolean): string {
   const cargos = conCargos
     ? `
     <cbc:ChargeTotalAmount ${monto(t.cargos)}</cbc:ChargeTotalAmount>`
@@ -565,13 +574,23 @@ function legalMonetaryTotal(t: TotalesUbl, conCargos: boolean): string {
   </cac:LegalMonetaryTotal>`;
 }
 
+/** Etiquetas de la línea: cambian entre `Invoice`, `CreditNote` y `DebitNote`. */
+export interface EtiquetasLinea {
+  linea: 'InvoiceLine' | 'CreditNoteLine' | 'DebitNoteLine';
+  cantidad: 'InvoicedQuantity' | 'CreditedQuantity' | 'DebitedQuantity';
+  /** `cbc:FreeOfChargeIndicator`: lo trae la línea de factura y de nota crédito, no la de nota débito. */
+  gratuito: boolean;
+}
+
+const ETIQUETAS_INVOICE: EtiquetasLinea = { linea: 'InvoiceLine', cantidad: 'InvoicedQuantity', gratuito: true };
+
 /**
- * Una `cac:InvoiceLine`. El precio va como PriceAmount = base de la línea
+ * Una `cac:InvoiceLine` (o `CreditNoteLine`/`DebitNoteLine`, según `e`). El precio va como PriceAmount = base de la línea
  * sobre BaseQuantity = cantidad («la cantidad real sobre la cual el precio
  * aplica»): así PriceAmount × cantidad / BaseQuantity es la base EXACTA, sin
  * dividir pesos entre unidades (la base ya viene neta de descuentos).
  */
-function lineaXml(l: LineaDocumento, i: number): string {
+export function lineaXml(l: LineaDocumento, i: number, e: EtiquetasLinea = ETIQUETAS_INVOICE): string {
   const unidad = codigoUnidad(l.unitCode);
   const qty = cantidad(l.qty);
   const base = centavos(l.base, `Línea ${i + 1}, base`);
@@ -589,11 +608,10 @@ function lineaXml(l: LineaDocumento, i: number): string {
   const tributos = impuestos.map((x) => `\n      ${x}`).join('');
   if (!l.description?.trim()) throw new DocumentoUblInvalidoError(`Línea ${i + 1}: sin descripción`);
   return `
-  <cac:InvoiceLine>
+  <cac:${e.linea}>
     <cbc:ID>${i + 1}</cbc:ID>
-    <cbc:InvoicedQuantity unitCode="${unidad}">${qty}</cbc:InvoicedQuantity>
-    <cbc:LineExtensionAmount ${monto(base)}</cbc:LineExtensionAmount>
-    <cbc:FreeOfChargeIndicator>false</cbc:FreeOfChargeIndicator>${tributos}
+    <cbc:${e.cantidad} unitCode="${unidad}">${qty}</cbc:${e.cantidad}>
+    <cbc:LineExtensionAmount ${monto(base)}</cbc:LineExtensionAmount>${e.gratuito ? '\n    <cbc:FreeOfChargeIndicator>false</cbc:FreeOfChargeIndicator>' : ''}${tributos}
     <cac:Item>
       <cbc:Description>${esc(l.description)}</cbc:Description>
       <cac:StandardItemIdentification>
@@ -604,10 +622,10 @@ function lineaXml(l: LineaDocumento, i: number): string {
       <cbc:PriceAmount ${monto(base)}</cbc:PriceAmount>
       <cbc:BaseQuantity unitCode="${unidad}">${qty}</cbc:BaseQuantity>
     </cac:Price>
-  </cac:InvoiceLine>`;
+  </cac:${e.linea}>`;
 }
 
-function validarParte(p: ParteUbl, que: string): void {
+export function validarParte(p: ParteUbl, que: string): void {
   if (!/^[0-9A-Za-z-]{1,20}$/.test(p.numero)) throw new DocumentoUblInvalidoError(`${que}: número de documento inválido`);
   if (!/^\d{2}$/.test(p.tipoDocumento)) throw new DocumentoUblInvalidoError(`${que}: tipo de documento inválido`);
   if (p.dv !== undefined && !/^\d$/.test(p.dv)) throw new DocumentoUblInvalidoError(`${que}: DV inválido`);
@@ -678,7 +696,7 @@ export function armarInvoiceUbl(f: FacturaUbl, v: VarianteInvoice): string {
   ${parte('AccountingSupplierParty', f.emisor, f.prefijo)}
   ${parte('AccountingCustomerParty', f.adquiriente, undefined, v.identificacionAdquirienteSiempre)}
   ${v.pagos.map(medioDePago).join('\n  ')}${cargosXml(f.cargos, t.lineExtension)}${taxTotalesCabecera(f.lineas)}
-  ${legalMonetaryTotal(t, f.cargos.length > 0)}${f.lineas.map(lineaXml).join('')}
+  ${legalMonetaryTotal(t, f.cargos.length > 0)}${f.lineas.map((l, i) => lineaXml(l, i)).join('')}
 </Invoice>
 `;
 }
