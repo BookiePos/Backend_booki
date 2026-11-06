@@ -26,8 +26,9 @@ describe('ReconsultaDianService.barrer', () => {
   const transmision = { reconsultarPendientes: vi.fn() };
   const nomina = { reconsultarPendientes: vi.fn() };
   const habilitacion = { avanzarEnCurso: vi.fn() };
+  const habilitacionFactura = { avanzarEnCurso: vi.fn() };
   const servicio = () =>
-    new ReconsultaDianService(businesses as never, transmision as never, nomina as never, habilitacion as never);
+    new ReconsultaDianService(businesses as never, transmision as never, nomina as never, habilitacion as never, habilitacionFactura as never);
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -35,6 +36,16 @@ describe('ReconsultaDianService.barrer', () => {
     transmision.reconsultarPendientes.mockResolvedValue(cifras());
     nomina.reconsultarPendientes.mockResolvedValue(cifras());
     habilitacion.avanzarEnCurso.mockResolvedValue(cifras());
+    habilitacionFactura.avanzarEnCurso.mockResolvedValue(cifras());
+  });
+
+  it('avanza también los sets de factura/POS con el mismo plazo y suma sus cifras', async () => {
+    businesses.listActive.mockResolvedValue([biz('a')]);
+    habilitacionFactura.avanzarEnCurso.mockResolvedValue(cifras({ revisados: 2, avanzados: 1 }));
+    const hasta = Date.now() + 100_000;
+    const r = await servicio().barrer({ hasta });
+    expect(habilitacionFactura.avanzarEnCurso).toHaveBeenCalledWith(10, expect.objectContaining({ hasta }));
+    expect(r.cifras).toMatchObject({ setsRevisados: 2, avanzados: 1 });
   });
 
   it('recorre cada empresa dentro de su TenantContext', async () => {

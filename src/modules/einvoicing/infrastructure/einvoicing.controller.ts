@@ -19,6 +19,7 @@ import { TransmisionDianService } from '../application/transmision-dian.service'
 import { NominaElectronicaService } from '../application/nomina-electronica.service';
 import { NominaPeriodoService } from '../application/nomina-periodo.service';
 import { HabilitacionNominaService } from '../application/habilitacion-nomina.service';
+import { HabilitacionFacturaService } from '../application/habilitacion-factura.service';
 import { AjusteNominaDto } from '../application/dto/ajuste-nomina.dto';
 import { EmitirPeriodoNominaDto } from '../application/dto/emitir-periodo-nomina.dto';
 import { DocumentoFeVistaService } from '../application/documento-fe-vista.service';
@@ -55,6 +56,7 @@ export class EinvoicingController {
     private readonly nomina: NominaElectronicaService,
     private readonly periodos: NominaPeriodoService,
     private readonly habilitacionNomina: HabilitacionNominaService,
+    private readonly habilitacionFactura: HabilitacionFacturaService,
   ) {}
 
   /**
@@ -211,6 +213,33 @@ export class EinvoicingController {
   @Post('nomina/:id/ajuste')
   ajustarNomina(@Param('id') id: string, @Body() dto: AjusteNominaDto, @CurrentUser() user: JwtUser) {
     return this.periodos.ajustar(id, dto.tipoNota, user);
+  }
+
+  /** Arma, firma y envía el set de pruebas de la FACTURA (resolución SETP, adquiriente de prueba). Solo ambiente 2. */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CERTIFICATE)
+  @Post('sedes/:sedeId/emisor/factura/habilitacion')
+  iniciarHabilitacionFactura(@Param('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
+    return this.habilitacionFactura.iniciar(sedeId, user, 'fe');
+  }
+
+  /** Reconsulta el veredicto del set de pruebas de la factura. */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CERTIFICATE)
+  @Get('sedes/:sedeId/emisor/factura/habilitacion')
+  estadoHabilitacionFactura(@Param('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
+    return this.habilitacionFactura.consultar(sedeId, user, 'fe');
+  }
+
+  /** Set del documento equivalente POS: estructura lista, DESACTIVADO (409 con el motivo) hasta confirmar el portal. */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CERTIFICATE)
+  @Post('sedes/:sedeId/emisor/pos/habilitacion')
+  iniciarHabilitacionPos(@Param('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
+    return this.habilitacionFactura.iniciar(sedeId, user, 'pos');
+  }
+
+  @RequirePermissions(PERMISSIONS.EINVOICING_CERTIFICATE)
+  @Get('sedes/:sedeId/emisor/pos/habilitacion')
+  estadoHabilitacionPos(@Param('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
+    return this.habilitacionFactura.consultar(sedeId, user, 'pos');
   }
 
   /** Arma, firma y envía el set de pruebas de nómina (trabajador sintético). Solo ambiente 2. */

@@ -111,6 +111,14 @@ export class FiscalEmitter {
   @Prop({ type: String, trim: true })
   facturaTestSetId?: string;
 
+  /** Cuándo la DIAN aceptó el set de pruebas de la factura (lo marca la habilitación automática). */
+  @Prop({ type: Date })
+  facturaSetAprobadoAt?: Date;
+
+  /** Cuándo la DIAN aceptó el set de pruebas del documento equivalente POS. */
+  @Prop({ type: Date })
+  posSetAprobadoAt?: Date;
+
   // ── Credenciales DIAN de nómina (Fase 8), aparte de las de factura ─────────
   @Prop({ type: String, trim: true })
   nominaSoftwareId?: string;

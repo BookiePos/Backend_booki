@@ -22,6 +22,8 @@ import { PayrollDeduction, PayrollDeductionSchema } from '../payroll/infrastruct
 import { EmployeesModule } from '../employees/employees.module';
 import { NominaPeriodoService } from './application/nomina-periodo.service';
 import { HabilitacionNominaService } from './application/habilitacion-nomina.service';
+import { HabilitacionFacturaService } from './application/habilitacion-factura.service';
+import { EinvoicingHabilitacion, EinvoicingHabilitacionSchema } from './infrastructure/schemas/einvoicing-habilitacion.schema';
 import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
 import { EinvoicingService } from './application/einvoicing.service';
 import { FiscalEmittersService } from './application/fiscal-emitters.service';
@@ -59,6 +61,7 @@ import { ControlModule } from '../control/control.module';
       { name: ElectronicDocument.name, schema: ElectronicDocumentSchema },
       { name: PayrollEDocument.name, schema: PayrollEDocumentSchema },
       { name: PayrollHabilitacion.name, schema: PayrollHabilitacionSchema },
+      { name: EinvoicingHabilitacion.name, schema: EinvoicingHabilitacionSchema },
       { name: PayrollRun.name, schema: PayrollRunSchema },
       { name: PayrollDeduction.name, schema: PayrollDeductionSchema },
       { name: Counter.name, schema: CounterSchema },
@@ -88,6 +91,7 @@ import { ControlModule } from '../control/control.module';
     NominaElectronicaService,
     NominaPeriodoService,
     HabilitacionNominaService,
+    HabilitacionFacturaService,
     ReconsultaDianService,
     { provide: PROVEEDOR_TRANSMISOR_NOMINA, useClass: ProveedorTransmisorNomina },
     // Fase 5B: entrega al adquiriente (PDF + AttachedDocument/ZIP) tras `accepted`.
