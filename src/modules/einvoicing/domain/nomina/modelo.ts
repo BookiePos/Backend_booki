@@ -64,6 +64,10 @@ export interface DevengadosNe {
   cesantias?: { pago: Centavos; porcentaje: number; intereses: Centavos };
   incapacidades: IncapacidadNe[];
   licenciasMP: DiasPagoNe[];
+  /** Licencias remuneradas (luto, calamidad, sufragio…): llevan pago. */
+  licenciasR?: DiasPagoNe[];
+  /** Licencias no remuneradas: solo fechas y días (el XSD no lleva Pago). */
+  licenciasNR?: { dias: number; fechaInicio: string; fechaFin: string }[];
   bonificaciones: SalarialNe[];
   auxilios: SalarialNe[];
   otrosConceptos: (SalarialNe & { descripcion: string })[];

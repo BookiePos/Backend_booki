@@ -160,6 +160,8 @@ export function buildPayslipPdf(data: PayslipPdfData): Promise<Buffer> {
   row(doc, left, right, 'Pensión (4%)', `− ${money.format(de.pension)}`);
   if (de.fsp)
     row(doc, left, right, 'Fondo de solidaridad pensional', `− ${money.format(de.fsp)}`);
+  if (de.pensionLicenciaNR)
+    row(doc, left, right, 'Aporte pensión licencia no remunerada', `− ${money.format(de.pensionLicenciaNR)}`);
   if (de.retencionFuente)
     row(
       doc,

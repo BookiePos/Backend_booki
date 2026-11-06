@@ -147,7 +147,7 @@ export function computeLiquidacion(
 
   // Vacaciones: 15 días hábiles por año de servicio (art. 186 CST), menos los
   // ya disfrutados; se pagan los pendientes (art. 189), sin auxilio. Las
-  // compensadas al retiro no son base de salud ni pensión (art. 192 CST; las
+  // compensadas al retiro no son salario ni base de salud y pensión (art. 189 CST, a confirmar; las
   // disfrutadas sí, Decreto 1406/1999 art. 40): a confirmar con concepto UGPP vigente.
   const diasVacacionesCausados = redondearA((dias * 15) / 360, 2);
   const disfrutadas = Math.max(0, input.vacacionesDisfrutadasDias ?? 0);

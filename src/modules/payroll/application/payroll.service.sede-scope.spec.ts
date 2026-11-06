@@ -74,6 +74,7 @@ describe('PayrollService · alcance por sede', () => {
       {} as never,
       {} as never,
       {} as never, {} as any,
+    { find: () => ({ exec: async () => [] }) } as any,
     );
     return { service, runs, deductions, employees };
   }

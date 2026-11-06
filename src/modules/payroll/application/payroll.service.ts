@@ -47,6 +47,18 @@ import {
   PayrollLiquidacion,
   type PayrollLiquidacionDocument,
 } from '../infrastructure/schemas/payroll-liquidacion.schema';
+import {
+  PayrollNovedad,
+  type PayrollNovedadDocument,
+} from '../infrastructure/schemas/payroll-novedad.schema';
+import {
+  diasCalendario,
+  liquidarAusencias,
+  vacacionesDisfrutadasDeNovedades,
+  type NovedadAusencia,
+  type TipoNovedad,
+} from '../domain/novedades-calc';
+import type { CrearNovedadDto } from './dto/novedad.dto';
 import { diasPagablesHastaRetiro } from '../domain/liquidacion-calc';
 import { buildPayslipPdf, type PayslipNominaElectronica } from './payslip-pdf';
 import {
@@ -119,6 +131,15 @@ function conAvisos<T>(doc: T, advertencias: string[]): ConAvisos<T> {
   return { ...plano, advertencias };
 }
 
+/** Todas las fechas (YYYY-MM-DD) de los tramos de ausencia. */
+function fechasDe(lineas: { fechaInicio: string; fechaFin: string }[]): string[] {
+  const out: string[] = [];
+  for (const l of lineas) {
+    for (let d = l.fechaInicio; d <= l.fechaFin; d = sumarDiasIso(d, 1)) out.push(d);
+  }
+  return out;
+}
+
 /** Una liquidación se guarda cerca del retiro: hasta este margen hacia el futuro (preaviso corto). */
 const MARGEN_RETIRO_FUTURO_DIAS = 30;
 
@@ -169,6 +190,8 @@ export class PayrollService {
     private readonly nominaElectronica: Model<PayrollEDocumentDocument>,
     @InjectModel(PayrollLiquidacion.name)
     private readonly liquidaciones: Model<PayrollLiquidacionDocument>,
+    @InjectModel(PayrollNovedad.name)
+    private readonly novedades: Model<PayrollNovedadDocument>,
   ) {}
 
   /** Genera el comprobante (PDF) de un desprendible y lo envía al correo del empleado. */
@@ -680,6 +703,16 @@ export class PayrollService {
       })
       .select('employeeId workDate checkIn checkOut')
       .exec();
+    // Vacaciones, incapacidades y licencias activas que tocan el mes (decisión 3 del dueño).
+    const novs = await this.novedades
+      .find({ employeeId: { $in: emps.map((e) => e.id) }, estado: 'activa', fechaInicio: { $lte: to }, fechaFin: { $gte: from } })
+      .exec();
+    const novsByEmp = new Map<string, NovedadAusencia[]>();
+    for (const n of novs) {
+      const arr = novsByEmp.get(n.employeeId) ?? [];
+      arr.push({ id: String(n._id), tipo: n.tipo, fechaInicio: n.fechaInicio, fechaFin: n.fechaFin, diasPreviosProrroga: n.diasPreviosProrroga, diasHabiles: n.diasHabiles, salarioPromedio: n.salarioPromedio });
+      novsByEmp.set(n.employeeId, arr);
+    }
     const recsByEmp = new Map<
       string,
       { workDate: string; checkIn?: string; checkOut?: string }[]
@@ -697,7 +730,19 @@ export class PayrollService {
       // salud, pensión y retención como cualquier colilla (decisión 4 del
       // dueño): ni turnos ni descansos remunerados después de esa fecha.
       const hasta = e.terminationDate && e.terminationDate >= from && e.terminationDate < to ? e.terminationDate : to;
-      const registros = (recsByEmp.get(e.id) ?? []).filter((r) => r.workDate <= hasta);
+      // Ausencias del mes: sus días salen de los trabajados (un turno marcado en
+      // vacaciones o incapacidad no se paga dos veces) y se pagan por su regla.
+      const novsEmp = (novsByEmp.get(e.id) ?? []).map((n) => ({ ...n, fechaFin: n.fechaFin < hasta ? n.fechaFin : hasta }));
+      const ausencias = liquidarAusencias(
+        novsEmp.filter((n) => n.fechaInicio <= n.fechaFin),
+        period,
+        e.salary ?? 0,
+        s.smmlv,
+        // Salario integral: incapacidades y licencias sobre el IBC (70 %, art. 132 CST).
+        e.salaryType === 'integral' ? { factorIntegral: s.integralIbcFactor } : {},
+      );
+      const enAusencia = (d: string) => ausencias.lineas.some((l) => d >= l.fechaInicio && d <= l.fechaFin);
+      const registros = (recsByEmp.get(e.id) ?? []).filter((r) => r.workDate <= hasta && !enAusencia(r.workDate));
       const turnos = classifyTurnos(registros, {
         desde: from,
         jornadaSemanal: (f) => jornadaSemanalVigente(f, s),
@@ -720,18 +765,25 @@ export class PayrollService {
         // Basta la entrada: olvidar la salida no quita el día ni el descanso de
         // la semana; solo deja sin horas extra ni recargos (classifyTurnos), y
         // la colilla lo avisa.
-        diasTrabajados: Math.min(
-          DIAS_MES,
-          diasALiquidar(
-            new Set(registros.filter((r) => r.checkIn).map((r) => r.workDate)),
-            from,
-            hasta,
-            s.diasLaborablesSemana ?? 6,
-          ),
+        // Los días de ausencia cuentan como presentes para ganar el descanso de
+        // la semana (una ausencia justificada no lo hace perder, art. 173 CST) y
+        // luego se restan: se pagan por su propia regla.
+        diasTrabajados: Math.max(
+          0,
+          Math.min(
+            DIAS_MES,
+            diasALiquidar(
+              new Set([...registros.filter((r) => r.checkIn).map((r) => r.workDate), ...fechasDe(ausencias.lineas)]),
+              from,
+              hasta,
+              s.diasLaborablesSemana ?? 6,
+            ),
+          ) - ausencias.diasRemunerados - ausencias.diasNoRemunerados,
         ),
         arlRiskLevel: e.arlRiskLevel as ArlLevel | undefined,
         novedades: Object.keys(novedades).length > 0 ? novedades : undefined,
         fechaCorte: fechaCorteDePeriodo(period),
+        ...(ausencias.lineas.length > 0 ? { ausencias } : {}),
       };
       const breakdown = computeSlip(input, s);
       return {
@@ -998,6 +1050,8 @@ export class PayrollService {
     };
     breakdown: LiquidacionBreakdown;
     advertencias: string[];
+    /** Días de vacaciones disfrutados según las novedades registradas, para precargar el dato. */
+    sugerencias?: { vacacionesDisfrutadasDias: number };
   }> {
     if (user && dto.employeeId) await this.empleadoEnAlcance(dto.employeeId, user);
     const s = await this.parametrosEn(dto.fechaFin);
@@ -1066,7 +1120,220 @@ export class PayrollService {
       },
       breakdown: computeLiquidacion(input, s),
       advertencias: dto.employeeId ? await this.avisoVariables(dto.employeeId, dto.fechaFin) : [],
+      ...(dto.employeeId ? await this.sugerenciaVacaciones(dto.employeeId, fechaInicio, dto.fechaFin) : {}),
     };
+  }
+
+  /**
+   * Suma los días hábiles de las vacaciones registradas como novedad entre el
+   * ingreso y el retiro. Es una sugerencia: las disfrutadas antes de usar
+   * BookiPos no están registradas.
+   */
+  private async sugerenciaVacaciones(
+    employeeId: string,
+    desde: string,
+    hasta: string,
+  ): Promise<{ sugerencias?: { vacacionesDisfrutadasDias: number } }> {
+    const vac = await this.novedades
+      .find({ employeeId, estado: 'activa', tipo: 'vacaciones', fechaInicio: { $gte: desde, $lte: hasta } })
+      .exec();
+    if (vac.length === 0) return {};
+    return {
+      sugerencias: {
+        vacacionesDisfrutadasDias: vacacionesDisfrutadasDeNovedades(
+          vac.map((n) => ({ tipo: n.tipo, fechaInicio: n.fechaInicio, fechaFin: n.fechaFin, diasHabiles: n.diasHabiles })),
+        ),
+      },
+    };
+  }
+
+  // ─── Novedades: vacaciones, incapacidades y licencias (decisión 3) ────────
+
+  /** Meses (YYYY-MM) que toca un rango de fechas. */
+  private mesesDe(desde: string, hasta: string): string[] {
+    const meses: string[] = [];
+    let y = Number(desde.slice(0, 4));
+    let m = Number(desde.slice(5, 7));
+    const fin = hasta.slice(0, 7);
+    for (;;) {
+      const p = `${y}-${String(m).padStart(2, '0')}`;
+      meses.push(p);
+      if (p >= fin || meses.length > 24) break;
+      m += 1;
+      if (m > 12) {
+        m = 1;
+        y += 1;
+      }
+    }
+    return meses;
+  }
+
+  /** Una corrida CERRADA ya liquidó al empleado en alguno de esos meses: la novedad no se puede tocar. */
+  private async assertMesesAbiertos(employeeId: string, desde: string, hasta: string): Promise<void> {
+    const cerrada = await this.runs
+      .findOne({ period: { $in: this.mesesDe(desde, hasta) }, status: 'cerrada', 'slips.employeeId': employeeId })
+      .select('period')
+      .exec();
+    if (cerrada) {
+      throw new ConflictException(
+        `La nómina de ${cerrada.period} ya está cerrada con este empleado: la novedad cambiaría lo que ya se pagó. Regístrala como ajuste con el contador.`,
+      );
+    }
+  }
+
+  /**
+   * Registra una novedad. Valida fechas, que no se cruce con otra activa del
+   * mismo empleado (también después de crear, por concurrencia) y que la
+   * nómina de esos meses siga abierta. Recalcula las corridas en borrador de
+   * esos meses para que la tomen.
+   */
+  async crearNovedad(dto: CrearNovedadDto, user: JwtUser): Promise<ConAvisos<PayrollNovedad> & { corridasRecalculadas: string[] }> {
+    await this.empleadoEnAlcance(dto.employeeId, user);
+    const valida = (f: string) => {
+      const d = new Date(`${f}T00:00:00Z`);
+      return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === f;
+    };
+    if (!valida(dto.fechaInicio) || !valida(dto.fechaFin)) throw new BadRequestException('Las fechas de la novedad no son válidas.');
+    if (dto.fechaFin < dto.fechaInicio) throw new BadRequestException('La fecha final no puede ser anterior a la inicial.');
+    if (this.mesesDe(dto.fechaInicio, dto.fechaFin).length > 12) {
+      throw new BadRequestException('Una novedad no puede pasar de 12 meses; regístrala por tramos (prórrogas).');
+    }
+    const tipo = dto.tipo as TipoNovedad;
+    if (tipo === 'vacaciones' && !dto.diasHabiles) {
+      throw new BadRequestException('Indica los días hábiles de vacaciones que disfruta (los descuenta la liquidación de retiro).');
+    }
+    if (tipo === 'vacaciones' && dto.diasHabiles! > diasCalendario(dto.fechaInicio, dto.fechaFin)) {
+      throw new BadRequestException(
+        `Los días hábiles (${dto.diasHabiles}) no pueden ser más que los días del rango (${diasCalendario(dto.fechaInicio, dto.fechaFin)}).`,
+      );
+    }
+    if (dto.salarioPromedio !== undefined && tipo !== 'vacaciones') {
+      throw new BadRequestException('El salario promedio solo aplica a las vacaciones (art. 192 CST).');
+    }
+    if (dto.diasPreviosProrroga !== undefined && tipo !== 'incapacidad_comun') {
+      throw new BadRequestException('Los días previos de prórroga solo aplican a la incapacidad común.');
+    }
+    const cruce = await this.novedades
+      .findOne({ employeeId: dto.employeeId, estado: 'activa', fechaInicio: { $lte: dto.fechaFin }, fechaFin: { $gte: dto.fechaInicio } })
+      .exec();
+    if (cruce) {
+      throw new ConflictException(`Se cruza con otra novedad (${cruce.tipo} del ${cruce.fechaInicio} al ${cruce.fechaFin}). Anúlala o ajusta las fechas.`);
+    }
+    await this.assertMesesAbiertos(dto.employeeId, dto.fechaInicio, dto.fechaFin);
+    const emp = await this.employees.findById(dto.employeeId).select('sedeId firstName lastName').exec();
+    const creada = await this.novedades.create({
+      employeeId: dto.employeeId,
+      employeeName: emp ? `${emp.firstName} ${emp.lastName}`.trim() : undefined,
+      sedeId: emp?.sedeId,
+      tipo,
+      fechaInicio: dto.fechaInicio,
+      fechaFin: dto.fechaFin,
+      ...(dto.diasPreviosProrroga !== undefined ? { diasPreviosProrroga: dto.diasPreviosProrroga } : {}),
+      ...(tipo === 'vacaciones' ? { diasHabiles: dto.diasHabiles } : {}),
+      ...(tipo === 'vacaciones' && dto.salarioPromedio ? { salarioPromedio: dto.salarioPromedio } : {}),
+      observacion: dto.observacion,
+      estado: 'activa',
+      creadaPor: user.email,
+    });
+    // El cruce se revisó antes de crear, pero dos registros simultáneos pasan los dos: se vuelve a mirar. Si
+    // hay otra activa cruzada creada ANTES (menor _id), esta se borra y se responde 409; gana la primera.
+    // Ventana residual (N4): sin transacción ni índice de exclusión, dos altas casi simultáneas cuyos `_id`
+    // salgan en orden distinto al de inserción, o un borrado que falle tras la revisión, pueden dejar dos
+    // cruzadas. El pre-vuelo y la corrida no las suman dos veces sin avisar: el tope de 30 días del mes lo limita.
+    const otras = await this.novedades
+      .find({
+        employeeId: dto.employeeId,
+        estado: 'activa',
+        _id: { $ne: creada._id },
+        fechaInicio: { $lte: dto.fechaFin },
+        fechaFin: { $gte: dto.fechaInicio },
+      })
+      .exec();
+    if (otras.some((o) => String(o._id) < String(creada._id))) {
+      await this.novedades.deleteOne({ _id: creada._id }).exec();
+      throw new ConflictException('Otra novedad del mismo empleado se registró a la vez en esas fechas. Revisa la lista.');
+    }
+    const advertencias: string[] = [];
+    if (tipo === 'vacaciones' && !dto.salarioPromedio && (await this.devengosVariables(dto.employeeId, dto.fechaInicio, 12)) > 0) {
+      advertencias.push(
+        'Tuvo devengos variables en el último año: por el art. 192 CST las vacaciones se pagan con el salario PROMEDIO. Sin «salario promedio» se usa el fijo; revísalo con el contador.',
+      );
+    }
+    const recalculo = await this.recalcularBorradores(dto.employeeId, dto.fechaInicio, dto.fechaFin, user);
+    return { ...conAvisos(creada, [...advertencias, ...recalculo.advertencias]), corridasRecalculadas: recalculo.ids };
+  }
+
+  /**
+   * Las corridas en BORRADOR de los meses que toca la novedad se recalculan
+   * para que la tomen (las cerradas no: la novedad se rechaza antes). Si un
+   * recálculo falla, la novedad queda y se avisa que hay que recalcular a mano.
+   */
+  private async recalcularBorradores(
+    employeeId: string,
+    desde: string,
+    hasta: string,
+    user: JwtUser,
+  ): Promise<{ ids: string[]; advertencias: string[] }> {
+    const borradores = await this.runs
+      .find({ period: { $in: this.mesesDe(desde, hasta) }, status: 'borrador' })
+      .select('_id period coverage sedeId')
+      .exec();
+    const ids: string[] = [];
+    const advertencias: string[] = [];
+    for (const r of borradores) {
+      try {
+        await this.recalcRun(String(r._id), user);
+        ids.push(String(r._id));
+      } catch (err) {
+        advertencias.push(`No se pudo recalcular la nómina en borrador de ${r.period}: ${(err as Error).message}. Recalcúlala a mano.`);
+      }
+    }
+    return { ids, advertencias };
+  }
+
+  /** Lista por empleado y/o periodo, solo de empleados de las sedes del usuario (su sede actual). */
+  async listarNovedades(
+    filtros: { employeeId?: string; periodo?: string },
+    user?: SedeScopeUser,
+  ): Promise<PayrollNovedadDocument[]> {
+    const filtro: Record<string, unknown> = {};
+    if (filtros.employeeId) filtro.employeeId = filtros.employeeId;
+    if (filtros.periodo) {
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(filtros.periodo)) throw new BadRequestException('periodo debe ser YYYY-MM');
+      filtro.fechaInicio = { $lte: fechaCorteDePeriodo(filtros.periodo) };
+      filtro.fechaFin = { $gte: `${filtros.periodo}-01` };
+    }
+    const sedes = user ? allowedSedeIds(user) : null;
+    if (sedes) {
+      const visibles = await this.employees
+        .find({ sedeId: { $in: sedes.map((id) => new Types.ObjectId(id)) } })
+        .select('_id')
+        .exec();
+      const ids = visibles.map((e) => String(e._id));
+      filtro.employeeId = filtros.employeeId ? (ids.includes(filtros.employeeId) ? filtros.employeeId : { $in: [] }) : { $in: ids };
+    }
+    return this.novedades.find(filtro).sort({ fechaInicio: -1 }).limit(200).exec();
+  }
+
+  /**
+   * Anula una novedad (atómico). No se puede si la nómina de esos meses ya se
+   * cerró con el empleado; las corridas en borrador se recalculan.
+   */
+  async anularNovedad(id: string, user: JwtUser): Promise<ConAvisos<PayrollNovedad> & { corridasRecalculadas: string[] }> {
+    const nov = Types.ObjectId.isValid(id) ? await this.novedades.findById(id).exec() : null;
+    if (!nov) throw new NotFoundException('Novedad no encontrada');
+    if (user) await this.empleadoEnAlcance(nov.employeeId, user);
+    await this.assertMesesAbiertos(nov.employeeId, nov.fechaInicio, nov.fechaFin);
+    const anulada = await this.novedades
+      .findOneAndUpdate(
+        { _id: nov._id, estado: 'activa' },
+        { $set: { estado: 'anulada', anuladaPor: user?.email, anuladaEn: new Date() } },
+        { new: true },
+      )
+      .exec();
+    if (!anulada) throw new ConflictException('La novedad ya está anulada.');
+    const recalculo = await this.recalcularBorradores(nov.employeeId, nov.fechaInicio, nov.fechaFin, user);
+    return { ...conAvisos(anulada, recalculo.advertencias), corridasRecalculadas: recalculo.ids };
   }
 
   /**
@@ -1076,9 +1343,19 @@ export class PayrollService {
    * comisiones o bonificaciones salariales.
    */
   private async avisoVariables(employeeId: string, fechaFin: string): Promise<string[]> {
+    const variable = await this.devengosVariables(employeeId, fechaFin, 3);
+    return variable > 0
+      ? [
+          `En los últimos 3 meses tuvo devengos variables (${variable}: horas extra, recargos, comisiones o bonificaciones). Por el art. 253 CST las prestaciones se liquidan con el salario PROMEDIO, y este cálculo usa el salario fijo: revísalo con el contador.`,
+        ]
+      : [];
+  }
+
+  /** Suma de horas extra, recargos, comisiones y bonificaciones salariales en las corridas cerradas de los últimos `n` meses. */
+  private async devengosVariables(employeeId: string, fechaFin: string, n: number): Promise<number> {
     const y = Number(fechaFin.slice(0, 4));
     const m = Number(fechaFin.slice(5, 7));
-    const meses = [0, 1, 2].map((i) => new Date(Date.UTC(y, m - 1 - i, 1)).toISOString().slice(0, 7));
+    const meses = Array.from({ length: n }, (_, i) => new Date(Date.UTC(y, m - 1 - i, 1)).toISOString().slice(0, 7));
     const corridas = await this.runs
       .find({ period: { $in: meses }, status: 'cerrada', 'slips.employeeId': employeeId })
       .select('slips.employeeId slips.breakdown')
@@ -1091,11 +1368,7 @@ export class PayrollService {
         const d = sl.breakdown?.devengados;
         return t + (d ? (d.recargos ?? 0) + (d.horasExtra ?? 0) + (d.comisiones ?? 0) + (d.bonificacionSalarial ?? 0) : 0);
       }, 0);
-    return variable > 0
-      ? [
-          `En los últimos 3 meses tuvo devengos variables (${variable}: horas extra, recargos, comisiones o bonificaciones). Por el art. 253 CST las prestaciones se liquidan con el salario PROMEDIO, y este cálculo usa el salario fijo: revísalo con el contador.`,
-        ]
-      : [];
+    return variable;
   }
 
   listRuns(user?: SedeScopeUser): Promise<PayrollRunDocument[]> {
@@ -1426,7 +1699,8 @@ export class PayrollService {
       saldoACargoEmpleados: sumBy(run.slips, (sl) => Math.max(0, -(sl.netoPagar ?? 0))),
       seguridadSocialEmpleado: sumBy(
         run.slips,
-        (sl) => (ded(sl)?.salud ?? 0) + (ded(sl)?.pension ?? 0) + (ded(sl)?.fsp ?? 0),
+        (sl) =>
+          (ded(sl)?.salud ?? 0) + (ded(sl)?.pension ?? 0) + (ded(sl)?.fsp ?? 0) + (ded(sl)?.pensionLicenciaNR ?? 0),
       ),
       retencionFuente: sumBy(run.slips, (sl) => ded(sl)?.retencionFuente ?? 0),
       fiado,
