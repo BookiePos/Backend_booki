@@ -38,7 +38,7 @@ const DUENO = { role: ROLES.OWNER, permissions: [], sedeIds: [] };
  * crédito), que es como lo entrega el ledger.
  *
  * El servicio se instancia DIRECTAMENTE con dependencias mockeadas. El
- * constructor es: (ledger, sales).
+ * constructor es: (ledger, sales, saleReturns).
  */
 describe('ReportsService · estados financieros', () => {
   let ledger: any;
@@ -78,7 +78,7 @@ describe('ReportsService · estados financieros', () => {
         balanced: true,
       }),
     };
-    service = new ReportsService(ledger as never, {} as never);
+    service = new ReportsService(ledger as never, {} as never, {} as never);
   }
 
   beforeEach(() => {
@@ -273,6 +273,7 @@ describe('ReportsService · alcance por sede', () => {
 
   let ledger: any;
   let sales: any;
+  let saleReturns: any;
   let service: ReportsService;
 
   beforeEach(() => {
@@ -291,7 +292,10 @@ describe('ReportsService · alcance por sede', () => {
     sales = {
       aggregate: vi.fn(() => ({ exec: async () => [] })),
     };
-    service = new ReportsService(ledger as never, sales as never);
+    saleReturns = {
+      aggregate: vi.fn(() => ({ exec: async () => [] })),
+    };
+    service = new ReportsService(ledger as never, sales as never, saleReturns as never);
   });
 
   it('pedir una sede ajena es 403 en los cuatro informes', async () => {
@@ -302,12 +306,17 @@ describe('ReportsService · alcance por sede', () => {
     await expect(service.salesReport({ sedeId: AJENA }, u)).rejects.toThrow(ForbiddenException);
     expect(ledger.trialBalance).not.toHaveBeenCalled();
     expect(sales.aggregate).not.toHaveBeenCalled();
+    expect(saleReturns.aggregate).not.toHaveBeenCalled();
   });
 
   it('sin sede, el gerente de una sede ve solo la suya, nunca la empresa', async () => {
     const r = await service.incomeStatement({ from: '2026-01-01' }, gerente([S1]));
 
-    expect(ledger.trialBalance).toHaveBeenCalledWith({ from: '2026-01-01', to: undefined, sedeId: S1 });
+    expect(ledger.trialBalance).toHaveBeenCalledWith({
+      from: '2026-01-01',
+      to: undefined,
+      sedeId: S1,
+    });
     expect(r.totalIngresos).toBe(1_000);
   });
 
@@ -347,6 +356,7 @@ describe('ReportsService · alcance por sede', () => {
     await expect(service.salesReport({ sedeId: 'xx' }, DUENO)).rejects.toThrow(BadRequestException);
     expect(ledger.trialBalance).not.toHaveBeenCalled();
     expect(sales.aggregate).not.toHaveBeenCalled();
+    expect(saleReturns.aggregate).not.toHaveBeenCalled();
   });
 
   it('sin sedes asignadas no ve nada, en vez de ver toda la empresa', async () => {
@@ -361,6 +371,53 @@ describe('ReportsService · alcance por sede', () => {
 
     const match = sales.aggregate.mock.calls[0][0][0].$match;
     expect(match.sedeId.$in.map(String)).toEqual([S1, S2]);
+    // Las devoluciones, con la MISMA sede y sin filtro de status.
+    const ret = saleReturns.aggregate.mock.calls[0][0][0].$match;
+    expect(ret.sedeId.$in.map(String)).toEqual([S1, S2]);
+    expect(ret).not.toHaveProperty('status');
+  });
+
+  it('ventas y devoluciones usan el mismo rango, en hora de Colombia', async () => {
+    await service.salesReport({ from: '2026-03-01', to: '2026-03-31' }, DUENO);
+
+    const v = sales.aggregate.mock.calls[0][0][0].$match;
+    const d = saleReturns.aggregate.mock.calls[0][0][0].$match;
+    expect(v.status).toBe('completed');
+    expect(v.createdAt.$gte.toISOString()).toBe('2026-03-01T05:00:00.000Z');
+    expect(v.createdAt.$lte.toISOString()).toBe('2026-04-01T04:59:59.999Z');
+    expect(d.createdAt).toEqual(v.createdAt);
+  });
+
+  it('el total del reporte de ventas va neto de devoluciones', async () => {
+    sales.aggregate.mockReturnValue({
+      exec: async () => [
+        {
+          days: [{ _id: '2026-03-02', revenue: 100_000, tax: 19_000, tickets: 4 }],
+          byMethod: [],
+          bySede: [],
+          topProducts: [],
+          totals: [{ revenue: 100_000, tax: 19_000, tickets: 4 }],
+        },
+      ],
+    });
+    saleReturns.aggregate.mockReturnValue({
+      exec: async () => [
+        {
+          days: [{ _id: '2026-03-02', amount: 20_000, tax: 3_800, count: 1 }],
+          bySede: [],
+          byMethod: [],
+          byReason: [],
+          products: [],
+          totals: [{ amount: 20_000, tax: 3_800, count: 1 }],
+        },
+      ],
+    });
+    const r = await service.salesReport({}, DUENO);
+    expect(r.totalGrossRevenue).toBe(100_000);
+    expect(r.totalReturns).toBe(20_000);
+    expect(r.totalRevenue).toBe(80_000);
+    expect(r.totalTax).toBe(15_200);
+    expect(r.avgTicket).toBe(20_000);
   });
 
   it('el reporte de ventas del dueño no lleva filtro de sede', async () => {
