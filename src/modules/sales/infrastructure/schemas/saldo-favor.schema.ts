@@ -64,6 +64,14 @@ export class SaldoFavorMovimiento {
 
   @Prop({ trim: true })
   memo?: string;
+
+  /**
+   * Si ya movió el saldo del cliente. Nace en `false` (salvo sin tercero) y
+   * se reclama a `true` antes de mover el saldo: el barrido aplica los que
+   * quedaron en `false` por un corte.
+   */
+  @Prop({ default: false })
+  aplicado!: boolean;
 }
 
 export const SaldoFavorMovimientoSchema = SchemaFactory.createForClass(SaldoFavorMovimiento);
@@ -73,3 +81,8 @@ SaldoFavorMovimientoSchema.index(
   { unique: true, name: 'saldo_favor_movimiento_origen' },
 );
 SaldoFavorMovimientoSchema.index({ customerId: 1, createdAt: -1 });
+// Barrido: los que quedaron sin aplicar.
+SaldoFavorMovimientoSchema.index(
+  { aplicado: 1, createdAt: 1 },
+  { name: 'saldo_favor_sin_aplicar', partialFilterExpression: { aplicado: false } },
+);

@@ -258,6 +258,42 @@ describe('SaleReturnsService · rebaja posterior (Fase 6C)', () => {
     expect(ledger.postSaleReturn.mock.calls[0][0].refundMethod).toBe('credit_note');
   });
 
+  it('a favor sin cliente en la venta: 400 «identifica al cliente o devuelve en efectivo/transferencia»', async () => {
+    build();
+    await expect(
+      service.createRebaja(saleId.toString(), rebaja({ refundMethod: 'credit_note' }), user),
+    ).rejects.toThrow(/identifica al cliente o devuelve en efectivo\/transferencia/);
+    await expect(
+      service.create(saleId.toString(), devolucion({ refundMethod: 'none' }), user),
+    ).rejects.toThrow(/identifica al cliente/);
+    expect(registros).toHaveLength(0);
+  });
+
+  it('venta pagada en parte con saldo a favor: esa parte vuelve a la 2805 y al saldo, nunca en efectivo', async () => {
+    const CLIENTE = new Types.ObjectId();
+    // $40.000: $10.000 con saldo a favor y $30.000 en efectivo.
+    build(
+      venta({
+        customerId: CLIENTE,
+        total: 40_000,
+        payments: [
+          { method: 'saldo_favor', amount: 10_000 },
+          { method: 'cash', amount: 30_000 },
+        ],
+      }),
+    );
+    // Devuelve $15.000 en efectivo: $10.000 vuelven al saldo y solo $5.000 salen del cajón.
+    const d: any = await service.create(saleId.toString(), devolucion(), user);
+    expect(d.aSaldoFavor).toBe(10_000);
+    expect(caja.movement.mock.calls[0][0].amount).toBe(5_000);
+    expect(saldoFavor.abonar).toHaveBeenCalledWith(expect.objectContaining({ customerId: CLIENTE, amount: 10_000 }));
+    expect(ledger.postSaleReturn.mock.calls[0][0]).toMatchObject({ refundTotal: 15_000, toCustomerCredit: 10_000 });
+    // Una rebaja después: el saldo pagado ya volvió entero, todo sale por el medio.
+    const r: any = await service.createRebaja(saleId.toString(), rebaja({ amount: 1_000 }), user);
+    expect(r.aSaldoFavor).toBe(0);
+    expect(caja.movement.mock.calls[1][0].amount).toBe(1_000);
+  });
+
   it('en efectivo no abona saldo a favor', async () => {
     build();
     await service.createRebaja(saleId.toString(), rebaja(), user);

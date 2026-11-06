@@ -53,6 +53,8 @@ describe('SaleReturnsService.create · lo que se mueve', () => {
     return {
       _id: saleId,
       saleNumber: 'FV-000123',
+      // Fase 6C: con cliente, así una devolución a favor tiene a quién abonarle.
+      customerId: new Types.ObjectId(),
       sedeId: { _id: sedeId },
       status: 'completed',
       lines: [

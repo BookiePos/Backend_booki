@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ForbiddenException,
   Controller,
   Get,
   Param,
@@ -22,6 +23,7 @@ import { NotasSinReferenciaService } from '../application/notas-sin-referencia.s
 import { SaldoFavorService } from '../application/saldo-favor.service';
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
+import { allowedSedeIds } from '../../core-auth/domain/sede-access';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { OfflineSalesService } from '../application/offline-sales.service';
 import { DocumentoFiscalVentaService } from '../application/documento-fiscal-venta.service';
@@ -169,7 +171,13 @@ export class SalesController {
    */
   @RequirePermissions(PERMISSIONS.FINANCE_VIEW)
   @Get('saldos-favor')
-  saldosFavor() {
+  saldosFavor(@CurrentUser() user: JwtUser) {
+    // El saldo a favor es de TODA la empresa: el cliente lo gasta en cualquier
+    // sede, aunque cada asiento de la 2805 lleve la sede donde se originó. Por
+    // eso no se filtra por sede y quien está limitado a unas sedes no lo ve.
+    if (allowedSedeIds(user) !== null) {
+      throw new ForbiddenException('El reporte de saldos a favor es de toda la empresa: no está disponible para un usuario limitado por sede.');
+    }
     return this.saldoFavor.reporte();
   }
 

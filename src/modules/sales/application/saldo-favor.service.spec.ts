@@ -56,6 +56,23 @@ describe('SaldoFavorService', () => {
         return m;
       }),
       deleteOne: vi.fn((f: any) => ({ exec: async () => void (movs = movs.filter((m) => String(m._id) !== String(f._id))) })),
+      findOneAndUpdate: vi.fn((f: any, u: any) => ({
+        exec: async () => {
+          const m = movs.find((x) => String(x._id) === String(f._id) && x.aplicado === f.aplicado);
+          if (!m) return null;
+          return Object.assign(m, u.$set);
+        },
+      })),
+      updateOne: vi.fn((f: any, u: any) => ({
+        exec: async () => {
+          const m = movs.find((x) => String(x._id) === String(f._id));
+          if (m) Object.assign(m, u.$set);
+          return {};
+        },
+      })),
+      find: vi.fn(() => ({
+        sort: () => ({ limit: () => ({ exec: async () => movs.filter((m) => m.aplicado === false && m.customerId) }) }),
+      })),
       findOne: vi.fn((f: any) => ({
         exec: async () => movs.find((m) => m.sourceType === f.sourceType && m.sourceId === f.sourceId && m.tipo === f.tipo) ?? null,
       })),
@@ -133,5 +150,37 @@ describe('SaldoFavorService', () => {
     expect(r.libro2805).toBe(4_500);
     // $500 en la 2805 sin auxiliar: saldos de antes de la Fase 6C.
     expect(r.diferenciaLibro).toBe(500);
+  });
+
+  it('cada movimiento se reclama antes de mover el saldo: aplicarlo otra vez no hace nada', async () => {
+    await abono(5_000);
+    expect(movs[0].aplicado).toBe(true);
+    await (svc as any).aplicar(movs[0]);
+    expect(await svc.saldoDe(A.toString())).toBe(5_000);
+  });
+
+  it('si el saldo falla, abonar y revertir retiran el movimiento (como consumir)', async () => {
+    const original = (svc as any).saldos.findOneAndUpdate;
+    (svc as any).saldos.findOneAndUpdate = vi.fn(() => ({ exec: async () => Promise.reject(new Error('base caída')) }));
+    await expect(abono(5_000)).rejects.toThrow('base caída');
+    expect(movs).toHaveLength(0);
+    (svc as any).saldos.findOneAndUpdate = original;
+    await abono(5_000);
+    await svc.consumir({ customerId: A.toString(), amount: 2_000, saleId: 's1' });
+    (svc as any).saldos.findOneAndUpdate = vi.fn(() => ({ exec: async () => Promise.reject(new Error('base caída')) }));
+    await svc.revertirConsumo('s1');
+    expect(movs.filter((m) => m.tipo === 'reverso')).toHaveLength(0);
+    (svc as any).saldos.findOneAndUpdate = original;
+    await svc.revertirConsumo('s1');
+    expect(await svc.saldoDe(A.toString())).toBe(5_000);
+  });
+
+  it('el barrido aplica los movimientos que quedaron reservados sin efecto', async () => {
+    // Un corte entre el auxiliar y el saldo: el abono quedó reservado, sin aplicar.
+    movs.push({ _id: new Types.ObjectId(), customerId: A, tipo: 'abono', amount: 7_000, sourceType: 'sale_return', sourceId: 'r9', aplicado: false });
+    const r = await svc.aplicarPendientes();
+    expect(r).toEqual({ aplicados: 1, fallidos: 0 });
+    expect(await svc.saldoDe(A.toString())).toBe(7_000);
+    expect(await svc.aplicarPendientes()).toEqual({ aplicados: 0, fallidos: 0 });
   });
 });
