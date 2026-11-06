@@ -63,6 +63,7 @@ import {
   type TipoAmbiente,
 } from '../domain/emisor-fiscal';
 import { FiscalEmittersService } from './fiscal-emitters.service';
+import { AuditService } from '../../core-audit/application/audit.service';
 import {
   normalizarNit,
   tipoDeChoque,
@@ -164,6 +165,8 @@ export class EinvoicingService {
     private readonly sedes: SedesService,
     private readonly businesses: BusinessService,
     private readonly emisores: FiscalEmittersService,
+    /** Auditoría de negocio (emisión, resolución). Opcional solo para los tests antiguos. */
+    private readonly audit?: AuditService,
   ) {}
 
   /** Ambiente del emisor fiscal de la sede; sin emisor, habilitación ('2'). */
@@ -279,6 +282,8 @@ export class EinvoicingService {
     existente: () => Promise<ElectronicDocumentDocument | null>;
     /** Mensaje del 409 si choca la exclusión POS/FEV con el otro tipo. */
     exclusion?: string;
+    /** Quién emite: queda en la fila de auditoría de la emisión. */
+    actor: JwtUser;
   }): Promise<ElectronicDocumentDocument> {
     const MAX_INTENTOS = 3;
     for (let intento = 1; ; intento++) {
@@ -287,7 +292,9 @@ export class EinvoicingService {
       let number: number | undefined;
       try {
         number = await this.nextNumber(o.counterId, o.desde, o.hasta);
-        return await this.model.create(o.construir(number));
+        const creado = await this.model.create(o.construir(number));
+        await this.auditarEmision(creado, o.actor);
+        return creado;
       } catch (err) {
         await this.refundDocQuota(origen);
         const choque = tipoDeChoque(err);
@@ -315,6 +322,33 @@ export class EinvoicingService {
         throw err;
       }
     }
+  }
+
+  /**
+   * Una fila por documento fiscal emitido (FEV, POS o nota): quién, qué número
+   * y su CUFE/CUDE. Solo ids y códigos: nunca el XML, la clave ni el PIN. Es
+   * aparte de la fila HTTP del interceptor, que no sabe el número.
+   */
+  private async auditarEmision(doc: ElectronicDocumentDocument, user: JwtUser): Promise<void> {
+    await this.audit?.record({
+      userId: user.userId,
+      userEmail: user.email,
+      userName: user.name,
+      role: user.role,
+      method: 'POST',
+      path: `/einvoicing/documentos/${String(doc._id)}/emision`,
+      statusCode: 201,
+      success: true,
+      action: 'einvoicing.documento.emitido',
+      detail: {
+        documentoId: String(doc._id),
+        tipo: String(doc.type),
+        fullNumber: String(doc.fullNumber),
+        cufe: String(doc.cufe ?? ''),
+        sedeId: String(doc.sedeId),
+        tipoAmbiente: String(doc.tipoAmbiente ?? ''),
+      },
+    });
   }
 
   /** Mayor número ya emitido para (NIT normalizado, prefijo), o 0 si no hay. */
@@ -443,6 +477,7 @@ export class EinvoicingService {
     const medioPago = MEDIO_PAGO_BY_METHOD[sale.payment.method] ?? '10';
 
     return this.emitir({
+      actor: user,
       counterId: contadorDeResolucion('invoice', sedeId, prefix),
       desde: resolucion.rangoDesde ?? 1,
       hasta: resolucion.rangoHasta,
@@ -567,6 +602,7 @@ export class EinvoicingService {
     const { issueDate, issueTime } = this.now();
 
     return this.emitir({
+      actor: user,
       counterId: contadorDeResolucion('pos', sedeId, prefix),
       desde: resolucion.rangoDesde ?? 1,
       hasta: resolucion.rangoHasta,
@@ -684,6 +720,7 @@ export class EinvoicingService {
     // Una nota crédito también es un documento electrónico: cuenta al cupo
     // (dentro de `emitir`, antes de quemar folio).
     return this.emitir({
+      actor: user,
       counterId: resolucionNota
         ? contadorDeResolucion('credit_note', sedeId, prefix)
         : `nc:${sedeId}`,
@@ -942,6 +979,30 @@ export class EinvoicingService {
         { upsert: true },
       )
       .exec();
+
+    // Sin clave técnica en el detalle: solo qué se registró y desde qué número.
+    await this.audit?.record({
+      userId: user.userId,
+      userEmail: user.email,
+      userName: user.name,
+      role: user.role,
+      method: 'POST',
+      path: `/einvoicing/resolutions/${sedeId}`,
+      statusCode: 201,
+      success: true,
+      action: previa ? 'einvoicing.resolucion.renovada' : 'einvoicing.resolucion.registrada',
+      detail: {
+        sedeId,
+        tipoDocumento: tipo,
+        numero: String(nueva.numero ?? ''),
+        prefijo: nueva.prefijo ?? '',
+        rangoDesde: String(desde),
+        rangoHasta: String(nueva.rangoHasta ?? ''),
+        vigenciaHasta: String(dto.vigenciaHasta).slice(0, 10),
+        empezarEn: String(empezarEn),
+        claveTecnicaNueva: String(dto.claveTecnica != null),
+      },
+    });
 
     return this.resolutionStatus(user);
   }
