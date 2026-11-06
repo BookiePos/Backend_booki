@@ -877,7 +877,10 @@ export class EinvoicingService {
     if (!dto.vigenciaHasta) {
       throw new BadRequestException('La resolución necesita la fecha de vigencia final (vigenciaHasta).');
     }
-    if (new Date(dto.vigenciaHasta) < startOfDay(new Date())) {
+    // Se compara como texto YYYY-MM-DD contra el día de hoy en Colombia: con
+    // `new Date('YYYY-MM-DD')` (UTC) una resolución salía vencida en su último día.
+    const hoyColombia = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
+    if (String(dto.vigenciaHasta).slice(0, 10) < hoyColombia) {
       throw new BadRequestException('La resolución ya venció: no se puede registrar una vigencia pasada.');
     }
 
