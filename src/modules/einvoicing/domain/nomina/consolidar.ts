@@ -12,8 +12,11 @@
  * FSP (solidaridad 0,5 % + subsistencia), retención en la fuente y las
  * deducciones de nómina (`sale`/`arrastre` → Deuda; `manual` → OtraDeduccion).
  * Qué NO entra: aportes del empleador y provisiones (no son pagos al
- * trabajador). Prima, cesantías, vacaciones, incapacidades, licencias y retiro
- * no se inventan: si aparecen, el trabajador se bloquea (tarea 11 del dueño).
+ * trabajador). Retiro: la liquidación APROBADA del mes aporta cesantías,
+ * intereses, prima, vacaciones compensadas e indemnización (decisión 4 del
+ * dueño); sin ella, quien se retira en el mes se bloquea. Vacaciones,
+ * incapacidades, licencias y el pago semestral de prima o la consignación de
+ * cesantías no se inventan: si aparecen en la colilla, el trabajador se bloquea.
  *
  * Pago: el medio y la fecha REAL de cada egreso los declara el negocio al
  * cerrar la corrida (`PayrollRun.pago`, decisión 1 del dueño, tarea 11). Una
@@ -114,6 +117,23 @@ export interface EmpleadorConsolidar {
   direccion?: string;
 }
 
+/** La liquidación de retiro APROBADA (`PayrollLiquidacion`), en pesos. */
+export interface LiquidacionConsolidar {
+  id: string;
+  /** YYYY-MM-DD */
+  fechaRetiro: string;
+  diasLiquidados: number;
+  /** Días del semestre que paga la prima. */
+  diasPrima?: number;
+  cesantias: number;
+  interesesCesantias: number;
+  prima: number;
+  vacaciones: number;
+  indemnizacion: number;
+  salariosPendientes: number;
+  pago?: PagoCorrida;
+}
+
 export interface EntradaConsolidar {
   /** YYYY-MM */
   periodo: string;
@@ -123,6 +143,8 @@ export interface EntradaConsolidar {
   deducciones: DeduccionConsolidar[];
   /** SMMLV vigente en el mes: sin él no se valida el mínimo del salario integral (13 SMMLV, art. 132 CST). */
   smmlv?: number;
+  /** Liquidación de retiro aprobada cuyo retiro cae en el mes. */
+  liquidacion?: LiquidacionConsolidar;
 }
 
 /** Lo que se dejó de reportar por neto negativo (pesos): la parte de cada colilla que `crearArrastres` lleva al mes siguiente. */
@@ -229,6 +251,7 @@ function revisarTrabajador(
   periodo: string,
   medio: string | undefined,
   smmlv: number | undefined,
+  liq: LiquidacionConsolidar | undefined,
   bloqueos: string[],
 ): void {
   const quien = nombreDe(e);
@@ -297,9 +320,14 @@ function revisarTrabajador(
     }
   }
 
-  if (e.terminationDate && e.terminationDate.slice(0, 7) === periodo) {
+  const retiroEnMes = !!e.terminationDate && e.terminationDate.slice(0, 7) === periodo;
+  if (retiroEnMes && !liq) {
     bloqueos.push(
-      `${quien}: se retira en ${periodo} (${e.terminationDate}). La liquidación del retiro (cesantías, prima, vacaciones, indemnización) aún no se reporta: ${PENDIENTE_DUENO}.`,
+      `${quien}: se retira en ${periodo} (${e.terminationDate}) y no tiene liquidación de retiro aprobada. Guárdala y apruébala en Nómina → Liquidación; sin ella el documento saldría sin cesantías, prima ni vacaciones.`,
+    );
+  } else if (liq && liq.fechaRetiro !== e.terminationDate) {
+    bloqueos.push(
+      `${quien}: la liquidación aprobada es de un retiro el ${liq.fechaRetiro} y el expediente dice ${e.terminationDate ?? 'sin fecha de retiro'}. Corrige una de las dos.`,
     );
   }
 }
@@ -416,6 +444,56 @@ function clasificarDeducciones(
   return { deuda, otras, arrastre };
 }
 
+/** Tasa de los intereses de cesantías (Ley 52 de 1975): `Cesantias@Porcentaje`. */
+const INTERESES_CESANTIAS_PCT = 12;
+
+/**
+ * Nodos del retiro (anexo §3): Cesantias (pago, 12.00, intereses), Primas
+ * (días del semestre), VacacionesCompensadas (días = días liquidados × 15 /
+ * 360) e Indemnizacion. El último sueldo NO va aquí: va en la colilla del mes.
+ */
+function agregarLiquidacion(d: DevengadosNe, liq: LiquidacionConsolidar, quien: string, bloqueos: string[]): void {
+  const importes: [string, number][] = [
+    ['cesantías', liq.cesantias],
+    ['intereses de cesantías', liq.interesesCesantias],
+    ['prima', liq.prima],
+    ['vacaciones', liq.vacaciones],
+    ['indemnización', liq.indemnizacion],
+    ['salarios pendientes', liq.salariosPendientes],
+  ];
+  const malos = importes.filter(([, v]) => !Number.isInteger(v) || v < 0).map(([k, v]) => `${k} (${String(v)})`);
+  if (malos.length > 0) {
+    bloqueos.push(`${quien}: la liquidación de retiro trae importes que no son pesos enteros no negativos: ${malos.join(', ')}.`);
+    return;
+  }
+  if (liq.salariosPendientes > 0) {
+    bloqueos.push(
+      `${quien}: la liquidación de retiro trae ${liq.salariosPendientes} de salarios pendientes; el último sueldo va en la nómina del mes, con salud y pensión. Anúlala y guárdala de nuevo sin ese valor.`,
+    );
+    return;
+  }
+  if (liq.cesantias > 0 || liq.interesesCesantias > 0) {
+    d.cesantias = {
+      pago: centavosDeCop(liq.cesantias),
+      porcentaje: INTERESES_CESANTIAS_PCT,
+      intereses: centavosDeCop(liq.interesesCesantias),
+    };
+  }
+  if (liq.prima > 0) {
+    if (!Number.isInteger(liq.diasPrima) || (liq.diasPrima ?? 0) <= 0) {
+      bloqueos.push(`${quien}: la liquidación de retiro no trae los días del semestre de la prima. Anúlala y guárdala de nuevo.`);
+      return;
+    }
+    d.primas = { dias: liq.diasPrima!, pago: centavosDeCop(liq.prima) };
+  }
+  if (liq.vacaciones > 0) {
+    // Días hábiles causados: 15 por año de servicio (art. 186 CST), proporcionales; al menos 1 si hay pago.
+    const dias = Math.max(1, Math.round((liq.diasLiquidados * 15) / 360));
+    d.vacacionesCompensadas = [{ dias, pago: centavosDeCop(liq.vacaciones) }];
+  }
+  if (liq.indemnizacion > 0) d.indemnizacion = centavosDeCop(liq.indemnizacion);
+}
+
 // ── Consolidación ───────────────────────────────────────────────────────────
 
 export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsolidar {
@@ -440,7 +518,7 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     if (borradores.length === 0) {
       bloqueos.push(`${quien}: no tiene ninguna corrida cerrada en ${periodo}; sin pagos en el mes no hay documento.`);
     }
-    revisarTrabajador(e, periodo, undefined, entrada.smmlv, bloqueos);
+    revisarTrabajador(e, periodo, undefined, entrada.smmlv, entrada.liquidacion, bloqueos);
     return { ok: false, bloqueos };
   }
 
@@ -468,6 +546,20 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
       pagos.push(p);
     }
   }
+  // La liquidación del retiro es otro egreso: su pago también va al documento.
+  const liq = entrada.liquidacion;
+  if (liq) {
+    const p = liq.pago;
+    if (!p?.medio || !p.fecha || !(MEDIOS_PAGO_NOMINA as readonly string[]).includes(p.medio) || !YYYYMMDD.test(p.fecha)) {
+      bloqueos.push(
+        `${quien}: la liquidación de retiro aprobada no tiene un medio y una fecha de pago válidos. Anúlala y apruébala de nuevo con esos datos.`,
+      );
+    } else if (p.fecha < primero) {
+      bloqueos.push(`${quien}: la liquidación se pagó el ${p.fecha}, antes de ${periodo}. Corrígela.`);
+    } else {
+      pagos.push(p);
+    }
+  }
   // El XSD admite un solo nodo Pago: manda el medio del último egreso.
   const ultimoPago = [...pagos].sort((a, b) => a.fecha.localeCompare(b.fecha))[pagos.length - 1];
   const medio = ultimoPago?.medio;
@@ -476,7 +568,7 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
       `${quien}: las corridas de ${periodo} se pagaron por medios distintos; el documento reporta el del último pago (${NOMBRE_MEDIO[medio!] ?? medio}).`,
     );
   }
-  revisarTrabajador(e, periodo, medio, entrada.smmlv, bloqueos);
+  revisarTrabajador(e, periodo, medio, entrada.smmlv, liq, bloqueos);
 
   const mes = { desde: primero, hasta: ultimo };
   const vistos = new Set<string>();
@@ -551,6 +643,7 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     comisiones: comisiones > 0 ? [centavosDeCop(comisiones)] : [],
     pagosTerceros: [],
   };
+  if (liq) agregarLiquidacion(devengados, liq, quien, bloqueos);
 
   // ── Deducciones ──
   const ibc = sum((b) => b.ibc);
@@ -699,6 +792,7 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
   const fechasPagos = [...new Set(pagos.map((p) => p.fecha))].sort();
 
   const desdeLiq = e.hireDate! > primero ? e.hireDate! : primero;
+  const finLiq = liq && liq.fechaRetiro < ultimo ? liq.fechaRetiro : ultimo;
   const unaCorrida = cerradas.length === 1;
   const todasConRango = cerradas.every((c) => c.rango);
   const quincenales = todasConRango && cerradas.every((c) => c.rango!.hasta.slice(-2) <= '16' || c.rango!.desde.slice(-2) >= '16');
@@ -707,9 +801,10 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
   const modelo: DocumentoNe = {
     periodo: {
       fechaIngreso: e.hireDate!,
+      ...(liq ? { fechaRetiro: liq.fechaRetiro } : {}),
       fechaLiquidacionInicio: desdeLiq,
-      fechaLiquidacionFin: ultimo,
-      tiempoLaborado: tiempoLaborado360(e.hireDate!, ultimo),
+      fechaLiquidacionFin: finLiq,
+      tiempoLaborado: tiempoLaborado360(e.hireDate!, finLiq),
     },
     periodoNomina,
     trabajador: {
@@ -753,7 +848,11 @@ export function totalesDeModelo(m: DocumentoNe): { devengados: Centavos; deducci
     (d.transporte?.auxilio ?? 0) +
     d.horas.reduce((s, h) => s + h.pago, 0) +
     d.bonificaciones.reduce((s, b) => s + (b.s ?? 0) + (b.ns ?? 0), 0) +
-    d.comisiones.reduce((s, v) => s + v, 0);
+    d.comisiones.reduce((s, v) => s + v, 0) +
+    (d.cesantias ? d.cesantias.pago + d.cesantias.intereses : 0) +
+    (d.primas?.pago ?? 0) +
+    d.vacacionesCompensadas.reduce((s, v) => s + v.pago, 0) +
+    (d.indemnizacion ?? 0);
   const x = m.deducciones;
   const ded =
     x.salud.valor +

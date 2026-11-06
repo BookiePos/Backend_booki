@@ -43,6 +43,10 @@ import {
   PayrollEDocument,
   PayrollEDocumentDocument,
 } from '../../einvoicing/infrastructure/schemas/payroll-e-document.schema';
+import {
+  PayrollLiquidacion,
+  type PayrollLiquidacionDocument,
+} from '../infrastructure/schemas/payroll-liquidacion.schema';
 import { buildPayslipPdf, type PayslipNominaElectronica } from './payslip-pdf';
 import {
   classifyTurnos,
@@ -104,6 +108,22 @@ export interface PreviewResult {
   breakdown: ReturnType<typeof computeSlip>;
 }
 
+/**
+ * Empleados que entran en la corrida del periodo: los activos con salario y
+ * los retirados cuyo retiro cae en el mes. Antes los retirados quedaban
+ * fuera y su último sueldo solo aparecía como «salarios pendientes» de la
+ * liquidación, sin salud ni pensión (decisión 4 del dueño, tarea 11).
+ */
+export function filtroNominables(period: string): Record<string, unknown> {
+  return {
+    salary: { $gt: 0 },
+    $or: [
+      { status: 'activo' },
+      { status: 'retirado', terminationDate: { $gte: `${period}-01`, $lte: fechaCorteDePeriodo(period) } },
+    ],
+  };
+}
+
 @Injectable()
 export class PayrollService {
   private readonly logger = new Logger(PayrollService.name);
@@ -126,6 +146,8 @@ export class PayrollService {
     private readonly ledgerPosting: LedgerPostingService,
     @InjectModel(PayrollEDocument.name)
     private readonly nominaElectronica: Model<PayrollEDocumentDocument>,
+    @InjectModel(PayrollLiquidacion.name)
+    private readonly liquidaciones: Model<PayrollLiquidacionDocument>,
   ) {}
 
   /** Genera el comprobante (PDF) de un desprendible y lo envía al correo del empleado. */
@@ -440,10 +462,7 @@ export class PayrollService {
       );
     }
     const coverage = dto.coverage ?? 'all';
-    const filter: Record<string, unknown> = {
-      status: 'activo',
-      salary: { $gt: 0 },
-    };
+    const filter: Record<string, unknown> = filtroNominables(dto.period);
     if (coverage === 'sede') {
       if (!dto.sedeId) {
         throw new BadRequestException('Indica la sede para la cobertura "sede".');
@@ -561,7 +580,7 @@ export class PayrollService {
       .exec();
 
     const s = await this.parametrosEn(fechaCorteDePeriodo(run.period));
-    const filter: Record<string, unknown> = { status: 'activo', salary: { $gt: 0 } };
+    const filter: Record<string, unknown> = filtroNominables(run.period);
     if (run.coverage === 'sede' && run.sedeId) {
       filter.sedeId = run.sedeId;
     }
@@ -653,7 +672,11 @@ export class PayrollService {
     const slips: PayrollSlip[] = emps.map((e) => {
       const empDeductions = dedByEmp.get(e.id) ?? [];
       const otrasDeducciones = empDeductions.reduce((sum, d) => sum + d.amount, 0);
-      const registros = recsByEmp.get(e.id) ?? [];
+      // Quien se retira en el mes se liquida hasta el día del retiro, con su
+      // salud, pensión y retención como cualquier colilla (decisión 4 del
+      // dueño): ni turnos ni descansos remunerados después de esa fecha.
+      const hasta = e.terminationDate && e.terminationDate >= from && e.terminationDate < to ? e.terminationDate : to;
+      const registros = (recsByEmp.get(e.id) ?? []).filter((r) => r.workDate <= hasta);
       const turnos = classifyTurnos(registros, {
         desde: from,
         jornadaSemanal: (f) => jornadaSemanalVigente(f, s),
@@ -681,7 +704,7 @@ export class PayrollService {
           diasALiquidar(
             new Set(registros.filter((r) => r.checkIn).map((r) => r.workDate)),
             from,
-            to,
+            hasta,
             s.diasLaborablesSemana ?? 6,
           ),
         ),
@@ -1066,6 +1089,107 @@ export class PayrollService {
     if (!emp || !this.sedeEnAlcance(user, emp.sedeId)) {
       throw new NotFoundException('Empleado no encontrado');
     }
+  }
+
+  // ─── Liquidación de retiro guardada y aprobada (decisión 4 del dueño) ─────
+
+  /**
+   * Calcula y GUARDA la liquidación de un empleado como borrador. El último
+   * sueldo no entra aquí: se liquida en la corrida del mes del retiro (con
+   * salud, pensión y retención), así que «salarios pendientes» se rechaza.
+   */
+  async guardarLiquidacion(
+    dto: LiquidacionDto,
+    user: SedeScopeUser & { email?: string },
+  ): Promise<PayrollLiquidacionDocument> {
+    if (!dto.employeeId) {
+      throw new BadRequestException('Para guardar la liquidación elige el empleado.');
+    }
+    if ((dto.salariosPendientes ?? 0) > 0) {
+      throw new BadRequestException(
+        'El último sueldo no va como «salarios pendientes»: se paga en la nómina del mes del retiro, con salud y pensión. Déjalo en 0 y corre (o recalcula) esa nómina.',
+      );
+    }
+    const { input, breakdown } = await this.liquidacion(dto, user);
+    const emp = await this.employees.findById(dto.employeeId).select('sedeId').exec();
+    return this.liquidaciones.create({
+      employeeId: dto.employeeId,
+      employeeName: input.employeeName,
+      sedeId: emp?.sedeId,
+      fechaInicio: input.fechaInicio,
+      fechaRetiro: input.fechaFin,
+      motivo: input.motivo,
+      contractType: input.contractType,
+      salarioBase: input.salarioBase,
+      salaryType: input.salaryType,
+      breakdown,
+      estado: 'borrador',
+      creadaPor: user.email,
+    });
+  }
+
+  listarLiquidaciones(employeeId: string | undefined, user?: SedeScopeUser): Promise<PayrollLiquidacionDocument[]> {
+    const filtro: Record<string, unknown> = {};
+    if (employeeId) filtro.employeeId = employeeId;
+    const sedes = user ? allowedSedeIds(user) : null;
+    if (sedes) filtro.sedeId = { $in: sedes.map((id) => new Types.ObjectId(id)) };
+    return this.liquidaciones.find(filtro).sort({ createdAt: -1 }).limit(100).exec();
+  }
+
+  private async liquidacionEnAlcance(id: string, user?: SedeScopeUser): Promise<PayrollLiquidacionDocument> {
+    const liq = Types.ObjectId.isValid(id) ? await this.liquidaciones.findById(id).exec() : null;
+    if (!liq) throw new NotFoundException('Liquidación no encontrada');
+    if (user) await this.empleadoEnAlcance(liq.employeeId, user);
+    return liq;
+  }
+
+  /**
+   * Aprueba un borrador con el medio y la fecha real del pago. Queda fija: es
+   * la que la nómina electrónica del mes del retiro reporta (cesantías,
+   * intereses, prima, vacaciones compensadas e indemnización). Deja la fecha
+   * de retiro en el expediente para que el pre-vuelo la encuentre.
+   */
+  async aprobarLiquidacion(
+    id: string,
+    pago: { medioPago: string; fechaPago: string },
+    user?: SedeScopeUser & { email?: string },
+  ): Promise<PayrollLiquidacionDocument> {
+    const liq = await this.liquidacionEnAlcance(id, user);
+    if (liq.estado !== 'borrador') {
+      throw new BadRequestException(`La liquidación está ${liq.estado}; solo se aprueba un borrador.`);
+    }
+    const motivo = motivoPagoInvalido(liq.fechaRetiro.slice(0, 7), pago.medioPago, pago.fechaPago, fechaColombia(new Date()));
+    if (motivo) throw new BadRequestException(motivo);
+    liq.estado = 'aprobada';
+    liq.pago = { medio: pago.medioPago, fecha: pago.fechaPago };
+    liq.aprobadaPor = user?.email;
+    liq.aprobadaEn = new Date();
+    try {
+      await liq.save();
+    } catch (err) {
+      if ((err as { code?: number }).code === 11000) {
+        throw new ConflictException('El empleado ya tiene una liquidación aprobada. Anúlala antes de aprobar otra.');
+      }
+      throw err;
+    }
+    await this.employees
+      .updateOne({ _id: new Types.ObjectId(liq.employeeId) }, { $set: { terminationDate: liq.fechaRetiro } })
+      .exec();
+    return liq;
+  }
+
+  /**
+   * Anula una liquidación (borrador o aprobada). Si ya salió en una nómina
+   * electrónica aceptada, el documento se corrige con la nota de ajuste.
+   */
+  async anularLiquidacion(id: string, user?: SedeScopeUser & { email?: string }): Promise<PayrollLiquidacionDocument> {
+    const liq = await this.liquidacionEnAlcance(id, user);
+    if (liq.estado === 'anulada') throw new BadRequestException('La liquidación ya está anulada.');
+    liq.estado = 'anulada';
+    liq.anuladaPor = user?.email;
+    liq.anuladaEn = new Date();
+    await liq.save();
+    return liq;
   }
 
   /**

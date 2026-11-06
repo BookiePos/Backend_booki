@@ -230,6 +230,10 @@ Además del permiso, cada servicio limita por sede a quien no ve todas.
 | `POST /payroll/preview` | `payroll.view` | ✓ | ✓ | · | · | ✓ |
 | `GET /payroll/novedades-turnos` | `payroll.view` | ✓ | ✓ | · | · | ✓ |
 | `POST /payroll/liquidacion` | `payroll.view` | ✓ | ✓ | · | · | ✓ |
+| `POST /payroll/liquidaciones` | `payroll.manage` | ✓ | ✓ | · | · | · |
+| `GET /payroll/liquidaciones` | `payroll.view` | ✓ | ✓ | · | · | ✓ |
+| `POST /payroll/liquidaciones/:id/aprobar` | `payroll.manage` | ✓ | ✓ | · | · | · |
+| `POST /payroll/liquidaciones/:id/anular` | `payroll.manage` | ✓ | ✓ | · | · | · |
 | `POST /payroll/runs` | `payroll.manage` | ✓ | ✓ | · | · | · |
 | `GET /payroll/runs` | `payroll.view` | ✓ | ✓ | · | · | ✓ |
 | `GET /payroll/runs/:id` | `payroll.view` | ✓ | ✓ | · | · | ✓ |

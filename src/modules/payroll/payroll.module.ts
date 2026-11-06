@@ -28,6 +28,10 @@ import {
   PayrollEDocument,
   PayrollEDocumentSchema,
 } from '../einvoicing/infrastructure/schemas/payroll-e-document.schema';
+import {
+  PayrollLiquidacion,
+  PayrollLiquidacionSchema,
+} from './infrastructure/schemas/payroll-liquidacion.schema';
 import { CoreAuthModule } from '../core-auth/core-auth.module';
 import { CoreParamsModule } from '../core-params/core-params.module';
 import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
@@ -47,6 +51,7 @@ import { PayrollController } from './infrastructure/payroll.controller';
       { name: AttendanceRecord.name, schema: AttendanceRecordSchema },
       { name: Sede.name, schema: SedeSchema },
       { name: PayrollEDocument.name, schema: PayrollEDocumentSchema },
+      { name: PayrollLiquidacion.name, schema: PayrollLiquidacionSchema },
     ]),
   ],
   controllers: [PayrollController],

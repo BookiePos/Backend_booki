@@ -8,6 +8,7 @@ import {
   type DeduccionConsolidar,
   type EntradaConsolidar,
   type EmpleadoConsolidar,
+  type LiquidacionConsolidar,
   type ResultadoConsolidar,
 } from './consolidar';
 import type { ContextoNomina, DocumentoNe, EmisionNe } from './modelo';
@@ -337,6 +338,67 @@ describe('consolidarNominaMes: casos que pasan', () => {
   }, 60_000);
 });
 
+describe('consolidarNominaMes: retiro en el mes (decisión 4 del dueño)', () => {
+  const liq = (o: Partial<LiquidacionConsolidar> = {}): LiquidacionConsolidar => ({
+    id: 'liq1',
+    fechaRetiro: '2026-10-20',
+    diasLiquidados: 980,
+    diasPrima: 110,
+    cesantias: 4_083_333,
+    interesesCesantias: 1_333_889,
+    prima: 458_333,
+    vacaciones: 2_041_667,
+    indemnizacion: 1_000_000,
+    salariosPendientes: 0,
+    pago: { medio: '10', fecha: '2026-10-25' },
+    ...o,
+  });
+  // Colilla del mes del retiro: 20 días, con salud y pensión (el último sueldo ya no va como «salarios pendientes»).
+  const bd20 = () => breakdown({ salario: 1_000_000 });
+  const retiro = (l: LiquidacionConsolidar | undefined, e: Partial<EmpleadoConsolidar> = {}) =>
+    entrada({
+      empleado: empleado({ terminationDate: '2026-10-20', ...e }),
+      slips: [corrida({ dias: 20, bd: bd20(), pago: { medio: '10', fecha: '2026-10-20' } })],
+      ...(l ? { liquidacion: l } : {}),
+    });
+
+  it('lleva cesantías, intereses, prima, vacaciones compensadas e indemnización, y pasa el XSD', async () => {
+    const l = liq();
+    const { modelo } = ok(retiro(l));
+    expect(modelo.periodo).toMatchObject({
+      fechaRetiro: '2026-10-20',
+      fechaLiquidacionFin: '2026-10-20',
+    });
+    expect(modelo.devengados.basico.dias).toBe(20);
+    expect(modelo.devengados.cesantias).toEqual({ pago: 408_333_300, porcentaje: 12, intereses: 133_388_900 });
+    expect(modelo.devengados.primas).toEqual({ dias: 110, pago: 45_833_300 });
+    expect(modelo.devengados.vacacionesCompensadas).toEqual([{ dias: 41, pago: 204_166_700 }]);
+    expect(modelo.devengados.indemnizacion).toBe(100_000_000);
+    expect(modelo.fechasPagos).toEqual(['2026-10-20', '2026-10-25']);
+    const dev = bd20().devengados.total + l.cesantias + l.interesesCesantias + l.prima + l.vacaciones + l.indemnizacion;
+    await verificar(modelo, dev, bd20().deducciones.total);
+  }, 60_000);
+
+  it('la fecha de retiro de la liquidación debe ser la del expediente', () => {
+    expect(bloqueos(retiro(liq(), { terminationDate: '2026-10-19' })).join()).toMatch(/liquidación aprobada es de un retiro el 2026-10-20/);
+  });
+
+  it('salarios pendientes en la liquidación bloquean (el último sueldo va en la colilla)', () => {
+    expect(bloqueos(retiro(liq({ salariosPendientes: 300_000 }))).join()).toMatch(/salarios pendientes/);
+  });
+
+  it('liquidación sin pago válido o con importes no enteros bloquea', () => {
+    expect(bloqueos(retiro(liq({ pago: undefined }))).join()).toMatch(/medio y una fecha de pago válidos/);
+    expect(bloqueos(retiro(liq({ prima: 10.5 }))).join()).toMatch(/pesos enteros/);
+    expect(bloqueos(retiro(liq({ diasPrima: undefined }))).join()).toMatch(/días del semestre/);
+  });
+
+  it('vacaciones de pocos días reportan al menos 1 día', () => {
+    const { modelo } = ok(retiro(liq({ diasLiquidados: 10, vacaciones: 41_667 })));
+    expect(modelo.devengados.vacacionesCompensadas).toEqual([{ dias: 1, pago: 4_166_700 }]);
+  });
+});
+
 describe('consolidarNominaMes: bloqueos por trabajador', () => {
   const caso = (nombre: string, e: Partial<EmpleadoConsolidar>, patron: RegExp) =>
     it(nombre, () => expect(bloqueos(entrada({ empleado: empleado(e) })).join('\n')).toMatch(patron));
@@ -367,7 +429,7 @@ describe('consolidarNominaMes: bloqueos por trabajador', () => {
   caso('docTypeDian no coincide con docType', { docType: 'CE', docTypeDian: '13' }, /no coincide con el código DIAN 13/);
   caso('tipoContratoDian no coincide con contractType', { contractType: 'fijo', tipoContratoDian: '2' }, /no coincide con el código DIAN 2/);
   caso('prestación de servicios no va en nómina electrónica', { contractType: 'prestacion_servicios' }, /prestación de servicios/);
-  caso('retiro en el mes: pendiente de decisión del dueño', { terminationDate: '2026-10-20' }, /tarea 11/);
+  caso('retiro en el mes sin liquidación aprobada', { terminationDate: '2026-10-20' }, /no tiene liquidación de retiro aprobada/);
 
   it('sin municipio propio ni del emisor', () => {
     const b = bloqueos(entrada({ empleado: empleado({ municipioDaneTrabajo: undefined }), empleador: {} }));

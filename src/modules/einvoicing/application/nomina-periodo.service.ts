@@ -4,6 +4,10 @@ import { Model, Types } from 'mongoose';
 import { PayrollEDocument, type PayrollEDocumentDocument } from '../infrastructure/schemas/payroll-e-document.schema';
 import { PayrollRun, type PayrollRunDocument } from '../../payroll/infrastructure/schemas/payroll-run.schema';
 import { PayrollDeduction, type PayrollDeductionDocument } from '../../payroll/infrastructure/schemas/payroll-deduction.schema';
+import {
+  PayrollLiquidacion,
+  type PayrollLiquidacionDocument,
+} from '../../payroll/infrastructure/schemas/payroll-liquidacion.schema';
 import { Sede, type SedeDocument } from '../../sedes/infrastructure/schemas/sede.schema';
 import { EmployeesService } from '../../employees/application/employees.service';
 import { FiscalEmittersService } from './fiscal-emitters.service';
@@ -130,6 +134,7 @@ export class NominaPeriodoService {
     private readonly nomina: NominaElectronicaService,
     private readonly audit: AuditService,
     private readonly params: ParamsService,
+    @InjectModel(PayrollLiquidacion.name) private readonly liquidaciones: Model<PayrollLiquidacionDocument>,
   ) {}
 
   // ── Pre-vuelo ─────────────────────────────────────────────────────────────
@@ -478,6 +483,12 @@ export class NominaPeriodoService {
       status: f.status,
       appliedRunId: f.appliedRunId ? String(f.appliedRunId) : undefined,
     }));
+    // Liquidación de retiro APROBADA cuyo retiro cae en el mes (decisión 4 del dueño).
+    const finMes = new Date(Date.UTC(Number(ctx.periodo.slice(0, 4)), Number(ctx.periodo.slice(5, 7)), 0)).toISOString().slice(0, 10);
+    const liq = (await this.liquidaciones
+      .findOne({ employeeId: id, estado: 'aprobada', fechaRetiro: { $gte: `${ctx.periodo}-01`, $lte: finMes } })
+      .lean()
+      .exec()) as unknown as (PayrollLiquidacion & { _id: Types.ObjectId }) | null;
     const entrada: EntradaConsolidar = {
       periodo: ctx.periodo,
       empleado,
@@ -485,6 +496,23 @@ export class NominaPeriodoService {
       slips,
       deducciones,
       smmlv: ctx.smmlv,
+      ...(liq
+        ? {
+            liquidacion: {
+              id: String(liq._id),
+              fechaRetiro: liq.fechaRetiro,
+              diasLiquidados: liq.breakdown.diasLiquidados,
+              diasPrima: liq.breakdown.diasPrima,
+              cesantias: liq.breakdown.cesantias,
+              interesesCesantias: liq.breakdown.interesesCesantias,
+              prima: liq.breakdown.prima,
+              vacaciones: liq.breakdown.vacaciones,
+              indemnizacion: liq.breakdown.indemnizacion,
+              salariosPendientes: liq.breakdown.salariosPendientes,
+              pago: liq.pago,
+            },
+          }
+        : {}),
     };
     const r = consolidarNominaMes(entrada);
     return r.ok ? { ok: true as const, modelo: r.modelo as DocumentoNe, advertencias: r.advertencias } : { ok: false as const, bloqueos: r.bloqueos };

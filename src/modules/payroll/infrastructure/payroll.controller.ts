@@ -70,6 +70,32 @@ export class PayrollController {
     return this.payroll.liquidacion(dto, user);
   }
 
+  /** Guarda la liquidación de retiro como borrador (decisión 4 del dueño). */
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('liquidaciones')
+  guardarLiquidacion(@Body() dto: LiquidacionDto, @CurrentUser() user: JwtUser) {
+    return this.payroll.guardarLiquidacion(dto, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)
+  @Get('liquidaciones')
+  listarLiquidaciones(@Query('employeeId') employeeId: string | undefined, @CurrentUser() user: JwtUser) {
+    return this.payroll.listarLiquidaciones(employeeId, user);
+  }
+
+  /** Aprueba la liquidación con el medio y la fecha real del pago: es la que reporta la nómina electrónica. */
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('liquidaciones/:id/aprobar')
+  aprobarLiquidacion(@Param('id') id: string, @Body() dto: PagoNominaDto, @CurrentUser() user: JwtUser) {
+    return this.payroll.aprobarLiquidacion(id, dto, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('liquidaciones/:id/anular')
+  anularLiquidacion(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.payroll.anularLiquidacion(id, user);
+  }
+
   @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
   @Post('runs')
   createRun(@Body() dto: CreateRunDto, @CurrentUser() user: JwtUser) {

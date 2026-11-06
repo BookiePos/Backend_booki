@@ -29,6 +29,8 @@ export interface LiquidacionInput {
 
 export interface LiquidacionBreakdown {
   diasLiquidados: number;
+  /** Días del semestre que paga la prima (nodo `Primas@Cantidad` de la nómina electrónica). */
+  diasPrima?: number;
   salarioBase: number;
   auxilioTransporte: number;
   basePrestacional: number;
@@ -127,6 +129,7 @@ export function computeLiquidacion(
 
   return {
     diasLiquidados: dias,
+    diasPrima,
     salarioBase,
     auxilioTransporte,
     basePrestacional,

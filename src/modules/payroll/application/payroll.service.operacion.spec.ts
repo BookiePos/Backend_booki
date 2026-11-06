@@ -135,7 +135,7 @@ function armar(o: {
     mail as any,
     params as any,
     ledgerPosting as any,
-    nominaElectronica as any,
+    nominaElectronica as any, {} as any,
   );
   return { service, settings, runs, deductions, mail, ledgerPosting, settingsDoc, nominaElectronica };
 }
