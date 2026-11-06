@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { liquidarAusencias, tramoEnPeriodo, vacacionesDisfrutadasDeNovedades } from './novedades-calc';
+import { diasCalendario, liquidarAusencias, tramoEnPeriodo, vacacionesDisfrutadasDeNovedades } from './novedades-calc';
 import { computeSlip } from './payroll-calc';
 import { DEFAULT_PAYROLL_SETTINGS } from './payroll.constants';
 
@@ -68,7 +68,7 @@ describe('liquidarAusencias (decisión 3 del dueño)', () => {
     expect(tramoEnPeriodo('2026-09-20', '2026-11-05', '2026-10')).toEqual({ desde: '2026-10-01', hasta: '2026-10-31' });
     expect(tramoEnPeriodo('2026-11-01', '2026-11-05', '2026-10')).toBeNull();
     const r = liquidarAusencias([{ tipo: 'vacaciones', fechaInicio: '2026-10-25', fechaFin: '2026-11-10', diasHabiles: 12 }], '2026-10', SAL, SMMLV);
-    expect(r.lineas[0]).toMatchObject({ fechaFin: '2026-10-31', dias: 6 });
+    expect(r.lineas[0]).toMatchObject({ fechaFin: '2026-10-31', dias: 7 });
   });
 
   it('sugiere los días hábiles de vacaciones disfrutados', () => {
@@ -79,6 +79,63 @@ describe('liquidarAusencias (decisión 3 del dueño)', () => {
         { tipo: 'vacaciones', fechaInicio: '2026-01-05', fechaFin: '2026-01-12', diasHabiles: 6 },
       ]),
     ).toBe(21);
+  });
+});
+
+describe('liquidarAusencias: días calendario (revisión D1)', () => {
+  const dias = (desde: string, hasta: string, periodo: string, tipo: any = 'vacaciones') =>
+    liquidarAusencias([{ tipo, fechaInicio: desde, fechaFin: hasta, diasHabiles: 1 }], periodo, SAL, SMMLV).lineas[0]?.dias;
+
+  it('febrero: del 20 al 28 son 9; el mes entero da 30 (también en bisiesto)', () => {
+    expect(dias('2026-02-20', '2026-02-28', '2026-02')).toBe(9);
+    expect(dias('2026-02-01', '2026-02-28', '2026-02')).toBe(30);
+    expect(dias('2028-02-01', '2028-02-29', '2028-02')).toBe(30);
+    expect(dias('2028-02-20', '2028-02-29', '2028-02')).toBe(10);
+  });
+
+  it('meses de 31: el día 31 cuenta, pero el mes entero se topa en 30', () => {
+    expect(dias('2026-10-25', '2026-10-31', '2026-10')).toBe(7);
+    expect(dias('2026-10-01', '2026-10-31', '2026-10')).toBe(30);
+    expect(diasCalendario('2026-01-28', '2026-02-03')).toBe(7);
+  });
+
+  it('incapacidad del 28 de enero al 3 de febrero: 4 + 3 días y la prórroga corre en calendario', () => {
+    const n = [{ tipo: 'incapacidad_comun' as const, fechaInicio: '2026-01-28', fechaFin: '2026-02-03' }];
+    const ene = liquidarAusencias(n, '2026-01', SAL, SMMLV).lineas[0]!;
+    const feb = liquidarAusencias(n, '2026-02', SAL, SMMLV).lineas[0]!;
+    expect(ene).toMatchObject({ dias: 4, diasPorPagador: { empleador: 2, eps: 2 } });
+    expect(feb).toMatchObject({ dias: 3, diasPorPagador: { eps: 3 } });
+    expect(ene.dias + feb.dias).toBe(7);
+  });
+
+  it('el umbral de 90 días se cuenta en calendario a través de los meses', () => {
+    // Del 1-ene al 31-mar son 90 días calendario: el 1-abr es el día 91 (mitad).
+    const n = [{ tipo: 'incapacidad_comun' as const, fechaInicio: '2026-01-01', fechaFin: '2026-04-02' }];
+    const abr = liquidarAusencias(n, '2026-04', SAL, SMMLV).lineas[0]!;
+    expect(abr).toMatchObject({ dias: 2, valor: 100_000 }); // 2 × 50.000 (1/2 de 100.000)
+    const mar = liquidarAusencias(n, '2026-03', SAL, SMMLV).lineas[0]!;
+    expect(mar.dias).toBe(30); // marzo entero, topado en 30
+  });
+});
+
+describe('liquidarAusencias: salario integral y promedio (revisión D2 y art. 192)', () => {
+  it('integral: incapacidad y licencia sobre el 70 % (IBC, art. 132 CST); vacaciones sobre el salario', () => {
+    const n = [
+      { tipo: 'incapacidad_laboral' as const, fechaInicio: '2026-10-01', fechaFin: '2026-10-10' },
+      { tipo: 'vacaciones' as const, fechaInicio: '2026-10-11', fechaFin: '2026-10-20', diasHabiles: 8 },
+    ];
+    const r = liquidarAusencias(n, '2026-10', 30_000_000, SMMLV, { factorIntegral: 0.7 });
+    expect(r.lineas.map((l) => l.valor)).toEqual([7_000_000, 10_000_000]);
+  });
+
+  it('vacaciones con salario promedio: se usa el promedio', () => {
+    const r = liquidarAusencias(
+      [{ tipo: 'vacaciones', fechaInicio: '2026-10-01', fechaFin: '2026-10-10', diasHabiles: 8, salarioPromedio: 3_600_000 }],
+      '2026-10',
+      SAL,
+      SMMLV,
+    );
+    expect(r.lineas[0]!.valor).toBe(1_200_000);
   });
 });
 
@@ -102,6 +159,16 @@ describe('computeSlip con ausencias', () => {
     expect(b.devengados.ausencias).toBe(1_500_000); // piso del SMMLV
     expect(b.ibc).toBe(1_500_000);
     expect(b.devengados.auxilioTransporte).toBe(0); // sin días trabajados no hay auxilio
+  });
+
+  it('licencia no remunerada: 16 % de pensión, 12 % empleador y 4 % descontado al trabajador (revisión D5)', () => {
+    const aus = liquidarAusencias([{ tipo: 'licencia_no_remunerada', fechaInicio: '2026-10-01', fechaFin: '2026-10-10' }], '2026-10', SAL, SMMLV);
+    const b = computeSlip({ salarioBase: SAL, salaryType: 'ordinario', diasTrabajados: 20, ausencias: aus, fechaCorte: '2026-10-31' }, s);
+    expect(b.deducciones.pensionLicenciaNR).toBe(40_000); // 4 % de 1.000.000
+    expect(b.deducciones.total).toBe(b.deducciones.salud + b.deducciones.pension + b.deducciones.fsp + b.deducciones.retencionFuente + b.deducciones.otras + 40_000);
+    // Con el mínimo, la base tiene piso de 1 SMMLV.
+    const min = liquidarAusencias([{ tipo: 'licencia_no_remunerada', fechaInicio: '2026-10-01', fechaFin: '2026-10-30' }], '2026-10', 1_000_000, SMMLV);
+    expect(min.basePensionNoRemunerada).toBe(1_500_000);
   });
 
   it('licencia no remunerada: no paga ni cotiza salud; el empleador aporta pensión sobre esos días', () => {

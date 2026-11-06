@@ -39,6 +39,10 @@ export class PayrollNovedad {
   @Prop()
   diasHabiles?: number;
 
+  /** Vacaciones con salario variable: promedio del último año (art. 192 CST). */
+  @Prop()
+  salarioPromedio?: number;
+
   @Prop({ trim: true })
   observacion?: string;
 

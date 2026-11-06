@@ -2,28 +2,35 @@
  * Novedades de ausencia del mes (decisión 3 del dueño, tarea 11): vacaciones
  * disfrutadas, incapacidades y licencias. Función pura: recibe las novedades
  * registradas del empleado y devuelve, para el periodo, los días de cada una
- * (mes comercial de 30) y su valor en COP entero.
+ * y su valor en COP entero.
+ *
+ * Días: se cuentan días CALENDARIO dentro del tramo del mes. Un febrero entero
+ * de ausencia se completa hasta 30 y el total del mes se topa en 30 (mes
+ * comercial): así un mes entero de ausencia siempre da 30.
+ * Las prórrogas y los umbrales de 2, 90 y 180 días van en días calendario.
  *
  * Reglas (a confirmar con el contador donde se indica):
  * - Vacaciones disfrutadas: salario de los días (art. 186 CST); cotizan a
  *   salud y pensión (Decreto 1406/1999 art. 40). Con salario variable, el art.
- *   192 CST manda el promedio del último año: aquí se usa el fijo.
+ *   192 CST manda el promedio del último año: se usa `salarioPromedio` si viene.
  * - Incapacidad común: 2/3 del salario los primeros 90 días y 1/2 del 91 al
  *   180 (art. 227 CST), nunca menos del SMMLV diario. Los 2 primeros días los
  *   paga el empleador y desde el 3 la EPS (Decreto 2943/2013); desde el 181,
- *   el fondo de pensiones (Ley 962/2005 art. 142).
+ *   el fondo de pensiones (Decreto-ley 019/2012 art. 142, que modificó el art.
+ *   41 de la Ley 100/1993).
  * - Incapacidad laboral o profesional: 100 % del salario desde el día 1, a
  *   cargo de la ARL (Ley 776/2002 art. 3).
  * - Licencias de maternidad y paternidad: 100 % del salario, a cargo de la EPS
  *   (art. 236 CST, Ley 1822/2017; Ley 2114/2021).
  * - Licencia remunerada (luto, calamidad, sufragio…): 100 %, empleador.
- * - Licencia no remunerada: no paga; suspende el contrato (art. 51 CST) y
- *   solo genera el aporte a pensión del empleador sobre el salario de esos días
- *   (Decreto 1406/1999 art. 71: A CONFIRMAR con el contador si el trabajador
- *   también aporta su 4 %).
+ * - Con salario integral, incapacidades y licencias se liquidan sobre el IBC
+ *   (70 %, art. 132 CST), no sobre el salario completo.
+ * - Licencia no remunerada: no paga; suspende el contrato (art. 51 CST). Se
+ *   cotiza pensión: 16 % sobre el último salario (piso 1 SMMLV), 12 % del
+ *   empleador y 4 % del trabajador, que se le descuenta en la colilla
+ *   (Decreto 1406/1999 art. 71): A CONFIRMAR con el contador.
  */
 import { cop, redondearA, sumCop } from '../../finance/domain/money.util';
-import { dias360Inclusivo } from './liquidacion-calc';
 
 export const TIPOS_NOVEDAD = [
   'vacaciones',
@@ -45,10 +52,12 @@ export interface NovedadAusencia {
   /** YYYY-MM-DD, ambos incluidos. */
   fechaInicio: string;
   fechaFin: string;
-  /** Incapacidad común que prorroga otra: días ya incapacitado antes de esta (para el 66,67 % / 50 % y quién paga). */
+  /** Incapacidad común que prorroga otra: días calendario ya incapacitado antes de esta. */
   diasPreviosProrroga?: number;
   /** Vacaciones: días hábiles disfrutados (los que descuenta la liquidación de retiro). */
   diasHabiles?: number;
+  /** Vacaciones con salario variable: promedio del último año (art. 192 CST). */
+  salarioPromedio?: number;
 }
 
 export interface AusenciaLinea {
@@ -57,7 +66,7 @@ export interface AusenciaLinea {
   /** Tramo dentro del periodo. */
   fechaInicio: string;
   fechaFin: string;
-  /** Días comerciales (mes de 30) dentro del periodo. */
+  /** Días del tramo (calendario, con febrero completado a 30 y el mes topado en 30). */
   dias: number;
   /** COP entero que paga la nómina por esos días (0 en la no remunerada). */
   valor: number;
@@ -73,15 +82,29 @@ export interface AusenciasLiquidadas {
   diasNoRemunerados: number;
   /** Suma de `valor`: entra al devengado y al IBC. */
   totalRemunerado: number;
-  /** Salario de los días de licencia no remunerada: base del aporte a pensión del empleador. */
+  /** Base del aporte a pensión de la licencia no remunerada (último salario de esos días, piso SMMLV). */
   basePensionNoRemunerada: number;
 }
+
+export interface OpcionesAusencias {
+  /** Salario integral: incapacidades y licencias sobre este factor del salario (IBC, art. 132 CST). */
+  factorIntegral?: number;
+}
+
+const DIA_MS = 86_400_000;
+const DIAS_MES = 30;
 
 const ultimoDia = (periodo: string): string => {
   const y = Number(periodo.slice(0, 4));
   const m = Number(periodo.slice(5, 7));
   return `${periodo}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0')}`;
 };
+
+/** Días calendario entre dos fechas, ambas incluidas. */
+export function diasCalendario(desde: string, hasta: string): number {
+  if (hasta < desde) return 0;
+  return redondearA((Date.parse(`${hasta}T00:00:00Z`) - Date.parse(`${desde}T00:00:00Z`)) / DIA_MS, 0) + 1;
+}
 
 /** Tramo de [desde, hasta] dentro del mes, o null si no lo toca. */
 export function tramoEnPeriodo(desde: string, hasta: string, periodo: string): { desde: string; hasta: string } | null {
@@ -90,6 +113,20 @@ export function tramoEnPeriodo(desde: string, hasta: string, periodo: string): {
   const d = desde > ini ? desde : ini;
   const h = hasta < fin ? hasta : fin;
   return d <= h ? { desde: d, hasta: h } : null;
+}
+
+/**
+ * Días que paga un tramo del mes: los calendario. Solo si cubre el mes ENTERO
+ * de un febrero se completa hasta 30 (un mes entero de ausencia siempre da
+ * 30); un tramo parcial cuenta sus días reales y el resto del mes comercial
+ * queda para los días trabajados.
+ */
+export function diasDelTramo(t: { desde: string; hasta: string }, periodo: string): number {
+  const fin = ultimoDia(periodo);
+  const largoMes = Number(fin.slice(8, 10));
+  const mesEntero = t.desde === `${periodo}-01` && t.hasta === fin;
+  const relleno = mesEntero && largoMes < DIAS_MES ? DIAS_MES - largoMes : 0;
+  return diasCalendario(t.desde, t.hasta) + relleno;
 }
 
 const PAGADOR_FIJO: Record<Exclude<TipoNovedad, 'incapacidad_comun'>, PagadorNovedad> = {
@@ -102,64 +139,81 @@ const PAGADOR_FIJO: Record<Exclude<TipoNovedad, 'incapacidad_comun'>, PagadorNov
   licencia_no_remunerada: 'ninguno',
 };
 
-/** Fracción del salario que paga el día `k` (1 = primero) de una incapacidad común (art. 227 CST). */
+/** Fracción del salario que paga el día `k` (1 = primero, calendario) de una incapacidad común (art. 227 CST). */
 const fraccionComun = (k: number): number => (k <= 90 ? 2 / 3 : 1 / 2);
 const pagadorComun = (k: number): PagadorNovedad => (k <= 2 ? 'empleador' : k <= 180 ? 'eps' : 'fondo_pensiones');
 
 /**
  * Liquida las novedades del `periodo` (YYYY-MM). Las que no tocan el mes se
- * ignoran; las que lo cruzan se recortan a él. Los días se cuentan en mes
- * comercial (30), como el resto de la colilla.
+ * ignoran; las que lo cruzan se recortan a él.
  */
 export function liquidarAusencias(
   novedades: NovedadAusencia[],
   periodo: string,
   salarioBase: number,
   smmlv: number,
+  opciones: OpcionesAusencias = {},
 ): AusenciasLiquidadas {
-  const diario = salarioBase / 30;
-  const minimoDiario = smmlv / 30;
+  const factor = opciones.factorIntegral ?? 1;
+  // Incapacidades y licencias: sobre el IBC (en integral, el 70 %). Vacaciones: sobre el salario.
+  const diarioIbc = (salarioBase * factor) / DIAS_MES;
+  const minimoDiario = smmlv / DIAS_MES;
   const lineas: AusenciaLinea[] = [];
+  let disponibles = DIAS_MES;
   for (const n of [...novedades].sort((a, b) => a.fechaInicio.localeCompare(b.fechaInicio))) {
     const t = tramoEnPeriodo(n.fechaInicio, n.fechaFin, periodo);
     if (!t) continue;
-    const dias = dias360Inclusivo(t.desde, t.hasta);
+    const calendario = diasCalendario(t.desde, t.hasta);
+    // Tope del mes en 30: si un mes de 31 días queda todo en ausencias, el último día no suma.
+    const dias = Math.min(diasDelTramo(t, periodo), disponibles);
     if (dias <= 0) continue;
+    disponibles -= dias;
+    // Días que el tramo paga de más (febrero) o de menos (tope del mes) respecto al calendario.
+    const ajuste = dias - calendario;
+
     if (n.tipo === 'incapacidad_comun') {
-      // Días ya corridos de la misma incapacidad: los anteriores al mes y las prórrogas.
-      const antes = Math.max(0, n.diasPreviosProrroga ?? 0) + (t.desde > n.fechaInicio ? dias360Inclusivo(n.fechaInicio, t.desde) - 1 : 0);
+      // Días calendario ya corridos de la misma incapacidad: las prórrogas y lo anterior al mes.
+      const antes = Math.max(0, n.diasPreviosProrroga ?? 0) + (t.desde > n.fechaInicio ? diasCalendario(n.fechaInicio, t.desde) - 1 : 0);
+      const valorDia = (k: number) => Math.max(diarioIbc * fraccionComun(k), minimoDiario);
       let valor = 0;
       const porPagador: Partial<Record<PagadorNovedad, number>> = {};
-      for (let i = 1; i <= dias; i++) {
+      for (let i = 1; i <= calendario; i++) {
         const k = antes + i;
-        valor += Math.max(diario * fraccionComun(k), minimoDiario);
+        valor += valorDia(k);
         const p = pagadorComun(k);
         porPagador[p] = (porPagador[p] ?? 0) + 1;
       }
+      // El relleno de febrero o el tope del mes se valoran como el último día del tramo.
+      const ultimoK = antes + calendario;
+      valor += ajuste * valorDia(ultimoK);
+      const pUlt = pagadorComun(ultimoK);
+      porPagador[pUlt] = (porPagador[pUlt] ?? 0) + ajuste;
       const pagador: PagadorNovedad = porPagador.fondo_pensiones ? 'fondo_pensiones' : porPagador.eps ? 'eps' : 'empleador';
       lineas.push({ id: n.id, tipo: n.tipo, fechaInicio: t.desde, fechaFin: t.hasta, dias, valor: cop(valor), pagador, diasPorPagador: porPagador });
       continue;
     }
-    const remunerada = n.tipo !== 'licencia_no_remunerada';
+    const diario =
+      n.tipo === 'vacaciones'
+        ? (n.salarioPromedio && n.salarioPromedio > 0 ? n.salarioPromedio : salarioBase) / DIAS_MES
+        : diarioIbc;
     lineas.push({
       id: n.id,
       tipo: n.tipo,
       fechaInicio: t.desde,
       fechaFin: t.hasta,
       dias,
-      valor: remunerada ? cop(diario * dias) : 0,
+      valor: n.tipo === 'licencia_no_remunerada' ? 0 : cop(diario * dias),
       pagador: PAGADOR_FIJO[n.tipo],
     });
   }
   const remuneradas = lineas.filter((l) => l.tipo !== 'licencia_no_remunerada');
-  const noRem = lineas.filter((l) => l.tipo === 'licencia_no_remunerada');
-  const diasNoRemunerados = noRem.reduce((s, l) => s + l.dias, 0);
+  const diasNoRemunerados = lineas.filter((l) => l.tipo === 'licencia_no_remunerada').reduce((s, l) => s + l.dias, 0);
   return {
     lineas,
     diasRemunerados: remuneradas.reduce((s, l) => s + l.dias, 0),
     diasNoRemunerados,
     totalRemunerado: sumCop(remuneradas.map((l) => l.valor)),
-    basePensionNoRemunerada: diasNoRemunerados > 0 ? cop(Math.max(diario, minimoDiario) * diasNoRemunerados) : 0,
+    basePensionNoRemunerada: diasNoRemunerados > 0 ? cop(Math.max(diarioIbc, minimoDiario) * diasNoRemunerados) : 0,
   };
 }
 

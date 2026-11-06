@@ -21,12 +21,22 @@ const NID = new Types.ObjectId().toString();
 const owner = { role: 'owner', permissions: [], sedeIds: [], email: 'o@x.co' } as any;
 const otraSede = { role: 'cashier', permissions: [], sedeIds: [new Types.ObjectId().toString()], email: 'c@x.co' } as any;
 
-function armar(o: { cruce?: any; cerrada?: any; actual?: any; vacaciones?: any[]; visibles?: string[] } = {}) {
+function armar(
+  o: { cruce?: any; cerrada?: any; actual?: any; vacaciones?: any[]; visibles?: string[]; borradores?: any[]; variables?: number } = {},
+) {
   const creadas: any[] = [];
+  // Almacén en memoria de novedades activas, para la prueba de concurrencia.
+  const store: any[] = [];
   let actual: any = o.actual ? { ...o.actual } : null;
+  const cruzan = (f: any, n: any) => n.estado === 'activa' && n.fechaInicio <= f.fechaInicio.$lte && n.fechaFin >= f.fechaFin.$gte;
   const novedades = {
-    create: vi.fn(async (d: any) => { creadas.push(d); return d; }),
-    findOne: vi.fn(() => ({ exec: async () => o.cruce ?? null })),
+    create: vi.fn(async (d: any) => {
+      const doc = { ...d, _id: new Types.ObjectId() };
+      creadas.push(doc);
+      store.push(doc);
+      return doc;
+    }),
+    findOne: vi.fn((f: any) => ({ exec: async () => o.cruce ?? store.find((n) => cruzan(f, n)) ?? null })),
     findById: () => ({ exec: async () => (actual ? { ...actual } : null) }),
     findOneAndUpdate: vi.fn((f: any, u: any) => ({
       exec: async () => {
@@ -35,9 +45,31 @@ function armar(o: { cruce?: any; cerrada?: any; actual?: any; vacaciones?: any[]
         return { ...actual };
       },
     })),
-    find: vi.fn(() => ({ sort: () => ({ limit: () => ({ exec: async () => [] }) }), exec: async () => o.vacaciones ?? [] })),
+    find: vi.fn((f: any) => ({
+      sort: () => ({ limit: () => ({ exec: async () => [] }) }),
+      exec: async () =>
+        f?._id?.$ne ? store.filter((n) => String(n._id) !== String(f._id.$ne) && cruzan(f, n)) : (o.vacaciones ?? []),
+    })),
+    deleteOne: vi.fn((f: any) => ({
+      exec: async () => {
+        const k = store.findIndex((n) => String(n._id) === String(f._id));
+        if (k >= 0) store.splice(k, 1);
+      },
+    })),
   };
-  const runs = { findOne: vi.fn(() => ({ select: () => ({ exec: async () => o.cerrada ?? null }) })) };
+  const variables = o.variables ?? 0;
+  const runs = {
+    findOne: vi.fn(() => ({ select: () => ({ exec: async () => o.cerrada ?? null }) })),
+    find: vi.fn((f: any) => ({
+      select: () => ({
+        exec: async () => (f.status === 'borrador' ? (o.borradores ?? []) : []),
+        lean: () => ({
+          exec: async () =>
+            variables > 0 ? [{ slips: [{ employeeId: EMP, breakdown: { devengados: { horasExtra: variables } } }] }] : [],
+        }),
+      }),
+    })),
+  };
   const employees = {
     findById: () => ({
       select: () => ({ exec: async () => ({ sedeId: SEDE, firstName: 'Ana', lastName: 'Ruiz' }) }),
@@ -50,7 +82,8 @@ function armar(o: { cruce?: any; cerrada?: any; actual?: any; vacaciones?: any[]
     {} as any,
     novedades as any,
   );
-  return { service, creadas, novedades, runs, employees, get actual() { return actual; } };
+  const recalc = vi.spyOn(service, 'recalcRun').mockResolvedValue({} as any);
+  return { service, creadas, store, novedades, runs, employees, recalc, get actual() { return actual; } };
 }
 const base = { employeeId: EMP, tipo: 'incapacidad_comun', fechaInicio: '2026-10-06', fechaFin: '2026-10-10' };
 
@@ -77,6 +110,57 @@ describe('PayrollService: novedades', () => {
     const z = armar({ cerrada: { period: '2026-10' } });
     await expect(z.service.crearNovedad({ ...base } as any, owner)).rejects.toThrow(/2026-10 ya está cerrada/);
     expect((z.runs.findOne as any).mock.calls[0][0]).toMatchObject({ period: { $in: ['2026-10'] }, status: 'cerrada', 'slips.employeeId': EMP });
+  });
+
+  it('D6: los días hábiles no pueden superar los días del rango', async () => {
+    const t = armar();
+    await expect(
+      t.service.crearNovedad({ ...base, tipo: 'vacaciones', fechaInicio: '2026-10-01', fechaFin: '2026-10-05', diasHabiles: 6 } as any, owner),
+    ).rejects.toThrow(/no pueden ser más que los días del rango \(5\)/);
+    await expect(
+      t.service.crearNovedad({ ...base, tipo: 'incapacidad_comun', salarioPromedio: 2_000_000 } as any, owner),
+    ).rejects.toThrow(/solo aplica a las vacaciones/);
+  });
+
+  it('D3: recalcula las corridas en borrador de los meses que toca (al crear y al anular)', async () => {
+    const t = armar({ borradores: [{ _id: 'r1', period: '2026-10' }] });
+    const r = await t.service.crearNovedad({ ...base } as any, owner);
+    expect(t.recalc).toHaveBeenCalledWith('r1', owner);
+    expect(r.corridasRecalculadas).toEqual(['r1']);
+    const filtro = (t.runs.find as any).mock.calls.find((c: any[]) => c[0].status === 'borrador')[0];
+    expect(filtro.period.$in).toEqual(['2026-10']);
+    const a = armar({ actual: { _id: NID, ...base, estado: 'activa' }, borradores: [{ _id: 'r2', period: '2026-10' }] });
+    expect((await a.service.anularNovedad(NID, owner)).corridasRecalculadas).toEqual(['r2']);
+  });
+
+  it('D3: si el recálculo falla, la novedad queda y se avisa', async () => {
+    const t = armar({ borradores: [{ _id: 'r1', period: '2026-10' }] });
+    t.recalc.mockRejectedValueOnce(new Error('consumos sin amarrar'));
+    const r = await t.service.crearNovedad({ ...base } as any, owner);
+    expect(r.corridasRecalculadas).toEqual([]);
+    expect(r.advertencias.join()).toMatch(/Recalcúlala a mano/);
+  });
+
+  it('D4: dos registros simultáneos que se cruzan: uno queda y el otro da 409', async () => {
+    const t = armar();
+    const r = await Promise.allSettled([
+      t.service.crearNovedad({ ...base } as any, owner),
+      t.service.crearNovedad({ ...base, fechaInicio: '2026-10-08', fechaFin: '2026-10-12' } as any, owner),
+    ]);
+    expect(r.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
+    expect((r.find((x) => x.status === 'rejected') as PromiseRejectedResult).reason).toBeInstanceOf(ConflictException);
+    expect(t.store).toHaveLength(1);
+    expect(t.novedades.deleteOne).toHaveBeenCalledTimes(1);
+  });
+
+  it('art. 192 CST: vacaciones sin salario promedio con variables en el último año avisan', async () => {
+    const vac = { ...base, tipo: 'vacaciones', fechaInicio: '2026-10-01', fechaFin: '2026-10-15', diasHabiles: 11 };
+    const t = armar({ variables: 90_000 });
+    expect((await t.service.crearNovedad(vac as any, owner)).advertencias.join()).toMatch(/art. 192 CST/);
+    const p = armar({ variables: 90_000 });
+    const conPromedio = await p.service.crearNovedad({ ...vac, salarioPromedio: 2_000_000 } as any, owner);
+    expect(conPromedio.advertencias).toEqual([]);
+    expect(p.creadas[0].salarioPromedio).toBe(2_000_000);
   });
 
   it('una novedad que cruza meses revisa todos los meses que toca', async () => {

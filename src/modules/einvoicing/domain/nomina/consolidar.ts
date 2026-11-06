@@ -413,7 +413,7 @@ function revisarColilla(c: CorridaColilla, quien: string, bloqueos: string[]): b
       `${donde}: el detalle de horas (${pagoHoras}) no cuadra con recargos + horas extra (${cop(dev.recargos + dev.horasExtra)}). Revisa o recalcula la corrida.`,
     );
   }
-  const sumaDed = sumCop([ded.salud, ded.pension, ded.fsp, ded.retencionFuente, ded.otras]);
+  const sumaDed = sumCop([ded.salud, ded.pension, ded.fsp, ded.retencionFuente, ded.otras, ded.pensionLicenciaNR ?? 0]);
   if (sumaDed !== cop(ded.total)) {
     bloqueos.push(`${donde}: las deducciones no cuadran entre sí (${sumaDed} ≠ ${ded.total}). Revisa o recalcula la corrida.`);
   }
@@ -440,6 +440,7 @@ function revisarColilla(c: CorridaColilla, quien: string, bloqueos: string[]): b
     ['FSP', ded.fsp],
     ['retención en la fuente', ded.retencionFuente],
     ['otras deducciones', ded.otras],
+    ['aporte pensión licencia no remunerada', ded.pensionLicenciaNR ?? 0],
     ['total deducciones', ded.total],
     ...(dev.recargoDetalle ?? []).map((l): [string, number] => [`horas ${l.key}`, l.valor]),
     ...(c.colilla.otrasDeduccionesDetalle ?? []).map((d): [string, number] => [`deducción «${d.concept}»`, d.amount]),
@@ -495,6 +496,10 @@ function clasificarDeducciones(
       arrastre += det.amount;
     } else otras.push(det.amount);
   }
+  // El 4 % de pensión de la licencia no remunerada (a cargo del trabajador) se reporta como OtraDeduccion y,
+  // con neto negativo, se recorta como las demás deducciones de nómina.
+  const lnr = c.colilla.breakdown.deducciones.pensionLicenciaNR ?? 0;
+  if (lnr > 0) otras.push(lnr);
   return { deuda, otras, arrastre };
 }
 
@@ -556,7 +561,7 @@ function agregarLiquidacion(
   }
   if (liq.vacaciones > 0) {
     // Los días que se pagan: causados (15 por año, art. 186 CST) menos los ya disfrutados (art. 189).
-    // Con pago, al menos 1 día. Las compensadas no son base de salud ni pensión (art. 192 CST):
+    // Con pago, al menos 1 día. Las compensadas no son salario ni base de salud y pensión (art. 189 CST, a confirmar):
     // a confirmar con concepto UGPP vigente.
     const pendientes = liq.diasVacacionesPendientes;
     if (typeof pendientes !== 'number' || !Number.isFinite(pendientes) || pendientes < 0) {
@@ -776,6 +781,16 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
         );
       }
     }
+  }
+
+  // Retención: incapacidades y licencias pueden ser renta exenta (art. 206 ET); BookiPos las deja en la base.
+  const conIncapOLicencia = colillas.some((c) =>
+    (c.breakdown.devengados.ausenciaDetalle ?? []).some((l) => l.tipo !== 'vacaciones'),
+  );
+  if (conIncapOLicencia) {
+    advertencias.push(
+      `${quien}: tiene incapacidades o licencias en ${periodo}; su tratamiento en retención en la fuente está a confirmar con el contador (ET 206).`,
+    );
   }
 
   // ── Deducciones ──

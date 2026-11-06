@@ -709,6 +709,23 @@ describe('consolidarNominaMes: novedades del mes (decisión 3 del dueño)', () =
     expect(r.xml).toContain('<LicenciaNR FechaInicio="2026-10-13" FechaFin="2026-10-14" Cantidad="2"');
   }, 60_000);
 
+  it('D7: con incapacidades o licencias avisa del tratamiento en retención (ET 206)', () => {
+    const { advertencias } = ok(entrada({ slips: [corrida({ bd: conNovedades(), dias: 16 })] }));
+    expect(advertencias.join()).toMatch(/retención en la fuente está a confirmar con el contador \(ET 206\)/);
+    const soloVac = conNovedades([lineas[0]!]);
+    expect(ok(entrada({ slips: [corrida({ bd: soloVac, dias: 25 })] })).advertencias.join()).not.toMatch(/ET 206/);
+  });
+
+  it('D5: el 4 % de pensión de la licencia no remunerada va como OtraDeduccion y pasa el XSD', async () => {
+    const bd = conNovedades();
+    bd.deducciones.pensionLicenciaNR = 40_000;
+    bd.deducciones.total += 40_000;
+    bd.netoPagar -= 40_000;
+    const { modelo } = ok(entrada({ slips: [corrida({ bd, dias: 16 })] }));
+    expect(modelo.deducciones.otras).toEqual([4_000_000]);
+    await verificar(modelo, bd.devengados.total, bd.deducciones.total);
+  }, 60_000);
+
   it('el detalle de novedades debe sumar lo pagado', () => {
     const bd = conNovedades();
     bd.devengados.ausencias = (bd.devengados.ausencias ?? 0) + 1;

@@ -27,6 +27,12 @@ export class CrearNovedadDto {
   @Min(1)
   diasHabiles?: number;
 
+  /** Vacaciones con salario variable: promedio del último año (art. 192 CST), en pesos. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  salarioPromedio?: number;
+
   @IsOptional()
   @IsString()
   @MaxLength(300)

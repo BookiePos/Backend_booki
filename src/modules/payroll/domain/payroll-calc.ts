@@ -97,6 +97,8 @@ export interface PayrollBreakdown {
     pension: number;
     fsp: number;
     retencionFuente: number;
+    /** 4 % de pensión de los días de licencia no remunerada, a cargo del trabajador (A CONFIRMAR con el contador). */
+    pensionLicenciaNR?: number;
     otras: number;
     total: number;
   };
@@ -371,8 +373,12 @@ export function computeSlip(
   const baseGravable = Math.max(0, ingresoNeto - beneficios);
   const retencionFuente = retencion383(baseGravable, s);
   const otras = round(nov.otrasDeducciones ?? 0);
+  // Licencia no remunerada: el trabajador aporta su 4 % de pensión sobre esos
+  // días (Decreto 1406/1999 art. 71); se le descuenta aquí aunque no haya pago
+  // y, si el neto no alcanza, el saldo sigue la regla de arrastre. A confirmar con el contador.
+  const pensionLicenciaNR = round((aus?.basePensionNoRemunerada ?? 0) * s.pensionEmpleado);
 
-  const totalDeducciones = salud + pension + fsp + retencionFuente + otras;
+  const totalDeducciones = salud + pension + fsp + retencionFuente + otras + pensionLicenciaNR;
   const netoPagar = totalDevengado - totalDeducciones;
 
   // Aportes del empleador.
@@ -432,6 +438,7 @@ export function computeSlip(
       pension,
       fsp,
       retencionFuente,
+      ...(pensionLicenciaNR > 0 ? { pensionLicenciaNR } : {}),
       otras,
       total: totalDeducciones,
     },
