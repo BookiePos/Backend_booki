@@ -80,15 +80,23 @@ export class EinvoicingController {
       if (!user.permissions.includes(PERMISSIONS.EINVOICING_CONFIGURE)) {
         throw new ForbiddenException('Traer la clave técnica de la DIAN requiere permiso de configuración.');
       }
-      const clave = await this.rangosDian.claveTecnicaDe(
+      const rango = await this.rangosDian.claveTecnicaDe(
         sedeId,
         { numero: datos.numero, prefijo: datos.prefijo?.toUpperCase(), desde: datos.rangoDesde, hasta: datos.rangoHasta },
         user,
       );
-      if (!clave) {
-        throw new BadRequestException('La DIAN no devolvió la clave técnica de ese rango. Vuelve a traer los rangos.');
+      if (!rango?.claveTecnica) {
+        throw new BadRequestException('La DIAN no devolvió ese rango. Vuelve a traer los rangos.');
       }
-      datos.claveTecnica = clave;
+      // Manda lo que dijo la DIAN, no lo del DTO: número, prefijo, tramo y fechas.
+      datos.numero = rango.resolucion;
+      datos.prefijo = rango.prefijo;
+      datos.rangoDesde = rango.desde;
+      datos.rangoHasta = rango.hasta;
+      datos.fechaResolucion = rango.fechaResolucion;
+      datos.vigenciaDesde = rango.vigenciaDesde;
+      datos.vigenciaHasta = rango.vigenciaHasta;
+      datos.claveTecnica = rango.claveTecnica;
     }
     return this.einvoicing.registerResolution(sedeId, datos, user);
   }

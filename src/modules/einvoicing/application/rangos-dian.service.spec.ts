@@ -83,7 +83,9 @@ describe('RangosDianService', () => {
   it('claveTecnicaDe devuelve la clave del rango que coincide y solo en el servidor', async () => {
     const m = montar();
     const q = { numero: '1876', prefijo: 'FE', desde: 1, hasta: 100 };
-    expect(await m.svc.claveTecnicaDe(SEDE, q, user())).toBe('SECRETA');
+    const r = await m.svc.claveTecnicaDe(SEDE, q, user());
+    expect(r!.claveTecnica).toBe('SECRETA');
+    expect(r!.vigenciaHasta).toBe('2028-01-02');
     expect(await m.svc.claveTecnicaDe(SEDE, { ...q, hasta: 99 }, user())).toBeUndefined();
     await expect(m.svc.claveTecnicaDe(SEDE, q, user(['b'.repeat(24)]))).rejects.toBeInstanceOf(ForbiddenException);
   });

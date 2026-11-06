@@ -9,6 +9,7 @@ import {
   PROVEEDOR_TRANSMISOR_DIAN,
   type ProveedorTransmisorDian,
 } from './transmision-dian.puertos';
+import type { RangoNumeracionDian } from '../domain/transmisor-dian';
 import type { TipoAmbiente } from '../domain/emisor-fiscal';
 
 export interface RangoDianVista {
@@ -60,7 +61,7 @@ export class RangosDianService {
   }
 
   /**
-   * Clave técnica del rango que coincide con lo que se va a registrar, leída
+   * Rango de la DIAN (con su clave técnica, solo en el servidor) que coincide con lo que se va a registrar, leída
    * de la DIAN en el servidor: nunca viaja al navegador. `undefined` si la DIAN
    * no devuelve ese rango.
    */
@@ -68,7 +69,7 @@ export class RangosDianService {
     sedeId: string,
     q: { numero?: string; prefijo?: string; desde?: number; hasta?: number },
     user: JwtUser,
-  ): Promise<string | undefined> {
+  ): Promise<RangoNumeracionDian | undefined> {
     assertSedeAccess(user, sedeId);
     let rangos;
     try {
@@ -84,7 +85,7 @@ export class RangosDianService {
         x.desde === q.desde &&
         x.hasta === q.hasta,
     );
-    return r?.claveTecnica;
+    return r;
   }
 
   private async crudo(sedeId: string) {

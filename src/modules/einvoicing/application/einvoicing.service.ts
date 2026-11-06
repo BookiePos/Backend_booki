@@ -872,6 +872,15 @@ export class EinvoicingService {
     const tipo = dto.tipoDocumento ?? TIPO_RESOLUCION_POR_DEFECTO;
     const previa = resolucionDeTipo(sede, tipo);
 
+    // Sin vigencia final no se puede saber cuándo deja de servir, y una vencida
+    // no sirve para emitir: ninguna se registra, venga de la DIAN o tecleada.
+    if (!dto.vigenciaHasta) {
+      throw new BadRequestException('La resolución necesita la fecha de vigencia final (vigenciaHasta).');
+    }
+    if (new Date(dto.vigenciaHasta) < startOfDay(new Date())) {
+      throw new BadRequestException('La resolución ya venció: no se puede registrar una vigencia pasada.');
+    }
+
     const prefijo = dto.prefijo?.toUpperCase() ?? '';
     // El consecutivo se comparte por (NIT, prefijo) entre todos los tipos: sin
     // prefijo propio, un POS o una nota chocarían con la factura.
