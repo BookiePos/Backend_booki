@@ -18,7 +18,7 @@ import {
   EMISION_DOCUMENTO_FISCAL,
   type DocumentoFiscalEmitido,
   type NotaFiscalOperacion,
-  type TalonarioContingencia,
+  type OpcionesTranscripcion,
   type TranscripcionContingencia,
 } from './emision-documento-fiscal.puerto';
 import { NotaFiscalVentaService } from './nota-fiscal-venta.service';
@@ -84,7 +84,7 @@ export class ContingenciaVentasService {
   async transcribir(
     saleId: string,
     user: JwtUser,
-    opts: { talonario?: TalonarioContingencia } = {},
+    opts: OpcionesTranscripcion = {},
   ): Promise<ResultadoTranscripcion> {
     const sale = Types.ObjectId.isValid(saleId) ? await this.saleModel.findById(saleId).exec() : null;
     if (!sale) throw new NotFoundException('Venta no encontrada');

@@ -16,7 +16,7 @@ import type {
   NotaSinReferenciaEmitida,
   SolicitudNotaSinReferencia,
   SolicitudNotaVenta,
-  TalonarioContingencia,
+  OpcionesTranscripcion,
   TranscripcionContingencia,
 } from '../../sales/application/emision-documento-fiscal.puerto';
 
@@ -64,7 +64,7 @@ export class EmisionDocumentoFiscalDian
   async transcribirContingencia(
     saleId: string,
     solicitado: DocumentoFiscalSolicitado,
-    opts: { talonario?: TalonarioContingencia },
+    opts: OpcionesTranscripcion,
     user: JwtUser,
   ): Promise<DocumentoFiscalEmitido> {
     const modo = modoPosDe(solicitado);

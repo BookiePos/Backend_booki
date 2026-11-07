@@ -35,10 +35,17 @@ export interface EmisionDocumentoFiscal {
   transmitir(documentoId: string, user: JwtUser): Promise<void>;
 }
 
-/** Talonario de contingencia: número impreso (sin prefijo) y fecha AAAA-MM-DD. */
+/** Talonario de contingencia: número impreso (sin prefijo), fecha AAAA-MM-DD y hora HH:MM[:SS] opcional. */
 export interface TalonarioContingencia {
   numero: number;
   fecha: string;
+  hora?: string;
+}
+
+/** Opciones de la transcripción: el talonario y cuándo se superó la falla (por defecto, ahora o la llegada de la venta). */
+export interface OpcionesTranscripcion {
+  talonario?: TalonarioContingencia;
+  superadaAt?: Date;
 }
 
 /**
@@ -50,7 +57,7 @@ export interface TranscripcionContingencia {
   transcribirContingencia(
     saleId: string,
     solicitado: DocumentoFiscalSolicitado,
-    opts: { talonario?: TalonarioContingencia },
+    opts: OpcionesTranscripcion,
     user: JwtUser,
   ): Promise<DocumentoFiscalEmitido>;
   /** Documento y después sus notas. Nunca lanza. */

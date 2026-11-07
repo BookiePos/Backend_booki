@@ -49,9 +49,13 @@ describe('EinvoicingService.transcribirContingencia', () => {
     puntosVenta: [{ placa: 'CAJA-01', ubicacion: 'Mostrador', tipo: 'Caja' }],
   });
 
-  const transcribir = (tipo: 'pos' | 'invoice' = 'pos', talonario?: { numero: number; fecha: string }) =>
+  const transcribir = (
+    tipo: 'pos' | 'invoice' = 'pos',
+    talonario?: { numero: number; fecha: string; hora?: string },
+    superadaAt?: Date,
+  ) =>
     TenantContext.run({ businessId: 'b1', dbName: 'biz_b1' }, () =>
-      svc.transcribirContingencia(saleId.toString(), tipo === 'pos' ? { tipo, modo: 'anonimo' } : { tipo }, { talonario }, user),
+      svc.transcribirContingencia(saleId.toString(), tipo === 'pos' ? { tipo, modo: 'anonimo' } : { tipo }, { talonario, superadaAt }, user),
     );
 
   beforeEach(() => {
@@ -113,12 +117,12 @@ describe('EinvoicingService.transcribirContingencia', () => {
     );
   });
 
-  it('POS 07 de una venta sin conexión (aunque luego se anuló): numeración de contingencia, fecha real, CUDE con el PIN y plazo desde que llegó', async () => {
+  it('POS 07 de una venta sin conexión (aunque luego se anuló): numeración de contingencia desde el FINAL del rango, fecha real, CUDE con el PIN y plazo desde que llegó', async () => {
     const doc: any = await transcribir();
     expect(counters.findOneAndUpdate.mock.calls[0][0]).toEqual({ _id: `fe:contingency:${sedeId}:CONT` });
     expect(doc).toMatchObject({
       type: 'pos',
-      fullNumber: 'CONT1',
+      fullNumber: 'CONT500',
       issueDate: '2026-11-04',
       issueTime: '20:15:00-05:00',
       dianStatus: 'draft',
@@ -131,7 +135,7 @@ describe('EinvoicingService.transcribirContingencia', () => {
       },
     });
     const cude = calcularCude({
-      numero: 'CONT1',
+      numero: 'CONT500',
       fecha: '2026-11-04',
       hora: '20:15:00-05:00',
       valorBruto: 0,
@@ -145,15 +149,41 @@ describe('EinvoicingService.transcribirContingencia', () => {
     expect(doc.cufe).toBe(cude);
   });
 
-  it('FEV 03 con talonario: el número impreso, su fecha en la referencia y sin tomar folio del contador', async () => {
-    const doc: any = await transcribir('invoice', { numero: 7, fecha: '2026-11-04' });
+  it('FEV 03 con talonario: el número impreso, IssueDate = fecha del PAPEL (con su hora) = la del ADR, sin folio del contador', async () => {
+    const doc: any = await transcribir('invoice', { numero: 7, fecha: '2026-11-03', hora: '09:30' });
     expect(counters.findOneAndUpdate).not.toHaveBeenCalled();
     expect(doc).toMatchObject({
       type: 'invoice',
       fullNumber: 'CONT7',
       number: 7,
-      contingencia: { tipo: '03', referencia: { id: 'CONT7', fecha: '2026-11-04' } },
+      issueDate: '2026-11-03',
+      issueTime: '09:30:00-05:00',
+      contingencia: { tipo: '03', referencia: { id: 'CONT7', fecha: '2026-11-03' } },
     });
+  });
+
+  it('talonario sin hora: la fecha del papel con la hora de la venta; hora mal formada, 400', async () => {
+    const doc: any = await transcribir('invoice', { numero: 8, fecha: '2026-11-03' });
+    expect(doc).toMatchObject({ issueDate: '2026-11-03', issueTime: '20:15:00-05:00' });
+    await expect(transcribir('invoice', { numero: 9, fecha: '2026-11-03', hora: '25:00' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('el contador automático salta los números que ya ocupa un talonario (no hay 409 para el papel ni para la venta)', async () => {
+    // El 500 ya lo usa un documento (p. ej. un talonario impreso al final del rango).
+    model.create
+      .mockRejectedValueOnce(choque({ 'emisor.nitNorm': 1, prefix: 1, number: 1 }))
+      .mockImplementation(async (d: any) => ({ ...d, _id: 'doc' }));
+    const doc: any = await transcribir();
+    expect(doc.fullNumber).toBe('CONT499');
+    expect(businesses.refundDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it('superadaAt: la que dice quien transcribe; futura o anterior a la venta, 400', async () => {
+    const superada = new Date('2026-11-05T20:00:00Z');
+    const doc: any = await transcribir('pos', undefined, superada);
+    expect(doc.contingencia.superadaAt).toEqual(superada);
+    await expect(transcribir('pos', undefined, new Date(Date.now() + 3_600_000))).rejects.toThrow(/futura/);
+    await expect(transcribir('pos', undefined, new Date('2026-11-01T00:00:00Z'))).rejects.toThrow(/anterior a la venta/);
   });
 
   it('talonario fuera de rango o con fecha futura: 400 antes de cupo y folio', async () => {
@@ -165,7 +195,7 @@ describe('EinvoicingService.transcribirContingencia', () => {
 
   it('talonario ya transcrito: 409 y el cupo vuelve', async () => {
     model.create.mockRejectedValueOnce(choque({ 'emisor.nitNorm': 1, prefix: 1, number: 1 }));
-    await expect(transcribir('invoice', { numero: 7, fecha: '2026-11-04' })).rejects.toThrow(/ya fue transcrito/);
+    await expect(transcribir('invoice', { numero: 7, fecha: '2026-11-04' })).rejects.toThrow(/ya está usado/);
     expect(businesses.refundDocument).toHaveBeenCalledTimes(1);
   });
 

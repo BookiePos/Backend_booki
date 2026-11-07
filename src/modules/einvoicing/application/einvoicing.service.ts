@@ -353,15 +353,26 @@ export class EinvoicingService {
      */
     numeroFijo?: number;
     choqueNumeroFijo?: string;
+    /**
+     * Numeración DESCENDENTE desde el final del rango (contingencia automática,
+     * Fase 9): el talonario de papel se usa desde el principio, así que los dos
+     * no se cruzan. Un número ya usado (por un talonario) se salta: el contador
+     * ya avanzó y el siguiente intento toma el anterior.
+     */
+    descendente?: boolean;
   }): Promise<ElectronicDocumentDocument> {
-    const MAX_INTENTOS = 3;
+    const MAX_INTENTOS = o.descendente ? 20 : 3;
     for (let intento = 1; ; intento++) {
       // Cupo del plan antes de quemar folio: si no hay cupo, 402 sin consumir nada.
       const origen = await this.consumeDocQuota();
       let number: number | undefined;
       let creado: ElectronicDocumentDocument | undefined;
       try {
-        number = o.numeroFijo ?? (await this.nextNumber(o.counterId, o.desde, o.hasta));
+        number =
+          o.numeroFijo ??
+          (o.descendente
+            ? await this.nextNumberDescendente(o.counterId, o.desde, o.hasta)
+            : await this.nextNumber(o.counterId, o.desde, o.hasta));
         creado = await this.model.create(o.construir(number));
       } catch (err) {
         await this.refundDocQuota(origen);
@@ -377,7 +388,8 @@ export class EinvoicingService {
           throw err;
         }
         if (number !== undefined && choque !== 'consecutivo') {
-          await this.devolverFolio(o.counterId, number - o.desde + 1);
+          const seq = o.descendente && o.hasta !== undefined ? o.hasta - number + 1 : number - o.desde + 1;
+          await this.devolverFolio(o.counterId, seq);
         }
         if (choque === 'venta' || choque === 'exclusion') {
           const existente = await o.existente();
@@ -389,7 +401,8 @@ export class EinvoicingService {
           throw new ConflictException(o.exclusion);
         }
         if (choque === 'consecutivo' && intento < MAX_INTENTOS) {
-          await this.subirContador(o);
+          // Descendente: el número lo ocupa un talonario; el contador ya bajó.
+          if (!o.descendente) await this.subirContador(o);
           continue;
         }
         if (choque === 'consecutivo') {
@@ -744,13 +757,18 @@ export class EinvoicingService {
    * documento electrónico: POS 07 o FEV 03 (anexo DE §15; anexo FEV §12.1).
    *
    * - Numeración de CONTINGENCIA de la sede (resolución `contingency`): el
-   *   número impreso del talonario si se da (validado contra rango y vigencia)
-   *   o el siguiente del contador de contingencia.
-   * - Fecha y hora REALES de la venta (`soldAt`; si no, `createdAt`) y
-   *   `AdditionalDocumentReference` al documento de origen (talonario o venta).
+   *   número impreso del talonario si se da (validado contra rango y vigencia),
+   *   que se usa desde el PRINCIPIO del rango; sin talonario, el contador
+   *   automático cuenta hacia atrás desde el FINAL del rango y salta lo que ya
+   *   ocupa un talonario. Así un papel ya entregado nunca choca con una venta
+   *   sin conexión (salvo que el rango se agote y se crucen).
+   * - Fecha: con talonario, la del PAPEL (`talonario.fecha`, con su hora o la
+   *   de la venta), la misma del `AdditionalDocumentReference`; sin talonario,
+   *   la real de la venta (`soldAt`; si no, `createdAt`).
    * - CUDE con el PIN, también en la FEV 03 (§11.1.4.2 nota 2).
-   * - Plazo de 48 h desde que se superó la falla: para la venta sin conexión,
-   *   cuando llegó al servidor (`createdAt`); para el talonario, ahora.
+   * - Plazo de 48 h desde que se superó la falla: `superadaAt` si lo dice quien
+   *   transcribe (ni futuro ni anterior a la venta); si no, para la venta sin
+   *   conexión, cuando llegó al servidor (`createdAt`), y para el talonario, ahora.
    * - Una venta anulada después también se transcribe: el documento es el de la
    *   venta tal como se hizo; su nota de anulación la emite quien llama, en orden.
    * - Mismo fallar cerrado que la emisión normal: todo se valida ANTES del
@@ -760,7 +778,7 @@ export class EinvoicingService {
   async transcribirContingencia(
     saleId: string,
     solicitado: { tipo: 'pos' | 'invoice'; modo?: ModoPos },
-    opts: { talonario?: { numero: number; fecha: string } },
+    opts: { talonario?: { numero: number; fecha: string; hora?: string }; superadaAt?: Date },
     user: JwtUser,
   ): Promise<ElectronicDocumentDocument> {
     const sale = await this.sales.getOrFail(saleId);
@@ -785,12 +803,32 @@ export class EinvoicingService {
     const prefix = resolucion.prefijo ?? '';
 
     const momentoVenta = sale.soldAt ?? (sale as { createdAt?: Date }).createdAt ?? new Date();
-    const { issueDate, issueTime } = this.now(momentoVenta);
+    const deLaVenta = this.now(momentoVenta);
     const hoy = this.now().issueDate;
     const talonario = opts.talonario;
     if (talonario) {
       const error = errorTalonario({ numero: talonario.numero, fecha: talonario.fecha, hoy }, resolucion);
       if (error) throw new BadRequestException(error);
+      if (talonario.hora !== undefined && !/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(talonario.hora)) {
+        throw new BadRequestException('La hora del talonario va en formato HH:MM o HH:MM:SS.');
+      }
+    }
+    // Con talonario manda el PAPEL (checklist Fase 9: «la fecha real del
+    // talonario»; a confirmar con el contador): su fecha y su hora, o la hora
+    // de la venta si el papel no la trae.
+    const issueDate = talonario?.fecha ?? deLaVenta.issueDate;
+    const issueTime = talonario?.hora
+      ? `${talonario.hora.length === 5 ? `${talonario.hora}:00` : talonario.hora}-05:00`
+      : deLaVenta.issueTime;
+
+    const ahora = new Date();
+    if (opts.superadaAt) {
+      if (Number.isNaN(opts.superadaAt.getTime()) || opts.superadaAt > ahora) {
+        throw new BadRequestException('La fecha en que se superó la falla no puede ser futura.');
+      }
+      if (opts.superadaAt < momentoVenta) {
+        throw new BadRequestException('La fecha en que se superó la falla no puede ser anterior a la venta.');
+      }
     }
 
     let adquiriente: ReturnType<typeof buildAdquiriente>;
@@ -818,8 +856,7 @@ export class EinvoicingService {
     if (!pin) throw new BadRequestException(MENSAJE_POS_SIN_PIN.replace('el documento POS', 'el documento de contingencia'));
 
     const emisor = this.buildEmisor(sede);
-    const ahora = new Date();
-    const superadaAt = talonario ? ahora : ((sale as { createdAt?: Date }).createdAt ?? ahora);
+    const superadaAt = opts.superadaAt ?? (talonario ? ahora : ((sale as { createdAt?: Date }).createdAt ?? ahora));
     const camposPos =
       solicitado.tipo === 'pos'
         ? { pagos: pagosPos(sale), cajaVenta: cajaVentaPos(sede, sale), fabricante: fabricanteDesdeEntorno(process.env) }
@@ -833,7 +870,8 @@ export class EinvoicingService {
       prefix,
       nit: emisor.nit,
       numeroFijo: talonario?.numero,
-      choqueNumeroFijo: `El número ${prefix}${talonario?.numero ?? ''} del talonario ya fue transcrito.`,
+      descendente: !talonario,
+      choqueNumeroFijo: `El número ${prefix}${talonario?.numero ?? ''} del talonario ya está usado por otro documento de contingencia (ya transcrito, o el rango se cruzó con las ventas sin conexión).`,
       existente: () => this.model.findOne({ saleId: sale._id, type: solicitado.tipo }).exec(),
       exclusion: MENSAJE_EXCLUSION_POS_FEV[solicitado.tipo],
       construir: (number) => {
@@ -1643,6 +1681,21 @@ export class EinvoicingService {
       .findById(contadorDeResolucion(tipo, sedeId, prefijo))
       .exec();
     return (rangoDesde ?? 1) + (counter?.seq ?? 0);
+  }
+
+  /** Siguiente número contando hacia atrás desde `hasta` (contingencia automática). */
+  private async nextNumberDescendente(counterId: string, desde: number, hasta: number | undefined): Promise<number> {
+    if (hasta == null) {
+      throw new BadRequestException('La numeración de contingencia necesita el final del rango autorizado.');
+    }
+    const counter = await this.counters
+      .findOneAndUpdate({ _id: counterId }, { $inc: { seq: 1 } }, { upsert: true, new: true })
+      .exec();
+    const number = hasta - counter.seq + 1;
+    if (number < desde) {
+      throw new ConflictException('Se agotó el rango de numeración de contingencia autorizado por la DIAN para esta sede.');
+    }
+    return number;
   }
 
   private async nextNumber(

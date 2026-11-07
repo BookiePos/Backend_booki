@@ -240,14 +240,6 @@ export class SalesController {
   }
 
   /**
-   * Rebaja o descuento POSTERIOR sobre la venta (Fase 6C): menor valor sin que
-   * vuelva mercancía, con su NC 91 o nota de ajuste 94 (conceptos 3–6).
-   *
-   * Va con el permiso de autorizar anulaciones y no con el de devolver: en la
-   * devolución la mercancía vuelve y se cuenta; aquí sale plata (o baja la
-   * cartera) sin nada físico que lo respalde, y eso lo autoriza un supervisor.
-   */
-  /**
    * Transcripción de contingencia (Fase 9): la venta hecha sin conexión o en
    * talonario recibe su POS 07 / FEV 03 y, en orden, las notas de lo que le
    * pasó mientras tanto; después se transmite. Es emitir un documento
@@ -261,9 +253,20 @@ export class SalesController {
     @Body() dto: TranscribirContingenciaDto,
     @CurrentUser() user: JwtUser,
   ) {
-    return this.contingencia.transcribir(id, user, { talonario: dto.talonario });
+    return this.contingencia.transcribir(id, user, {
+      talonario: dto.talonario,
+      superadaAt: dto.superadaAt ? new Date(dto.superadaAt) : undefined,
+    });
   }
 
+  /**
+   * Rebaja o descuento POSTERIOR sobre la venta (Fase 6C): menor valor sin que
+   * vuelva mercancía, con su NC 91 o nota de ajuste 94 (conceptos 3–6).
+   *
+   * Va con el permiso de autorizar anulaciones y no con el de devolver: en la
+   * devolución la mercancía vuelve y se cuenta; aquí sale plata (o baja la
+   * cartera) sin nada físico que lo respalde, y eso lo autoriza un supervisor.
+   */
   @RequirePermissions(PERMISSIONS.POS_VOID_AUTHORIZE)
   @Post(':id/rebajas')
   createRebaja(
