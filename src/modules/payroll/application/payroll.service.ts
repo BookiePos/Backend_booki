@@ -723,6 +723,8 @@ export class PayrollService {
       recsByEmp.set(r.employeeId, arr);
     }
 
+    const exentaLiqPorEmp = await this.exentaDeLiquidacionesDelMes(period);
+
     const slips: PayrollSlip[] = emps.map((e) => {
       const empDeductions = dedByEmp.get(e.id) ?? [];
       const otrasDeducciones = empDeductions.reduce((sum, d) => sum + d.amount, 0);
@@ -784,6 +786,7 @@ export class PayrollService {
         novedades: Object.keys(novedades).length > 0 ? novedades : undefined,
         fechaCorte: fechaCorteDePeriodo(period),
         ...(ausencias.lineas.length > 0 ? { ausencias } : {}),
+        ...(exentaLiqPorEmp.get(e.id) ? { rentaExentaUsadaLiquidacion: exentaLiqPorEmp.get(e.id) } : {}),
       };
       const breakdown = computeSlip(input, s);
       return {
@@ -1386,12 +1389,32 @@ export class PayrollService {
   /**
    * Renta exenta del 25 % (ET 206 num. 10) que ya tomaron las colillas del mes
    * del retiro, CERRADAS o en BORRADOR (política de retener más: si la liquidación
-   * se hace antes de cerrar la nómina del mes, el tope no se usa dos veces; si el
-   * borrador luego cambia, el recálculo de la nómina lo ajusta): comparte el tope mensual con la indemnización. Las
+   * se hace antes de cerrar la nómina del mes, el tope no se usa dos veces). El
+   * sentido contrario (liquidación primero, corrida después) lo cubre
+   * `exentaDeLiquidacionesDelMes`, que la colilla descuenta de su propio tope: comparte el tope mensual con la indemnización. Las
    * colillas guardadas antes de registrar `rentaExenta25` se estiman con el 25 %
    * de (devengado − salud − pensión − FSP), topado: sin restar dependientes ni
    * vivienda da un exento usado mayor, que es lo prudente. Sin colilla del mes, 0.
    */
+  /**
+   * Renta exenta del 25 % que tomó la indemnización de cada liquidación de retiro
+   * del mes (aprobada o en borrador, no anulada), por empleado. La colilla del
+   * mes la resta de su tope para que entre ambas no pasen de 790/12 UVT.
+   */
+  private async exentaDeLiquidacionesDelMes(period: string): Promise<Map<string, number>> {
+    const liqs = (await this.liquidaciones
+      .find({ fechaRetiro: { $gte: `${period}-01`, $lte: `${period}-31` }, estado: { $in: ['borrador', 'aprobada'] } })
+      .select('employeeId breakdown.rentaExenta25Indemnizacion')
+      .lean()
+      .exec()) as unknown as { employeeId: string; breakdown?: { rentaExenta25Indemnizacion?: number } }[];
+    const mapa = new Map<string, number>();
+    for (const l of liqs ?? []) {
+      const v = l.breakdown?.rentaExenta25Indemnizacion ?? 0;
+      if (v > 0) mapa.set(l.employeeId, (mapa.get(l.employeeId) ?? 0) + v);
+    }
+    return mapa;
+  }
+
   private async rentaExentaUsadaEnMes(employeeId: string, fechaFin: string, s: PayrollSettingsData): Promise<number> {
     const corridas = (await this.runs
       .find({ period: fechaFin.slice(0, 7), status: { $in: ['cerrada', 'borrador'] }, 'slips.employeeId': employeeId })
@@ -1697,10 +1720,8 @@ export class PayrollService {
       )
       .exec();
     if (!anulada) throw new ConflictException('La liquidación ya está anulada.');
-    // Una aprobada ya tiene asiento: se contra-asienta (idempotente; sin asiento no hace nada).
-    if (liq.estado === 'aprobada') {
-      await this.ledgerPosting.reverseLiquidacionRetiro(String(liq._id), user?.email);
-    }
+    // Siempre se pide la reversa: no depende del estado leído antes del update atómico; sin asiento no hace nada.
+    await this.ledgerPosting.reverseLiquidacionRetiro(String(liq._id), user?.email);
     return conAvisos(
       anulada,
       liq.estado === 'aprobada'

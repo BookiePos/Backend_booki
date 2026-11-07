@@ -79,6 +79,8 @@ export interface LiquidacionBreakdown {
    * Ausente en liquidaciones guardadas antes de calcularla (tarea 14 del dueño).
    */
   retencionFuente?: number;
+  /** Renta exenta del 25 % (ET 206 num. 10) que tomó la indemnización: la colilla del mes del retiro la descuenta de su tope. */
+  rentaExenta25Indemnizacion?: number;
   detalleRetencion?: string;
   /** Lo que se le paga: `total` menos la retención. */
   netoPagar?: number;
@@ -328,6 +330,7 @@ export function computeLiquidacion(
     ingresoMensualPromedio: ingresoMensual,
     porcentajeExentoCesantias: pctExento,
     retencionFuente: ret.retencion,
+    rentaExenta25Indemnizacion: ret.exenta,
     ...(detalleRetencion ? { detalleRetencion } : {}),
     netoPagar: total - ret.retencion,
   };

@@ -448,4 +448,11 @@ describe('retención de la indemnización: revisión del PR #134', () => {
     expect(con.retencionFuente!).toBeGreaterThan(sin.retencionFuente!);
     expect(con.detalleRetencion).toMatch(/la colilla del mes ya usó 1000000/);
   });
+
+  it('guarda la renta exenta que tomó la indemnización (la colilla del mes la descuenta de su tope)', () => {
+    const sin = computeLiquidacion(input, s);
+    expect(sin.rentaExenta25Indemnizacion).toBe(retencionIndemnizacion(sin.indemnizacion, sin.ingresoMensualPromedio!, s).exenta);
+    const con = computeLiquidacion({ ...input, rentaExentaUsadaMes: 1_000_000 }, s);
+    expect(con.rentaExenta25Indemnizacion!).toBeLessThanOrEqual(sin.rentaExenta25Indemnizacion!);
+  });
 });

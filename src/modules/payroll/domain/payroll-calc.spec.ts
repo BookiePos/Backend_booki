@@ -1,3 +1,4 @@
+import { retencionIndemnizacion } from './liquidacion-calc';
 import { describe, it, expect } from 'vitest';
 import { computeSlip, PayrollInput } from './payroll-calc';
 import { cop } from '../../finance/domain/money.util';
@@ -168,5 +169,24 @@ describe('computeSlip: renta exenta del 25 % que toma la colilla (la comparte la
     expect(bajo.rentaExenta25).toBe(cop(0.25 * (bajo.devengados.total - aportes)));
     const alto = computeSlip({ salarioBase: 40_000_000, salaryType: 'ordinario', diasTrabajados: 30, fechaCorte: '2026-10-31' }, s);
     expect(alto.rentaExenta25).toBe(3_447_955); // 790/12 × 52.374
+  });
+});
+
+describe('computeSlip: liquidación guardada antes de la corrida del mes', () => {
+  it('la colilla descuenta de su tope lo que tomó la indemnización: entre ambas no pasan de 790/12 UVT', () => {
+    const s = { ...DEFAULT_PAYROLL_SETTINGS };
+    const tope = cop((s.rentaExentaMaxUvtMes * s.uvt));
+    const base = { salarioBase: 40_000_000, salaryType: 'ordinario' as const, diasTrabajados: 30, fechaCorte: '2026-10-31' };
+    // La indemnización (liquidada primero) tomó 2.000.000 del tope.
+    const liq = retencionIndemnizacion(40_000_000, 300 * s.uvt, s);
+    expect(liq.exenta).toBe(tope);
+    const parcial = 2_000_000;
+    const colilla = computeSlip({ ...base, rentaExentaUsadaLiquidacion: parcial }, s);
+    expect(colilla.rentaExenta25).toBe(tope - parcial);
+    expect(colilla.rentaExenta25! + parcial).toBeLessThanOrEqual(tope);
+    // Tope agotado por la liquidación: la colilla no toma nada exento y retiene más.
+    const agotado = computeSlip({ ...base, rentaExentaUsadaLiquidacion: tope }, s);
+    expect(agotado.rentaExenta25).toBe(0);
+    expect(agotado.deducciones.retencionFuente).toBeGreaterThan(computeSlip(base, s).deducciones.retencionFuente);
   });
 });

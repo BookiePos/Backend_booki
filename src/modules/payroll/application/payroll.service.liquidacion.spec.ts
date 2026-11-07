@@ -40,7 +40,7 @@ function armar(liqInicial?: any, errorAlAprobar?: unknown, empleadosVisibles: st
         return { ...actual };
       },
     })),
-    find: vi.fn(() => ({ sort: () => ({ limit: () => ({ exec: async () => [] }) }) })),
+    find: vi.fn(() => ({ sort: () => ({ limit: () => ({ exec: async () => [] }) }), select: () => ({ lean: () => ({ exec: async () => [] }) }) })),
   };
   const empUpdate = vi.fn(() => ({ exec: async () => ({}) }));
   const employees = {
@@ -236,17 +236,32 @@ describe('PayrollService: asiento y renta exenta de la liquidación', () => {
     expect(t.ledgerPosting.postLiquidacionRetiro).toHaveBeenCalledWith(expect.objectContaining({ liquidacionId: expect.any(String) }));
   });
 
-  it('un borrador que no se aprueba no asienta', async () => {
+  it('anular un borrador no asienta; la reversa se pide igual y sin asiento no hace nada', async () => {
     const t = armar(borrador({ breakdown: brk }));
     await t.service.anularLiquidacion(LID, owner);
     expect(t.ledgerPosting.postLiquidacionRetiro).not.toHaveBeenCalled();
-    expect(t.ledgerPosting.reverseLiquidacionRetiro).not.toHaveBeenCalled();
+    expect(t.ledgerPosting.reverseLiquidacionRetiro).toHaveBeenCalledTimes(1);
   });
 
   it('anular una aprobada hace el contra-asiento', async () => {
     const t = armar(borrador({ estado: 'aprobada', breakdown: brk }));
     await t.service.anularLiquidacion(LID, owner);
     expect(t.ledgerPosting.reverseLiquidacionRetiro).toHaveBeenCalledWith(expect.any(String), 'o@x.co');
+  });
+
+  it('la corrida del mes recibe por empleado la renta exenta que tomaron sus liquidaciones no anuladas', async () => {
+    const t = armar();
+    (t.liquidaciones.find as any).mockReturnValue({
+      select: () => ({ lean: () => ({ exec: async () => [
+        { employeeId: EMP, breakdown: { rentaExenta25Indemnizacion: 1_200_000 } },
+        { employeeId: EMP, breakdown: { rentaExenta25Indemnizacion: 300_000 } },
+        { employeeId: 'otro', breakdown: {} },
+      ] }) }),
+    });
+    const mapa = await (t.service as any).exentaDeLiquidacionesDelMes('2026-10');
+    expect(mapa.get(EMP)).toBe(1_500_000);
+    expect(mapa.has('otro')).toBe(false);
+    expect((t.liquidaciones.find as any).mock.calls[0][0].estado).toEqual({ $in: ['borrador', 'aprobada'] });
   });
 
   it('renta exenta: cuenta también la colilla en borrador del mes (no usa el tope dos veces)', async () => {
