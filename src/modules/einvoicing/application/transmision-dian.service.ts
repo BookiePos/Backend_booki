@@ -401,14 +401,18 @@ export class TransmisionDianService {
       ]);
     }
 
-    // ¿Admite la contingencia de la DIAN y ninguna transmisión anterior tuvo
-    // respuesta de ella? (todas RED: `enviosSinRespuesta === intentos`). Solo
-    // entonces se reintenta y, sin respuesta, se declara la 04/08. Una sola
-    // respuesta de la DIAN (aunque sea «pendiente») descarta la contingencia.
+    // ¿Admite la contingencia de la DIAN y la DIAN nunca respondió a este
+    // documento? (`enviosConRespuesta` en 0; los documentos de antes del
+    // contador miran su última respuesta). Un envío que no salió o salió RED no
+    // cuenta. Solo entonces se reintenta y, sin respuesta, se declara la 04/08.
     const puedeDeclarar =
-      admiteContingenciaDian(doc) && (doc.enviosSinRespuesta ?? 0) === (doc.intentos ?? 0);
-    // Cola de contingencia: ¿es el primer envío del XML 04/08?
-    const primerEnvioContingencia = desdeContingencia && (doc.contingencia?.enviosXml ?? 0) === 0;
+      admiteContingenciaDian(doc) &&
+      (doc.enviosConRespuesta ?? 0) === 0 &&
+      (doc.respuestaDian as { origen?: string } | undefined)?.origen !== 'dian';
+    // Cola de contingencia: ¿la DIAN todavía no respondió a ningún envío del
+    // XML 04/08? (los RED de la caída no cuentan).
+    const sinRespuestaAlXmlContingencia =
+      desdeContingencia && (doc.contingencia?.enviosXmlConRespuesta ?? 0) === 0;
 
     // (4) `sent` antes de la red.
     assertTransicion(estado, 'sent');
@@ -457,13 +461,15 @@ export class TransmisionDianService {
         return this.resultado(declarado, transmitido, 'CONTINGENCIA_DIAN', r.mensajes);
       }
     }
-    // «Ya procesado» al primer envío del XML de contingencia: la DIAN tenía el
-    // ORIGINAL (01/20), que sí le llegó durante la caída. La contingencia no
-    // aplicó: se restaura el original como XML vigente para que la entrega
-    // lleve el que la DIAN validó. En un envío posterior el «ya procesado»
-    // puede ser del propio 04/08, así que no se toca.
+    // «Ya procesado» en la PRIMERA respuesta de la DIAN al XML de contingencia
+    // (los envíos RED de antes no cuentan): la DIAN tenía el ORIGINAL (01/20),
+    // que sí le llegó durante la caída. La contingencia no aplicó: se restaura
+    // el original como XML vigente para que la entrega lleve el que la DIAN
+    // validó. Si la DIAN ya había respondido a un envío del 04/08, el «ya
+    // procesado» puede ser del propio 04/08 y no se toca.
     const contingenciaNoAplico =
-      primerEnvioContingencia && r.codigo === 'YA_PROCESADO_DIAN' && Boolean(doc.contingencia?.xmlOriginalPath);
+      sinRespuestaAlXmlContingencia && r.codigo === 'YA_PROCESADO_DIAN' && Boolean(doc.contingencia?.xmlOriginalPath);
+    const envioRespondido = r;
     if (r.codigo === 'YA_PROCESADO_DIAN') {
       // Reenvío de algo que la DIAN ya procesó: su veredicto se consulta.
       r = (
@@ -498,8 +504,13 @@ export class TransmisionDianService {
     if (destino === 'rejected') set.rechazoMotivo = this.motivoRechazo(r);
     const update: UpdateQuery<ElectronicDocumentDocument> = { $set: set };
     if (destino === 'accepted') update.$unset = { rechazoMotivo: '' };
-    // Esta transmisión salió y la DIAN no respondió: cuenta para la contingencia.
-    if (transmitido && sinRespuestaDian(r)) update.$inc = { enviosSinRespuesta: 1 };
+    // La DIAN respondió (veredicto, «ya procesado», «pendiente»…): descarta
+    // declarar la 04/08 y, en la cola, cierra la puerta a restaurar el original.
+    if (dianRespondio(envioRespondido) || dianRespondio(r)) {
+      update.$inc = desdeContingencia
+        ? { enviosConRespuesta: 1, 'contingencia.enviosXmlConRespuesta': 1 }
+        : { enviosConRespuesta: 1 };
+    }
     const final = await this.escribir(docId, 'sent', bloqueo, update);
     if (!final) {
       // Perdimos el bloqueo después de la red: el documento sigue en `sent`
@@ -629,6 +640,11 @@ export class TransmisionDianService {
     if (user) assertSedeAccess(user, doc.sedeId.toString());
     if (!doc.contingencia?.tipo) {
       throw new BadRequestException('El documento no es de contingencia.');
+    }
+    // Factura 04 en cola: si su entrega (archivos o correo) quedó a medias, se
+    // reintenta aquí. Es idempotente: no rehace lo hecho ni repite el correo.
+    if (doc.dianStatus === 'contingency' && doc.type === 'invoice' && doc.contingencia.tipo === '04') {
+      await this.entregarContingenciaSinRomper(doc);
     }
     let documento: ResultadoTransmision;
     if (doc.dianStatus === 'accepted') {

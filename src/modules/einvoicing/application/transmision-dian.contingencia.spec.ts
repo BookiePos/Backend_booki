@@ -224,18 +224,25 @@ describe('TransmisionDianService · contingencia (Fase 9)', () => {
 
     it('un reenvío cuando la DIAN ya respondió alguna vez no declara contingencia: queda en vuelo, sin reintentos', async () => {
       transmisor.enviar.mockResolvedValue(SIN_RESPUESTA);
-      // 1 intento previo y 0 sin respuesta: la DIAN contestó (p. ej. «pendiente»).
-      const reenvio = sembrar({ fullNumber: 'EPOS2', intentos: 1, enviosSinRespuesta: 0 });
+      // La DIAN ya contestó una vez (p. ej. «pendiente»).
+      const reenvio = sembrar({ fullNumber: 'EPOS2', intentos: 1, enviosConRespuesta: 1 });
       await enEmpresa(() => svc.transmitir(String(reenvio._id), DUENO));
       expect(fila(reenvio).dianStatus).toBe('sent');
       expect(fila(reenvio).contingencia).toBeUndefined();
       expect(esperas).toEqual([]);
     });
 
-    it('reenvío del cron cuando TODOS los envíos previos fueron sin respuesta: sí declara (punto 7)', async () => {
+    it('reenvío del cron cuando la DIAN nunca respondió (envíos RED o que no salieron): sí declara', async () => {
       transmisor.enviar.mockResolvedValue(SIN_RESPUESTA);
       const ruta = (d: Fila) => `einvoicing/b1/e1/docs/${String(d._id)}/documento.xml`;
-      const d = sembrar({ fullNumber: 'EPOS3', dianStatus: 'sent', intentos: 2, enviosSinRespuesta: 2 });
+      // 2 intentos previos sin ninguna respuesta de la DIAN (uno pudo ni salir).
+      const d = sembrar({
+        fullNumber: 'EPOS3',
+        dianStatus: 'sent',
+        intentos: 2,
+        enviosConRespuesta: 0,
+        respuestaDian: { origen: 'adapter', codigo: 'RED' },
+      });
       bucket.set(ruta(d), Buffer.from('<Invoice tipo="normal"/><!--firma-->'));
       fila(d).xmlPath = ruta(d);
       const r = await enEmpresa(() => svc.transmitir(String(d._id), DUENO));
@@ -243,11 +250,27 @@ describe('TransmisionDianService · contingencia (Fase 9)', () => {
       expect(transmisor.enviar).toHaveBeenCalledTimes(3);
     });
 
-    it('cada transmisión sin respuesta suma enviosSinRespuesta (habilitación: queda en vuelo)', async () => {
+    it('enviosConRespuesta sube solo cuando la DIAN respondió: RED no cuenta, «pendiente» sí', async () => {
       transmisor.enviar.mockResolvedValue(SIN_RESPUESTA);
       const d = sembrar({ fullNumber: 'EPOS4', intentos: 0, contingencia: { tipo: '07', declaradaAt: new Date() } });
       await enEmpresa(() => svc.transmitir(String(d._id), DUENO));
-      expect(fila(d)).toMatchObject({ dianStatus: 'sent', intentos: 1, enviosSinRespuesta: 1 });
+      expect(fila(d)).toMatchObject({ dianStatus: 'sent', intentos: 1 });
+      expect(fila(d).enviosConRespuesta).toBeUndefined();
+      transmisor.enviar.mockResolvedValue({ ok: false, origen: 'dian', codigo: 'PENDIENTE_DIAN', mensajes: ['en proceso'] });
+      fila(d).bloqueoTransmision = undefined;
+      await enEmpresa(() => svc.transmitir(String(d._id), DUENO));
+      expect(fila(d)).toMatchObject({ dianStatus: 'sent', intentos: 2, enviosConRespuesta: 1 });
+    });
+
+    it('una vez que la DIAN respondió, un envío RED posterior ya no declara contingencia', async () => {
+      transmisor.enviar.mockResolvedValue(SIN_RESPUESTA);
+      const ruta = (d: Fila) => `einvoicing/b1/e1/docs/${String(d._id)}/documento.xml`;
+      const d = sembrar({ fullNumber: 'EPOS5', dianStatus: 'sent', intentos: 3, enviosConRespuesta: 1 });
+      bucket.set(ruta(d), Buffer.from('<Invoice tipo="normal"/>'));
+      fila(d).xmlPath = ruta(d);
+      await enEmpresa(() => svc.transmitir(String(d._id), DUENO));
+      expect(fila(d).dianStatus).toBe('sent');
+      expect(transmisor.enviar).toHaveBeenCalledTimes(1);
     });
 
     it('conserva el XML original aparte y la 04 entrega al adquiriente al declararse (punto 4)', async () => {
@@ -364,11 +387,30 @@ describe('TransmisionDianService · contingencia (Fase 9)', () => {
       expect(r.documento.dianStatus).toBe('accepted');
       const f = fila(d);
       expect(bucket.get(f.xmlPath)!.toString()).toContain('tipo="normal"');
-      expect(f.contingencia).toMatchObject({ noAplico: true, enviosXml: 1 });
+      expect(f.contingencia).toMatchObject({ noAplico: true, enviosXml: 1, enviosXmlConRespuesta: 1 });
     });
 
-    it('«ya procesado» en un envío POSTERIOR del 04/08: no restaura (puede ser el propio 04)', async () => {
-      const d = enContingencia({ contingencia: { tipo: '08', declaradaAt: new Date(), enviosXml: 1 } });
+    it('RED, RED y luego «ya procesado»: restaura el original (los RED de la caída no cuentan)', async () => {
+      const d = enContingencia({ type: 'invoice', fullNumber: 'FE7', contingencia: { tipo: '04', declaradaAt: new Date() } });
+      const original = `einvoicing/b1/e1/docs/${String(d._id)}/original.xml`;
+      bucket.set(original, Buffer.from('<Invoice tipo="normal"/><!--firma-->'));
+      fila(d).contingencia.xmlOriginalPath = original;
+      transmisor.enviar.mockResolvedValue(SIN_RESPUESTA);
+      await enEmpresa(() => svc.procesarContingencia(String(d._id)));
+      await enEmpresa(() => svc.procesarContingencia(String(d._id)));
+      expect(fila(d)).toMatchObject({ dianStatus: 'contingency' });
+      expect(fila(d).contingencia).toMatchObject({ enviosXml: 2 });
+      transmisor.enviar.mockResolvedValue({ ok: false, isValid: false, origen: 'dian', codigo: 'YA_PROCESADO_DIAN', mensajes: ['90'] });
+      await enEmpresa(() => svc.procesarContingencia(String(d._id)));
+      const f = fila(d);
+      expect(f.dianStatus).toBe('accepted');
+      expect(bucket.get(f.xmlPath)!.toString()).toContain('tipo="normal"');
+      expect(f.contingencia.noAplico).toBe(true);
+    });
+
+    it('«ya procesado» después de que la DIAN ya respondió al 04/08: no restaura (puede ser el propio 04/08)', async () => {
+      // La DIAN ya había respondido a un envío del 08: el «ya procesado» puede ser del propio 08.
+      const d = enContingencia({ contingencia: { tipo: '08', declaradaAt: new Date(), enviosXml: 1, enviosXmlConRespuesta: 1 } });
       const original = `einvoicing/b1/e1/docs/${String(d._id)}/original.xml`;
       bucket.set(original, Buffer.from('<Invoice tipo="normal"/>'));
       fila(d).contingencia.xmlOriginalPath = original;
@@ -376,6 +418,27 @@ describe('TransmisionDianService · contingencia (Fase 9)', () => {
       await enEmpresa(() => svc.procesarContingencia(String(d._id)));
       expect(bucket.get(fila(d).xmlPath)!.toString()).toContain('tipo="08"');
       expect(fila(d).contingencia.noAplico).toBeUndefined();
+    });
+
+    it('la cola reintenta la entrega de la 04 (idempotente) antes de transmitir; un 08 no', async () => {
+      const entrega = { entregar: vi.fn(), entregarContingencia: vi.fn(async () => ({ estado: 'ya_entregada' })) };
+      const conEntrega = new TransmisionDianService(
+        modelo as never,
+        (svc as any).emisores,
+        (svc as any).storage,
+        armador as never,
+        (svc as any).firmante,
+        (svc as any).transmisores,
+        audit as never,
+        entrega as never,
+      );
+      transmisor.enviar.mockResolvedValue(SIN_RESPUESTA);
+      const f04 = enContingencia({ type: 'invoice', fullNumber: 'FE8', contingencia: { tipo: '04', declaradaAt: new Date() } });
+      const p08 = enContingencia({ fullNumber: 'EPOS8' });
+      await enEmpresa(() => conEntrega.procesarContingencia(String(f04._id)));
+      await enEmpresa(() => conEntrega.procesarContingencia(String(p08._id)));
+      expect(entrega.entregarContingencia).toHaveBeenCalledTimes(1);
+      expect((entrega.entregarContingencia.mock.calls as unknown as unknown[][])[0]![0]).toMatchObject({ fullNumber: 'FE8' });
     });
 
     it('una nota anterior rechazada detiene las siguientes (orden, punto 8)', async () => {

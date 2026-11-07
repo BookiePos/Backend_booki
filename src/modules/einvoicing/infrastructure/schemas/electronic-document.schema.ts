@@ -197,8 +197,10 @@ export class DocContingencia {
   @Prop() cerradaAt?: Date;
   /** 04/08: copia del XML original (01/20) antes de refirmarlo (`original.xml`). */
   @Prop() xmlOriginalPath?: string;
-  /** 04/08: veces que salió el XML de contingencia (el primero decide si la contingencia aplicó). */
+  /** 04/08: veces que salió el XML de contingencia. */
   @Prop() enviosXml?: number;
+  /** 04/08: envíos del XML de contingencia a los que la DIAN respondió (en 0, un «ya procesado» es del original). */
+  @Prop() enviosXmlConRespuesta?: number;
   /** La DIAN ya tenía el original: la contingencia no aplicó y el XML vigente es el original. */
   @Prop() noAplico?: boolean;
   @Prop() motivoNoAplico?: string;
@@ -461,12 +463,12 @@ export class ElectronicDocument {
   @Prop({ default: 0, min: 0 })
   intentos?: number;
   /**
-   * Transmisiones que salieron y no tuvieron respuesta de la DIAN (Fase 9).
-   * Mientras sea igual a `intentos`, la DIAN nunca respondió y el documento
-   * todavía puede pasar a contingencia 04/08.
+   * Transmisiones a las que la DIAN respondió algo (Fase 9). Mientras valga 0,
+   * la DIAN nunca respondió y el documento todavía puede pasar a contingencia
+   * 04/08. Los envíos RED o que no salieron no cuentan.
    */
   @Prop({ default: 0, min: 0 })
-  enviosSinRespuesta?: number;
+  enviosConRespuesta?: number;
 
   @Prop()
   enviadoAt?: Date;

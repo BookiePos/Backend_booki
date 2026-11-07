@@ -27,6 +27,8 @@ function cumple(f: Fila, filtro: Record<string, any>): boolean {
     if (k === '_id') return String(f._id) === String(v);
     const x = valor(f, k);
     if (v && typeof v === 'object' && '$exists' in v) return (x !== undefined) === v.$exists;
+    if (v && typeof v === 'object' && '$nin' in v) return !(v.$nin as unknown[]).includes(x);
+    if (v instanceof Date) return x instanceof Date && x.getTime() === v.getTime();
     return x === v;
   });
 }
@@ -36,6 +38,13 @@ function aplicar(f: Fila, u: Record<string, any>) {
     let o = f;
     for (const p of partes.slice(0, -1)) o = o[p] ??= {};
     o[partes[partes.length - 1] as string] = v;
+  }
+  for (const [k, n] of Object.entries(u.$inc ?? {})) {
+    const partes = k.split('.');
+    let o = f;
+    for (const p of partes.slice(0, -1)) o = o[p] ??= {};
+    const hoja = partes[partes.length - 1] as string;
+    o[hoja] = (o[hoja] ?? 0) + (n as number);
   }
   for (const k of Object.keys(u.$unset ?? {})) delete f[k];
 }
@@ -126,11 +135,41 @@ describe('EntregaDianService · contingencia 04', () => {
     expect((await enEmpresa(() => svc.entregarContingencia({ ...aceptada } as never))).estado).toBe('omitida');
   });
 
-  it('si el armado falla, libera la reserva para reintentar', async () => {
+  it('si el armado falla, la reserva queda y se retoma pasados 10 min (no antes)', async () => {
     const d = sembrar();
+    const xml = bucket.get(d.xmlPath)!;
     bucket.delete(d.xmlPath);
     await expect(enEmpresa(() => svc.entregarContingencia({ ...d } as never))).rejects.toThrow();
-    expect(filas.get(String(d._id))!.entregaContingencia).toBeUndefined();
+    const f = filas.get(String(d._id))!;
+    expect(f.entregaContingencia.reservadaAt).toBeInstanceOf(Date);
+    bucket.set(d.xmlPath, xml);
+    // Antes de 10 min: no se retoma.
+    expect((await enEmpresa(() => svc.entregarContingencia({ ...f } as never))).estado).toBe('ya_entregada');
+    expect(f.entregaDian).toBeUndefined();
+    // Pasados 10 min: se retoma y queda entregada.
+    f.entregaContingencia.reservadaAt = new Date(Date.now() - 11 * 60_000);
+    const r = await enEmpresa(() => svc.entregarContingencia({ ...f, entregaContingencia: { ...f.entregaContingencia } } as never));
+    expect(r.estado).toBe('contingencia');
+    expect(f.entregaContingencia.archivosAt).toBeInstanceOf(Date);
+  });
+
+  it('correo fallido: se reintenta pasados 10 min con su propia reserva, sin rehacer archivos; uno «ambiguo» no se repite', async () => {
+    mail.sendFacturaElectronica.mockResolvedValueOnce({ sent: false });
+    const d = sembrar();
+    await enEmpresa(() => svc.entregarContingencia({ ...d } as never));
+    const f = filas.get(String(d._id))!;
+    expect(f.entregaContingencia).toMatchObject({ correoEnviado: false, correoIntentos: 1 });
+    // Antes de 10 min, nada.
+    await enEmpresa(() => svc.entregarContingencia({ ...f, entregaContingencia: { ...f.entregaContingencia } } as never));
+    expect(mail.sendFacturaElectronica).toHaveBeenCalledTimes(1);
+    f.entregaContingencia.correoAt = new Date(Date.now() - 11 * 60_000);
+    mail.sendFacturaElectronica.mockResolvedValueOnce({ sent: false, ambiguo: true });
+    await enEmpresa(() => svc.entregarContingencia({ ...f, entregaContingencia: { ...f.entregaContingencia } } as never));
+    expect(mail.sendFacturaElectronica).toHaveBeenCalledTimes(2);
+    expect(f.entregaContingencia).toMatchObject({ correoEnviado: 'ambiguo', correoIntentos: 2 });
+    f.entregaContingencia.correoAt = new Date(Date.now() - 11 * 60_000);
+    await enEmpresa(() => svc.entregarContingencia({ ...f, entregaContingencia: { ...f.entregaContingencia } } as never));
+    expect(mail.sendFacturaElectronica).toHaveBeenCalledTimes(2);
   });
 
   it('aceptada después: `entregar` rehace la entrega aunque ya haya PDF y ZIP de contingencia', async () => {
