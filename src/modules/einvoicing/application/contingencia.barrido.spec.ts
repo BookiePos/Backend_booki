@@ -37,6 +37,7 @@ describe('ContingenciaBarrido', () => {
         expect(filtro).toMatchObject({ 'contingencia.tipo': { $exists: true }, 'contingencia.cerradaAt': null });
         return chain(docsPorDb[db] ?? []);
       }),
+      countDocuments: vi.fn(() => chain((docsPorDb[TenantContext.current()?.dbName ?? ''] ?? []).length)),
     };
     const sales = {
       pendientesDeContingencia: vi.fn(async () => {
@@ -58,15 +59,19 @@ describe('ContingenciaBarrido', () => {
           { fullNumber: 'CONT3', dianStatus: 'draft', contingencia: { tipo: '07', declaradaAt: h(50), superadaAt: h(50) } },
           { fullNumber: 'CONT4', dianStatus: 'draft', contingencia: { tipo: '07', declaradaAt: h(1), superadaAt: h(1) } },
           { fullNumber: 'CONT5', dianStatus: 'rejected', contingencia: { tipo: '03', declaradaAt: h(2) } },
+          // Aceptado hace mucho con una nota pendiente: no es «vencido».
+          { fullNumber: 'CONT6', dianStatus: 'accepted', contingencia: { tipo: '07', declaradaAt: h(90), superadaAt: h(90) } },
         ],
       },
       { biz_b: [{ saleNumber: 'FV-9', createdAt: h(47) }, { saleNumber: 'FV-10', createdAt: h(2) }] },
     );
     const r = await b.barrer({ ahora });
-    expect(vistos).toEqual(['biz_a', 'biz_b']);
+    // biz_b no tiene documentos abiertos (countDocuments = 0): no los busca.
+    expect(vistos).toEqual(['biz_a']);
     expect(r.estado).toBe('ok');
     expect(r.cifras).toMatchObject({
-      abiertas: 5,
+      abiertas: 6,
+      notasPendientes: 1,
       sinCorrer: 1,
       enPlazo: 1,
       porVencer: 1,

@@ -31,6 +31,8 @@ export interface CifrasContingencia {
   porVencer: number;
   vencidas: number;
   rechazadas: number;
+  /** Documento ya aceptado con notas que siguen sin aceptar: no corre plazo del documento. */
+  notasPendientes: number;
   ventasSinTranscribir: number;
   ventasPorVencer: number;
   ventasVencidas: number;
@@ -43,6 +45,7 @@ const vacias = (): CifrasContingencia => ({
   porVencer: 0,
   vencidas: 0,
   rechazadas: 0,
+  notasPendientes: 0,
   ventasSinTranscribir: 0,
   ventasPorVencer: 0,
   ventasVencidas: 0,
@@ -96,6 +99,9 @@ export class ContingenciaBarrido {
               const c = await this.revisarEmpresa(businessId, ahora);
               for (const k of Object.keys(total) as (keyof CifrasContingencia)[]) total[k] += c[k];
               if (c.porVencer + c.vencidas + c.rechazadas + c.ventasPorVencer + c.ventasVencidas > 0) conAlerta++;
+              if (c.notasPendientes > 0) {
+                this.logger.warn(`Contingencia: empresa ${businessId} tiene ${c.notasPendientes} documento(s) aceptado(s) con notas pendientes.`);
+              }
             },
           );
         },
@@ -128,8 +134,12 @@ export class ContingenciaBarrido {
 
   private async revisarEmpresa(businessId: string, ahora: Date): Promise<CifrasContingencia> {
     const c = vacias();
+    const abiertos = { 'contingencia.tipo': { $exists: true }, 'contingencia.cerradaAt': null };
+    // El total, sin tope; la clasificación por plazo, sobre los más viejos.
+    c.abiertas = await this.model.countDocuments(abiertos).exec();
+    if (c.abiertas === 0) return this.revisarVentas(businessId, ahora, c);
     const docs = (await this.model
-      .find({ 'contingencia.tipo': { $exists: true }, 'contingencia.cerradaAt': null })
+      .find(abiertos)
       .select({ fullNumber: 1, dianStatus: 1, contingencia: 1 })
       .sort({ 'contingencia.declaradaAt': 1 })
       .limit(TOPE_POR_EMPRESA)
@@ -140,7 +150,11 @@ export class ContingenciaBarrido {
     for (const d of docs) {
       const cont = d.contingencia;
       if (!cont || !esTipoContingencia(cont.tipo)) continue;
-      c.abiertas++;
+      // El documento ya está aceptado y solo faltan sus notas: no está vencido.
+      if (d.dianStatus === 'accepted') {
+        c.notasPendientes++;
+        continue;
+      }
       if (d.dianStatus === 'rejected') {
         c.rechazadas++;
         rechazados.push(d.fullNumber ?? '?');
@@ -167,7 +181,11 @@ export class ContingenciaBarrido {
       );
     }
 
-    // Ventas sin conexión sin transcribir: el plazo corre desde que llegaron.
+    return this.revisarVentas(businessId, ahora, c);
+  }
+
+  /** Ventas sin conexión sin transcribir: el plazo corre desde que llegaron. */
+  private async revisarVentas(businessId: string, ahora: Date, c: CifrasContingencia): Promise<CifrasContingencia> {
     const pend = await this.sales.pendientesDeContingencia(TOPE_POR_EMPRESA);
     c.ventasSinTranscribir = pend.total;
     const ventasUrgentes: string[] = [];
