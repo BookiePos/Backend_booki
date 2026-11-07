@@ -1106,7 +1106,12 @@ export class PayrollService {
       diasFaltantesContrato: dto.diasFaltantesContrato,
       inicioCesantias: dto.inicioCesantias,
       vacacionesDisfrutadasDias: dto.vacacionesDisfrutadasDias,
-      ...(dto.employeeId ? { ingresoMensualPromedio: await this.ingresoMensualPromedio(dto.employeeId, dto.fechaFin) } : {}),
+      ...(dto.employeeId
+        ? {
+            ingresoMensualPromedio: await this.ingresoMensualPromedio(dto.employeeId, dto.fechaFin),
+            rentaExentaUsadaMes: await this.rentaExentaUsadaEnMes(dto.employeeId, dto.fechaFin, s),
+          }
+        : {}),
     };
     return {
       input: {
@@ -1376,6 +1381,32 @@ export class PayrollService {
     }
     const valores = [...porMes.values()].filter((v) => v > 0);
     return valores.length > 0 ? cop(sumCop(valores) / valores.length) : undefined;
+  }
+
+  /**
+   * Renta exenta del 25 % (ET 206 num. 10) que ya tomaron las colillas CERRADAS
+   * del mes del retiro: comparte el tope mensual con la indemnización. Las
+   * colillas guardadas antes de registrar `rentaExenta25` se estiman con el 25 %
+   * de (devengado − salud − pensión − FSP), topado: sin restar dependientes ni
+   * vivienda da un exento usado mayor, que es lo prudente. Sin colilla cerrada, 0.
+   */
+  private async rentaExentaUsadaEnMes(employeeId: string, fechaFin: string, s: PayrollSettingsData): Promise<number> {
+    const corridas = (await this.runs
+      .find({ period: fechaFin.slice(0, 7), status: 'cerrada', 'slips.employeeId': employeeId })
+      .select('slips.employeeId slips.breakdown')
+      .lean()
+      .exec()) as unknown as { slips: { employeeId: string; breakdown?: PayrollBreakdown }[] }[];
+    const tope = s.rentaExentaMaxUvtMes * s.uvt;
+    const usado = (corridas ?? [])
+      .flatMap((r) => r.slips ?? [])
+      .filter((sl) => sl.employeeId === employeeId && sl.breakdown)
+      .map((sl) => {
+        const b = sl.breakdown!;
+        if (typeof b.rentaExenta25 === 'number') return b.rentaExenta25;
+        const neto = (b.devengados?.total ?? 0) - (b.deducciones?.salud ?? 0) - (b.deducciones?.pension ?? 0) - (b.deducciones?.fsp ?? 0);
+        return cop(Math.min(Math.max(0, neto) * s.rentaExentaPorc, tope));
+      });
+    return usado.length > 0 ? cop(Math.min(sumCop(usado), tope)) : 0;
   }
 
   /** Suma de horas extra, recargos, comisiones y bonificaciones salariales en las corridas cerradas de los últimos `n` meses. */

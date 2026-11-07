@@ -409,3 +409,43 @@ describe('retención en la liquidación de retiro', () => {
     expect(liq.detalleRetencion).toBeUndefined();
   });
 });
+
+describe('retención de la indemnización: revisión del PR #134', () => {
+  const UVT = 52_374;
+  const s = { ...DEFAULT_PAYROLL_SETTINGS, uvt: UVT };
+  const input = {
+    salarioBase: 11_000_000,
+    salaryType: 'ordinario' as const,
+    fechaInicio: '2026-01-01',
+    fechaFin: '2026-10-05',
+    motivo: 'sin_justa_causa' as const,
+    contractType: 'indefinido',
+  };
+
+  it('umbral de 204 UVT con lo que devenga hoy: salario de 11.000.000 y retiro el día 5 sí retiene', () => {
+    // La colilla del retiro (5 días) baja el promedio: (5 × 11.000.000 + 1.833.333) / 6 = 9.472.222 < 204 UVT (10.684.296).
+    const liq = computeLiquidacion({ ...input, ingresoMensualPromedio: 9_472_222 }, s);
+    expect(liq.retencionFuente).toBeGreaterThan(0);
+    // El promedio sigue mandando en la escala del 206-4.
+    expect(liq.ingresoMensualPromedio).toBe(9_472_222);
+    expect(liq.porcentajeExentoCesantias).toBe(1);
+  });
+
+  it('el 25 % exento comparte el tope mensual con la colilla del mes del retiro', () => {
+    const tope = (790 / 12) * UVT; // 3.447.955
+    const sinColilla = retencionIndemnizacion(40_000_000, 300 * UVT, s);
+    expect(sinColilla.exenta).toBe(3_447_955);
+    const conColilla = retencionIndemnizacion(40_000_000, 300 * UVT, s, 2_000_000);
+    expect(conColilla.exenta).toBe(1_447_955);
+    expect(conColilla.retencion).toBe(7_710_409); // 20 % de 38.552.045
+    // La colilla agotó el tope: nada exento.
+    expect(retencionIndemnizacion(40_000_000, 300 * UVT, s, tope + 1).exenta).toBe(0);
+  });
+
+  it('computeLiquidacion descuenta lo que ya usó la colilla y lo anota en el detalle', () => {
+    const sin = computeLiquidacion(input, s);
+    const con = computeLiquidacion({ ...input, rentaExentaUsadaMes: 1_000_000 }, s);
+    expect(con.retencionFuente!).toBeGreaterThan(sin.retencionFuente!);
+    expect(con.detalleRetencion).toMatch(/la colilla del mes ya usó 1000000/);
+  });
+});

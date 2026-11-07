@@ -40,6 +40,12 @@ export interface LiquidacionInput {
    * umbral de retención de la indemnización (ET 401-3). Sin él, el salario base.
    */
   ingresoMensualPromedio?: number;
+  /**
+   * Renta exenta del 25 % (ET 206 num. 10) que ya usaron las colillas CERRADAS
+   * del mes del retiro (pesos). El tope mensual de 790/12 UVT lo comparten con
+   * la indemnización. Sin colilla cerrada, 0: la indemnización usa el tope entero.
+   */
+  rentaExentaUsadaMes?: number;
 }
 
 export interface LiquidacionBreakdown {
@@ -124,19 +130,27 @@ export const RETENCION_INDEMNIZACION_UMBRAL_UVT_DUR_1_2_4_1_13 = 204;
 /**
  * Retención de la indemnización (ET 401-3). El 25 % es renta exenta (ET 206
  * num. 10) porque la indemnización es un pago laboral (Oficio DIAN 024563 del
- * 26-sep-2019); se topa con el límite mensual de esa renta exenta (790 UVT al
- * año, Ley 2277/2022) por prudencia: el agente retenedor responde por lo que
- * deje de retener. Se practica aparte de la retención del salario del mes.
+ * 26-sep-2019). Forma estrictamente prudente (A CONFIRMAR con el contador): el
+ * tope mensual de esa renta exenta (790 UVT al año / 12, Ley 2277/2022) lo
+ * comparten la colilla del mes del retiro y la indemnización, así que se le
+ * resta lo que ya usó la colilla (`exentaUsadaMes`). El agente retenedor
+ * responde por lo que deje de retener. Se practica aparte de la retención del
+ * salario del mes.
+ *
+ * `ingresoMensual` mide el umbral de 204 UVT con lo que el trabajador DEVENGA
+ * (Concepto DIAN 030573 de 2015): el mayor entre el salario mensual y el promedio.
  */
 export function retencionIndemnizacion(
   indemnizacion: number,
   ingresoMensual: number,
   s: Pick<PayrollSettingsData, 'uvt' | 'rentaExentaPorc' | 'rentaExentaMaxUvtMes'>,
+  exentaUsadaMes = 0,
 ): { retencion: number; exenta: number; base: number } {
   if (indemnizacion <= 0 || !(s.uvt > 0) || ingresoMensual <= RETENCION_INDEMNIZACION_UMBRAL_UVT_DUR_1_2_4_1_13 * s.uvt) {
     return { retencion: 0, exenta: 0, base: 0 };
   }
-  const exenta = cop(Math.min(indemnizacion * s.rentaExentaPorc, s.rentaExentaMaxUvtMes * s.uvt));
+  const topeDisponible = Math.max(0, s.rentaExentaMaxUvtMes * s.uvt - Math.max(0, exentaUsadaMes));
+  const exenta = cop(Math.min(indemnizacion * s.rentaExentaPorc, topeDisponible));
   const base = indemnizacion - exenta;
   return { retencion: cop(base * RETENCION_INDEMNIZACION_TARIFA_ET_401_3), exenta, base };
 }
@@ -277,14 +291,18 @@ export function computeLiquidacion(
 
   // Retención (tarea 14 del dueño, punto 1). Cesantías e intereses: NUNCA llevan retención
   // (DUR 1625/2016 art. 1.2.4.1.11); su parte no exenta la declara el trabajador. Indemnización: 20 %.
+  // El promedio de 6 meses mide la escala del 206-4. El umbral del 401-3 se mide con lo que devenga HOY
+  // (Concepto DIAN 030573 de 2015): el mayor entre el salario mensual y el promedio. Así un retiro el día 5,
+  // cuya última colilla baja el promedio, no deja de retener.
   const ingresoMensual =
     input.ingresoMensualPromedio && input.ingresoMensualPromedio > 0 ? cop(input.ingresoMensualPromedio) : salarioBase;
+  const ingresoUmbral401 = Math.max(salarioBase, ingresoMensual);
   const pctExento = porcentajeExentoCesantias(ingresoMensual, s.uvt);
-  const ret = retencionIndemnizacion(indemnizacion, ingresoMensual, s);
+  const ret = retencionIndemnizacion(indemnizacion, ingresoUmbral401, s, input.rentaExentaUsadaMes ?? 0);
   const detalleRetencion =
     indemnizacion > 0
       ? ret.retencion > 0
-        ? `Indemnización: 20 % sobre ${ret.base} (25 % exento: ${ret.exenta}), ingreso mensual > 204 UVT (art. 401-3 ET)`
+        ? `Indemnización: 20 % sobre ${ret.base} (25 % exento: ${ret.exenta}${input.rentaExentaUsadaMes ? `; la colilla del mes ya usó ${cop(input.rentaExentaUsadaMes)} del tope` : ''}), ingreso mensual > 204 UVT (art. 401-3 ET)`
         : 'Indemnización sin retención: ingreso mensual de 204 UVT o menos (art. 401-3 ET)'
       : undefined;
 

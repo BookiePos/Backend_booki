@@ -444,6 +444,17 @@ describe('consolidarNominaMes: retiro en el mes (decisión 4 del dueño)', () =>
     expect(bloqueos(retiro(liq({ retencionFuente: -1 }))).join()).toMatch(/retención en la fuente \(-1\)/);
   });
 
+  it('206-4 ET: usa el promedio y el % exento guardados en la liquidación; recalcula solo sin ellos', () => {
+    // La liquidación guardó 60 % con 25.000.000: manda aunque el salario y la UVT digan otra cosa.
+    const base = { ...retiro(liq({ indemnizacion: 0, ingresoMensualPromedio: 25_000_000, porcentajeExentoCesantias: 0.6 })), uvt: 52_374 };
+    const txt = ok(base).advertencias.join();
+    expect(txt).toMatch(/promedio de 25000000 de los últimos 6 meses \(según la liquidación\)/);
+    expect(txt).toMatch(/exentos solo en un 60 %/);
+    // Guardado 100 %: no avisa, aunque el recálculo con un salario alto diría otra cosa.
+    const cien = { ...retiro(liq({ indemnizacion: 0, salarioBase: 30_000_000, ingresoMensualPromedio: 15_000_000, porcentajeExentoCesantias: 1 }), { salary: 30_000_000 }), uvt: 52_374 };
+    expect(ok(cien).advertencias.join()).not.toMatch(/206/);
+  });
+
   it('206-4 ET: el aviso dice el % exento del tramo y que las cesantías no llevan retención', () => {
     // 20.000.000 / 52.374 = 381,9 UVT: tramo de 350 a 410, 90 % exento.
     const base = { ...retiro(liq({ indemnizacion: 0, salarioBase: 20_000_000 }), { salary: 20_000_000 }), uvt: 52_374 };

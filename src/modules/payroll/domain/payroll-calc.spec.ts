@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { computeSlip, PayrollInput } from './payroll-calc';
+import { cop } from '../../finance/domain/money.util';
 import {
   DEFAULT_PAYROLL_SETTINGS,
   DIAS_MES,
@@ -156,5 +157,16 @@ describe('computeSlip - auxilio de transporte según el tope', () => {
       S,
     );
     expect(integral.devengados.auxilioTransporte).toBe(0);
+  });
+});
+
+describe('computeSlip: renta exenta del 25 % que toma la colilla (la comparte la indemnización del retiro)', () => {
+  it('guarda el 25 % de (devengado − aportes), topado en 790/12 UVT', () => {
+    const s = { ...DEFAULT_PAYROLL_SETTINGS };
+    const bajo = computeSlip({ salarioBase: 4_000_000, salaryType: 'ordinario', diasTrabajados: 30, fechaCorte: '2026-10-31' }, s);
+    const aportes = bajo.deducciones.salud + bajo.deducciones.pension + bajo.deducciones.fsp;
+    expect(bajo.rentaExenta25).toBe(cop(0.25 * (bajo.devengados.total - aportes)));
+    const alto = computeSlip({ salarioBase: 40_000_000, salaryType: 'ordinario', diasTrabajados: 30, fechaCorte: '2026-10-31' }, s);
+    expect(alto.rentaExenta25).toBe(3_447_955); // 790/12 × 52.374
   });
 });

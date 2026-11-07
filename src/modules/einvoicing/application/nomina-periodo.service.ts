@@ -518,6 +518,12 @@ export class NominaPeriodoService {
               indemnizacion: liq.breakdown.indemnizacion,
               salariosPendientes: liq.breakdown.salariosPendientes,
               ...(liq.breakdown.retencionFuente !== undefined ? { retencionFuente: liq.breakdown.retencionFuente } : {}),
+              ...(liq.breakdown.ingresoMensualPromedio !== undefined
+                ? { ingresoMensualPromedio: liq.breakdown.ingresoMensualPromedio }
+                : {}),
+              ...(liq.breakdown.porcentajeExentoCesantias !== undefined
+                ? { porcentajeExentoCesantias: liq.breakdown.porcentajeExentoCesantias }
+                : {}),
               pago: liq.pago,
             },
           }

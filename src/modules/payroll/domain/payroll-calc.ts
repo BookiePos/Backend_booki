@@ -121,6 +121,8 @@ export interface PayrollBreakdown {
   netoPagar: number;
   costoEmpleador: number;
   baseRetencionUvt: number;
+  /** Renta exenta del 25 % (ET 206 num. 10) que tomó la colilla, en pesos: la comparte la indemnización del retiro. */
+  rentaExenta25?: number;
 }
 
 const round = cop;
@@ -472,5 +474,6 @@ export function computeSlip(
     netoPagar,
     costoEmpleador,
     baseRetencionUvt: baseUvtDe(baseGravable, s),
+    rentaExenta25: cop(Math.max(0, rentaExenta)),
   };
 }

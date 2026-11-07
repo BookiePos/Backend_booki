@@ -136,6 +136,9 @@ export interface LiquidacionConsolidar {
    * las aprobadas antes de calcularla: no se inventa una retención que no se descontó.
    */
   retencionFuente?: number;
+  /** Ingreso mensual promedio y % exento de cesantías que guardó la liquidación (ET 206-4); mandan sobre el recálculo. */
+  ingresoMensualPromedio?: number;
+  porcentajeExentoCesantias?: number;
   cesantias: number;
   interesesCesantias: number;
   prima: number;
@@ -587,14 +590,26 @@ function agregarLiquidacion(
   // Art. 206-4 ET: se mide con el ingreso mensual PROMEDIO de los últimos 6 meses (devengado total de las
   // colillas, con horas extra, recargos y demás variables); sin colillas, el salario pactado. Las cesantías
   // NUNCA llevan retención (DUR 1625/2016 art. 1.2.4.1.11): la parte no exenta la declara el trabajador.
+  // Lo que guardó la liquidación manda (es lo que se le informó al trabajador); el recálculo es el respaldo de
+  // las liquidaciones viejas.
   const meses = (devengados6m ?? []).filter((v) => Number.isFinite(v) && v > 0);
-  const promedio = meses.length > 0 ? cop(sumCop(meses) / meses.length) : (liq.salarioBase ?? 0);
+  const guardado =
+    typeof liq.porcentajeExentoCesantias === 'number' &&
+    liq.porcentajeExentoCesantias >= 0 &&
+    liq.porcentajeExentoCesantias <= 1 &&
+    enteroPositivo(liq.ingresoMensualPromedio);
+  const promedio = guardado
+    ? liq.ingresoMensualPromedio!
+    : meses.length > 0
+      ? cop(sumCop(meses) / meses.length)
+      : (liq.salarioBase ?? 0);
   const ces = liq.cesantias + liq.interesesCesantias;
-  if (ces > 0 && enteroPositivo(uvt)) {
-    const exento = porcentajeExentoCesantias(promedio, uvt);
+  if (ces > 0 && (guardado || enteroPositivo(uvt))) {
+    const exento = guardado ? liq.porcentajeExentoCesantias! : porcentajeExentoCesantias(promedio, uvt!);
+    const cuando = guardado ? 'de los últimos 6 meses (según la liquidación)' : `en los últimos ${meses.length || 1} mes(es)`;
     if (exento < 1) {
       advertencias.push(
-        `${quien}: con ingreso mensual promedio de ${promedio} en los últimos ${meses.length || 1} mes(es), las cesantías e intereses (${ces}) son exentos solo en un ${redondearA(exento * 100, 0)} % (art. 206 num. 4 ET); la parte gravada (${ces - cop(ces * exento)}) no lleva retención en la fuente (DUR 1625/2016 art. 1.2.4.1.11) y va en el certificado de ingresos y retenciones para que el trabajador la declare.`,
+        `${quien}: con ingreso mensual promedio de ${promedio} ${cuando}, las cesantías e intereses (${ces}) son exentos solo en un ${redondearA(exento * 100, 0)} % (art. 206 num. 4 ET); la parte gravada (${ces - cop(ces * exento)}) no lleva retención en la fuente (DUR 1625/2016 art. 1.2.4.1.11) y va en el certificado de ingresos y retenciones para que el trabajador la declare.`,
       );
     }
   }
