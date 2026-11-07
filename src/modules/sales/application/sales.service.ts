@@ -2004,6 +2004,29 @@ export class SalesService {
     return sale;
   }
 
+  /**
+   * Ventas sin conexión que siguen sin su documento de contingencia 07/03
+   * (Fase 9), las más viejas primero: para la alerta diaria del plazo de 48 h,
+   * que corre desde que la venta llegó (`createdAt`). Camino de sistema: exige
+   * el `TenantContext` abierto por quien llama (el modelo es un proxy).
+   */
+  async pendientesDeContingencia(muestra: number): Promise<{ total: number; ventas: { saleNumber: string; createdAt?: Date }[] }> {
+    const filtro = { 'documentoFiscal.estado': 'pendiente_contingencia_07' as const };
+    const total = await this.saleModel.countDocuments(filtro).exec();
+    if (total === 0) return { total, ventas: [] };
+    const ventas = await this.saleModel
+      .find(filtro)
+      .select({ saleNumber: 1, createdAt: 1 })
+      .sort({ createdAt: 1 })
+      .limit(Math.max(0, muestra))
+      .lean()
+      .exec();
+    return {
+      total,
+      ventas: ventas.map((v) => ({ saleNumber: v.saleNumber, createdAt: (v as { createdAt?: Date }).createdAt })),
+    };
+  }
+
   async getOrFail(id: string): Promise<SaleDocument> {
     const sale = Types.ObjectId.isValid(id)
       ? await this.saleModel

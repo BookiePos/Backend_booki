@@ -37,6 +37,7 @@ describe('CronController.diario', () => {
   const reconsulta = { barrer: vi.fn() };
   const devoluciones = { barrer: vi.fn() };
   const notasColgadas = { barrer: vi.fn() };
+  const contingencia = { barrer: vi.fn() };
   const conSecreto = (secreto?: string) =>
     new CronController(
       { get: () => secreto } as never,
@@ -46,6 +47,7 @@ describe('CronController.diario', () => {
       { barrer: reconsulta.barrer } as never,
       devoluciones as never,
       notasColgadas as never,
+      contingencia as never,
     );
 
   beforeEach(() => {
@@ -55,6 +57,17 @@ describe('CronController.diario', () => {
     certificados.barrerVencimientos.mockResolvedValue(ok);
     devoluciones.barrer.mockResolvedValue(ok);
     notasColgadas.barrer.mockResolvedValue(ok);
+    contingencia.barrer.mockResolvedValue(ok);
+  });
+
+  it('corre la alerta de contingencia (Fase 9); una alerta no pone el cron en rojo y un fallo sí', async () => {
+    const alerta = { estado: 'ok', detalle: 'alerta: 1 documento(s)', cifras: { vencidas: 1 } };
+    contingencia.barrer.mockResolvedValue(alerta);
+    const r = await conSecreto('s3cr3t').diario('Bearer s3cr3t');
+    expect(contingencia.barrer).toHaveBeenCalledTimes(1);
+    expect(r.tareas['contingencia-fe']).toEqual(alerta);
+    contingencia.barrer.mockResolvedValue({ estado: 'error', detalle: 'falló en 1 empresa(s)' });
+    await expect(conSecreto('s3cr3t').diario('Bearer s3cr3t')).rejects.toThrow();
   });
 
   it('corre la alerta de notas en draft colgadas (Fase 6C) y una alerta no pone el cron en rojo', async () => {

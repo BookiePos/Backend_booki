@@ -15,6 +15,7 @@ import { CertificadoEmisorService } from '../../einvoicing/application/certifica
 import { ReconsultaDianService } from '../../einvoicing/application/reconsulta-dian.service';
 import { DevolucionesVaradasBarrido } from '../../sales/application/devoluciones-varadas.barrido';
 import { NotasColgadasBarrido } from '../../einvoicing/application/notas-colgadas.barrido';
+import { ContingenciaBarrido } from '../../einvoicing/application/contingencia.barrido';
 import { secretoDeCronValido } from '../domain/cron-auth';
 import type { ResultadoBarrido } from '../../../shared/barridos/resultado-barrido';
 
@@ -49,6 +50,8 @@ export class CronController {
     private readonly devoluciones: DevolucionesVaradasBarrido,
     /** Alerta de notas en `draft` colgadas (Fase 6C). Al final: no mueve las pruebas. */
     private readonly notasColgadas?: NotasColgadasBarrido,
+    /** Alerta de documentos y ventas de contingencia cerca del plazo legal (Fase 9). */
+    private readonly contingencia?: ContingenciaBarrido,
   ) {}
 
   @Public()
@@ -80,6 +83,12 @@ export class CronController {
     // notas que siguen en `draft` hace más de N min, por empresa (Fase 6C).
     if (this.notasColgadas) {
       tareas['notas-draft-colgadas'] = await this.notasColgadas.barrer({
+        hasta: inicio + PLAZO_BARRIDOS_MS,
+      });
+    }
+    // Contingencia (Fase 9): lo que sigue abierto frente al plazo de 48 h.
+    if (this.contingencia) {
+      tareas['contingencia-fe'] = await this.contingencia.barrer({
         hasta: inicio + PLAZO_BARRIDOS_MS,
       });
     }
