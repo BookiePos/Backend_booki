@@ -153,6 +153,41 @@ export class EinvoicingStorageService {
   }
 
   /**
+   * Copia del XML ORIGINAL (01/20) de un documento que se declaró en
+   * contingencia de la DIAN (Fase 9): `.../docs/<docId>/original.xml`. Si la
+   * DIAN resulta haber validado ese original («ya procesado»), se restaura
+   * como XML vigente para que la entrega lleve el que la DIAN validó. No tiene
+   * URL firmada: solo lo lee el servidor.
+   */
+  async guardarXmlOriginal(emisorId: string, docId: string, contenido: Buffer): Promise<{ pathname: string }> {
+    return this.storage.uploadPrivado(this.rutaXmlOriginal(emisorId, docId), contenido, CONTENT_TYPE.xml);
+  }
+
+  /** Lee la copia del original por la ruta guardada; mismas validaciones que `leerArtefactoGuardado`. */
+  async leerXmlOriginalGuardado(pathname: string | undefined, docId: string): Promise<Buffer> {
+    const partes = typeof pathname === 'string' ? pathname.split('/') : [];
+    const [raiz, empresa, emisorId, docs, id, archivo] = partes;
+    const valida =
+      partes.length === 6 &&
+      raiz === 'einvoicing' &&
+      docs === 'docs' &&
+      empresa === TenantContext.currentOrThrow().businessId &&
+      typeof emisorId === 'string' &&
+      SEGMENTO.test(emisorId) &&
+      id === docId &&
+      archivo === 'original.xml';
+    if (!valida) {
+      throw new BadRequestException('Ruta del XML original no válida para este documento.');
+    }
+    const { buffer } = await this.storage.descargarPrivado(this.rutaXmlOriginal(emisorId, docId));
+    return buffer;
+  }
+
+  private rutaXmlOriginal(emisorId: string, docId: string): string {
+    return `${this.prefijoEmisor(emisorId)}/docs/${this.segmento(docId, 'documento')}/original.xml`;
+  }
+
+  /**
    * XML firmado de la NÓMINA electrónica: prefijo propio
    * (`einvoicing/<empresa>/<emisor>/nomina/<docId>/documento.xml`), aparte de
    * los documentos de factura.

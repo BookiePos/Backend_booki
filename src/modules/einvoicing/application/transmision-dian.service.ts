@@ -401,15 +401,20 @@ export class TransmisionDianService {
       ]);
     }
 
-    // ¿Primer envío de un documento que admite la contingencia de la DIAN?
-    // Solo entonces se reintenta y, sin respuesta, se declara la 04/08.
-    const puedeDeclarar = admiteContingenciaDian(doc) && (doc.intentos ?? 0) === 0;
+    // ¿Admite la contingencia de la DIAN y ninguna transmisión anterior tuvo
+    // respuesta de ella? (todas RED: `enviosSinRespuesta === intentos`). Solo
+    // entonces se reintenta y, sin respuesta, se declara la 04/08. Una sola
+    // respuesta de la DIAN (aunque sea «pendiente») descarta la contingencia.
+    const puedeDeclarar =
+      admiteContingenciaDian(doc) && (doc.enviosSinRespuesta ?? 0) === (doc.intentos ?? 0);
+    // Cola de contingencia: ¿es el primer envío del XML 04/08?
+    const primerEnvioContingencia = desdeContingencia && (doc.contingencia?.enviosXml ?? 0) === 0;
 
     // (4) `sent` antes de la red.
     assertTransicion(estado, 'sent');
     doc = await this.escribirOFallar(docId, estado, bloqueo, {
       $set: { dianStatus: 'sent', enviadoAt: new Date() },
-      $inc: { intentos: 1 },
+      $inc: desdeContingencia ? { intentos: 1, 'contingencia.enviosXml': 1 } : { intentos: 1 },
     });
 
     // (5) Red.
@@ -445,9 +450,20 @@ export class TransmisionDianService {
       r = otro.respuesta;
     }
     if (puedeDeclarar && envios >= INTENTOS_ANTES_DE_CONTINGENCIA && sinRespuestaDian(r)) {
-      const declarado = await this.declararContingenciaDian(doc, bloqueo, emisorId, envios);
-      if (declarado) return this.resultado(declarado, transmitido, 'CONTINGENCIA_DIAN', r.mensajes);
+      const declarado = await this.declararContingenciaDian(doc, bloqueo, emisorId, envios, xmlFirmado);
+      if (declarado) {
+        // Se expide sin validación previa: se entrega ya (art. 37; §12.2).
+        await this.entregarContingenciaSinRomper(declarado);
+        return this.resultado(declarado, transmitido, 'CONTINGENCIA_DIAN', r.mensajes);
+      }
     }
+    // «Ya procesado» al primer envío del XML de contingencia: la DIAN tenía el
+    // ORIGINAL (01/20), que sí le llegó durante la caída. La contingencia no
+    // aplicó: se restaura el original como XML vigente para que la entrega
+    // lleve el que la DIAN validó. En un envío posterior el «ya procesado»
+    // puede ser del propio 04/08, así que no se toca.
+    const contingenciaNoAplico =
+      primerEnvioContingencia && r.codigo === 'YA_PROCESADO_DIAN' && Boolean(doc.contingencia?.xmlOriginalPath);
     if (r.codigo === 'YA_PROCESADO_DIAN') {
       // Reenvío de algo que la DIAN ya procesó: su veredicto se consulta.
       r = (
@@ -468,11 +484,22 @@ export class TransmisionDianService {
     if (doc.contingencia?.tipo && dianRespondio(r) && !doc.contingencia.restablecidoAt) {
       set['contingencia.restablecidoAt'] = new Date();
     }
+    if (contingenciaNoAplico) {
+      const restaurado = await this.restaurarOriginal(doc, emisorId);
+      if (restaurado) {
+        set.xmlPath = restaurado;
+        set['contingencia.noAplico'] = true;
+        set['contingencia.motivoNoAplico'] =
+          'La DIAN ya había recibido el documento original durante la caída: la contingencia no aplicó y queda vigente el XML original.';
+      }
+    }
     if (r.trackId) set.trackId = r.trackId;
     if (r.zipKey) set.zipKey = r.zipKey;
     if (destino === 'rejected') set.rechazoMotivo = this.motivoRechazo(r);
     const update: UpdateQuery<ElectronicDocumentDocument> = { $set: set };
     if (destino === 'accepted') update.$unset = { rechazoMotivo: '' };
+    // Esta transmisión salió y la DIAN no respondió: cuenta para la contingencia.
+    if (transmitido && sinRespuestaDian(r)) update.$inc = { enviosSinRespuesta: 1 };
     const final = await this.escribir(docId, 'sent', bloqueo, update);
     if (!final) {
       // Perdimos el bloqueo después de la red: el documento sigue en `sent`
@@ -500,10 +527,11 @@ export class TransmisionDianService {
     bloqueo: string,
     emisorId: string,
     envios: number,
+    xmlOriginal: string,
   ): Promise<ElectronicDocumentDocument | null> {
     const docId = String(doc._id);
     const tipo = tipoContingencia(doc.type, 'dian') as TipoContingencia;
-    const contingencia = {
+    const contingencia: Record<string, unknown> = {
       tipo,
       declaradaAt: new Date(),
       intentos: envios,
@@ -513,6 +541,10 @@ export class TransmisionDianService {
     try {
       const xml = await this.armador.armar(this.conCampo(doc, 'contingencia', contingencia));
       const firmado = await this.firmante.firmar(xml, emisorId);
+      // El original (01/20) se conserva aparte ANTES de reemplazarlo: si la DIAN
+      // sí lo recibió, se restaura (ver `contingenciaNoAplico`).
+      const original = await this.storage.guardarXmlOriginal(emisorId, docId, Buffer.from(xmlOriginal, 'utf8'));
+      contingencia.xmlOriginalPath = original.pathname;
       const { pathname } = await this.storage.guardarArtefacto(emisorId, docId, 'xml', Buffer.from(firmado, 'utf8'));
       assertTransicion('sent', 'contingency');
       const final = await this.escribir(docId, 'sent', bloqueo, {
@@ -527,6 +559,38 @@ export class TransmisionDianService {
         `Documento ${docId}: no se pudo declarar la contingencia ${tipo} (${(err as Error)?.name ?? 'Error'}); queda en vuelo.`,
       );
       return null;
+    }
+  }
+
+  /**
+   * Vuelve a poner el XML original como `documento.xml` (la ruta que leen la
+   * entrega y las descargas). Devuelve la ruta, o null si no se pudo: en ese
+   * caso queda el 04/08 y se deja en el log para revisión.
+   */
+  private async restaurarOriginal(doc: ElectronicDocumentDocument, emisorId: string): Promise<string | null> {
+    const docId = String(doc._id);
+    try {
+      const original = await this.storage.leerXmlOriginalGuardado(doc.contingencia?.xmlOriginalPath, docId);
+      const { pathname } = await this.storage.guardarArtefacto(emisorId, docId, 'xml', original);
+      this.logger.warn(`Documento ${docId}: la DIAN ya tenía el original; la contingencia no aplicó.`);
+      return pathname;
+    } catch (err) {
+      this.logger.error(
+        `Documento ${docId}: «ya procesado» en contingencia pero no se pudo restaurar el XML original (${(err as Error)?.name ?? 'Error'}). Revisión manual.`,
+      );
+      return null;
+    }
+  }
+
+  /** Entrega de la 04 al declararla. Nunca rompe la transmisión ni mueve el estado. */
+  private async entregarContingenciaSinRomper(doc: ElectronicDocumentDocument): Promise<void> {
+    if (!this.entrega?.entregarContingencia) return;
+    try {
+      await this.entrega.entregarContingencia(doc);
+    } catch (err) {
+      this.logger.warn(
+        `Documento ${String(doc._id)}: la entrega de contingencia falló (${(err as Error)?.name ?? 'Error'}); se puede regenerar.`,
+      );
     }
   }
 
@@ -574,12 +638,15 @@ export class TransmisionDianService {
       if (documento.dianStatus !== 'accepted') return { documento, notas: [], cerrada: false };
     }
     const filtroNotas = { referenceId: doc._id, type: { $in: ['credit_note' as const, 'debit_note' as const] } };
-    const porEnviar = await this.model
-      .find({ ...filtroNotas, dianStatus: { $in: ['draft', 'signed'] } })
+    const pendientes = await this.model
+      .find({ ...filtroNotas, dianStatus: { $ne: 'accepted' } })
       .sort({ createdAt: 1 })
       .exec();
     const notas: ResultadoTransmision[] = [];
-    for (const nota of porEnviar) {
+    for (const nota of pendientes) {
+      // En orden: una nota anterior rechazada (la corrige una persona) o en
+      // vuelo (la resuelve la reconsulta) detiene las siguientes.
+      if (nota.dianStatus === 'rejected' || nota.dianStatus === 'sent') break;
       const r = await this.ejecutarAuditado(String(nota._id), user);
       notas.push(r);
       // En orden: si una no salió a la red, las siguientes esperan.

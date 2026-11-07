@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import {
@@ -25,6 +25,11 @@ import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import { AuditService } from '../../core-audit/application/audit.service';
 import { FIRMANTE_DIAN, FirmaNoDisponibleError, type FirmanteDian } from './transmision-dian.puertos';
 import type { EntregaDian, OpcionesEntrega, ResultadoEntrega } from './entrega-dian.puerto';
+import { MailService } from '../../core-auth/application/mail.service';
+import { cop } from '../../finance/domain/money.util';
+
+/** Correo con formato de correo (como el envío manual). */
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Sin la ApplicationResponse de la DIAN no hay AttachedDocument (ver `applicationResponseDe`). */
 export const MOTIVO_SIN_APPLICATION_RESPONSE = 'SIN_APPLICATION_RESPONSE';
@@ -55,6 +60,8 @@ export class EntregaDianService implements EntregaDian {
     private readonly storage: EinvoicingStorageService,
     @Inject(FIRMANTE_DIAN) private readonly firmante: FirmanteDian,
     private readonly audit: AuditService,
+    /** Correo de la entrega de contingencia (Fase 9). Opcional: sin él solo se guardan los archivos. */
+    @Optional() private readonly mail?: MailService,
   ) {}
 
   async entregar(
@@ -66,7 +73,10 @@ export class EntregaDianService implements EntregaDian {
     if (doc.dianStatus !== 'accepted') return { ...base, estado: 'omitida', motivo: 'NO_ACEPTADO' };
     // Fase 5: solo la factura de venta. Notas y POS llegan con sus fases.
     if (doc.type !== 'invoice') return { ...base, estado: 'omitida', motivo: 'TIPO_NO_SOPORTADO' };
-    if (!opciones.forzar && doc.pdfPath && doc.attachedPath) {
+    // La entrega de contingencia (XML 04 sin ApplicationResponse) se rehace con
+    // el AttachedDocument cuando la DIAN acepta: es OTRO artefacto.
+    const deContingencia = (doc.entregaDian as { estado?: string } | undefined)?.estado === 'contingencia';
+    if (!opciones.forzar && !deContingencia && doc.pdfPath && doc.attachedPath) {
       return { ...base, estado: 'ya_entregada', pdf: true, zip: true };
     }
     try {
@@ -156,6 +166,110 @@ export class EntregaDianService implements EntregaDian {
       entregaDian: { estado: 'completa', archivo: nombres.zip, at: new Date() },
     });
     return { documentoId, estado: 'completa', pdf: true, zip: true };
+  }
+
+  /**
+   * Entrega de la FACTURA 04 al declarar la contingencia de la DIAN (Fase 9;
+   * art. 37 Res. 165/2023 y anexo FEV §12.2: se expide y entrega sin validación
+   * previa). PDF y ZIP con el XML 04 firmado + PDF, SIN ApplicationResponse (no
+   * existe todavía) y, si el adquiriente tiene correo, un envío.
+   *
+   * Idempotente y una sola vez: la reserva es una escritura atómica sobre
+   * `entregaContingencia` (si ya existe, no hace nada); si el armado falla, la
+   * reserva se libera y el cron/endpoint la puede reintentar; el correo no se
+   * repite. Cuando la DIAN acepta, `entregar` rehace el ZIP con el
+   * AttachedDocument (otro artefacto) como siempre.
+   */
+  async entregarContingencia(doc: ElectronicDocumentDocument): Promise<ResultadoEntrega> {
+    const documentoId = String(doc._id);
+    const base = { documentoId, pdf: false, zip: false };
+    if (doc.type !== 'invoice' || doc.contingencia?.tipo !== '04') {
+      return { ...base, estado: 'omitida', motivo: 'NO_ES_04' };
+    }
+    if (doc.dianStatus !== 'contingency') return { ...base, estado: 'omitida', motivo: 'NO_EN_CONTINGENCIA' };
+    const reserva = await this.model
+      .updateOne(
+        { _id: doc._id, dianStatus: 'contingency', entregaContingencia: { $exists: false } },
+        { $set: { entregaContingencia: { reservadaAt: new Date() } } },
+      )
+      .exec();
+    if (reserva.matchedCount !== 1) return { ...base, estado: 'ya_entregada', pdf: true, zip: true };
+
+    let zip: Buffer;
+    let pdfPath: string;
+    let attachedPath: string;
+    let archivo: string;
+    try {
+      const xml04 = (await this.storage.leerArtefactoGuardado(doc.xmlPath, documentoId, 'xml')).toString('utf8');
+      const emisorId = String(doc.xmlPath).split('/')[2]!;
+      const pdf = await generarRepresentacionGrafica(datosRepresentacionDe(doc));
+      pdfPath = (await this.storage.guardarArtefacto(emisorId, documentoId, 'pdf', pdf)).pathname;
+      const emisor = doc.emisor ?? {};
+      const nombres = nombresEntrega({
+        nit: emisor.nitNorm ?? normalizarNit(emisor.nit) ?? '',
+        consecutivo: consecutivoDeNumero(doc.fullNumber),
+        anio: Number(String(doc.issueDate).slice(0, 4)),
+      });
+      // El XML que se entrega es la factura 04 firmada tal cual (no un AttachedDocument).
+      zip = zipArchivos([
+        { nombre: nombres.xml, contenido: xml04 },
+        { nombre: nombres.pdf, contenido: pdf },
+      ]);
+      attachedPath = (await this.storage.guardarArtefacto(emisorId, documentoId, 'zip', zip)).pathname;
+      archivo = nombres.zip;
+    } catch (err) {
+      // Sin archivos no hay entrega: se libera la reserva para reintentar.
+      await this.model
+        .updateOne({ _id: doc._id, 'entregaContingencia.correoAt': { $exists: false } }, { $unset: { entregaContingencia: '' } })
+        .exec()
+        .catch(() => undefined);
+      throw err;
+    }
+    await this.model
+      .updateOne(
+        { _id: doc._id, dianStatus: 'contingency' },
+        {
+          $set: {
+            pdfPath,
+            attachedPath,
+            entregaDian: { estado: 'contingencia', archivo, at: new Date() },
+            'entregaContingencia.archivosAt': new Date(),
+          },
+        },
+      )
+      .exec();
+    await this.correoContingencia(doc, zip);
+    return { documentoId, estado: 'contingencia', pdf: true, zip: true };
+  }
+
+  /** Un solo correo de la 04 (si hay a quién). Un fallo se registra; nunca se repite solo. */
+  private async correoContingencia(doc: ElectronicDocumentDocument, zip: Buffer): Promise<void> {
+    const para = (doc.adquiriente?.email ?? '').trim().toLowerCase();
+    if (!this.mail || !para || para.length > 254 || !EMAIL.test(para)) return;
+    const documentoId = String(doc._id);
+    // Reserva atómica del envío: dos declaraciones simultáneas mandan uno.
+    const r = await this.model
+      .updateOne(
+        { _id: doc._id, 'entregaContingencia.correoAt': { $exists: false } },
+        { $set: { 'entregaContingencia.correoAt': new Date() } },
+      )
+      .exec();
+    if (r.matchedCount !== 1) return;
+    try {
+      const res = await this.mail.sendFacturaElectronica({
+        to: para,
+        numero: doc.fullNumber,
+        emisorNombre: doc.emisor?.name ?? 'Tu proveedor',
+        total: `$ ${cop(Number(doc.total) || 0).toLocaleString('es-CO')}`,
+        zip,
+        filename: `${doc.fullNumber}.zip`,
+      });
+      await this.model
+        .updateOne({ _id: doc._id }, { $set: { 'entregaContingencia.correoEnviado': res.sent === true } })
+        .exec();
+    } catch (err) {
+      this.logger.warn(`Documento ${documentoId}: el correo de la contingencia 04 falló (${(err as Error)?.name ?? 'Error'}).`);
+    }
   }
 
   /**
