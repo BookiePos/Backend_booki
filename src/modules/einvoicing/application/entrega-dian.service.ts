@@ -256,6 +256,7 @@ export class EntregaDianService implements EntregaDian {
     } catch (err) {
       // Sin archivos no hay entrega: la reserva vence en 10 min y la cola de
       // contingencia la retoma (`reservadaAt` sin `archivosAt`).
+      this.logger.warn(`Documento ${documentoId}: la entrega de la 04 quedó a medias; se retoma en 10 min.`);
       throw err;
     }
     await this.model
