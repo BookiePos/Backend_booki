@@ -1623,15 +1623,21 @@ export class EinvoicingService {
       );
     }
 
-    if (dto.corteTalonario != null) {
-      if (tipo !== 'contingency') {
-        throw new BadRequestException('El corte del talonario solo aplica a la numeración de contingencia.');
-      }
-      if (!corteTalonarioValido(desde, dto.rangoHasta, dto.corteTalonario)) {
-        throw new BadRequestException(
-          'El corte del talonario tiene que estar dentro del rango y dejar al menos un número para las ventas sin conexión.',
-        );
-      }
+    if (dto.corteTalonario != null && tipo !== 'contingency') {
+      throw new BadRequestException('El corte del talonario solo aplica a la numeración de contingencia.');
+    }
+    // El corte se conserva si no viene uno nuevo, como la clave técnica: volver
+    // a la mitad en silencio dejaría números de papel ya impresos dentro de la
+    // serie automática, y una venta sin conexión podría tomar uno de ellos
+    // (número repetido ante la DIAN al transcribir el papel).
+    const corteHeredado = dto.corteTalonario == null && tipo === 'contingency' ? previa?.corteTalonario : undefined;
+    const corteTalonario = tipo === 'contingency' ? (dto.corteTalonario ?? corteHeredado) : undefined;
+    if (corteTalonario != null && !corteTalonarioValido(desde, dto.rangoHasta, corteTalonario)) {
+      throw new BadRequestException(
+        corteHeredado != null
+          ? `El corte del talonario guardado (${corteHeredado}) no cabe en el rango nuevo: envía corteTalonario con el corte que corresponde a los talonarios impresos.`
+          : 'El corte del talonario tiene que estar dentro del rango y dejar al menos un número para las ventas sin conexión.',
+      );
     }
     const nueva = {
       tipoDocumento: tipo,
@@ -1647,7 +1653,7 @@ export class EinvoicingService {
       // La clave técnica se conserva si no viene una nueva: es un dato que se
       // teclea una vez y perderlo dejaría la sede sin poder emitir.
       claveTecnica: dto.claveTecnica ?? previa?.claveTecnica,
-      ...(tipo === 'contingency' && dto.corteTalonario != null ? { corteTalonario: dto.corteTalonario } : {}),
+      ...(corteTalonario != null ? { corteTalonario } : {}),
     };
     if (tipo === 'invoice') {
       sede.resolucionFe = nueva;
