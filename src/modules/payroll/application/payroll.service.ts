@@ -1384,15 +1384,17 @@ export class PayrollService {
   }
 
   /**
-   * Renta exenta del 25 % (ET 206 num. 10) que ya tomaron las colillas CERRADAS
-   * del mes del retiro: comparte el tope mensual con la indemnización. Las
+   * Renta exenta del 25 % (ET 206 num. 10) que ya tomaron las colillas del mes
+   * del retiro, CERRADAS o en BORRADOR (política de retener más: si la liquidación
+   * se hace antes de cerrar la nómina del mes, el tope no se usa dos veces; si el
+   * borrador luego cambia, el recálculo de la nómina lo ajusta): comparte el tope mensual con la indemnización. Las
    * colillas guardadas antes de registrar `rentaExenta25` se estiman con el 25 %
    * de (devengado − salud − pensión − FSP), topado: sin restar dependientes ni
-   * vivienda da un exento usado mayor, que es lo prudente. Sin colilla cerrada, 0.
+   * vivienda da un exento usado mayor, que es lo prudente. Sin colilla del mes, 0.
    */
   private async rentaExentaUsadaEnMes(employeeId: string, fechaFin: string, s: PayrollSettingsData): Promise<number> {
     const corridas = (await this.runs
-      .find({ period: fechaFin.slice(0, 7), status: 'cerrada', 'slips.employeeId': employeeId })
+      .find({ period: fechaFin.slice(0, 7), status: { $in: ['cerrada', 'borrador'] }, 'slips.employeeId': employeeId })
       .select('slips.employeeId slips.breakdown')
       .lean()
       .exec()) as unknown as { slips: { employeeId: string; breakdown?: PayrollBreakdown }[] }[];
@@ -1572,6 +1574,8 @@ export class PayrollService {
     const liq = await this.liquidacionEnAlcance(id, user);
     if (liq.estado === 'aprobada') {
       await this.marcarRetiro(liq);
+      // Idempotente por (liquidacion_retiro, id): repara el asiento si el posteo anterior falló.
+      await this.postearLiquidacion(liq);
       const distinto = liq.pago && (liq.pago.medio !== pago.medioPago || liq.pago.fecha !== pago.fechaPago);
       return conAvisos(liq, [
         ...(distinto
@@ -1618,7 +1622,33 @@ export class PayrollService {
       throw new ConflictException('La liquidación cambió mientras la aprobabas (otra persona la aprobó o la anuló). Vuelve a cargarla.');
     }
     await this.marcarRetiro(aprobada);
+    await this.postearLiquidacion(aprobada);
     return conAvisos(aprobada, await this.avisoCorridaCerrada(aprobada));
+  }
+
+  /**
+   * Asiento de la liquidación aprobada (ver `lineasLiquidacionRetiro`). Best-effort
+   * e idempotente, como el de la nómina: un fallo del ledger no tumba la aprobación.
+   * Se asienta en la fecha del retiro (causación), no en la del pago.
+   */
+  private async postearLiquidacion(liq: PayrollLiquidacionDocument): Promise<void> {
+    const b = liq.breakdown;
+    await this.ledgerPosting.postLiquidacionRetiro({
+      liquidacionId: String(liq._id),
+      date: liq.fechaRetiro,
+      sedeId: liq.sedeId ? String(liq.sedeId) : undefined,
+      employeeName: liq.employeeName,
+      partes: {
+        cesantias: b.cesantias ?? 0,
+        interesesCesantias: b.interesesCesantias ?? 0,
+        prima: b.prima ?? 0,
+        vacaciones: b.vacaciones ?? 0,
+        indemnizacion: b.indemnizacion ?? 0,
+        salariosPendientes: b.salariosPendientes ?? 0,
+        retencionFuente: b.retencionFuente ?? 0,
+      },
+      userEmail: liq.aprobadaPor,
+    });
   }
 
   /**
@@ -1667,6 +1697,10 @@ export class PayrollService {
       )
       .exec();
     if (!anulada) throw new ConflictException('La liquidación ya está anulada.');
+    // Una aprobada ya tiene asiento: se contra-asienta (idempotente; sin asiento no hace nada).
+    if (liq.estado === 'aprobada') {
+      await this.ledgerPosting.reverseLiquidacionRetiro(String(liq._id), user?.email);
+    }
     return conAvisos(
       anulada,
       liq.estado === 'aprobada'

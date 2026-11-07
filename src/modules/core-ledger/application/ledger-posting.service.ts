@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { LedgerService, PostLine } from './ledger.service';
 import { LedgerConciliacionService } from './ledger-conciliacion.service';
 import { ACC } from '../domain/ledger.constants';
-import { cop, sumBy } from '../../finance/domain/money.util';
+import { cop, sumBy, sumCop } from '../../finance/domain/money.util';
 
 /**
  * Posteo automático al ledger desde los eventos de negocio (venta, gasto,
@@ -743,6 +743,39 @@ export class LedgerPostingService {
     });
   }
 
+  /**
+   * Liquidación de retiro aprobada. Cesantías, intereses, prima y vacaciones se
+   * provisionaron mes a mes en la 2610 (`lineasNominaCausada`), así que aquí se
+   * consume ese pasivo; la indemnización y los salarios pendientes no se
+   * provisionan y van directo al gasto. Lo que se le debe pagar (total menos
+   * retención) queda en 2505 como el neto de la nómina y la retención en 2365.
+   * Idempotente por (liquidacion_retiro, id de la liquidación).
+   */
+  async postLiquidacionRetiro(input: {
+    liquidacionId: string;
+    date: string;
+    sedeId?: string;
+    employeeName?: string;
+    partes: PartesLiquidacion;
+    userEmail?: string;
+  }): Promise<void> {
+    const lines = lineasLiquidacionRetiro(input.partes, input.sedeId);
+    if (lines.length === 0) return;
+    await this.safePost({
+      date: input.date,
+      sourceType: 'liquidacion_retiro',
+      sourceId: input.liquidacionId,
+      memo: `Liquidación de retiro${input.employeeName ? ` ${input.employeeName}` : ''}`,
+      lines,
+      userEmail: input.userEmail,
+    });
+  }
+
+  /** Contra-asiento al anular una liquidación aprobada (idempotente: reverseBySource). */
+  async reverseLiquidacionRetiro(liquidacionId: string, userEmail?: string): Promise<void> {
+    await this.safeReverse('liquidacion_retiro', liquidacionId, userEmail);
+  }
+
   // ── Producción ────────────────────────────────────────────────────────────────
 
   /**
@@ -867,5 +900,47 @@ export function lineasNominaCausada(p: PartesNomina, sedeId?: string): PostLine[
       memo: 'Saldo a cargo de nóminas anteriores descontado',
     });
   }
+  return lines;
+}
+
+/** Conceptos de una liquidación de retiro (ver `postLiquidacionRetiro`). */
+export interface PartesLiquidacion {
+  cesantias: number;
+  interesesCesantias: number;
+  prima: number;
+  vacaciones: number;
+  indemnizacion: number;
+  salariosPendientes: number;
+  retencionFuente: number;
+}
+
+/**
+ * Renglones del asiento de la liquidación de retiro. Puro.
+ *   D 2610 cesantías + intereses + prima + vacaciones (pasivo ya provisionado)
+ *   D 5105 indemnización + salarios pendientes (no se provisionan)
+ *   C 2365 retención en la fuente (ET 401-3 sobre la indemnización)
+ *   C 2505 neto a pagar (total − retención)
+ * Cuadra por construcción: el neto es el total menos la retención.
+ * A CONFIRMAR CON EL CONTADOR: que la 2610 tenga saldo para cubrir lo
+ * provisionado (si no, queda saldo deudor y el ajuste va a 5105), y 2505 vs.
+ * pago directo a bancos.
+ */
+export function lineasLiquidacionRetiro(p: PartesLiquidacion, sedeId?: string): PostLine[] {
+  const prestaciones = sumCop([p.cesantias, p.interesesCesantias, p.prima, p.vacaciones].map(cop));
+  const gasto = sumCop([cop(p.indemnizacion), cop(p.salariosPendientes)]);
+  const retencion = cop(p.retencionFuente);
+  const total = prestaciones + gasto;
+  if ([p.cesantias, p.interesesCesantias, p.prima, p.vacaciones, p.indemnizacion, p.salariosPendientes, p.retencionFuente].some((m) => cop(m) < 0)) {
+    throw new Error('La liquidación trae un concepto negativo.');
+  }
+  if (retencion > total) {
+    throw new Error('La retención de la liquidación supera lo liquidado: el asiento no cuadra.');
+  }
+  const neto = total - retencion;
+  const lines: PostLine[] = [];
+  if (prestaciones > 0) lines.push({ accountCode: ACC.PROVISIONES_LABORALES, debit: prestaciones, sedeId, memo: 'Cesantías, intereses, prima y vacaciones provisionadas' });
+  if (gasto > 0) lines.push({ accountCode: ACC.GASTOS_PERSONAL, debit: gasto, sedeId, memo: 'Indemnización y salarios pendientes' });
+  if (retencion > 0) lines.push({ accountCode: ACC.RETENCION_FUENTE, credit: retencion, sedeId });
+  if (neto > 0) lines.push({ accountCode: ACC.SALARIOS_POR_PAGAR, credit: neto, sedeId, memo: 'Neto de la liquidación' });
   return lines;
 }

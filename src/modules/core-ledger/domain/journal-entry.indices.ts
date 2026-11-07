@@ -55,6 +55,7 @@ export const ORIGENES_AUTOMATICOS: readonly string[] = [
   'receivable_payment',
   'purchase_receipt',
   'payroll_run',
+  'liquidacion_retiro',
   'reclasificacion_puc',
   'production_order',
   // Cierre anual (R4, 1.16): solo por POST /ledger/cierres/:anio.
