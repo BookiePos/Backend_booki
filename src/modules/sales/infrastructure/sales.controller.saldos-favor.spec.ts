@@ -16,7 +16,7 @@ import { SalesController } from './sales.controller';
 /** El reporte de saldos a favor es de toda la empresa (Fase 6C). */
 describe('SalesController · reporte de saldos a favor', () => {
   const reporte = vi.fn(async () => ({ filas: [] }));
-  const ctl = new SalesController({} as never, {} as never, {} as never, {} as never, {} as never, {} as never, { reporte } as never);
+  const ctl = new SalesController({} as never, {} as never, {} as never, {} as never, {} as never, {} as never, { reporte } as never, {} as never);
 
   it('quien ve todas las sedes lo recibe', async () => {
     const user = { role: 'owner', sedeIds: [], permissions: [] } as never;

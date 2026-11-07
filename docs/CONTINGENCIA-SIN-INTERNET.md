@@ -27,9 +27,28 @@ vender. Va dirigido al cajero y al dueño; conviene imprimirlo y dejarlo en la c
    del turno se hace después de digitar todo.
 3. **Inventario:** las ventas digitadas descuentan stock al registrarse; si algo se
    vendió sin existencia en el sistema, se ajusta después con un ajuste de inventario.
-4. **Factura electrónica:** si un cliente pidió factura durante la contingencia, se
-   emite por el canal de facturación electrónica del negocio al volver la conexión,
-   dentro de los plazos de la DIAN para contingencias.
+4. **Documento electrónico (Fase 9, contingencia del facturador 07/03):** cada venta
+   que se hizo sin BookiPos necesita su documento electrónico **dentro de las 48 horas**
+   siguientes a que vuelva el servicio (art. 37 Res. 165/2023):
+   - Las ventas del **modo sin conexión** del POS se transcriben solas al sincronizar:
+     POS **07** (o factura **03** si el cliente la pidió), con la numeración de
+     contingencia de la sede, la fecha real de la venta y la referencia a su número.
+     Si no se puede (falta la numeración de contingencia o el PIN), quedan pendientes y
+     se transcriben con `POST /sales/:id/contingencia/transcribir`.
+   - Las ventas del **talonario de papel** se digitan y se transcriben con el mismo
+     endpoint, indicando el número impreso y la fecha del talonario
+     (`{ "talonario": { "numero": 7, "fecha": "2026-11-04" } }`).
+   - Las devoluciones, rebajas o anulaciones que se hicieron antes de transcribir se
+     emiten en ese momento, en orden y contra el documento transcrito.
+   - BookiPos transmite el documento y después sus notas (cron de reconsulta cada
+     30 min o `POST /einvoicing/documentos/:id/contingencia/transmitir`). La alerta del
+     cron diario avisa lo que está por vencer.
+   - Requisito: registrar en Resoluciones la **numeración de contingencia** que autoriza
+     la DIAN (tipo «Contingencia») y avisar a la DIAN según el procedimiento vigente.
+5. **Si la que falla es la DIAN (04/08):** no hay que hacer nada en la caja. BookiPos
+   reintenta tres veces; si la DIAN no responde, el documento queda expedido en
+   contingencia con el mismo número y CUDE/CUFE (el tiquete impreso sigue valiendo) y se
+   transmite solo cuando la DIAN vuelva, dentro de las 48 horas.
 
 ## Antes de que pase
 

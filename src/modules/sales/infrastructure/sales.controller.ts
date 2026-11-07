@@ -27,6 +27,8 @@ import { allowedSedeIds } from '../../core-auth/domain/sede-access';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { OfflineSalesService } from '../application/offline-sales.service';
 import { DocumentoFiscalVentaService } from '../application/documento-fiscal-venta.service';
+import { ContingenciaVentasService } from '../application/contingencia-ventas.service';
+import { TranscribirContingenciaDto } from '../application/dto/transcribir-contingencia.dto';
 import {
   ReserveOfflineNumbersDto,
   SyncOfflineSaleDto,
@@ -43,6 +45,7 @@ export class SalesController {
     private readonly documentoFiscal: DocumentoFiscalVentaService,
     private readonly sinReferencia: NotasSinReferenciaService,
     private readonly saldoFavor: SaldoFavorService,
+    private readonly contingencia: ContingenciaVentasService,
   ) {}
 
   /**
@@ -244,6 +247,23 @@ export class SalesController {
    * devolución la mercancía vuelve y se cuenta; aquí sale plata (o baja la
    * cartera) sin nada físico que lo respalde, y eso lo autoriza un supervisor.
    */
+  /**
+   * Transcripción de contingencia (Fase 9): la venta hecha sin conexión o en
+   * talonario recibe su POS 07 / FEV 03 y, en orden, las notas de lo que le
+   * pasó mientras tanto; después se transmite. Es emitir un documento
+   * electrónico: mismo permiso que la emisión (`einvoicing.issue`). El
+   * servicio comprueba el acceso a la sede; idempotente por venta.
+   */
+  @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
+  @Post(':id/contingencia/transcribir')
+  transcribirContingencia(
+    @Param('id') id: string,
+    @Body() dto: TranscribirContingenciaDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.contingencia.transcribir(id, user, { talonario: dto.talonario });
+  }
+
   @RequirePermissions(PERMISSIONS.POS_VOID_AUTHORIZE)
   @Post(':id/rebajas')
   createRebaja(

@@ -55,6 +55,7 @@ import {
 } from './infrastructure/schemas/nota-sin-referencia.schema';
 import { OrdersService } from './application/orders.service';
 import { DocumentoFiscalVentaService } from './application/documento-fiscal-venta.service';
+import { ContingenciaVentasService } from './application/contingencia-ventas.service';
 import { NotaFiscalVentaService } from './application/nota-fiscal-venta.service';
 import { PackagingService } from './application/packaging.service';
 import { SalesController } from './infrastructure/sales.controller';
@@ -140,6 +141,8 @@ import { Sede, SedeSchema } from '../sedes/infrastructure/schemas/sede.schema';
     DocumentoFiscalVentaService,
     // Fase 6B: la nota de la devolución y de la anulación, por el mismo puerto.
     NotaFiscalVentaService,
+    // Fase 9: transcripción de contingencia (07/03) y sus notas en orden.
+    ContingenciaVentasService,
     NotasSinReferenciaService,
     SaldoFavorService,
     PlatformSettlementsService,

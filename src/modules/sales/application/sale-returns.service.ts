@@ -943,7 +943,8 @@ export class SaleReturnsService {
   }
 
   /** Lo que la nota de la devolución acredita: los mismos valores que van al libro. */
-  private solicitudNota(registro: SaleReturnDocument, sale: SaleDocument): Omit<SolicitudNotaVenta, 'saleId'> {
+  /** Pública para la transcripción de contingencia (Fase 9), que emite las notas que faltaron. */
+  solicitudNota(registro: SaleReturnDocument, sale: SaleDocument): Omit<SolicitudNotaVenta, 'saleId'> {
     if (registro.kind === 'rebaja') {
       // Rebaja (Fase 6C): sin unidades; la nota acredita el valor por producto.
       return {
