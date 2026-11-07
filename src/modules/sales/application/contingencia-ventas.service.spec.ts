@@ -165,7 +165,26 @@ describe('ContingenciaVentasService', () => {
       puerto.notasPorTransmitir = vi.fn(async () => ({ d1: 3 }));
       const [r] = await svc.conNotasPendientes([v]);
       expect((r as any).documentoFiscal.notasPendientes).toBe(2 + 1 + 3);
-      expect(returnModel.find).toHaveBeenCalledWith({ saleId: { $in: [v._id] }, 'notaFiscal.estado': { $ne: 'emitida' } });
+      expect(returnModel.find).toHaveBeenCalledWith({ saleId: { $in: [v._id] }, 'notaFiscal.estado': { $nin: ['emitida', 'sin_nota'] } });
+    });
+
+    it('las notas resueltas «sin_nota» no cuentan: el número puede bajar a 0', async () => {
+      const v = venta({ status: 'void', notaAnulacion: { estado: 'sin_nota' } });
+      conRegistros([]);
+      puerto.notasPorTransmitir = vi.fn(async () => ({ d1: 0 }));
+      const [r] = await svc.conNotasPendientes([v]);
+      expect((r as any).documentoFiscal.notasPendientes).toBe(0);
+      // El filtro que consulta excluye sin_nota; el del reintento no se tocó.
+      const filtro = (returnModel.find as any).mock.calls[0][0];
+      expect(filtro['notaFiscal.estado']).toEqual({ $nin: ['emitida', 'sin_nota'] });
+    });
+
+    it('si notasPorTransmitir falla no se cae el listado: todo da 0', async () => {
+      puerto.notasPorTransmitir = vi.fn(async () => {
+        throw new Error('mongo caído');
+      });
+      const [r] = await svc.conNotasPendientes([venta()]);
+      expect((r as any).documentoFiscal.notasPendientes).toBe(0);
     });
 
     it('con todo emitido y aceptado da 0 (no ofrece Transcribir)', async () => {

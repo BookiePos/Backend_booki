@@ -13,7 +13,7 @@ import { Sale, type SaleDocument } from '../infrastructure/schemas/sale.schema';
 import { SaleReturn, type SaleReturnDocument } from '../infrastructure/schemas/sale-return.schema';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
-import { anulacionSinNota, FILTRO_RETORNO_SIN_NOTA } from '../domain/notas-pendientes';
+import { anulacionPorContar, anulacionSinNota, FILTRO_RETORNO_POR_CONTAR, FILTRO_RETORNO_SIN_NOTA } from '../domain/notas-pendientes';
 import { origenNotaAnulacion, type DocumentoFiscalVenta } from '../domain/documento-fiscal';
 import {
   EMISION_DOCUMENTO_FISCAL,
@@ -123,12 +123,19 @@ export class ContingenciaVentasService {
     const candidatas = planas.filter((v) => v.documentoFiscal?.estado === 'emitido' && v.documentoFiscal.documentoId);
     if (candidatas.length === 0) return this.conCero(planas);
     const puerto = this.puerto();
-    const porTransmitir = (await puerto?.notasPorTransmitir?.(candidatas.map((v) => v.documentoFiscal!.documentoId!))) ?? {};
+    // Un dato de ayuda a la pantalla no puede tumbar el listado de ventas: si la
+    // consulta falla, se queda sin saber cuáles son de contingencia y todo da 0.
+    let porTransmitir: Record<string, number> = {};
+    try {
+      porTransmitir = (await puerto?.notasPorTransmitir?.(candidatas.map((v) => v.documentoFiscal!.documentoId!))) ?? {};
+    } catch (err) {
+      this.logger.error(`No se pudieron contar las notas pendientes de contingencia: ${(err as Error)?.name ?? 'Error'}`);
+    }
     const deContingencia = candidatas.filter((v) => porTransmitir[v.documentoFiscal!.documentoId!] !== undefined);
     const sinEmitir = new Map<string, number>();
     if (deContingencia.length > 0) {
       const registros = await this.returnModel
-        .find({ saleId: { $in: deContingencia.map((v) => v._id as Types.ObjectId) }, ...FILTRO_RETORNO_SIN_NOTA })
+        .find({ saleId: { $in: deContingencia.map((v) => v._id as Types.ObjectId) }, ...FILTRO_RETORNO_POR_CONTAR })
         .select({ saleId: 1 })
         .lean()
         .exec();
@@ -141,7 +148,7 @@ export class ContingenciaVentasService {
       const id = v.documentoFiscal.documentoId;
       const esContingencia = v.documentoFiscal.estado === 'emitido' && id != null && porTransmitir[id] !== undefined;
       const n = esContingencia
-        ? (sinEmitir.get(String(v._id)) ?? 0) + (anulacionSinNota(v) ? 1 : 0) + porTransmitir[id]!
+        ? (sinEmitir.get(String(v._id)) ?? 0) + (anulacionPorContar(v) ? 1 : 0) + porTransmitir[id]!
         : 0;
       return { ...v, documentoFiscal: { ...v.documentoFiscal, notasPendientes: n } };
     });
