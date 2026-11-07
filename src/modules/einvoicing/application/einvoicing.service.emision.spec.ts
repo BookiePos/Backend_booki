@@ -278,6 +278,19 @@ describe('EinvoicingService.registerResolution · número inicial y prefijo', ()
     expect(guardada.resolucionesFe[0]).toMatchObject({ tipoDocumento: 'pos', prefijo: 'POS' });
   });
 
+  it('contingencia: el corte del talonario se conserva al registrar de nuevo sin enviarlo', async () => {
+    const base = { tipoDocumento: 'contingency' as const, prefijo: 'cont', rangoDesde: 1, rangoHasta: 100, vigenciaHasta: '2099-12-31' };
+    await svc.registerResolution(sedeId, { ...base, corteTalonario: 80 }, user);
+    expect(guardada.resolucionesFe[0]).toMatchObject({ tipoDocumento: 'contingency', corteTalonario: 80 });
+    await svc.registerResolution(sedeId, base, user);
+    expect(guardada.resolucionesFe).toHaveLength(1);
+    expect(guardada.resolucionesFe[0].corteTalonario).toBe(80);
+    // Un rango nuevo donde el corte guardado no cabe exige mandarlo explícito.
+    await expect(svc.registerResolution(sedeId, { ...base, rangoHasta: 50 }, user)).rejects.toThrow(/corte del talonario guardado \(80\)/);
+    await svc.registerResolution(sedeId, { ...base, rangoHasta: 50, corteTalonario: 30 }, user);
+    expect(guardada.resolucionesFe[0].corteTalonario).toBe(30);
+  });
+
   it('la factura puede seguir sin prefijo', async () => {
     await svc.registerResolution(sedeId, { rangoDesde: 1, rangoHasta: 10, vigenciaHasta: '2099-12-31' }, user);
     expect(guardada.resolucionFe.tipoDocumento).toBe('invoice');

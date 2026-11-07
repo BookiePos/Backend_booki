@@ -29,7 +29,7 @@ describe('SalesController.create · documento fiscal', () => {
     const documentoFiscal = {
       alCobrar: vi.fn(async (s: any) => (orden.push('documento'), s)),
     };
-    const ctl = new SalesController(sales as any, {} as any, {} as any, {} as any, documentoFiscal as any, {} as any, {} as any);
+    const ctl = new SalesController(sales as any, {} as any, {} as any, {} as any, documentoFiscal as any, {} as any, {} as any, {} as any);
     return { ctl, sales, documentoFiscal, orden, sale };
   }
 

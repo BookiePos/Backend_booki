@@ -4,7 +4,8 @@ import { normalizarNit } from '../consecutivo-unico';
 import type { CargoDocumento, LineaDocumento, TotalesDocumento, TributoLinea } from '../documento-venta';
 import { CONSUMIDOR_FINAL_NIT } from '../einvoicing.constants';
 import type { TipoAmbiente } from '../emisor-fiscal';
-import { descuadresFactura, type FacturaUbl, type ParteUbl, type TributoParte } from './factura-ubl';
+import { esTipoContingencia } from '../contingencia';
+import { descuadresFactura, type ContingenciaUbl, type FacturaUbl, type ParteUbl, type TributoParte } from './factura-ubl';
 import { assertTextoXml, DocumentoUblInvalidoError, municipioDaneValido } from './xml-ubl';
 
 /**
@@ -85,6 +86,25 @@ export interface DocumentoParaUbl {
     rangoHasta?: number;
     vigenciaDesde?: Date;
     vigenciaHasta?: Date;
+  };
+  /** Contingencia (Fase 9): tipo y documento de origen. */
+  contingencia?: { tipo?: string; referencia?: { id?: string; fecha?: string } | null } | null;
+}
+
+/**
+ * La contingencia guardada, para el builder. Un tipo desconocido es un error:
+ * armar un tipo 01/20 de lo que se expidió en contingencia contradiría el papel.
+ */
+export function contingenciaUbl(doc: DocumentoParaUbl): ContingenciaUbl | undefined {
+  const c = doc.contingencia;
+  if (!c?.tipo) return undefined;
+  if (!esTipoContingencia(c.tipo)) {
+    throw new DocumentoUblInvalidoError(`Tipo de contingencia desconocido: «${String(c.tipo)}»`);
+  }
+  const r = c.referencia;
+  return {
+    tipo: c.tipo,
+    referencia: r?.id && r.fecha ? { id: r.id, fecha: r.fecha } : undefined,
   };
 }
 
@@ -312,6 +332,7 @@ export function prepararFacturaUbl(doc: DocumentoParaUbl, emisor: EmisorParaUbl)
     lineas: lineasDoc,
     cargos: doc.charges ?? [],
     totales: totalesDoc,
+    contingencia: contingenciaUbl(doc),
   };
   // Antes del PIN y de la firma: un texto que XML no admite es un 400 que dice el campo.
   assertTextoXml(f, '');

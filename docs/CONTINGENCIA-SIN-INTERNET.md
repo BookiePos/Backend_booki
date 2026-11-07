@@ -27,9 +27,48 @@ vender. Va dirigido al cajero y al dueño; conviene imprimirlo y dejarlo en la c
    del turno se hace después de digitar todo.
 3. **Inventario:** las ventas digitadas descuentan stock al registrarse; si algo se
    vendió sin existencia en el sistema, se ajusta después con un ajuste de inventario.
-4. **Factura electrónica:** si un cliente pidió factura durante la contingencia, se
-   emite por el canal de facturación electrónica del negocio al volver la conexión,
-   dentro de los plazos de la DIAN para contingencias.
+4. **Documento electrónico (Fase 9, contingencia del facturador 07/03):** cada venta
+   que se hizo sin BookiPos necesita su documento electrónico **dentro de las 48 horas**
+   siguientes a que vuelva el servicio (art. 37 Res. 165/2023):
+   - Las ventas del **modo sin conexión** del POS se transcriben solas al sincronizar:
+     POS **07** (o factura **03** si el cliente la pidió), con la numeración de
+     contingencia de la sede, la fecha real de la venta y la referencia a su número.
+     Si no se puede (falta la numeración de contingencia o el PIN), quedan pendientes y
+     se transcriben con `POST /sales/:id/contingencia/transcribir`.
+   - Las ventas del **talonario de papel** se digitan y se transcriben con el mismo
+     endpoint, indicando el número impreso, la fecha y (si la tiene) la hora del papel
+     (`{ "talonario": { "numero": 7, "fecha": "2026-11-04", "hora": "09:30" } }`). El
+     documento electrónico lleva la fecha del papel. Opcional: `superadaAt`, cuándo se
+     superó la falla (desde ahí corren las 48 h; por defecto, ahora).
+   - **Numeración:** el rango de contingencia se parte en dos series consecutivas y
+     ascendentes que no se cruzan: el **talonario de papel** va del inicio del rango al
+     *corte*, y las **ventas sin conexión** van del corte + 1 al final. El corte se fija al
+     registrar la resolución (`corteTalonario`); por defecto es la mitad del rango.
+     Imprime el talonario solo con los números de su serie. Un número de papel fuera de su
+     serie se rechaza (400) y una serie agotada responde 409: hay que pedir más numeración.
+     Lo ideal, a confirmar con el contador, es pedirle a la DIAN **prefijos separados**
+     para el papel y para el sistema.
+   - Las devoluciones, rebajas o anulaciones que se hicieron antes de transcribir se
+     emiten en ese momento, en orden y contra el documento transcrito.
+   - BookiPos transmite el documento y después sus notas (cron de reconsulta cada
+     30 min o `POST /einvoicing/documentos/:id/contingencia/transmitir`). La alerta del
+     cron diario avisa lo que está por vencer.
+   - Requisito: registrar en Resoluciones la **numeración de contingencia** que autoriza
+     la DIAN (tipo «Contingencia»).
+   - **Aviso a la DIAN (lo hace el negocio, no BookiPos):** en la falla del facturador,
+     el negocio informa la contingencia por correo a
+     **contingencia.facturadorvp@dian.gov.co**, con una carta firmada por el
+     **representante legal** que diga qué falló, desde cuándo y qué numeración de
+     contingencia usó (anexo DE §15; art. 37 Res. 165/2023). _Pendiente de confirmar
+     con el contador el contenido y el plazo del aviso._
+5. **Si la que falla es la DIAN (04/08):** no hay que hacer nada en la caja. BookiPos
+   reintenta tres veces; si la DIAN no responde, el documento queda expedido en
+   contingencia con el mismo número y CUDE/CUFE (el tiquete impreso sigue valiendo) y se
+   transmite solo cuando la DIAN vuelva, dentro de las 48 horas. La factura 04 se le
+   entrega al cliente en ese momento (PDF y XML firmado; por correo si tiene); cuando la
+   DIAN la acepta, se rehace la entrega con el AttachedDocument. Si la DIAN resulta haber
+   recibido el original durante la caída, la contingencia no aplica y queda vigente el
+   XML original.
 
 ## Antes de que pase
 

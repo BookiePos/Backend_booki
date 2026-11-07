@@ -4,6 +4,7 @@ import { assertFechaHoraDian, dianVerificationUrl } from '../cufe';
 import type { CargoDocumento, LineaDocumento, TotalesDocumento } from '../documento-venta';
 import { primerTributo } from '../documento-venta';
 import type { TipoAmbiente } from '../emisor-fiscal';
+import { contingenciaDeTipo, encabezadoContingencia, type TipoContingencia } from '../contingencia';
 import { descuadres, formatearMontoDian, redondearLinea, type Centavos } from '../redondeo';
 import {
   AGENCIA_DIAN,
@@ -152,6 +153,19 @@ export interface FacturaUbl {
   lineas: LineaDocumento[];
   cargos: CargoDocumento[];
   totales: TotalesDocumento;
+  /**
+   * Contingencia (Fase 9): cambia `InvoiceTypeCode`, `CustomizationID` (POS) y
+   * el esquema del código único, y agrega `AdditionalDocumentReference` con el
+   * documento físico o de origen. Ver `domain/contingencia.ts`.
+   */
+  contingencia?: ContingenciaUbl;
+}
+
+/** La contingencia del documento, como la recibe el builder. */
+export interface ContingenciaUbl {
+  tipo: TipoContingencia;
+  /** Documento físico (talonario, venta sin conexión) o el mismo documento (08): ID y fecha. */
+  referencia?: { id: string; fecha: string };
 }
 
 const SHA384_HEX = /^[0-9a-f]{96}$/;
@@ -643,6 +657,45 @@ export interface VarianteInvoice {
   extensionesExtra?: readonly string[];
   /** `PartyIdentification` del adquiriente siempre, no solo a persona natural. */
   identificacionAdquirienteSiempre?: boolean;
+  /** `invoice` o `pos`: decide qué tipos de contingencia admite y el `DocumentTypeCode` de la referencia. */
+  tipoDocumento: 'invoice' | 'pos';
+}
+
+/**
+ * El perfil con la contingencia aplicada (Fase 9). Un tipo que no es del
+ * documento (03/04 en un POS, 07/08 en una factura) es un error de flujo.
+ */
+export function perfilConContingencia(
+  perfil: PerfilInvoice,
+  c: ContingenciaUbl | undefined,
+  tipoDocumento: 'invoice' | 'pos',
+): PerfilInvoice {
+  if (!c) return perfil;
+  if (!contingenciaDeTipo(c.tipo, tipoDocumento)) {
+    throw new DocumentoUblInvalidoError(`${perfil.documento} no admite la contingencia tipo ${String(c.tipo)}`);
+  }
+  return { ...perfil, ...encabezadoContingencia(c.tipo) };
+}
+
+/**
+ * `cac:AdditionalDocumentReference` de la contingencia (FEV FAI01-FAI06; DE
+ * DEAI): ID y fecha del documento físico (03/07) o del mismo documento (08), con
+ * el `DocumentTypeCode` del documento normal (01 factura, 20 POS). Va después
+ * de `LineCountNumeric` y antes de las partes (orden del XSD de `Invoice`). La
+ * 04 no la lleva (ejemplo de la caja de herramientas 1.9).
+ */
+function referenciaContingencia(c: ContingenciaUbl | undefined, tipoDocumento: 'invoice' | 'pos'): string {
+  if (!c || c.tipo === '04') return '';
+  const r = c.referencia;
+  if (!r?.id?.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(r.fecha ?? '')) {
+    throw new DocumentoUblInvalidoError(`La contingencia tipo ${c.tipo} necesita el número y la fecha del documento de origen`);
+  }
+  return `
+  <cac:AdditionalDocumentReference>
+    <cbc:ID>${esc(r.id.trim())}</cbc:ID>
+    <cbc:IssueDate>${r.fecha}</cbc:IssueDate>
+    <cbc:DocumentTypeCode>${tipoDocumento === 'pos' ? '20' : '01'}</cbc:DocumentTypeCode>
+  </cac:AdditionalDocumentReference>`;
 }
 
 /**
@@ -669,7 +722,7 @@ export function armarInvoiceUbl(f: FacturaUbl, v: VarianteInvoice): string {
     </ext:UBLExtension>`,
     )
     .join('');
-  const p = v.perfil;
+  const p = perfilConContingencia(v.perfil, f.contingencia, v.tipoDocumento);
   return `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2" xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2" xmlns:sts="${NS_STS}">
   <ext:UBLExtensions>
@@ -692,7 +745,7 @@ export function armarInvoiceUbl(f: FacturaUbl, v: VarianteInvoice): string {
   <cbc:IssueTime>${f.hora}</cbc:IssueTime>
   <cbc:InvoiceTypeCode>${p.invoiceTypeCode}</cbc:InvoiceTypeCode>
   <cbc:DocumentCurrencyCode>COP</cbc:DocumentCurrencyCode>
-  <cbc:LineCountNumeric>${f.lineas.length}</cbc:LineCountNumeric>
+  <cbc:LineCountNumeric>${f.lineas.length}</cbc:LineCountNumeric>${referenciaContingencia(f.contingencia, v.tipoDocumento)}
   ${parte('AccountingSupplierParty', f.emisor, f.prefijo)}
   ${parte('AccountingCustomerParty', f.adquiriente, undefined, v.identificacionAdquirienteSiempre)}
   ${v.pagos.map(medioDePago).join('\n  ')}${cargosXml(f.cargos, t.lineExtension)}${taxTotalesCabecera(f.lineas)}
@@ -705,6 +758,7 @@ export function armarInvoiceUbl(f: FacturaUbl, v: VarianteInvoice): string {
 export function armarFacturaUbl(f: FacturaUbl): string {
   return armarInvoiceUbl(f, {
     perfil: PERFIL_FACTURA,
+    tipoDocumento: 'invoice',
     // Un solo medio; a crédito, con su vencimiento o, si falta, la fecha de la factura.
     pagos: [
       {

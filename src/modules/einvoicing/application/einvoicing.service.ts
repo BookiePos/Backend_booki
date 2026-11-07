@@ -78,6 +78,17 @@ import {
 import type { CargoDocumento, LineaDocumento } from '../domain/documento-venta';
 import { totalesUbl } from '../domain/ubl/factura-ubl';
 import { CONCEPTOS_NOTA_CREDITO, esquemaDeOrigen } from '../domain/ubl/nota-ubl';
+import {
+  corteTalonarioValido,
+  errorTalonario,
+  subrangosContingencia,
+  tipoContingencia,
+  type TipoContingencia,
+} from '../domain/contingencia';
+
+/** Contador de la serie automática de contingencia (ventas sin conexión), aparte del de la resolución. */
+export const contadorContingenciaAutomatica = (sedeId: string, prefijo: string): string =>
+  `fe:contingency-auto:${sedeId}:${prefijo}`;
 import { cop } from '../../finance/domain/money.util';
 import { origenNotaAnulacion } from '../../sales/domain/documento-fiscal';
 import type {
@@ -143,6 +154,10 @@ export type ResultadoNotaDeVenta =
 export const MENSAJE_NOTA_SIN_PIN =
   'Carga el PIN del software DIAN del emisor antes de emitir notas.';
 
+/** Sin la numeración de contingencia de la sede no se transcribe (Fase 9). */
+export const MENSAJE_SIN_NUMERACION_CONTINGENCIA =
+  'No se puede transcribir: la sede no tiene numeración de contingencia. Regístrala en Resoluciones con el tipo «Contingencia» (la autoriza la DIAN).';
+
 /** Rechazo del POS cuando el emisor no tiene PIN: sin él no hay CUDE (§14.1.3). */
 export const MENSAJE_POS_SIN_PIN =
   'No se puede emitir el documento POS: carga el PIN del software DIAN del emisor.';
@@ -201,6 +216,8 @@ export interface RegisterResolutionInput {
   claveTecnica?: string;
   /** Número por el que arranca el consecutivo. Por defecto, el inicio del rango. */
   empezarEn?: number;
+  /** Solo contingencia: último número del talonario de papel (por defecto, la mitad del rango). */
+  corteTalonario?: number;
 }
 
 /** Inicio y fin del día, para comparar vigencias sin que la hora estorbe. */
@@ -342,6 +359,12 @@ export class EinvoicingService {
     exclusion?: string;
     /** Quién emite: queda en la fila de auditoría de la emisión. */
     actor: JwtUser;
+    /**
+     * Número ya impreso (talonario de contingencia, Fase 9): no toma folio del
+     * contador. Si el número ya existe, 409 con `choqueNumeroFijo`.
+     */
+    numeroFijo?: number;
+    choqueNumeroFijo?: string;
   }): Promise<ElectronicDocumentDocument> {
     const MAX_INTENTOS = 3;
     for (let intento = 1; ; intento++) {
@@ -350,11 +373,21 @@ export class EinvoicingService {
       let number: number | undefined;
       let creado: ElectronicDocumentDocument | undefined;
       try {
-        number = await this.nextNumber(o.counterId, o.desde, o.hasta);
+        number = o.numeroFijo ?? (await this.nextNumber(o.counterId, o.desde, o.hasta));
         creado = await this.model.create(o.construir(number));
       } catch (err) {
         await this.refundDocQuota(origen);
         const choque = tipoDeChoque(err);
+        if (o.numeroFijo !== undefined) {
+          if (choque === 'venta' || choque === 'exclusion') {
+            const existente = await o.existente();
+            if (existente) return existente;
+          }
+          if (choque === 'consecutivo' || choque === 'exclusion') {
+            throw new ConflictException(o.choqueNumeroFijo ?? o.exclusion ?? 'Ese número ya existe.');
+          }
+          throw err;
+        }
         if (number !== undefined && choque !== 'consecutivo') {
           await this.devolverFolio(o.counterId, number - o.desde + 1);
         }
@@ -711,6 +744,198 @@ export class EinvoicingService {
           cufe: cude,
           qrUrl: dianVerificationUrl(cude, tipoAmbiente),
           dianStatus: 'draft',
+          createdByEmail: user.email,
+        };
+      },
+    });
+  }
+
+  /**
+   * Transcripción de contingencia del FACTURADOR (Fase 9): la venta se hizo sin
+   * BookiPos (sin conexión o en talonario) y, superada la falla, se expide su
+   * documento electrónico: POS 07 o FEV 03 (anexo DE §15; anexo FEV §12.1).
+   *
+   * - Numeración de CONTINGENCIA de la sede (resolución `contingency`): el
+   *   rango se parte en dos series ascendentes (`subrangosContingencia`): el
+   *   talonario de papel, de `desde` al corte (`corteTalonario`, por defecto la
+   *   mitad), con su número impreso; y las ventas sin conexión, del corte + 1 a
+   *   `hasta`, con su propio contador. Un papel fuera de su serie es 400; una
+   *   serie agotada, 409. Un papel ya entregado nunca choca con el sistema.
+   * - Fecha: con talonario, la del PAPEL (`talonario.fecha`, con su hora o la
+   *   de la venta), la misma del `AdditionalDocumentReference`; sin talonario,
+   *   la real de la venta (`soldAt`; si no, `createdAt`).
+   * - CUDE con el PIN, también en la FEV 03 (§11.1.4.2 nota 2).
+   * - Plazo de 48 h desde que se superó la falla: `superadaAt` si lo dice quien
+   *   transcribe (ni futuro ni anterior a la venta); si no, para la venta sin
+   *   conexión, cuando llegó al servidor (`createdAt`), y para el talonario, ahora.
+   * - Una venta anulada después también se transcribe: el documento es el de la
+   *   venta tal como se hizo; su nota de anulación la emite quien llama, en orden.
+   * - Mismo fallar cerrado que la emisión normal: todo se valida ANTES del
+   *   cupo y del folio. Idempotente por venta: devuelve el ya transcrito; si la
+   *   venta tiene un documento normal, 409.
+   */
+  async transcribirContingencia(
+    saleId: string,
+    solicitado: { tipo: 'pos' | 'invoice'; modo?: ModoPos },
+    opts: { talonario?: { numero: number; fecha: string; hora?: string }; superadaAt?: Date },
+    user: JwtUser,
+  ): Promise<ElectronicDocumentDocument> {
+    const sale = await this.sales.getOrFail(saleId);
+    const sedeId = this.saleSedeId(sale);
+    assertSedeAccess(user, sedeId);
+
+    const previo = await this.model
+      .findOne({ saleId: sale._id, type: { $in: [...TIPOS_EXCLUYENTES_POR_VENTA] } })
+      .exec();
+    if (previo) {
+      if (previo.type === solicitado.tipo && previo.contingencia?.tipo) return previo;
+      throw new ConflictException('La venta ya tiene su documento electrónico: no se transcribe en contingencia.');
+    }
+
+    const tipo = tipoContingencia(solicitado.tipo, 'facturador') as TipoContingencia;
+    const sede = await this.sedes.findOrFail(sedeId);
+    const resolucion = resolucionDeTipo(sede, 'contingency');
+    if (!resolucion) {
+      throw new BadRequestException(MENSAJE_SIN_NUMERACION_CONTINGENCIA);
+    }
+    this.assertResolucionVigente(resolucion, 'contingency');
+    const prefix = resolucion.prefijo ?? '';
+    const series = subrangosContingencia(resolucion);
+    if (!series) {
+      throw new BadRequestException(
+        'La numeración de contingencia de la sede necesita un rango con inicio y fin, y un corte del talonario dentro de él.',
+      );
+    }
+
+    const momentoVenta = sale.soldAt ?? (sale as { createdAt?: Date }).createdAt ?? new Date();
+    const deLaVenta = this.now(momentoVenta);
+    const hoy = this.now().issueDate;
+    const talonario = opts.talonario;
+    if (talonario) {
+      const t = series.talonario;
+      if (talonario.numero < t.desde || talonario.numero > t.hasta) {
+        throw new BadRequestException(
+          `El número ${prefix}${talonario.numero} no está en la serie del talonario de papel (${prefix}${t.desde} a ${prefix}${t.hasta}); ` +
+            `del ${prefix}${series.automatico.desde} al ${prefix}${series.automatico.hasta} son las ventas sin conexión.`,
+        );
+      }
+      const error = errorTalonario(
+        { numero: talonario.numero, fecha: talonario.fecha, hoy },
+        { ...resolucion, rangoDesde: t.desde, rangoHasta: t.hasta },
+      );
+      if (error) throw new BadRequestException(error);
+      if (talonario.hora !== undefined && !/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(talonario.hora)) {
+        throw new BadRequestException('La hora del talonario va en formato HH:MM o HH:MM:SS.');
+      }
+    }
+    // Con talonario manda el PAPEL (checklist Fase 9: «la fecha real del
+    // talonario»; a confirmar con el contador): su fecha y su hora, o la hora
+    // de la venta si el papel no la trae.
+    const issueDate = talonario?.fecha ?? deLaVenta.issueDate;
+    const issueTime = talonario?.hora
+      ? `${talonario.hora.length === 5 ? `${talonario.hora}:00` : talonario.hora}-05:00`
+      : deLaVenta.issueTime;
+
+    const ahora = new Date();
+    // Con talonario, la venta «ocurrió» en la fecha y hora del papel.
+    const momentoOrigen = talonario ? new Date(`${issueDate}T${issueTime}`) : momentoVenta;
+    if (opts.superadaAt) {
+      if (Number.isNaN(opts.superadaAt.getTime()) || opts.superadaAt > ahora) {
+        throw new BadRequestException('La fecha en que se superó la falla no puede ser futura.');
+      }
+      if (opts.superadaAt < momentoOrigen) {
+        throw new BadRequestException('La fecha en que se superó la falla no puede ser anterior a la venta.');
+      }
+    }
+
+    let adquiriente: ReturnType<typeof buildAdquiriente>;
+    if (solicitado.tipo === 'pos') {
+      const r = adquirientePos(sale.customer, solicitado.modo ?? 'anonimo');
+      if (!r.adquiriente) {
+        throw new BadRequestException(`No se puede transcribir el POS con datos del cliente: falta ${r.faltantes.join(', ')}.`);
+      }
+      adquiriente = r.adquiriente;
+    } else {
+      const validacion = validarAdquirienteParaFactura(sale.customer);
+      if (!validacion.esConsumidorFinal && validacion.faltantes.length > 0) {
+        throw new BadRequestException(
+          `No se puede transcribir la factura: en la ficha del cliente falta ${validacion.faltantes.join(', ')}.`,
+        );
+      }
+      adquiriente = this.buildAdquiriente(sale);
+    }
+
+    const doc = await this.armarDocumento(sale, sede);
+    const nitOfe = this.nitParaCodigo(sede.nit);
+    const emisorFiscal = await this.emisores.obtenerPorSede(sedeId);
+    const tipoAmbiente = this.ambienteDe(emisorFiscal);
+    const pin = emisorFiscal ? await this.emisores.leerSecreto(emisorFiscal.id as string, 'facturaPin') : null;
+    if (!pin) throw new BadRequestException(MENSAJE_POS_SIN_PIN.replace('el documento POS', 'el documento de contingencia'));
+
+    const emisor = this.buildEmisor(sede);
+    const superadaAt = opts.superadaAt ?? (talonario ? ahora : ((sale as { createdAt?: Date }).createdAt ?? ahora));
+    const camposPos =
+      solicitado.tipo === 'pos'
+        ? { pagos: pagosPos(sale), cajaVenta: cajaVentaPos(sede, sale), fabricante: fabricanteDesdeEntorno(process.env) }
+        : {};
+
+    return this.emitir({
+      actor: user,
+      counterId: contadorContingenciaAutomatica(sedeId, prefix),
+      // La serie automática: del corte + 1 al final del rango. Agotada, 409.
+      desde: series.automatico.desde,
+      hasta: series.automatico.hasta,
+      prefix,
+      nit: emisor.nit,
+      numeroFijo: talonario?.numero,
+      choqueNumeroFijo: `El número ${prefix}${talonario?.numero ?? ''} del talonario ya fue transcrito.`,
+      existente: () => this.model.findOne({ saleId: sale._id, type: solicitado.tipo }).exec(),
+      exclusion: MENSAJE_EXCLUSION_POS_FEV[solicitado.tipo],
+      construir: (number) => {
+        const fullNumber = `${prefix}${number}`;
+        const cude = calcularCude({
+          numero: fullNumber,
+          fecha: issueDate,
+          hora: issueTime,
+          ...doc.codigoUnico,
+          nitEmisor: nitOfe,
+          numAdquiriente: this.numeroAdquiriente(adquiriente),
+          softwarePin: pin,
+          tipoAmbiente,
+        });
+        return {
+          type: solicitado.tipo,
+          saleId: sale._id,
+          ventaFiscal: sale._id,
+          sedeId: new Types.ObjectId(sedeId),
+          prefix: prefix || undefined,
+          number,
+          fullNumber,
+          issueDate,
+          issueTime,
+          emisor,
+          adquiriente,
+          lines: doc.lines,
+          charges: doc.charges.length ? doc.charges : undefined,
+          ...doc.totales,
+          discountTotal: sale.discountTotal ?? 0,
+          total: doc.totales.payableAmount,
+          formaPago: hasCreditPart(sale) ? '2' : '1',
+          medioPago: MEDIO_PAGO_BY_METHOD[sale.payment.method] ?? '10',
+          ...camposPos,
+          resolution: this.buildResolution(resolucion),
+          tipoAmbiente,
+          aviso: doc.aviso,
+          cufe: cude,
+          qrUrl: dianVerificationUrl(cude, tipoAmbiente),
+          dianStatus: 'draft',
+          contingencia: {
+            tipo,
+            declaradaAt: ahora,
+            superadaAt,
+            // El talonario: su número impreso. La venta sin conexión: su consecutivo de BookiPos.
+            referencia: { id: talonario ? fullNumber : sale.saleNumber, fecha: talonario?.fecha ?? issueDate },
+          },
           createdByEmail: user.email,
         };
       },
@@ -1398,6 +1623,22 @@ export class EinvoicingService {
       );
     }
 
+    if (dto.corteTalonario != null && tipo !== 'contingency') {
+      throw new BadRequestException('El corte del talonario solo aplica a la numeración de contingencia.');
+    }
+    // El corte se conserva si no viene uno nuevo, como la clave técnica: volver
+    // a la mitad en silencio dejaría números de papel ya impresos dentro de la
+    // serie automática, y una venta sin conexión podría tomar uno de ellos
+    // (número repetido ante la DIAN al transcribir el papel).
+    const corteHeredado = dto.corteTalonario == null && tipo === 'contingency' ? previa?.corteTalonario : undefined;
+    const corteTalonario = tipo === 'contingency' ? (dto.corteTalonario ?? corteHeredado) : undefined;
+    if (corteTalonario != null && !corteTalonarioValido(desde, dto.rangoHasta, corteTalonario)) {
+      throw new BadRequestException(
+        corteHeredado != null
+          ? `El corte del talonario guardado (${corteHeredado}) no cabe en el rango nuevo: envía corteTalonario con el corte que corresponde a los talonarios impresos.`
+          : 'El corte del talonario tiene que estar dentro del rango y dejar al menos un número para las ventas sin conexión.',
+      );
+    }
     const nueva = {
       tipoDocumento: tipo,
       numero: dto.numero,
@@ -1412,6 +1653,7 @@ export class EinvoicingService {
       // La clave técnica se conserva si no viene una nueva: es un dato que se
       // teclea una vez y perderlo dejaría la sede sin poder emitir.
       claveTecnica: dto.claveTecnica ?? previa?.claveTecnica,
+      ...(corteTalonario != null ? { corteTalonario } : {}),
     };
     if (tipo === 'invoice') {
       sede.resolucionFe = nueva;
@@ -1431,6 +1673,17 @@ export class EinvoicingService {
         { upsert: true },
       )
       .exec();
+    if (tipo === 'contingency') {
+      // La serie automática arranca en su inicio (corte + 1); si ya hay
+      // números emitidos, el choque del índice sube el contador al mayor.
+      await this.counters
+        .findOneAndUpdate(
+          { _id: contadorContingenciaAutomatica(sedeId, nueva.prefijo ?? '') },
+          { $set: { seq: 0 } },
+          { upsert: true },
+        )
+        .exec();
+    }
 
     // Sin clave técnica en el detalle: solo qué se registró y desde qué número.
     await this.audit?.record({
@@ -1538,9 +1791,9 @@ export class EinvoicingService {
     };
   }
 
-  /** Fecha/hora en zona Colombia (UTC-5, sin DST). */
-  private now(): { issueDate: string; issueTime: string } {
-    const shifted = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
+  /** Fecha/hora en zona Colombia (UTC-5, sin DST); por defecto, ahora. */
+  private now(en: Date = new Date()): { issueDate: string; issueTime: string } {
+    const shifted = new Date(en.getTime() - 5 * 3600 * 1000).toISOString();
     return {
       issueDate: shifted.slice(0, 10),
       issueTime: `${shifted.slice(11, 19)}-05:00`,

@@ -326,6 +326,18 @@ export class EinvoicingController {
   }
 
   /**
+   * Transmite un documento de CONTINGENCIA (Fase 9) y después, en orden, sus
+   * notas. Es lo mismo que hace el cron de reconsulta, a mano. Mismo permiso
+   * que transmitir; el servicio comprueba el acceso a la sede y el bloqueo, y
+   * audita cada envío. Idempotente: lo aceptado no se reenvía.
+   */
+  @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
+  @Post('documentos/:id/contingencia/transmitir')
+  transmitirContingencia(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    return this.transmision.procesarContingencia(id, user);
+  }
+
+  /**
    * Regenera la entrega al adquiriente de un documento ACEPTADO: PDF y
    * AttachedDocument firmado + ZIP en el bucket privado (sin correo). Mismo
    * permiso que transmitir; el servicio comprueba el acceso a la sede, que

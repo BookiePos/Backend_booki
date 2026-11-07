@@ -4,6 +4,7 @@ import type { TipoAmbiente } from '../emisor-fiscal';
 import { descuadresFactura, type ParteUbl } from './factura-ubl';
 import {
   CONSUMIDOR_FINAL_UBL,
+  contingenciaUbl,
   emisorUbl,
   lineas,
   resolucion,
@@ -161,6 +162,7 @@ export function prepararPosUbl(doc: DocumentoPosParaUbl, emisor: EmisorParaUbl):
       nombreSoftware: fab.nombreSoftware?.trim() ?? '',
     },
     pagos: listaPagos,
+    contingencia: contingenciaUbl(doc),
   };
   assertTextoXml(p, '');
   const faltantes = faltantesPos(p);

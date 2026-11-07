@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
+import { TIPOS_CONTINGENCIA, type TipoContingencia } from '../../domain/contingencia';
 import {
   DIAN_STATUS,
   DianStatus,
@@ -174,6 +175,37 @@ export class DocPago {
   @Prop() vence?: string;
 }
 const DocPagoSchema = SchemaFactory.createForClass(DocPago);
+
+/**
+ * Contingencia del documento (Fase 9, `domain/contingencia.ts`): 04/08 si la
+ * DIAN no respondió al expedirlo; 03/07 si se expidió sin BookiPos (talonario o
+ * venta sin conexión) y se transcribió. Ausente en los documentos normales.
+ */
+@Schema({ _id: false })
+export class DocContingencia {
+  @Prop({ required: true, enum: TIPOS_CONTINGENCIA }) tipo!: TipoContingencia;
+  @Prop({ required: true }) declaradaAt!: Date;
+  /** 03/07: cuándo se superó la falla (desde ahí corren las 48 h). */
+  @Prop() superadaAt?: Date;
+  /** 04/08: primera respuesta de la DIAN tras la caída (desde ahí corren las 48 h). */
+  @Prop() restablecidoAt?: Date;
+  /** Documento de origen (talonario, venta sin conexión o el mismo número en la 08). */
+  @Prop({ type: Object }) referencia?: { id: string; fecha: string };
+  /** Envíos sin respuesta antes de declararla (04/08). */
+  @Prop() intentos?: number;
+  /** El documento y sus notas quedaron aceptados: sale de la cola de contingencia. */
+  @Prop() cerradaAt?: Date;
+  /** 04/08: copia del XML original (01/20) antes de refirmarlo (`original.xml`). */
+  @Prop() xmlOriginalPath?: string;
+  /** 04/08: veces que salió el XML de contingencia. */
+  @Prop() enviosXml?: number;
+  /** 04/08: envíos del XML de contingencia a los que la DIAN respondió (en 0, un «ya procesado» es del original). */
+  @Prop() enviosXmlConRespuesta?: number;
+  /** La DIAN ya tenía el original: la contingencia no aplicó y el XML vigente es el original. */
+  @Prop() noAplico?: boolean;
+  @Prop() motivoNoAplico?: string;
+}
+const DocContingenciaSchema = SchemaFactory.createForClass(DocContingencia);
 
 export type ElectronicDocumentDocument = HydratedDocument<ElectronicDocument>;
 
@@ -417,6 +449,12 @@ export class ElectronicDocument {
    */
   @Prop({ type: Object })
   correoEntrega?: Record<string, unknown>;
+  /**
+   * Entrega de la factura 04 al declararla (Fase 9): `reservadaAt`,
+   * `archivosAt`, `correoAt` y `correoEnviado`. Una sola vez por documento.
+   */
+  @Prop({ type: Object })
+  entregaContingencia?: Record<string, unknown>;
 
   /** Motivo del rechazo, solo si la DIAN respondió IsValid=false. */
   @Prop()
@@ -424,6 +462,13 @@ export class ElectronicDocument {
 
   @Prop({ default: 0, min: 0 })
   intentos?: number;
+  /**
+   * Transmisiones a las que la DIAN respondió algo (Fase 9). Mientras valga 0,
+   * la DIAN nunca respondió y el documento todavía puede pasar a contingencia
+   * 04/08. Los envíos RED o que no salieron no cuentan.
+   */
+  @Prop({ default: 0, min: 0 })
+  enviosConRespuesta?: number;
 
   @Prop()
   enviadoAt?: Date;
@@ -451,6 +496,10 @@ export class ElectronicDocument {
   /** Vence el bloqueo: pasado este instante otro intento lo puede tomar. */
   @Prop({ type: Date })
   bloqueoHasta?: Date;
+
+  /** Contingencia (Fase 9). Ver `DocContingencia`. */
+  @Prop({ type: DocContingenciaSchema })
+  contingencia?: DocContingencia;
 
   @Prop({ required: true })
   createdByEmail!: string;
@@ -487,6 +536,11 @@ ElectronicDocumentSchema.index(
 ElectronicDocumentSchema.index({ referenceId: 1, type: 1 });
 
 ElectronicDocumentSchema.index({ dianStatus: 1, reconsultadoAt: 1, enviadoAt: 1 }, { name: 'reconsulta_cola' });
+// Cola de contingencia (Fase 9): documentos de contingencia aún abiertos.
+ElectronicDocumentSchema.index(
+  { 'contingencia.cerradaAt': 1, 'contingencia.declaradaAt': 1 },
+  { name: 'contingencia_cola', partialFilterExpression: { 'contingencia.tipo': { $exists: true } } },
+);
 
 // Único (checklist 1, Fase 1): un solo documento por (emisor, prefijo, número).
 // Si una empresa ya tiene duplicados Mongo no lo crea al arrancar; el informe

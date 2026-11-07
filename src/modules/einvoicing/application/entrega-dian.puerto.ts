@@ -15,6 +15,8 @@ export type EstadoEntrega =
   | 'completa'
   /** Solo el PDF: falta algo para el AttachedDocument (ver `motivo`). */
   | 'incompleta'
+  /** Factura 04 entregada sin validación previa (PDF + XML 04); al aceptarse se rehace con el AttachedDocument. */
+  | 'contingencia'
   /** Ya estaba completa y no se pidió regenerar. */
   | 'ya_entregada'
   /** No aplica (documento no aceptado o de un tipo sin entrega todavía). */
@@ -35,4 +37,9 @@ export interface OpcionesEntrega {
 
 export interface EntregaDian {
   entregar(doc: ElectronicDocumentDocument, opciones?: OpcionesEntrega): Promise<ResultadoEntrega>;
+  /**
+   * Entrega de la factura 04 al declararla (Fase 9): PDF y XML 04 firmado, sin
+   * ApplicationResponse. Idempotente: una sola vez por documento.
+   */
+  entregarContingencia?(doc: ElectronicDocumentDocument): Promise<ResultadoEntrega>;
 }

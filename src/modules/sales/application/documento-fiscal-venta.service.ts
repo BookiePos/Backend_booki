@@ -20,6 +20,7 @@ import {
   type DocumentoFiscalEmitido,
   type EmisionDocumentoFiscal,
 } from './emision-documento-fiscal.puerto';
+import { ContingenciaVentasService } from './contingencia-ventas.service';
 
 /** Token opcional para cambiar el plazo en pruebas. */
 export const PLAZO_EMISION_FISCAL_MS = 'PLAZO_EMISION_FISCAL_MS';
@@ -81,6 +82,11 @@ export class DocumentoFiscalVentaService {
         ? { solicitado, estado: 'pendiente_contingencia_07' }
         : await this.emitirAcotado(sale, solicitado, user);
       await this.guardar(sale, estado);
+      // Fase 9: la venta llegó, la falla se superó. Se transcribe en seguida
+      // (POS 07 / FEV 03) detrás de la respuesta; si no se puede (sin
+      // numeración de contingencia, sin PIN…), queda pendiente con el motivo
+      // para el endpoint manual y la alerta diaria.
+      if (opts.offline) this.transcribirDetras(sale, solicitado, user);
     } catch (err) {
       // Defensa en profundidad: nada de aquí puede romper un cobro ya hecho.
       this.logger.error(
@@ -88,6 +94,29 @@ export class DocumentoFiscalVentaService {
       );
     }
     return sale;
+  }
+
+  private transcribirDetras(sale: SaleDocument, solicitado: DocumentoFiscalSolicitado, user: JwtUser): void {
+    let servicio: ContingenciaVentasService | null = null;
+    try {
+      servicio = this.moduleRef.get(ContingenciaVentasService, { strict: false });
+    } catch {
+      servicio = null;
+    }
+    if (!servicio) return;
+    waitUntil(
+      servicio.transcribir(String(sale._id), user).catch(async (err: unknown) => {
+        const error = this.motivo(err);
+        this.logger.warn(`Venta ${String(sale._id)} sin transcribir en contingencia: ${(err as Error)?.name ?? 'Error'}`);
+        await this.saleModel
+          .updateOne(
+            { _id: sale._id, 'documentoFiscal.estado': 'pendiente_contingencia_07' },
+            { $set: { documentoFiscal: { solicitado, estado: 'pendiente_contingencia_07', error } } },
+          )
+          .exec()
+          .catch(() => undefined);
+      }),
+    );
   }
 
   private puerto(): EmisionDocumentoFiscal | null {

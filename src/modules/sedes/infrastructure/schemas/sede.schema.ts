@@ -53,6 +53,14 @@ export class ResolucionFe {
   /** Clave técnica entregada por la DIAN (para el CUFE). */
   @Prop({ trim: true })
   claveTecnica?: string;
+
+  /**
+   * Solo contingencia (Fase 9): último número de la serie del talonario de
+   * papel; del siguiente al final del rango son las ventas sin conexión. Sin
+   * valor, la mitad del rango (`subrangosContingencia`).
+   */
+  @Prop({ min: 0 })
+  corteTalonario?: number;
 }
 const ResolucionFeSchema = SchemaFactory.createForClass(ResolucionFe);
 

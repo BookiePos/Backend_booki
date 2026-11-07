@@ -92,4 +92,13 @@ export class RegisterResolutionDto {
   @IsInt()
   @Min(1)
   empezarEn?: number;
+
+  /**
+   * Solo contingencia (Fase 9): último número del talonario de papel; del
+   * siguiente al final son las ventas sin conexión. Por defecto, la mitad.
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  corteTalonario?: number;
 }
