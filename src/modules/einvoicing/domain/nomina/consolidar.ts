@@ -33,7 +33,7 @@ import { cop, redondearA, sumCop } from '../../../finance/domain/money.util';
 import { DANE_MUNICIPIO, YYYYMMDD } from '../../../employees/domain/employees.constants';
 import type { PayrollBreakdown } from '../../../payroll/domain/payroll-calc';
 import { MEDIOS_PAGO_NOMINA, NOMBRE_MEDIO_PAGO } from '../../../payroll/domain/pago-nomina';
-import { diasPagablesHastaRetiro } from '../../../payroll/domain/liquidacion-calc';
+import { diasPagablesHastaRetiro, porcentajeExentoCesantias } from '../../../payroll/domain/liquidacion-calc';
 import type { Centavos } from '../redondeo';
 import { centavosDeCop } from '../redondeo';
 import type { DeduccionesNe, DevengadosNe, DiasPagoNe, DocumentoNe, HoraNe, TipoHoraNe } from './modelo';
@@ -129,8 +129,13 @@ export interface LiquidacionConsolidar {
   diasPrima?: number;
   /** Días hábiles de vacaciones pendientes (causados menos disfrutados) que paga la liquidación. */
   diasVacacionesPendientes?: number;
-  /** Salario mensual con que se liquidó (para el aviso de retención de cesantías, art. 206-4 ET). */
+  /** Salario mensual con que se liquidó (respaldo del ingreso promedio de la exención de cesantías, art. 206-4 ET). */
   salarioBase?: number;
+  /**
+   * Retención en la fuente que practicó la liquidación (la de la indemnización, art. 401-3 ET). `undefined` en
+   * las aprobadas antes de calcularla: no se inventa una retención que no se descontó.
+   */
+  retencionFuente?: number;
   cesantias: number;
   interesesCesantias: number;
   prima: number;
@@ -151,7 +156,7 @@ export interface EntradaConsolidar {
   smmlv?: number;
   /** Liquidación de retiro aprobada cuyo retiro cae en el mes. */
   liquidacion?: LiquidacionConsolidar;
-  /** UVT vigente (pesos): para el aviso de retención sobre cesantías. */
+  /** UVT vigente (pesos): para la parte exenta de las cesantías (art. 206-4 ET). */
   uvt?: number;
   /**
    * Devengado total (pesos) de cada mes con colillas cerradas en los últimos 6
@@ -505,17 +510,13 @@ function clasificarDeducciones(
 
 /** Tasa de los intereses de cesantías (Ley 52 de 1975): `Cesantias@Porcentaje`. */
 const INTERESES_CESANTIAS_PCT = 12;
-/**
- * Salario mensual promedio por encima del cual las cesantías y sus intereses
- * dejan de ser exentos del todo (art. 206 num. 4 ET), en UVT.
- * A CONFIRMAR con el contador: tope vigente y si se mide con el promedio de los últimos 6 meses.
- */
-const TOPE_CESANTIAS_EXENTAS_UVT = 350;
 
 /**
  * Nodos del retiro (anexo §3): Cesantias (pago, 12.00, intereses), Primas
  * (días del semestre), VacacionesCompensadas (días = días liquidados × 15 /
  * 360) e Indemnizacion. El último sueldo NO va aquí: va en la colilla del mes.
+ * Devuelve la retención en la fuente que practicó la liquidación (pesos), que
+ * se suma a la de las colillas en `RetencionFuente`.
  */
 function agregarLiquidacion(
   d: DevengadosNe,
@@ -525,7 +526,7 @@ function agregarLiquidacion(
   advertencias: string[],
   uvt: number | undefined,
   devengados6m: number[] | undefined,
-): void {
+): number {
   const importes: [string, number][] = [
     ['cesantías', liq.cesantias],
     ['intereses de cesantías', liq.interesesCesantias],
@@ -533,17 +534,18 @@ function agregarLiquidacion(
     ['vacaciones', liq.vacaciones],
     ['indemnización', liq.indemnizacion],
     ['salarios pendientes', liq.salariosPendientes],
+    ...(liq.retencionFuente !== undefined ? ([['retención en la fuente', liq.retencionFuente]] as [string, number][]) : []),
   ];
   const malos = importes.filter(([, v]) => !Number.isInteger(v) || v < 0).map(([k, v]) => `${k} (${String(v)})`);
   if (malos.length > 0) {
     bloqueos.push(`${quien}: la liquidación de retiro trae importes que no son pesos enteros no negativos: ${malos.join(', ')}.`);
-    return;
+    return 0;
   }
   if (liq.salariosPendientes > 0) {
     bloqueos.push(
       `${quien}: la liquidación de retiro trae ${liq.salariosPendientes} de salarios pendientes; el último sueldo va en la nómina del mes, con salud y pensión. Anúlala y guárdala de nuevo sin ese valor.`,
     );
-    return;
+    return 0;
   }
   if (liq.cesantias > 0 || liq.interesesCesantias > 0) {
     d.cesantias = {
@@ -555,38 +557,48 @@ function agregarLiquidacion(
   if (liq.prima > 0) {
     if (!Number.isInteger(liq.diasPrima) || (liq.diasPrima ?? 0) <= 0) {
       bloqueos.push(`${quien}: la liquidación de retiro no trae los días del semestre de la prima. Anúlala y guárdala de nuevo.`);
-      return;
+      return 0;
     }
     d.primas = { dias: liq.diasPrima!, pago: centavosDeCop(liq.prima) };
   }
   if (liq.vacaciones > 0) {
     // Los días que se pagan: causados (15 por año, art. 186 CST) menos los ya disfrutados (art. 189).
-    // Con pago, al menos 1 día. Las compensadas no son salario ni base de salud y pensión (art. 189 CST, a confirmar):
-    // a confirmar con concepto UGPP vigente.
+    // Con pago, al menos 1 día. Las compensadas no son salario ni base de salud y pensión (CST art. 189; la
+    // cotización de vacaciones es la de las disfrutadas, Decreto 806/1998 art. 70); sí de parafiscales
+    // (Consejo de Estado, exp. 27226, 11-may-2023). Verificado el 2026-11-06 (tarea 14, punto 2).
     const pendientes = liq.diasVacacionesPendientes;
     if (typeof pendientes !== 'number' || !Number.isFinite(pendientes) || pendientes < 0) {
       bloqueos.push(
         `${quien}: la liquidación de retiro no trae los días de vacaciones pendientes (causados menos disfrutados). Anúlala y guárdala de nuevo.`,
       );
-      return;
+      return 0;
     }
     d.vacacionesCompensadas = [{ dias: Math.max(1, redondearA(pendientes, 0)), pago: centavosDeCop(liq.vacaciones) }];
   }
   if (liq.indemnizacion > 0) {
     d.indemnizacion = centavosDeCop(liq.indemnizacion);
-    advertencias.push(
-      `${quien}: la indemnización (${liq.indemnizacion}) puede llevar retención en la fuente (art. 401-3 ET) y BookiPos no la calcula. Confírmalo con el contador antes de emitir.`,
-    );
+    if (liq.retencionFuente === undefined) {
+      // Liquidación aprobada antes de calcular la retención del art. 401-3 ET: se pagó sin descontarla.
+      advertencias.push(
+        `${quien}: la liquidación de retiro se aprobó sin calcular la retención de la indemnización (20 % si el ingreso mensual pasa de 204 UVT, art. 401-3 ET); el documento no reporta retención sobre ella. Si correspondía, anúlala y apruébala de nuevo para que BookiPos la calcule.`,
+      );
+    }
   }
   // Art. 206-4 ET: se mide con el ingreso mensual PROMEDIO de los últimos 6 meses (devengado total de las
-  // colillas, con horas extra, recargos y demás variables); sin colillas, el salario pactado.
+  // colillas, con horas extra, recargos y demás variables); sin colillas, el salario pactado. Las cesantías
+  // NUNCA llevan retención (DUR 1625/2016 art. 1.2.4.1.11): la parte no exenta la declara el trabajador.
   const meses = (devengados6m ?? []).filter((v) => Number.isFinite(v) && v > 0);
   const promedio = meses.length > 0 ? cop(sumCop(meses) / meses.length) : (liq.salarioBase ?? 0);
-  if (liq.cesantias + liq.interesesCesantias > 0 && enteroPositivo(uvt) && promedio > TOPE_CESANTIAS_EXENTAS_UVT * uvt) {
-    advertencias.push(
-      `${quien}: con ingreso mensual promedio de ${promedio} en los últimos ${meses.length || 1} mes(es) (más de ${TOPE_CESANTIAS_EXENTAS_UVT} UVT) las cesantías e intereses no son exentos del todo (art. 206 num. 4 ET) y BookiPos no calcula esa retención. Confírmalo con el contador.`,
-    );
+  const ces = liq.cesantias + liq.interesesCesantias;
+  if (ces > 0 && enteroPositivo(uvt)) {
+    const exento = porcentajeExentoCesantias(promedio, uvt);
+    if (exento < 1) {
+      advertencias.push(
+        `${quien}: con ingreso mensual promedio de ${promedio} en los últimos ${meses.length || 1} mes(es), las cesantías e intereses (${ces}) son exentos solo en un ${redondearA(exento * 100, 0)} % (art. 206 num. 4 ET); la parte gravada (${ces - cop(ces * exento)}) no lleva retención en la fuente (DUR 1625/2016 art. 1.2.4.1.11) y va en el certificado de ingresos y retenciones para que el trabajador la declare.`,
+      );
+    }
   }
+  return liq.retencionFuente ?? 0;
 }
 
 // ── Consolidación ───────────────────────────────────────────────────────────
@@ -655,7 +667,8 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
       bloqueos.push(`${quien}: la liquidación se pagó el ${p.fecha}, antes de ${periodo}. Corrígela.`);
     } else {
       const l = liq;
-      pagos.push({ ...p, valor: sumCop([l.cesantias, l.interesesCesantias, l.prima, l.vacaciones, l.indemnizacion]) });
+      const bruto = sumCop([l.cesantias, l.interesesCesantias, l.prima, l.vacaciones, l.indemnizacion]);
+      pagos.push({ ...p, valor: Math.max(0, bruto - (l.retencionFuente ?? 0)) });
     }
   }
   // El XSD admite un solo nodo Pago: manda el medio por el que se pagó MÁS en el mes (con empate, el último).
@@ -763,8 +776,9 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     comisiones: comisiones > 0 ? [centavosDeCop(comisiones)] : [],
     pagosTerceros: [],
   };
+  let retencionLiquidacion = 0;
   if (liq) {
-    agregarLiquidacion(devengados, liq, quien, bloqueos, advertencias, entrada.uvt, entrada.devengadoUltimos6Meses);
+    retencionLiquidacion = agregarLiquidacion(devengados, liq, quien, bloqueos, advertencias, entrada.uvt, entrada.devengadoUltimos6Meses);
     // La colilla del mes no puede pagar días después del retiro: pasa si la corrida se cerró antes de aprobar
     // la liquidación (con el mes entero). No se reporta; la corrida cerrada no se recalcula, así que se corrige
     // con el contador (pago de más) y una nueva corrida o ajuste.
@@ -783,22 +797,18 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     }
   }
 
-  // Retención: incapacidades y licencias pueden ser renta exenta (art. 206 ET); BookiPos las deja en la base.
-  const conIncapOLicencia = colillas.some((c) =>
-    (c.breakdown.devengados.ausenciaDetalle ?? []).some((l) => l.tipo !== 'vacaciones'),
-  );
-  if (conIncapOLicencia) {
-    advertencias.push(
-      `${quien}: tiene incapacidades o licencias en ${periodo}; su tratamiento en retención en la fuente está a confirmar con el contador (ET 206).`,
-    );
-  }
+  // Retención: incapacidades y licencias NO son renta exenta y van en la base de la colilla (tarea 14, punto 6).
+  // El num. 1 del art. 206 ET exime la INDEMNIZACIÓN por accidente de trabajo o enfermedad, no el pago de la
+  // incapacidad (Oficio DIAN 000321 de 2015, que revocó la doctrina contraria); el num. 2 exime indemnizaciones
+  // de protección a la maternidad, no las licencias, que llevan retención (Oficio DIAN 901191 de 2020). Les
+  // aplica el 25 % del num. 10, como a todo pago laboral. Verificado el 2026-11-06.
 
   // ── Deducciones ──
   const ibc = sum((b) => b.ibc);
   const salud = sum((b) => b.deducciones.salud);
   const pension = sum((b) => b.deducciones.pension);
   const fsp = sum((b) => b.deducciones.fsp);
-  const retencion = sum((b) => b.deducciones.retencionFuente);
+  const retencion = sum((b) => b.deducciones.retencionFuente) + retencionLiquidacion;
 
   if (e.subTipoTrabajador === '01' && pension > 0) {
     bloqueos.push(

@@ -517,6 +517,7 @@ export class NominaPeriodoService {
               vacaciones: liq.breakdown.vacaciones,
               indemnizacion: liq.breakdown.indemnizacion,
               salariosPendientes: liq.breakdown.salariosPendientes,
+              ...(liq.breakdown.retencionFuente !== undefined ? { retencionFuente: liq.breakdown.retencionFuente } : {}),
               pago: liq.pago,
             },
           }
