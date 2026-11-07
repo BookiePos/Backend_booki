@@ -35,6 +35,25 @@ export const DESCARGA_SEGUNDOS = 120;
 const ESTADOS_REINTENTABLES = ['draft', 'signed', 'sent', 'rejected'];
 const EMAIL = /^[^\s@<>"',;]{1,64}@[^\s@<>"',;]{1,255}\.[A-Za-z]{2,}$/;
 
+/**
+ * Contingencia del documento tal como la ve la pantalla: los mismos campos que
+ * devuelve `GET /einvoicing/:id`, sin la ruta del XML original en el bucket
+ * (`xmlOriginalPath`), que nunca sale de la API.
+ */
+export interface ContingenciaDocumentoFe {
+  tipo: string;
+  declaradaAt: Date;
+  superadaAt?: Date;
+  restablecidoAt?: Date;
+  referencia?: { id: string; fecha: string };
+  intentos?: number;
+  cerradaAt?: Date;
+  enviosXml?: number;
+  enviosXmlConRespuesta?: number;
+  noAplico?: boolean;
+  motivoNoAplico?: string;
+}
+
 export interface DetalleDocumentoFe {
   id: string;
   tipo: string;
@@ -58,6 +77,8 @@ export interface DetalleDocumentoFe {
   puedeReintentar: boolean;
   entrega?: { estado?: string; motivo?: string; archivo?: string };
   descargas: { xml: boolean; pdf: boolean; zip: boolean };
+  /** Solo los documentos de contingencia (03/04/07/08). */
+  contingencia?: ContingenciaDocumentoFe;
   correo: { envios: number; restantes: number; ultimoAt?: Date; puedeEnviar: boolean };
 }
 
@@ -132,12 +153,31 @@ export class DocumentoFeVistaService {
       puedeReintentar: ESTADOS_REINTENTABLES.includes(doc.dianStatus),
       entrega: entrega ? { estado: entrega.estado, motivo: entrega.motivo, archivo: entrega.archivo } : undefined,
       descargas: { xml: Boolean(doc.xmlPath), pdf: Boolean(doc.pdfPath), zip: Boolean(doc.attachedPath) },
+      contingencia: this.contingenciaVista(doc.contingencia),
       correo: {
         envios,
         restantes: Math.max(0, CORREO_MAX_ENVIOS - envios),
         ultimoAt,
         puedeEnviar: aceptado && doc.type === 'invoice' && envios < CORREO_MAX_ENVIOS,
       },
+    };
+  }
+
+  /** La contingencia del documento sin datos internos (ruta del XML original). */
+  private contingenciaVista(c: ElectronicDocumentDocument['contingencia']): ContingenciaDocumentoFe | undefined {
+    if (!c?.tipo) return undefined;
+    return {
+      tipo: c.tipo,
+      declaradaAt: c.declaradaAt,
+      superadaAt: c.superadaAt,
+      restablecidoAt: c.restablecidoAt,
+      referencia: c.referencia,
+      intentos: c.intentos,
+      cerradaAt: c.cerradaAt,
+      enviosXml: c.enviosXml,
+      enviosXmlConRespuesta: c.enviosXmlConRespuesta,
+      noAplico: c.noAplico,
+      motivoNoAplico: c.motivoNoAplico,
     };
   }
 

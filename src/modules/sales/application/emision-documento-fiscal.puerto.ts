@@ -62,6 +62,12 @@ export interface TranscripcionContingencia {
   ): Promise<DocumentoFiscalEmitido>;
   /** Documento y después sus notas. Nunca lanza. */
   transmitirContingencia(documentoId: string, user: JwtUser): Promise<void>;
+  /**
+   * De esos documentos, los que son de contingencia, con cuántas de sus notas
+   * siguen sin aceptar la DIAN (por transmitir). Un documento normal no sale
+   * en el resultado. Opcional: sin él no se sabe cuáles son de contingencia.
+   */
+  notasPorTransmitir?(documentoIds: string[]): Promise<Record<string, number>>;
 }
 
 /** Concepto de corrección de la nota crédito (DiscrepancyResponse). */

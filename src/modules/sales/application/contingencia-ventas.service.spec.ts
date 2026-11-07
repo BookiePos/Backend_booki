@@ -144,4 +144,79 @@ describe('ContingenciaVentasService', () => {
     expect(r.notas).toEqual([]);
     expect(puerto.transcribirContingencia).toHaveBeenCalledTimes(1);
   });
+  describe('conNotasPendientes', () => {
+    const venta = (o: any = {}) => ({
+      _id: new Types.ObjectId(),
+      status: 'completed',
+      documentoFiscal: { solicitado: 'pos_anonimo', estado: 'emitido', documentoId: 'd1' },
+      ...o,
+    });
+    /** Devoluciones sin nota que devuelve el modelo, por venta. */
+    const conRegistros = (ids: unknown[]) => {
+      returnModel.find = vi.fn(() => {
+        const c: any = { select: () => c, lean: () => c, exec: async () => ids.map((saleId) => ({ saleId })) };
+        return c;
+      });
+    };
+
+    it('suma devoluciones sin nota, anulación sin nota y notas sin aceptar en una venta emitida de contingencia', async () => {
+      const v = venta({ status: 'void' });
+      conRegistros([v._id, v._id]);
+      puerto.notasPorTransmitir = vi.fn(async () => ({ d1: 3 }));
+      const [r] = await svc.conNotasPendientes([v]);
+      expect((r as any).documentoFiscal.notasPendientes).toBe(2 + 1 + 3);
+      expect(returnModel.find).toHaveBeenCalledWith({ saleId: { $in: [v._id] }, 'notaFiscal.estado': { $nin: ['emitida', 'sin_nota'] } });
+    });
+
+    it('las notas resueltas «sin_nota» no cuentan: el número puede bajar a 0', async () => {
+      const v = venta({ status: 'void', notaAnulacion: { estado: 'sin_nota' } });
+      conRegistros([]);
+      puerto.notasPorTransmitir = vi.fn(async () => ({ d1: 0 }));
+      const [r] = await svc.conNotasPendientes([v]);
+      expect((r as any).documentoFiscal.notasPendientes).toBe(0);
+      // El filtro que consulta excluye sin_nota; el del reintento no se tocó.
+      const filtro = (returnModel.find as any).mock.calls[0][0];
+      expect(filtro['notaFiscal.estado']).toEqual({ $nin: ['emitida', 'sin_nota'] });
+    });
+
+    it('si notasPorTransmitir falla no se cae el listado: todo da 0', async () => {
+      puerto.notasPorTransmitir = vi.fn(async () => {
+        throw new Error('mongo caído');
+      });
+      const [r] = await svc.conNotasPendientes([venta()]);
+      expect((r as any).documentoFiscal.notasPendientes).toBe(0);
+    });
+
+    it('con todo emitido y aceptado da 0 (no ofrece Transcribir)', async () => {
+      const v = venta({ status: 'void', notaAnulacion: { estado: 'emitida' } });
+      conRegistros([]);
+      puerto.notasPorTransmitir = vi.fn(async () => ({ d1: 0 }));
+      const [r] = await svc.conNotasPendientes([v]);
+      expect((r as any).documentoFiscal.notasPendientes).toBe(0);
+    });
+
+    it('un documento normal (no de contingencia) da 0 y no consulta devoluciones', async () => {
+      const find = returnModel.find;
+      puerto.notasPorTransmitir = vi.fn(async () => ({}));
+      const [r] = await svc.conNotasPendientes([venta()]);
+      expect((r as any).documentoFiscal.notasPendientes).toBe(0);
+      expect(returnModel.find).toBe(find);
+      expect(returnModel.find).not.toHaveBeenCalled();
+    });
+
+    it('una venta pendiente de transcribir o sin documento fiscal no consulta nada', async () => {
+      puerto.notasPorTransmitir = vi.fn();
+      const pendiente = venta({ documentoFiscal: { solicitado: 'pos_anonimo', estado: 'pendiente_contingencia_07' } });
+      const sinFiscal = { _id: new Types.ObjectId(), status: 'completed' };
+      const [a, b] = await svc.conNotasPendientes([pendiente, sinFiscal]);
+      expect((a as any).documentoFiscal.notasPendientes).toBe(0);
+      expect(b).toBe(sinFiscal);
+      expect(puerto.notasPorTransmitir).not.toHaveBeenCalled();
+    });
+
+    it('sin el método en el puerto no puede saber cuáles son de contingencia: 0', async () => {
+      const [r] = await svc.conNotasPendientes([venta()]);
+      expect((r as any).documentoFiscal.notasPendientes).toBe(0);
+    });
+  });
 });
