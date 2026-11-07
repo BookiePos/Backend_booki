@@ -97,7 +97,7 @@ export interface PayrollBreakdown {
     pension: number;
     fsp: number;
     retencionFuente: number;
-    /** 4 % de pensión de los días de licencia no remunerada, a cargo del trabajador (A CONFIRMAR con el contador). */
+    /** 4 % de pensión de los días de licencia no remunerada, a cargo del trabajador (Res. 2388/2016, mod. Res. 221/2024). */
     pensionLicenciaNR?: number;
     otras: number;
     total: number;
@@ -121,6 +121,8 @@ export interface PayrollBreakdown {
   netoPagar: number;
   costoEmpleador: number;
   baseRetencionUvt: number;
+  /** Renta exenta del 25 % (ET 206 num. 10) que tomó la colilla, en pesos: la comparte la indemnización del retiro. */
+  rentaExenta25?: number;
 }
 
 const round = cop;
@@ -378,9 +380,12 @@ export function computeSlip(
   const baseGravable = Math.max(0, ingresoNeto - beneficios);
   const retencionFuente = retencion383(baseGravable, s);
   const otras = round(nov.otrasDeducciones ?? 0);
-  // Licencia no remunerada: el trabajador aporta su 4 % de pensión sobre esos
-  // días (Decreto 1406/1999 art. 71); se le descuenta aquí aunque no haya pago
-  // y, si el neto no alcanza, el saldo sigue la regla de arrastre. A confirmar con el contador.
+  // Licencia no remunerada (SLN): el contrato sigue vigente y la cotización a pensión es obligatoria
+  // (Ley 100/1993 art. 17). La PILA admite, en aportantes privados, 12 % (solo empleador) o 16 % (empleador
+  // y trabajador): Res. 2388/2016, Anexo Técnico 2, num. 2.1.2.3.10, modificado por la Res. 221 del
+  // 15-feb-2024 de MinSalud. BookiPos cotiza el 16 % para no dejarle semanas incompletas al trabajador: su
+  // 4 % se le descuenta aquí aunque no haya pago y, si el neto no alcanza, sigue la regla de arrastre.
+  // Base: el último salario (IBC) de esos días, piso 1 SMMLV. Verificado el 2026-11-06 (tarea 14, punto 4).
   const pensionLicenciaNR = round((aus?.basePensionNoRemunerada ?? 0) * s.pensionEmpleado);
 
   const totalDeducciones = salud + pension + fsp + retencionFuente + otras + pensionLicenciaNR;
@@ -393,10 +398,13 @@ export function computeSlip(
     !integral &&
     input.salarioBase < s.exoneracionSmmlv * s.smmlv;
   const arlRate = input.arlRiskLevel ? s.arlRates[input.arlRiskLevel] : 0;
-  const apSalud = exonera ? 0 : round(ibc * s.saludEmpleador);
-  // Licencia no remunerada: solo el aporte a pensión del empleador sobre el
-  // salario de esos días (Decreto 1406/1999 art. 71; A CONFIRMAR con el contador).
-  const apPension = round(ibc * s.pensionEmpleador) + round((aus?.basePensionNoRemunerada ?? 0) * s.pensionEmpleador);
+  // Licencia no remunerada: salud solo la parte del empleador (8,5 %) sobre el último salario base
+  // reportado; el trabajador no aporta (Decreto 806/1998 art. 71, compilado en el Decreto 780/2016), y con
+  // exoneración del art. 114-1 ET la tarifa es cero (Res. 2388/2016 mod. Res. 221/2024, num. 15 del cap. 4).
+  // Pensión: el 12 % del empleador sobre la misma base. ARL y parafiscales no: no hay trabajo ni salario.
+  const baseLnr = aus?.basePensionNoRemunerada ?? 0;
+  const apSalud = exonera ? 0 : round(ibc * s.saludEmpleador) + round(baseLnr * s.saludEmpleador);
+  const apPension = round(ibc * s.pensionEmpleador) + round(baseLnr * s.pensionEmpleador);
   const apArl = round(ibc * arlRate);
   const apCcf = round(ibc * s.ccf);
   const apSena = exonera ? 0 : round(ibc * s.sena);
@@ -466,5 +474,6 @@ export function computeSlip(
     netoPagar,
     costoEmpleador,
     baseRetencionUvt: baseUvtDe(baseGravable, s),
+    rentaExenta25: cop(Math.max(0, rentaExenta)),
   };
 }

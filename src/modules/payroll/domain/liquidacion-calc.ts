@@ -34,6 +34,18 @@ export interface LiquidacionInput {
   inicioCesantias?: string;
   /** Días hábiles de vacaciones ya disfrutados (o compensados) en todo el contrato (CST arts. 186 y 189). */
   vacacionesDisfrutadasDias?: number;
+  /**
+   * Ingreso mensual promedio (pesos) de los últimos 6 meses: devengado total de
+   * las colillas cerradas. Mide la exención de las cesantías (ET 206-4) y el
+   * umbral de retención de la indemnización (ET 401-3). Sin él, el salario base.
+   */
+  ingresoMensualPromedio?: number;
+  /**
+   * Renta exenta del 25 % (ET 206 num. 10) que ya usaron las colillas CERRADAS
+   * del mes del retiro (pesos). El tope mensual de 790/12 UVT lo comparten con
+   * la indemnización. Sin colilla cerrada, 0: la indemnización usa el tope entero.
+   */
+  rentaExentaUsadaMes?: number;
 }
 
 export interface LiquidacionBreakdown {
@@ -58,6 +70,89 @@ export interface LiquidacionBreakdown {
   detalleIndemnizacion?: string;
   salariosPendientes: number;
   total: number;
+  /** Ingreso mensual promedio con que se midieron la exención de cesantías y la retención (pesos). */
+  ingresoMensualPromedio?: number;
+  /** Parte exenta de cesantías e intereses (0 a 1, ET 206-4). No lleva retención (DUR 1625/2016 art. 1.2.4.1.11). */
+  porcentajeExentoCesantias?: number;
+  /**
+   * Retención en la fuente de la liquidación: la de la indemnización (ET 401-3).
+   * Ausente en liquidaciones guardadas antes de calcularla (tarea 14 del dueño).
+   */
+  retencionFuente?: number;
+  detalleRetencion?: string;
+  /** Lo que se le paga: `total` menos la retención. */
+  netoPagar?: number;
+}
+
+/**
+ * Exención de cesantías e intereses por ingreso mensual promedio de los últimos
+ * 6 meses (ET art. 206 num. 4, texto vigente; valores en UVT, sin cambio para
+ * 2026). Hasta 350 UVT es 100 % exento; desde 650 UVT, nada.
+ * Fuente: Estatuto Tributario art. 206 num. 4 (Secretaría del Senado /
+ * normograma DIAN), escala transcrita en gerencie.com «Cesantías exentas del
+ * impuesto a la renta», consultado el 2026-11-06.
+ */
+export const TABLA_EXENCION_CESANTIAS_ET_206_4: { hastaUvt: number | null; exento: number }[] = [
+  { hastaUvt: 350, exento: 1 },
+  { hastaUvt: 410, exento: 0.9 },
+  { hastaUvt: 470, exento: 0.8 },
+  { hastaUvt: 530, exento: 0.6 },
+  { hastaUvt: 590, exento: 0.4 },
+  { hastaUvt: 650, exento: 0.2 },
+  { hastaUvt: null, exento: 0 },
+];
+
+/**
+ * Parte exenta (0 a 1) de cesantías e intereses según el ingreso mensual
+ * promedio (pesos) y la UVT del año (ET 206-4). Cada tramo incluye su tope:
+ * «mayor de 350 y hasta 410 UVT» es 90 %.
+ */
+export function porcentajeExentoCesantias(ingresoMensualPromedio: number, uvt: number): number {
+  if (!(uvt > 0)) return 1;
+  const enUvt = ingresoMensualPromedio / uvt;
+  for (const t of TABLA_EXENCION_CESANTIAS_ET_206_4) {
+    if (t.hastaUvt === null || enUvt <= t.hastaUvt) return t.exento;
+  }
+  return 0;
+}
+
+/**
+ * Retención sobre indemnizaciones laborales: 20 % (ET art. 401-3, adicionado
+ * por la Ley 488/1998 art. 27) para trabajadores con ingresos mensuales
+ * superiores a 204 UVT (DUR 1625/2016 art. 1.2.4.1.13, del Decreto 379/2007,
+ * que reexpresó en UVT los 10 SMMLV de la ley). Con 204 UVT o menos, no hay
+ * retención por este concepto. Fuente: normograma del DUR 1625/2016 (cancilleria.gov.co,
+ * decreto_1625_2016_pr011), consultado el 2026-11-06.
+ */
+export const RETENCION_INDEMNIZACION_TARIFA_ET_401_3 = 0.2;
+export const RETENCION_INDEMNIZACION_UMBRAL_UVT_DUR_1_2_4_1_13 = 204;
+
+/**
+ * Retención de la indemnización (ET 401-3). El 25 % es renta exenta (ET 206
+ * num. 10) porque la indemnización es un pago laboral (Oficio DIAN 024563 del
+ * 26-sep-2019). Forma estrictamente prudente (A CONFIRMAR con el contador): el
+ * tope mensual de esa renta exenta (790 UVT al año / 12, Ley 2277/2022) lo
+ * comparten la colilla del mes del retiro y la indemnización, así que se le
+ * resta lo que ya usó la colilla (`exentaUsadaMes`). El agente retenedor
+ * responde por lo que deje de retener. Se practica aparte de la retención del
+ * salario del mes.
+ *
+ * `ingresoMensual` mide el umbral de 204 UVT con lo que el trabajador DEVENGA
+ * (Concepto DIAN 030573 de 2015): el mayor entre el salario mensual y el promedio.
+ */
+export function retencionIndemnizacion(
+  indemnizacion: number,
+  ingresoMensual: number,
+  s: Pick<PayrollSettingsData, 'uvt' | 'rentaExentaPorc' | 'rentaExentaMaxUvtMes'>,
+  exentaUsadaMes = 0,
+): { retencion: number; exenta: number; base: number } {
+  if (indemnizacion <= 0 || !(s.uvt > 0) || ingresoMensual <= RETENCION_INDEMNIZACION_UMBRAL_UVT_DUR_1_2_4_1_13 * s.uvt) {
+    return { retencion: 0, exenta: 0, base: 0 };
+  }
+  const topeDisponible = Math.max(0, s.rentaExentaMaxUvtMes * s.uvt - Math.max(0, exentaUsadaMes));
+  const exenta = cop(Math.min(indemnizacion * s.rentaExentaPorc, topeDisponible));
+  const base = indemnizacion - exenta;
+  return { retencion: cop(base * RETENCION_INDEMNIZACION_TARIFA_ET_401_3), exenta, base };
 }
 
 const round = cop;
@@ -147,8 +242,11 @@ export function computeLiquidacion(
 
   // Vacaciones: 15 días hábiles por año de servicio (art. 186 CST), menos los
   // ya disfrutados; se pagan los pendientes (art. 189), sin auxilio. Las
-  // compensadas al retiro no son salario ni base de salud y pensión (art. 189 CST, a confirmar; las
-  // disfrutadas sí, Decreto 1406/1999 art. 40): a confirmar con concepto UGPP vigente.
+  // compensadas al retiro no son base de salud ni pensión: la compensación en dinero no es salario
+  // (CST art. 189) y la cotización «durante vacaciones» es la de las disfrutadas (Decreto 806/1998 art. 70,
+  // Decreto 1406/1999 art. 40). Así lo planteó la propia UGPP en el exp. 27226 del Consejo de Estado
+  // (Sección 4.ª, 11-may-2023), que además fijó que SÍ son base de parafiscales SENA/ICBF/CCF (Ley 21/1982
+  // art. 17). Verificado el 2026-11-06 (tarea 14 del dueño, punto 2).
   const diasVacacionesCausados = redondearA((dias * 15) / 360, 2);
   const disfrutadas = Math.max(0, input.vacacionesDisfrutadasDias ?? 0);
   // El pago sale de los días exactos; los redondeados a 2 decimales son para mostrar y reportar.
@@ -191,6 +289,23 @@ export function computeLiquidacion(
     indemnizacion +
     salariosPendientes;
 
+  // Retención (tarea 14 del dueño, punto 1). Cesantías e intereses: NUNCA llevan retención
+  // (DUR 1625/2016 art. 1.2.4.1.11); su parte no exenta la declara el trabajador. Indemnización: 20 %.
+  // El promedio de 6 meses mide la escala del 206-4. El umbral del 401-3 se mide con lo que devenga HOY
+  // (Concepto DIAN 030573 de 2015): el mayor entre el salario mensual y el promedio. Así un retiro el día 5,
+  // cuya última colilla baja el promedio, no deja de retener.
+  const ingresoMensual =
+    input.ingresoMensualPromedio && input.ingresoMensualPromedio > 0 ? cop(input.ingresoMensualPromedio) : salarioBase;
+  const ingresoUmbral401 = Math.max(salarioBase, ingresoMensual);
+  const pctExento = porcentajeExentoCesantias(ingresoMensual, s.uvt);
+  const ret = retencionIndemnizacion(indemnizacion, ingresoUmbral401, s, input.rentaExentaUsadaMes ?? 0);
+  const detalleRetencion =
+    indemnizacion > 0
+      ? ret.retencion > 0
+        ? `Indemnización: 20 % sobre ${ret.base} (25 % exento: ${ret.exenta}${input.rentaExentaUsadaMes ? `; la colilla del mes ya usó ${cop(input.rentaExentaUsadaMes)} del tope` : ''}), ingreso mensual > 204 UVT (art. 401-3 ET)`
+        : 'Indemnización sin retención: ingreso mensual de 204 UVT o menos (art. 401-3 ET)'
+      : undefined;
+
   return {
     diasLiquidados: dias,
     diasPrima,
@@ -210,5 +325,10 @@ export function computeLiquidacion(
     detalleIndemnizacion,
     salariosPendientes,
     total,
+    ingresoMensualPromedio: ingresoMensual,
+    porcentajeExentoCesantias: pctExento,
+    retencionFuente: ret.retencion,
+    ...(detalleRetencion ? { detalleRetencion } : {}),
+    netoPagar: total - ret.retencion,
   };
 }

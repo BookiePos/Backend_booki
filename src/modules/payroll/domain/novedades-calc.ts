@@ -9,13 +9,15 @@
  * comercial): así un mes entero de ausencia siempre da 30.
  * Las prórrogas y los umbrales de 2, 90 y 180 días van en días calendario.
  *
- * Reglas (a confirmar con el contador donde se indica):
+ * Reglas (verificadas el 2026-11-06, tarea 14 del dueño):
  * - Vacaciones disfrutadas: salario de los días (art. 186 CST); cotizan a
  *   salud y pensión (Decreto 1406/1999 art. 40). Con salario variable, el art.
  *   192 CST manda el promedio del último año: se usa `salarioPromedio` si viene.
- * - Incapacidad común: 2/3 del salario los primeros 90 días y 1/2 del 91 al
- *   180 (art. 227 CST), nunca menos del SMMLV diario. Los 2 primeros días los
- *   paga el empleador y desde el 3 la EPS (Decreto 2943/2013); desde el 181,
+ * - Incapacidad común: 2/3 (66,67 %) del IBC los primeros 90 días y 1/2 del 91
+ *   al 180 (art. 227 CST), nunca menos del SMMLV diario. Los 2 primeros días
+ *   los paga el empleador y desde el 3 la EPS (Decreto 2943/2013, hoy Decreto
+ *   780/2016 art. 3.2.1.10; Decreto 1427/2022 sustituyó el título de
+ *   incapacidades sin cambiar esos porcentajes); desde el 181,
  *   el fondo de pensiones (Decreto-ley 019/2012 art. 142, que modificó el art.
  *   41 de la Ley 100/1993).
  * - Incapacidad laboral o profesional: 100 % del salario desde el día 1, a
@@ -24,8 +26,10 @@
  *   (art. 236 CST, Ley 1822/2017; Ley 2114/2021).
  * - Licencia remunerada (luto, calamidad, sufragio…): 100 %, empleador.
  * - Con salario integral, incapacidades y licencias de maternidad/paternidad
- *   se liquidan sobre el IBC (70 %, art. 132 CST). Vacaciones y licencia
- *   remunerada son salario del empleador y van al 100 %.
+ *   se liquidan sobre el IBC (70 %, art. 132 CST y Ley 797/2003 art. 5): la
+ *   prestación se reconoce sobre lo cotizado (conceptos de MinSalud de 2013 y
+ *   MinTrabajo de 2014). Vacaciones y licencia remunerada
+ *   son salario del empleador y van al 100 %.
  *
  * Límites conocidos:
  * - Dos novedades parciales que juntas cubren un febrero entero no se
@@ -33,8 +37,10 @@
  *   faltan quedan como días básicos aunque no haya turnos.
  * - Licencia no remunerada: no paga; suspende el contrato (art. 51 CST). Se
  *   cotiza pensión: 16 % sobre el último salario (piso 1 SMMLV), 12 % del
- *   empleador y 4 % del trabajador, que se le descuenta en la colilla
- *   (Decreto 1406/1999 art. 71): A CONFIRMAR con el contador.
+ *   empleador y 4 % del trabajador, que se le descuenta en la colilla (la PILA
+ *   admite 12 % o 16 % en aportantes privados: Res. 2388/2016, num.
+ *   2.1.2.3.10, mod. Res. 221/2024). Salud: solo el 8,5 % del empleador sobre
+ *   el último salario (Decreto 806/1998 art. 71), cero si está exonerado.
  */
 import { cop, redondearA, sumCop } from '../../finance/domain/money.util';
 

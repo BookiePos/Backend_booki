@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PayrollBreakdown } from '../../../payroll/domain/payroll-calc';
+import { centavosDeCop } from '../redondeo';
 import {
   consolidarNominaMes,
   tiempoLaborado360,
@@ -424,6 +425,45 @@ describe('consolidarNominaMes: retiro en el mes (decisión 4 del dueño)', () =>
     expect(ok({ ...retiro(liq({ indemnizacion: 0 })), uvt: 52_374 }).advertencias.join()).not.toMatch(/206/);
   });
 
+  it('retención de la indemnización calculada por la liquidación: va a RetencionFuente y sale del pago (tarea 14)', async () => {
+    const l = liq({ retencionFuente: 150_000 });
+    const { modelo, advertencias } = ok(retiro(l));
+    expect(advertencias.join()).not.toMatch(/401-3/);
+    expect(modelo.deducciones.retencionFuente).toBe(centavosDeCop(bd20().deducciones.retencionFuente + 150_000));
+    const dev = bd20().devengados.total + l.cesantias + l.interesesCesantias + l.prima + l.vacaciones + l.indemnizacion;
+    await verificar(modelo, dev, bd20().deducciones.total + 150_000);
+  }, 60_000);
+
+  it('liquidación con retención en 0 (ingreso ≤ 204 UVT): no avisa ni reporta retención extra', () => {
+    const { modelo, advertencias } = ok(retiro(liq({ retencionFuente: 0 })));
+    expect(advertencias.join()).not.toMatch(/401-3/);
+    expect(modelo.deducciones.retencionFuente ?? 0).toBe(centavosDeCop(bd20().deducciones.retencionFuente));
+  });
+
+  it('retención de la liquidación que no es un entero no negativo: bloquea', () => {
+    expect(bloqueos(retiro(liq({ retencionFuente: -1 }))).join()).toMatch(/retención en la fuente \(-1\)/);
+  });
+
+  it('206-4 ET: usa el promedio y el % exento guardados en la liquidación; recalcula solo sin ellos', () => {
+    // La liquidación guardó 60 % con 25.000.000: manda aunque el salario y la UVT digan otra cosa.
+    const base = { ...retiro(liq({ indemnizacion: 0, ingresoMensualPromedio: 25_000_000, porcentajeExentoCesantias: 0.6 })), uvt: 52_374 };
+    const txt = ok(base).advertencias.join();
+    expect(txt).toMatch(/promedio de 25000000 de los últimos 6 meses \(según la liquidación\)/);
+    expect(txt).toMatch(/exentos solo en un 60 %/);
+    // Guardado 100 %: no avisa, aunque el recálculo con un salario alto diría otra cosa.
+    const cien = { ...retiro(liq({ indemnizacion: 0, salarioBase: 30_000_000, ingresoMensualPromedio: 15_000_000, porcentajeExentoCesantias: 1 }), { salary: 30_000_000 }), uvt: 52_374 };
+    expect(ok(cien).advertencias.join()).not.toMatch(/206/);
+  });
+
+  it('206-4 ET: el aviso dice el % exento del tramo y que las cesantías no llevan retención', () => {
+    // 20.000.000 / 52.374 = 381,9 UVT: tramo de 350 a 410, 90 % exento.
+    const base = { ...retiro(liq({ indemnizacion: 0, salarioBase: 20_000_000 }), { salary: 20_000_000 }), uvt: 52_374 };
+    const txt = ok(base).advertencias.join();
+    expect(txt).toMatch(/exentos solo en un 90 %/);
+    expect(txt).toMatch(/no lleva retención en la fuente \(DUR 1625\/2016 art\. 1\.2\.4\.1\.11\)/);
+    expect(ok(base).modelo.deducciones.retencionFuente ?? 0).toBe(centavosDeCop(bd20().deducciones.retencionFuente));
+  });
+
   it('206-4 ET: promedio de 6 meses con horas extra que cruzan el tope avisa; sin variables no', () => {
     // Tope: 350 × 52.374 = 18.330.900. Salario pactado de 10 millones, pero un mes con horas extra lo sube.
     const base = { ...retiro(liq({ indemnizacion: 0, salarioBase: 10_000_000 }), { salary: 10_000_000 }), uvt: 52_374 };
@@ -709,11 +749,9 @@ describe('consolidarNominaMes: novedades del mes (decisión 3 del dueño)', () =
     expect(r.xml).toContain('<LicenciaNR FechaInicio="2026-10-13" FechaFin="2026-10-14" Cantidad="2"');
   }, 60_000);
 
-  it('D7: con incapacidades o licencias avisa del tratamiento en retención (ET 206)', () => {
+  it('D7: incapacidades y licencias no son renta exenta: ya no avisa «a confirmar» (tarea 14, punto 6)', () => {
     const { advertencias } = ok(entrada({ slips: [corrida({ bd: conNovedades(), dias: 16 })] }));
-    expect(advertencias.join()).toMatch(/retención en la fuente está a confirmar con el contador \(ET 206\)/);
-    const soloVac = conNovedades([lineas[0]!]);
-    expect(ok(entrada({ slips: [corrida({ bd: soloVac, dias: 25 })] })).advertencias.join()).not.toMatch(/ET 206/);
+    expect(advertencias.join()).not.toMatch(/a confirmar|ET 206/);
   });
 
   it('D5: el 4 % de pensión de la licencia no remunerada va como OtraDeduccion y pasa el XSD', async () => {
