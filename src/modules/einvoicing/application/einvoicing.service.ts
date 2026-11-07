@@ -231,6 +231,28 @@ const endOfDay = (d: Date) =>
 /** El XML de la DIAN (base64, hasta ~1 MB) lo lee la entrega; la API no lo devuelve. */
 const SIN_APPLICATION_RESPONSE = '-respuestaDian.applicationResponse';
 
+/**
+ * Campos internos que `GET /einvoicing` y `GET /einvoicing/:id` no devuelven:
+ * rutas del bucket (XML firmado, PDF, AttachedDocument, XML original de
+ * contingencia) y la URL del XML. Las descargas salen por URL firmada de vida
+ * corta (`DocumentoFeVistaService`); la pantalla no lee ninguno.
+ */
+export const CAMPOS_INTERNOS_DOCUMENTO = ['xmlPath', 'pdfPath', 'attachedPath', 'xmlUrl'] as const;
+
+/** Copia plana del documento sin rutas internas (ni `contingencia.xmlOriginalPath`). */
+export function sinCamposInternos(doc: ElectronicDocumentDocument): Record<string, unknown> {
+  const plano = (
+    typeof doc.toObject === 'function' ? doc.toObject() : { ...doc }
+  ) as Record<string, unknown>;
+  for (const campo of CAMPOS_INTERNOS_DOCUMENTO) delete plano[campo];
+  const c = plano.contingencia;
+  if (c && typeof c === 'object') {
+    const { xmlOriginalPath: _ruta, ...resto } = c as Record<string, unknown>;
+    plano.contingencia = resto;
+  }
+  return plano;
+}
+
 @Injectable()
 export class EinvoicingService {
   constructor(
@@ -496,23 +518,24 @@ export class EinvoicingService {
   }
 
   /** Documentos electrónicos de una sede (más recientes primero). */
-  list(sedeId: string, user: JwtUser): Promise<ElectronicDocumentDocument[]> {
+  async list(sedeId: string, user: JwtUser): Promise<Record<string, unknown>[]> {
     assertSedeAccess(user, sedeId);
-    return this.model
+    const docs = await this.model
       .find({ sedeId: new Types.ObjectId(sedeId) })
       .select(SIN_APPLICATION_RESPONSE)
       .sort({ createdAt: -1 })
       .limit(200)
       .exec();
+    return docs.map(sinCamposInternos);
   }
 
-  async get(id: string, user: JwtUser): Promise<ElectronicDocumentDocument> {
+  async get(id: string, user: JwtUser): Promise<Record<string, unknown>> {
     const doc = Types.ObjectId.isValid(id)
       ? await this.model.findById(id).select(SIN_APPLICATION_RESPONSE).exec()
       : null;
     if (!doc) throw new NotFoundException('Documento no encontrado');
     assertSedeAccess(user, doc.sedeId.toString());
-    return doc;
+    return sinCamposInternos(doc);
   }
 
   /**
