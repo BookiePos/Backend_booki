@@ -28,11 +28,16 @@ describe('ContingenciaBarrido', () => {
     return c;
   };
 
-  function build(docsPorDb: Record<string, unknown[]>, ventasPorDb: Record<string, { saleNumber: string; createdAt: Date }[]> = {}) {
+  function build(
+    docsPorDb: Record<string, unknown[]>,
+    ventasPorDb: Record<string, { saleNumber: string; createdAt: Date }[]> = {},
+    notasRechazadas: Record<string, unknown[]> = {},
+  ) {
     const vistos: string[] = [];
     const model: any = {
       find: vi.fn((filtro: any) => {
         const db = TenantContext.current()?.dbName ?? '';
+        if (filtro.dianStatus === 'rejected') return chain(notasRechazadas[db] ?? []);
         vistos.push(db);
         expect(filtro).toMatchObject({ 'contingencia.tipo': { $exists: true }, 'contingencia.cerradaAt': null });
         return chain(docsPorDb[db] ?? []);
@@ -60,10 +65,11 @@ describe('ContingenciaBarrido', () => {
           { fullNumber: 'CONT4', dianStatus: 'draft', contingencia: { tipo: '07', declaradaAt: h(1), superadaAt: h(1) } },
           { fullNumber: 'CONT5', dianStatus: 'rejected', contingencia: { tipo: '03', declaradaAt: h(2) } },
           // Aceptado hace mucho con una nota pendiente: no es «vencido».
-          { fullNumber: 'CONT6', dianStatus: 'accepted', contingencia: { tipo: '07', declaradaAt: h(90), superadaAt: h(90) } },
+          { _id: 'c6', fullNumber: 'CONT6', dianStatus: 'accepted', contingencia: { tipo: '07', declaradaAt: h(90), superadaAt: h(90) } },
         ],
       },
       { biz_b: [{ saleNumber: 'FV-9', createdAt: h(47) }, { saleNumber: 'FV-10', createdAt: h(2) }] },
+      { biz_a: [{ fullNumber: 'NAC3', referenceNumber: 'CONT6' }] },
     );
     const r = await b.barrer({ ahora });
     // biz_b no tiene documentos abiertos (countDocuments = 0): no los busca.
@@ -76,15 +82,16 @@ describe('ContingenciaBarrido', () => {
       enPlazo: 1,
       porVencer: 1,
       vencidas: 1,
-      rechazadas: 1,
+      // CONT5 (documento) y NAC3 (nota rechazada de CONT6).
+      rechazadas: 2,
       ventasSinTranscribir: 2,
       ventasPorVencer: 1,
       ventasVencidas: 0,
     });
-    expect(r.detalle).toMatch(/alerta: 3 documento\(s\) o venta\(s\).*1 rechazado\(s\) en 2 empresa/);
+    expect(r.detalle).toMatch(/alerta: 3 documento\(s\) o venta\(s\).*2 rechazado\(s\) en 2 empresa/);
     const mensajes = error.mock.calls.map((c) => String(c[0]));
     expect(mensajes.some((m) => m.includes('EPOS2') && m.includes('CONT3 (07, vencido)'))).toBe(true);
-    expect(mensajes.some((m) => m.includes('RECHAZADOS') && m.includes('CONT5'))).toBe(true);
+    expect(mensajes.some((m) => m.includes('RECHAZADOS') && m.includes('CONT5') && m.includes('nota NAC3 de CONT6'))).toBe(true);
     expect(mensajes.some((m) => m.includes('FV-9'))).toBe(true);
     error.mockRestore();
   });

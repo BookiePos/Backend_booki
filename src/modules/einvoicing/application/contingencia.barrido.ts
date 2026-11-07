@@ -144,7 +144,7 @@ export class ContingenciaBarrido {
       .sort({ 'contingencia.declaradaAt': 1 })
       .limit(TOPE_POR_EMPRESA)
       .lean()
-      .exec()) as unknown as { fullNumber?: string; dianStatus?: string; contingencia?: ContingenciaDocumento }[];
+      .exec()) as unknown as { _id?: unknown; fullNumber?: string; dianStatus?: string; contingencia?: ContingenciaDocumento }[];
     const urgentes: string[] = [];
     const rechazados: string[] = [];
     for (const d of docs) {
@@ -175,9 +175,26 @@ export class ContingenciaBarrido {
         `ALERTA FE: empresa ${businessId} tiene ${urgentes.length} documento(s) de contingencia por vencer o vencidos (plazo ${PLAZO_TRANSMISION_HORAS} h): ${urgentes.slice(0, MUESTRA).join(', ')}${urgentes.length > MUESTRA ? '…' : ''}`,
       );
     }
+    // Notas RECHAZADAS de estos documentos: detienen las siguientes (orden) y
+    // las tiene que corregir una persona. Cuentan como rechazadas.
+    const ids = docs.map((d) => d._id).filter((id) => id != null);
+    if (ids.length > 0) {
+      const notas = (await this.model
+        .find({
+          type: { $in: ['credit_note' as const, 'debit_note' as const] },
+          dianStatus: 'rejected' as const,
+          referenceId: { $in: ids as never[] },
+        })
+        .select({ fullNumber: 1, referenceNumber: 1 })
+        .limit(TOPE_POR_EMPRESA)
+        .lean()
+        .exec()) as unknown as { fullNumber?: string; referenceNumber?: string }[];
+      c.rechazadas += notas.length;
+      for (const n of notas) rechazados.push(`nota ${n.fullNumber ?? '?'} de ${n.referenceNumber ?? '?'}`);
+    }
     if (rechazados.length > 0) {
       this.logger.error(
-        `ALERTA FE: empresa ${businessId} tiene ${rechazados.length} documento(s) de contingencia RECHAZADOS por la DIAN (el cliente ya los recibió como válidos): ${rechazados.slice(0, MUESTRA).join(', ')}`,
+        `ALERTA FE: empresa ${businessId} tiene ${rechazados.length} documento(s) o nota(s) de contingencia RECHAZADOS por la DIAN (el cliente ya recibió el documento como válido; una nota rechazada detiene las siguientes): ${rechazados.slice(0, MUESTRA).join(', ')}`,
       );
     }
 
