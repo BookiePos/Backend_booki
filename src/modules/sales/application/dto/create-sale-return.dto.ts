@@ -65,4 +65,14 @@ export class CreateSaleReturnDto {
   @IsString()
   @MaxLength(100)
   idempotencyKey?: string;
+
+  /**
+   * Cliente al que se le deja el saldo a favor (Fase 6D, deuda). Solo se
+   * admite cuando la venta no tiene cliente; si la venta ya lo tiene, tiene que
+   * ser el mismo (la nota crédito va al adquiriente de la factura original,
+   * nunca a otro). Debe existir en la empresa.
+   */
+  @IsOptional()
+  @IsMongoId()
+  customerId?: string;
 }
