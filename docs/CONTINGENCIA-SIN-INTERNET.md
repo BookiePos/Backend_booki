@@ -40,9 +40,14 @@ vender. Va dirigido al cajero y al dueño; conviene imprimirlo y dejarlo en la c
      (`{ "talonario": { "numero": 7, "fecha": "2026-11-04", "hora": "09:30" } }`). El
      documento electrónico lleva la fecha del papel. Opcional: `superadaAt`, cuándo se
      superó la falla (desde ahí corren las 48 h; por defecto, ahora).
-   - **Numeración:** el talonario usa la numeración de contingencia desde el **principio**
-     del rango; las ventas sin conexión toman números desde el **final** del rango hacia
-     atrás. Así un papel ya entregado nunca choca con una venta sin conexión.
+   - **Numeración:** el rango de contingencia se parte en dos series consecutivas y
+     ascendentes que no se cruzan: el **talonario de papel** va del inicio del rango al
+     *corte*, y las **ventas sin conexión** van del corte + 1 al final. El corte se fija al
+     registrar la resolución (`corteTalonario`); por defecto es la mitad del rango.
+     Imprime el talonario solo con los números de su serie. Un número de papel fuera de su
+     serie se rechaza (400) y una serie agotada responde 409: hay que pedir más numeración.
+     Lo ideal, a confirmar con el contador, es pedirle a la DIAN **prefijos separados**
+     para el papel y para el sistema.
    - Las devoluciones, rebajas o anulaciones que se hicieron antes de transcribir se
      emiten en ese momento, en orden y contra el documento transcrito.
    - BookiPos transmite el documento y después sus notas (cron de reconsulta cada

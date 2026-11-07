@@ -215,6 +215,37 @@ export function errorTalonario(
   return null;
 }
 
+/** Un subrango de la numeración de contingencia. */
+export interface Subrango {
+  desde: number;
+  hasta: number;
+}
+
+/**
+ * La numeración de contingencia se parte en dos series ASCENDENTES que no se
+ * cruzan: el talonario de papel (de `desde` al corte) y las ventas sin conexión
+ * (del corte + 1 a `hasta`). El corte es configurable en la resolución
+ * (`corteTalonario`); por defecto, la mitad del rango. Así un papel ya
+ * entregado nunca choca con un número que tomó el sistema.
+ */
+export function subrangosContingencia(r: {
+  rangoDesde?: number;
+  rangoHasta?: number;
+  corteTalonario?: number;
+}): { talonario: Subrango; automatico: Subrango } | null {
+  const desde = r.rangoDesde ?? 1;
+  const hasta = r.rangoHasta;
+  if (hasta === undefined || !Number.isSafeInteger(desde) || !Number.isSafeInteger(hasta) || hasta <= desde) return null;
+  const corte = r.corteTalonario ?? desde + Math.floor((hasta - desde + 1) / 2) - 1;
+  if (!Number.isSafeInteger(corte) || corte < desde || corte >= hasta) return null;
+  return { talonario: { desde, hasta: corte }, automatico: { desde: corte + 1, hasta } };
+}
+
+/** El corte es válido para el rango (deja al menos un número en cada serie). */
+export function corteTalonarioValido(desde: number, hasta: number | undefined, corte: number): boolean {
+  return hasta !== undefined && Number.isSafeInteger(corte) && corte >= desde && corte < hasta;
+}
+
 /** Mensaje a la persona cuando se declara la contingencia de la DIAN. */
 export function mensajeContingenciaDian(fullNumber: string, tipo: TipoContingencia, intentos: number): string {
   const quePaso = intentos > 1 ? `La DIAN no respondió después de ${intentos} intentos.` : 'La DIAN no respondió a tiempo.';

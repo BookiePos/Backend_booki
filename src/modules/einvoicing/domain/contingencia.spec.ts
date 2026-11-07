@@ -3,8 +3,10 @@ import {
   admiteContingenciaDian,
   encabezadoContingencia,
   errorTalonario,
+  corteTalonarioValido,
   estadoPlazo,
   sinRespuestaDian,
+  subrangosContingencia,
   tipoContingencia,
 } from './contingencia';
 
@@ -70,5 +72,26 @@ describe('contingencia · talonario', () => {
     expect(errorTalonario({ numero: 7, fecha: '2026-11-07', hoy: '2026-11-06' }, reso)).toMatch(/posterior/);
     expect(errorTalonario({ numero: 7, fecha: '04/11/2026', hoy: '2026-11-06' }, reso)).toMatch(/AAAA-MM-DD/);
     expect(errorTalonario({ numero: 0, fecha: '2026-11-04', hoy: '2026-11-06' }, reso)).toMatch(/entero positivo/);
+  });
+});
+
+describe('contingencia · series del rango', () => {
+  it('por defecto parte el rango por la mitad; el corte configurable manda', () => {
+    expect(subrangosContingencia({ rangoDesde: 1, rangoHasta: 500 })).toEqual({
+      talonario: { desde: 1, hasta: 250 },
+      automatico: { desde: 251, hasta: 500 },
+    });
+    expect(subrangosContingencia({ rangoDesde: 1, rangoHasta: 9 })).toEqual({
+      talonario: { desde: 1, hasta: 4 },
+      automatico: { desde: 5, hasta: 9 },
+    });
+    expect(subrangosContingencia({ rangoDesde: 100, rangoHasta: 200, corteTalonario: 180 })!.automatico).toEqual({ desde: 181, hasta: 200 });
+  });
+  it('sin fin de rango, rango de un número o corte fuera de rango: null', () => {
+    expect(subrangosContingencia({ rangoDesde: 1 })).toBeNull();
+    expect(subrangosContingencia({ rangoDesde: 5, rangoHasta: 5 })).toBeNull();
+    expect(subrangosContingencia({ rangoDesde: 1, rangoHasta: 10, corteTalonario: 10 })).toBeNull();
+    expect(corteTalonarioValido(1, 10, 9)).toBe(true);
+    expect(corteTalonarioValido(1, 10, 0)).toBe(false);
   });
 });

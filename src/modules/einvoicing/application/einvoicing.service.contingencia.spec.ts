@@ -117,12 +117,13 @@ describe('EinvoicingService.transcribirContingencia', () => {
     );
   });
 
-  it('POS 07 de una venta sin conexión (aunque luego se anuló): numeración de contingencia desde el FINAL del rango, fecha real, CUDE con el PIN y plazo desde que llegó', async () => {
+  it('POS 07 de una venta sin conexión (aunque luego se anuló): serie automática desde la mitad del rango, fecha real, CUDE con el PIN y plazo desde que llegó', async () => {
     const doc: any = await transcribir();
-    expect(counters.findOneAndUpdate.mock.calls[0][0]).toEqual({ _id: `fe:contingency:${sedeId}:CONT` });
+    expect(counters.findOneAndUpdate.mock.calls[0][0]).toEqual({ _id: `fe:contingency-auto:${sedeId}:CONT` });
     expect(doc).toMatchObject({
       type: 'pos',
-      fullNumber: 'CONT500',
+      // Rango 1–500: talonario 1–250, ventas sin conexión 251–500.
+      fullNumber: 'CONT251',
       issueDate: '2026-11-04',
       issueTime: '20:15:00-05:00',
       dianStatus: 'draft',
@@ -135,7 +136,7 @@ describe('EinvoicingService.transcribirContingencia', () => {
       },
     });
     const cude = calcularCude({
-      numero: 'CONT500',
+      numero: 'CONT251',
       fecha: '2026-11-04',
       hora: '20:15:00-05:00',
       valorBruto: 0,
@@ -168,14 +169,26 @@ describe('EinvoicingService.transcribirContingencia', () => {
     await expect(transcribir('invoice', { numero: 9, fecha: '2026-11-03', hora: '25:00' })).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('el contador automático salta los números que ya ocupa un talonario (no hay 409 para el papel ni para la venta)', async () => {
-    // El 500 ya lo usa un documento (p. ej. un talonario impreso al final del rango).
-    model.create
-      .mockRejectedValueOnce(choque({ 'emisor.nitNorm': 1, prefix: 1, number: 1 }))
-      .mockImplementation(async (d: any) => ({ ...d, _id: 'doc' }));
-    const doc: any = await transcribir();
-    expect(doc.fullNumber).toBe('CONT499');
-    expect(businesses.refundDocument).toHaveBeenCalledTimes(1);
+  it('series consecutivas y ascendentes: la automática sigue 251, 252…; un talonario en la serie automática es 400', async () => {
+    expect(((await transcribir()) as any).fullNumber).toBe('CONT251');
+    expect(((await transcribir()) as any).fullNumber).toBe('CONT252');
+    await expect(transcribir('invoice', { numero: 300, fecha: '2026-11-04' })).rejects.toThrow(
+      /no está en la serie del talonario de papel \(CONT1 a CONT250\); del CONT251 al CONT500 son las ventas sin conexión/,
+    );
+  });
+
+  it('corte configurable en la resolución; la serie automática agotada es 409', async () => {
+    resolucionCont = { ...resolucionCont, rangoDesde: 1, rangoHasta: 10, corteTalonario: 8 };
+    expect(((await transcribir()) as any).fullNumber).toBe('CONT9');
+    expect(((await transcribir()) as any).fullNumber).toBe('CONT10');
+    await expect(transcribir()).rejects.toBeInstanceOf(ConflictException);
+    // El talonario sí admite hasta el 8.
+    expect(((await transcribir('invoice', { numero: 8, fecha: '2026-11-04' })) as any).fullNumber).toBe('CONT8');
+  });
+
+  it('una resolución de contingencia sin fin de rango no se puede partir: 400', async () => {
+    resolucionCont = { ...resolucionCont, rangoHasta: undefined };
+    await expect(transcribir()).rejects.toThrow(/rango con inicio y fin/);
   });
 
   it('superadaAt: la que dice quien transcribe; futura o anterior a la venta, 400', async () => {
@@ -186,8 +199,18 @@ describe('EinvoicingService.transcribirContingencia', () => {
     await expect(transcribir('pos', undefined, new Date('2026-11-01T00:00:00Z'))).rejects.toThrow(/anterior a la venta/);
   });
 
+  it('con talonario, superadaAt se compara contra la fecha y hora del PAPEL, no contra la venta', async () => {
+    // Papel del 3 a las 09:30 (Colombia); la venta se registró el 4 a las 20:15.
+    const antesDeLaVentaPeroDespuesDelPapel = new Date('2026-11-03T18:00:00Z');
+    const doc: any = await transcribir('invoice', { numero: 11, fecha: '2026-11-03', hora: '09:30' }, antesDeLaVentaPeroDespuesDelPapel);
+    expect(doc.contingencia.superadaAt).toEqual(antesDeLaVentaPeroDespuesDelPapel);
+    await expect(
+      transcribir('invoice', { numero: 12, fecha: '2026-11-03', hora: '09:30' }, new Date('2026-11-03T14:00:00Z')),
+    ).rejects.toThrow(/anterior a la venta/);
+  });
+
   it('talonario fuera de rango o con fecha futura: 400 antes de cupo y folio', async () => {
-    await expect(transcribir('invoice', { numero: 900, fecha: '2026-11-04' })).rejects.toThrow(/no está en la numeración/);
+    await expect(transcribir('invoice', { numero: 900, fecha: '2026-11-04' })).rejects.toThrow(/serie del talonario/);
     await expect(transcribir('invoice', { numero: 7, fecha: '2098-01-01' })).rejects.toBeInstanceOf(BadRequestException);
     expect(businesses.consumeDocument).not.toHaveBeenCalled();
     expect(model.create).not.toHaveBeenCalled();
@@ -195,7 +218,7 @@ describe('EinvoicingService.transcribirContingencia', () => {
 
   it('talonario ya transcrito: 409 y el cupo vuelve', async () => {
     model.create.mockRejectedValueOnce(choque({ 'emisor.nitNorm': 1, prefix: 1, number: 1 }));
-    await expect(transcribir('invoice', { numero: 7, fecha: '2026-11-04' })).rejects.toThrow(/ya está usado/);
+    await expect(transcribir('invoice', { numero: 7, fecha: '2026-11-04' })).rejects.toThrow(/ya fue transcrito/);
     expect(businesses.refundDocument).toHaveBeenCalledTimes(1);
   });
 
