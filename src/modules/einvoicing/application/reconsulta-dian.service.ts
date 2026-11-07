@@ -23,7 +23,7 @@ const PRESUPUESTO_MS = 240_000;
  *
  * Recorre todas las empresas activas y, DENTRO de `TenantContext.run` de cada
  * una (sin él los modelos y el bucket no saben a qué base ir), reconsulta:
- * facturas/POS/notas en `sent`, nómina en `sent` y los sets de habilitación de
+ * facturas/POS/notas en `sent`, la cola de contingencia (Fase 9), nómina en `sent` y los sets de habilitación de
  * nómina y de factura/POS en curso. Es el camino de «sistema»: sin usuario, con auditoría SYSTEM.
  * Un fallo en una empresa no frena a las demás; nunca se rechaza por red: lo que
  * no sale queda en `sent` y se reintenta en la siguiente corrida.
@@ -65,7 +65,10 @@ export class ReconsultaDianService {
               async () => {
                 const o = { hasta, ahora: opts.ahora };
                 // En serie por empresa: comparten el cupo de tiempo y la base.
-                const f = await this.transmision.reconsultarPendientes(limite, o);
+                const enVuelo = await this.transmision.reconsultarPendientes(limite, o);
+                // Cola de contingencia (Fase 9): 04/08 cuando la DIAN vuelve,
+                // 03/07 transcritos y sus notas en orden, dentro del plazo legal.
+                const f = sumarCifras(enVuelo, await this.transmision.transmitirContingencias(limite, o));
                 const n = await this.nomina.reconsultarPendientes(limite, o);
                 const sn = await this.habilitacion.avanzarEnCurso(limite, o);
                 // Sets de habilitación de factura/POS en curso, con el mismo plazo `hasta`.

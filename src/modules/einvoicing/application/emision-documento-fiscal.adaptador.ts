@@ -16,6 +16,8 @@ import type {
   NotaSinReferenciaEmitida,
   SolicitudNotaSinReferencia,
   SolicitudNotaVenta,
+  TalonarioContingencia,
+  TranscripcionContingencia,
 } from '../../sales/application/emision-documento-fiscal.puerto';
 
 const CONCEPTOS: readonly ConceptoNota[] = ['1', '2', '3', '4', '5', '6'];
@@ -30,7 +32,7 @@ const conceptoDe = (codigo?: string): ConceptoNota =>
  */
 @Injectable()
 export class EmisionDocumentoFiscalDian
-  implements EmisionDocumentoFiscal, EmisionNotaVenta, EmisionNotaSinReferencia
+  implements EmisionDocumentoFiscal, EmisionNotaVenta, EmisionNotaSinReferencia, TranscripcionContingencia
 {
   private readonly logger = new Logger(EmisionDocumentoFiscalDian.name);
 
@@ -56,6 +58,39 @@ export class EmisionDocumentoFiscalDian
       qrUrl: doc.qrUrl,
       dianStatus: doc.dianStatus,
     };
+  }
+
+  /** Transcripción de contingencia 07/03 (Fase 9). Lanza: falla cerrado. */
+  async transcribirContingencia(
+    saleId: string,
+    solicitado: DocumentoFiscalSolicitado,
+    opts: { talonario?: TalonarioContingencia },
+    user: JwtUser,
+  ): Promise<DocumentoFiscalEmitido> {
+    const modo = modoPosDe(solicitado);
+    const doc = await this.einvoicing.transcribirContingencia(
+      saleId,
+      modo ? { tipo: 'pos', modo } : { tipo: 'invoice' },
+      opts,
+      user,
+    );
+    return {
+      documentoId: String(doc._id),
+      tipo: doc.type === 'pos' ? 'pos' : 'invoice',
+      fullNumber: doc.fullNumber,
+      cude: doc.cufe,
+      qrUrl: doc.qrUrl,
+      dianStatus: doc.dianStatus,
+    };
+  }
+
+  /** Documento de contingencia y después sus notas, en orden. Nunca lanza. */
+  async transmitirContingencia(documentoId: string, user: JwtUser): Promise<void> {
+    try {
+      await this.transmision.procesarContingencia(documentoId, user);
+    } catch (err) {
+      this.logger.warn(`Contingencia ${documentoId}: transmisión pendiente (${(err as Error)?.name ?? 'Error'}).`);
+    }
   }
 
   /** Nota de una devolución o anulación (Fase 6B). Lanza: la operación falla cerrado. */

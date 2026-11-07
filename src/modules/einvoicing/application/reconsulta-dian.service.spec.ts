@@ -23,7 +23,7 @@ const cifras = (p: Partial<ReturnType<typeof cifrasVacias>> = {}) => ({ ...cifra
 
 describe('ReconsultaDianService.barrer', () => {
   const businesses = { listActive: vi.fn() };
-  const transmision = { reconsultarPendientes: vi.fn() };
+  const transmision = { reconsultarPendientes: vi.fn(), transmitirContingencias: vi.fn() };
   const nomina = { reconsultarPendientes: vi.fn() };
   const habilitacion = { avanzarEnCurso: vi.fn() };
   const habilitacionFactura = { avanzarEnCurso: vi.fn() };
@@ -34,6 +34,7 @@ describe('ReconsultaDianService.barrer', () => {
     vi.clearAllMocks();
     vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     transmision.reconsultarPendientes.mockResolvedValue(cifras());
+    transmision.transmitirContingencias.mockResolvedValue(cifras());
     nomina.reconsultarPendientes.mockResolvedValue(cifras());
     habilitacion.avanzarEnCurso.mockResolvedValue(cifras());
     habilitacionFactura.avanzarEnCurso.mockResolvedValue(cifras());
@@ -46,6 +47,20 @@ describe('ReconsultaDianService.barrer', () => {
     const r = await servicio().barrer({ hasta });
     expect(habilitacionFactura.avanzarEnCurso).toHaveBeenCalledWith(10, expect.objectContaining({ hasta }));
     expect(r.cifras).toMatchObject({ setsRevisados: 2, avanzados: 1 });
+  });
+
+  it('transmite la cola de contingencia de cada empresa dentro de su TenantContext y suma sus cifras', async () => {
+    businesses.listActive.mockResolvedValue([biz('a')]);
+    const vistas: string[] = [];
+    transmision.transmitirContingencias.mockImplementation(async () => {
+      vistas.push(TenantContext.currentOrThrow().businessId);
+      return cifras({ revisados: 3, avanzados: 2 });
+    });
+    const hasta = Date.now() + 100_000;
+    const r = await servicio().barrer({ hasta });
+    expect(vistas).toEqual(['a']);
+    expect(transmision.transmitirContingencias).toHaveBeenCalledWith(10, expect.objectContaining({ hasta }));
+    expect(r.cifras).toMatchObject({ facturasRevisadas: 3, avanzados: 2 });
   });
 
   it('recorre cada empresa dentro de su TenantContext', async () => {

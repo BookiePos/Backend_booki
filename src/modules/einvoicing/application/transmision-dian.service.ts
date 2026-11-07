@@ -45,6 +45,15 @@ import {
   esRechazoDeRegla,
   type CifrasReconsulta,
 } from '../domain/reconsulta';
+import {
+  admiteContingenciaDian,
+  dianRespondio,
+  ESPERA_ENTRE_INTENTOS_MS,
+  INTENTOS_ANTES_DE_CONTINGENCIA,
+  sinRespuestaDian,
+  tipoContingencia,
+  type TipoContingencia,
+} from '../domain/contingencia';
 
 /**
  * Vida del bloqueo de transmisión. Mayor que la duración máxima de una función
@@ -75,8 +84,19 @@ const MAX_LARGO_MENSAJE = 500;
 /** 1 MB decodificado en base64. */
 const MAX_B64_APPLICATION_RESPONSE = 1_400_000;
 
-/** Estados desde los que se puede (re)transmitir. */
-const ESTADOS_TRANSMITIBLES: readonly DianStatus[] = ['draft', 'signed', 'sent', 'rejected'];
+/** Estados desde los que se puede (re)transmitir. `contingency`: la cola de la Fase 9. */
+const ESTADOS_TRANSMITIBLES: readonly DianStatus[] = ['draft', 'signed', 'sent', 'rejected', 'contingency'];
+
+/** Una nota de un documento de contingencia aún no aceptado espera: la DIAN no conoce su referencia. */
+export const CODIGO_ESPERA_REFERIDO = 'ESPERA_REFERIDO';
+
+/** Lo que deja `procesarContingencia`: el documento y, en orden, sus notas. */
+export interface ResultadoContingencia {
+  documento: ResultadoTransmision;
+  notas: ResultadoTransmision[];
+  /** El documento y todas sus notas quedaron aceptados: sale de la cola. */
+  cerrada: boolean;
+}
 
 export interface ResultadoTransmision {
   documentoId: string;
@@ -122,6 +142,9 @@ export class TransmisionDianService {
     private readonly audit: AuditService,
     @Optional() @Inject(ENTREGA_DIAN) private readonly entrega?: EntregaDian,
   ) {}
+
+  /** Espera entre reintentos (§12.2). Se reemplaza en los tests. */
+  esperar: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms));
 
   /**
    * Camino HTTP: el usuario es obligatorio (acceso a la sede del documento y
@@ -226,14 +249,15 @@ export class TransmisionDianService {
     if (doc.dianStatus === 'accepted') {
       return this.resultado(doc, false, undefined, ['El documento ya fue aceptado por la DIAN.']);
     }
-    if (doc.dianStatus === 'contingency') {
-      throw new BadRequestException(
-        'El documento está en contingencia: se transmite por el flujo de contingencia.',
-      );
-    }
     if (!ESTADOS_TRANSMITIBLES.includes(doc.dianStatus)) {
       throw new BadRequestException(`Estado DIAN desconocido: ${String(doc.dianStatus)}`);
     }
+
+    // Hallazgo (d) de la 6B: la nota de un documento de contingencia que la
+    // DIAN todavía no aceptó no sale; su referencia aún no existe ante ella.
+    // La cola de contingencia la manda después del documento, en orden.
+    const espera = await this.esperaReferido(doc);
+    if (espera) return this.resultado(doc, false, CODIGO_ESPERA_REFERIDO, [espera]);
 
     // ── Gate de ambiente: antes de firmar y de salir a la red ──────────────
     const emisor = await this.emisores.obtenerPorSede(sedeId);
@@ -322,7 +346,16 @@ export class TransmisionDianService {
     let estado = doc.dianStatus;
     let xmlFirmado: string;
 
-    if (estado === 'draft' || estado === 'rejected' || (estado === 'signed' && !doc.xmlPath)) {
+    const desdeContingencia = estado === 'contingency';
+    if (desdeContingencia) {
+      // Cola de contingencia (Fase 9): el XML 04/08 ya firmado, nunca rearmado.
+      if (!doc.xmlPath) {
+        throw new ConflictException(
+          'El documento en contingencia no tiene XML guardado: no se rearma ni se renumera. Revisión manual.',
+        );
+      }
+      xmlFirmado = (await this.storage.leerArtefactoGuardado(doc.xmlPath, docId, 'xml')).toString('utf8');
+    } else if (estado === 'draft' || estado === 'rejected' || (estado === 'signed' && !doc.xmlPath)) {
       // (2) Armar y firmar. Si el builder no existe (Fase 5) lanza aquí y el
       // documento se queda como estaba, sin consumir nada más.
       const xml = await this.armador.armar(doc);
@@ -368,6 +401,10 @@ export class TransmisionDianService {
       ]);
     }
 
+    // ¿Primer envío de un documento que admite la contingencia de la DIAN?
+    // Solo entonces se reintenta y, sin respuesta, se declara la 04/08.
+    const puedeDeclarar = admiteContingenciaDian(doc) && (doc.intentos ?? 0) === 0;
+
     // (4) `sent` antes de la red.
     assertTransicion(estado, 'sent');
     doc = await this.escribirOFallar(docId, estado, bloqueo, {
@@ -388,6 +425,29 @@ export class TransmisionDianService {
     // ¿Salió de verdad? (casi siempre; no si el presupuesto se agotó al escribir `sent`).
     const transmitido = envio.salio;
     let r = envio.respuesta;
+    // (5b) Anexo FEV §12.2 / DE §15: sin respuesta, dos reintentos más con 5 s.
+    // Reenviar el MISMO XML es seguro: si la DIAN lo había recibido, responde
+    // «ya procesado» y se consulta.
+    let envios = envio.salio ? 1 : 0;
+    while (
+      puedeDeclarar &&
+      envio.salio &&
+      sinRespuestaDian(r) &&
+      envios < INTENTOS_ANTES_DE_CONTINGENCIA &&
+      this.presupuestoRed(bloqueoHasta, Date.now() + ESPERA_ENTRE_INTENTOS_MS) >= PRESUPUESTO_RED_MIN_MS
+    ) {
+      await this.esperar(ESPERA_ENTRE_INTENTOS_MS);
+      const otro = await this.llamar(bloqueoHasta, (presupuesto) =>
+        transmisor.enviar({ tipo: doc.type, fullNumber: doc.fullNumber, cufe: doc.cufe, xmlFirmado, ...presupuesto }),
+      );
+      if (!otro.salio) break;
+      envios += 1;
+      r = otro.respuesta;
+    }
+    if (puedeDeclarar && envios >= INTENTOS_ANTES_DE_CONTINGENCIA && sinRespuestaDian(r)) {
+      const declarado = await this.declararContingenciaDian(doc, bloqueo, emisorId, envios);
+      if (declarado) return this.resultado(declarado, transmitido, 'CONTINGENCIA_DIAN', r.mensajes);
+    }
     if (r.codigo === 'YA_PROCESADO_DIAN') {
       // Reenvío de algo que la DIAN ya procesó: su veredicto se consulta.
       r = (
@@ -397,12 +457,17 @@ export class TransmisionDianService {
       ).respuesta;
     }
 
-    // (6) Veredicto.
-    const destino = this.destino(r);
+    // (6) Veredicto. La cola de contingencia que sigue sin respuesta vuelve a
+    // la cola (no queda «en vuelo» como si la DIAN hubiera recibido algo).
+    const destino: DianStatus = desdeContingencia && sinRespuestaDian(r) ? 'contingency' : this.destino(r);
     const set: Record<string, unknown> = {
       dianStatus: destino,
       respuestaDian: this.limpiar(r),
     };
+    // 04/08: la primera respuesta de la DIAN tras la caída arranca el plazo de 48 h.
+    if (doc.contingencia?.tipo && dianRespondio(r) && !doc.contingencia.restablecidoAt) {
+      set['contingencia.restablecidoAt'] = new Date();
+    }
     if (r.trackId) set.trackId = r.trackId;
     if (r.zipKey) set.zipKey = r.zipKey;
     if (destino === 'rejected') set.rechazoMotivo = this.motivoRechazo(r);
@@ -421,6 +486,172 @@ export class TransmisionDianService {
     // y fuera de su camino: si falla, el documento sigue aceptado.
     if (final.dianStatus === 'accepted') await this.entregarSinRomper(final);
     return this.resultado(final, transmitido, r.codigo, r.mensajes);
+  }
+
+  /**
+   * Declara la contingencia de la DIAN (04 factura / 08 POS): el MISMO
+   * documento (prefijo, número y CUFE/CUDE, que no incluyen el tipo) se arma
+   * con el tipo de contingencia, se firma, su XML reemplaza al anterior y queda
+   * en `contingency` para la cola. Si algo falla, NO hay contingencia: el
+   * documento sigue en vuelo (`sent`) como cualquier envío sin respuesta.
+   */
+  private async declararContingenciaDian(
+    doc: ElectronicDocumentDocument,
+    bloqueo: string,
+    emisorId: string,
+    envios: number,
+  ): Promise<ElectronicDocumentDocument | null> {
+    const docId = String(doc._id);
+    const tipo = tipoContingencia(doc.type, 'dian') as TipoContingencia;
+    const contingencia = {
+      tipo,
+      declaradaAt: new Date(),
+      intentos: envios,
+      // 08: la referencia es el mismo documento (anexo DE, DEAI); la 04 no la lleva.
+      ...(tipo === '08' ? { referencia: { id: doc.fullNumber, fecha: doc.issueDate } } : {}),
+    };
+    try {
+      const xml = await this.armador.armar(this.conCampo(doc, 'contingencia', contingencia));
+      const firmado = await this.firmante.firmar(xml, emisorId);
+      const { pathname } = await this.storage.guardarArtefacto(emisorId, docId, 'xml', Buffer.from(firmado, 'utf8'));
+      assertTransicion('sent', 'contingency');
+      const final = await this.escribir(docId, 'sent', bloqueo, {
+        $set: { dianStatus: 'contingency', xmlPath: pathname, contingencia },
+      });
+      if (final) {
+        this.logger.warn(`Documento ${docId}: la DIAN no respondió en ${envios} envíos; queda en contingencia ${tipo}.`);
+      }
+      return final;
+    } catch (err) {
+      this.logger.error(
+        `Documento ${docId}: no se pudo declarar la contingencia ${tipo} (${(err as Error)?.name ?? 'Error'}); queda en vuelo.`,
+      );
+      return null;
+    }
+  }
+
+  /** Copia del documento con un campo más, sin tocar el original (la lee el armador). */
+  private conCampo(doc: ElectronicDocumentDocument, campo: string, valor: unknown): ElectronicDocumentDocument {
+    const d = doc as unknown as { toObject?: () => Record<string, unknown> };
+    const plano = typeof d.toObject === 'function' ? d.toObject() : { ...(doc as unknown as Record<string, unknown>) };
+    return { ...plano, [campo]: valor } as unknown as ElectronicDocumentDocument;
+  }
+
+  /**
+   * ¿La nota debe esperar a su documento? Solo si el referido es de
+   * contingencia y la DIAN aún no lo aceptó (las demás notas siguen como
+   * antes). Devuelve el motivo o null.
+   */
+  private async esperaReferido(doc: ElectronicDocumentDocument): Promise<string | null> {
+    if ((doc.type !== 'credit_note' && doc.type !== 'debit_note') || !doc.referenceId) return null;
+    const referido = (await this.model
+      .findOne({ _id: doc.referenceId })
+      .select({ dianStatus: 1, contingencia: 1, fullNumber: 1 })
+      .lean()
+      .exec()) as { dianStatus?: string; contingencia?: { tipo?: string }; fullNumber?: string } | null;
+    if (!referido?.contingencia?.tipo || referido.dianStatus === 'accepted') return null;
+    return `La nota espera a que la DIAN acepte ${referido.fullNumber ?? 'su documento'}, expedido en contingencia: se transmite después de él.`;
+  }
+
+  /**
+   * Transmite un documento de contingencia y DESPUÉS, en orden de creación,
+   * sus notas (hallazgo (d) de la 6B). Idempotente: lo aceptado no se toca y una
+   * nota que no sale a la red detiene las siguientes. Con usuario exige acceso
+   * a la sede; sin él es el camino de sistema del cron (tenancy obligatoria).
+   */
+  async procesarContingencia(docId: string, user?: JwtUser): Promise<ResultadoContingencia> {
+    TenantContext.currentOrThrow();
+    const doc = await this.cargar(docId);
+    if (user) assertSedeAccess(user, doc.sedeId.toString());
+    if (!doc.contingencia?.tipo) {
+      throw new BadRequestException('El documento no es de contingencia.');
+    }
+    let documento: ResultadoTransmision;
+    if (doc.dianStatus === 'accepted') {
+      documento = this.resultado(doc, false, undefined, ['El documento ya fue aceptado por la DIAN.']);
+    } else {
+      documento = await this.ejecutarAuditado(docId, user);
+      if (documento.dianStatus !== 'accepted') return { documento, notas: [], cerrada: false };
+    }
+    const filtroNotas = { referenceId: doc._id, type: { $in: ['credit_note' as const, 'debit_note' as const] } };
+    const porEnviar = await this.model
+      .find({ ...filtroNotas, dianStatus: { $in: ['draft', 'signed'] } })
+      .sort({ createdAt: 1 })
+      .exec();
+    const notas: ResultadoTransmision[] = [];
+    for (const nota of porEnviar) {
+      const r = await this.ejecutarAuditado(String(nota._id), user);
+      notas.push(r);
+      // En orden: si una no salió a la red, las siguientes esperan.
+      if (r.dianStatus === 'draft' || r.dianStatus === 'signed') break;
+    }
+    // Abierta mientras alguna nota no esté aceptada (en vuelo: la reconsulta;
+    // rechazada: una persona).
+    const abiertas = await this.model
+      .countDocuments({ ...filtroNotas, dianStatus: { $ne: 'accepted' } })
+      .exec();
+    const cerrada = abiertas === 0;
+    if (cerrada) {
+      await this.model
+        .updateOne({ _id: doc._id, dianStatus: 'accepted' }, { $set: { 'contingencia.cerradaAt': new Date() } })
+        .exec();
+    }
+    return { documento, notas, cerrada };
+  }
+
+  /** `ejecutar` con su fila de auditoría (usuario o SYSTEM). Relanza el error. */
+  private async ejecutarAuditado(docId: string, user?: JwtUser): Promise<ResultadoTransmision> {
+    try {
+      const r = await this.ejecutar(docId, user);
+      await this.auditar(docId, user, true, r.codigo ?? r.dianStatus, r);
+      return r;
+    } catch (err) {
+      await this.auditar(docId, user, false, (err as Error)?.name ?? 'Error');
+      throw err;
+    }
+  }
+
+  /**
+   * Camino de SISTEMA (cron de reconsulta): la cola de contingencia, la menos
+   * reconsultada primero, hasta `limite`. Lo que está en vuelo (`sent`) es de
+   * la reconsulta normal; lo rechazado espera a una persona (lo avisa la
+   * alerta diaria). Nunca lanza por un documento.
+   */
+  async transmitirContingencias(
+    limite: number,
+    opts: { ahora?: Date; hasta?: number } = {},
+  ): Promise<CifrasReconsulta> {
+    TenantContext.currentOrThrow();
+    const ahora = opts.ahora ?? new Date();
+    const cifras = cifrasVacias();
+    const docs = await this.model
+      .find({
+        'contingencia.tipo': { $exists: true },
+        'contingencia.cerradaAt': null,
+        dianStatus: { $in: ['contingency', 'draft', 'signed', 'accepted'] },
+        $or: [{ bloqueoHasta: null }, { bloqueoHasta: { $lte: ahora } }],
+      })
+      .sort({ reconsultadoAt: 1, 'contingencia.declaradaAt': 1 })
+      .limit(Math.max(0, limite))
+      .select('_id')
+      .exec();
+    for (const { _id } of docs) {
+      if (opts.hasta !== undefined && Date.now() + MARGEN_PLAZO_RECONSULTA_MS > opts.hasta) break;
+      const docId = String(_id);
+      cifras.revisados++;
+      await this.model.updateOne({ _id }, { $set: { reconsultadoAt: new Date() } }).exec();
+      try {
+        const r = await this.procesarContingencia(docId);
+        if (r.cerrada || r.documento.transmitido || r.notas.some((n) => n.transmitido)) cifras.avanzados++;
+      } catch (err) {
+        if (esRechazoDeRegla(err)) cifras.omitidos++;
+        else {
+          cifras.errores++;
+          this.logger.error(`Contingencia del documento ${docId}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+    return cifras;
   }
 
   /** Un fallo de la entrega se registra y se reintenta luego; nunca cambia el estado DIAN. */

@@ -23,7 +23,8 @@ import type { CajaVentaUbl, FabricanteSoftwareUbl, PosUbl } from './pos-ubl.type
 
 /**
  * 20 = documento equivalente electrónico POS (§16.3); 10 = operación normal
- * (§16.4.1). Contingencia (07/08 con `CustomizationID` 20) es de la Fase 9.
+ * (§16.4.1). En contingencia (07/08) `perfilConContingencia` pone el tipo y
+ * `CustomizationID` 20 (Fase 9).
  * El ProfileID va SIN el espacio inicial que el anexo muestra a veces: así lo
  * trae el «Ejemplo POS.xml» oficial (a confirmar en habilitación).
  */
@@ -132,6 +133,7 @@ export function armarPosUbl(p: PosUbl): string {
   ]);
   return armarInvoiceUbl(p, {
     perfil: PERFIL_POS,
+    tipoDocumento: 'pos',
     pagos: p.pagos,
     extensionesExtra: [fabricante, beneficios, caja],
     identificacionAdquirienteSiempre: true,

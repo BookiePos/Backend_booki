@@ -46,18 +46,19 @@ describe('transiciones', () => {
 
   it('contingencia y en vuelo', () => {
     expect(transicionPermitida('contingency', 'accepted')).toBe(false);
-    expect(transicionPermitida('contingency', 'sent')).toBe(false);
-    expect(transicionPermitida('sent', 'contingency')).toBe(false);
+    // Fase 9: la cola de contingencia se transmite y la 04/08 se declara desde el envío sin respuesta.
+    expect(transicionPermitida('contingency', 'sent')).toBe(true);
+    expect(transicionPermitida('sent', 'contingency')).toBe(true);
     expect(transicionPermitida('sent', 'draft')).toBe(false);
   });
 
   const ESPERADAS: Record<DianStatus, DianStatus[]> = {
     draft: ['signed', 'contingency'],
     signed: ['sent', 'contingency'],
-    sent: ['sent', 'accepted', 'rejected'],
+    sent: ['sent', 'accepted', 'rejected', 'contingency'],
     accepted: [],
     rejected: ['signed'],
-    contingency: ['signed'],
+    contingency: ['signed', 'sent'],
   };
   const PARES = DIAN_STATUS.flatMap((d) =>
     DIAN_STATUS.map((h) => [d, h] as const),

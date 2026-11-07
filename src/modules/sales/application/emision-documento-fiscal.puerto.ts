@@ -35,6 +35,28 @@ export interface EmisionDocumentoFiscal {
   transmitir(documentoId: string, user: JwtUser): Promise<void>;
 }
 
+/** Talonario de contingencia: número impreso (sin prefijo) y fecha AAAA-MM-DD. */
+export interface TalonarioContingencia {
+  numero: number;
+  fecha: string;
+}
+
+/**
+ * Contingencia del facturador (Fase 9): transcribe la venta hecha sin BookiPos
+ * (POS 07 / FEV 03) y transmite el documento con sus notas en orden.
+ */
+export interface TranscripcionContingencia {
+  /** Lanza las excepciones HTTP del emisor (400 faltan datos o numeración, 409…). */
+  transcribirContingencia(
+    saleId: string,
+    solicitado: DocumentoFiscalSolicitado,
+    opts: { talonario?: TalonarioContingencia },
+    user: JwtUser,
+  ): Promise<DocumentoFiscalEmitido>;
+  /** Documento y después sus notas. Nunca lanza. */
+  transmitirContingencia(documentoId: string, user: JwtUser): Promise<void>;
+}
+
 /** Concepto de corrección de la nota crédito (DiscrepancyResponse). */
 export type ConceptoNota = '1' | '2' | '3' | '4' | '5' | '6';
 

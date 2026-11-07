@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
+import { TIPOS_CONTINGENCIA, type TipoContingencia } from '../../domain/contingencia';
 import {
   DIAN_STATUS,
   DianStatus,
@@ -174,6 +175,28 @@ export class DocPago {
   @Prop() vence?: string;
 }
 const DocPagoSchema = SchemaFactory.createForClass(DocPago);
+
+/**
+ * Contingencia del documento (Fase 9, `domain/contingencia.ts`): 04/08 si la
+ * DIAN no respondió al expedirlo; 03/07 si se expidió sin BookiPos (talonario o
+ * venta sin conexión) y se transcribió. Ausente en los documentos normales.
+ */
+@Schema({ _id: false })
+export class DocContingencia {
+  @Prop({ required: true, enum: TIPOS_CONTINGENCIA }) tipo!: TipoContingencia;
+  @Prop({ required: true }) declaradaAt!: Date;
+  /** 03/07: cuándo se superó la falla (desde ahí corren las 48 h). */
+  @Prop() superadaAt?: Date;
+  /** 04/08: primera respuesta de la DIAN tras la caída (desde ahí corren las 48 h). */
+  @Prop() restablecidoAt?: Date;
+  /** Documento de origen (talonario, venta sin conexión o el mismo número en la 08). */
+  @Prop({ type: Object }) referencia?: { id: string; fecha: string };
+  /** Envíos sin respuesta antes de declararla (04/08). */
+  @Prop() intentos?: number;
+  /** El documento y sus notas quedaron aceptados: sale de la cola de contingencia. */
+  @Prop() cerradaAt?: Date;
+}
+const DocContingenciaSchema = SchemaFactory.createForClass(DocContingencia);
 
 export type ElectronicDocumentDocument = HydratedDocument<ElectronicDocument>;
 
@@ -452,6 +475,10 @@ export class ElectronicDocument {
   @Prop({ type: Date })
   bloqueoHasta?: Date;
 
+  /** Contingencia (Fase 9). Ver `DocContingencia`. */
+  @Prop({ type: DocContingenciaSchema })
+  contingencia?: DocContingencia;
+
   @Prop({ required: true })
   createdByEmail!: string;
 }
@@ -487,6 +514,11 @@ ElectronicDocumentSchema.index(
 ElectronicDocumentSchema.index({ referenceId: 1, type: 1 });
 
 ElectronicDocumentSchema.index({ dianStatus: 1, reconsultadoAt: 1, enviadoAt: 1 }, { name: 'reconsulta_cola' });
+// Cola de contingencia (Fase 9): documentos de contingencia aún abiertos.
+ElectronicDocumentSchema.index(
+  { 'contingencia.cerradaAt': 1, 'contingencia.declaradaAt': 1 },
+  { name: 'contingencia_cola', partialFilterExpression: { 'contingencia.tipo': { $exists: true } } },
+);
 
 // Único (checklist 1, Fase 1): un solo documento por (emisor, prefijo, número).
 // Si una empresa ya tiene duplicados Mongo no lo crea al arrancar; el informe

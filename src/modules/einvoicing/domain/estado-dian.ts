@@ -42,12 +42,17 @@ const TRANSICIONES: Record<DianStatus, readonly DianStatus[]> = {
   draft: ['signed', 'contingency'],
   signed: ['sent', 'contingency'],
   // Un documento en vuelo no entra a contingencia.
-  sent: ['sent', 'accepted', 'rejected'],
+  // `sent → contingency`: SOLO la declaración de la contingencia de la DIAN
+  // (04/08, Fase 9) tras tres envíos sin respuesta dentro del mismo bloqueo. Si
+  // la DIAN sí había recibido el original, el CUFE/CUDE es el mismo y el envío
+  // del 04/08 responde «ya procesado» → se consulta el veredicto.
+  sent: ['sent', 'accepted', 'rejected', 'contingency'],
   // Corregido el motivo, se vuelve a firmar con el MISMO número.
   rejected: ['signed'],
   accepted: [],
-  // La contingencia tipo 04 se vuelve a firmar (InvoiceTypeCode 04).
-  contingency: ['signed'],
+  // Contingencia: se transmite el XML 04/08 ya firmado (`sent`); `signed` queda
+  // para volver a firmarlo si hiciera falta.
+  contingency: ['signed', 'sent'],
 };
 
 export function transicionPermitida(
