@@ -515,6 +515,39 @@ export class EinvoicingService {
     return doc;
   }
 
+  /**
+   * De los documentos dados, los de contingencia, con cuántas de sus notas
+   * siguen sin aceptar la DIAN. Un documento normal no aparece. Solo lectura;
+   * los ids vienen de ventas que quien llama ya puede ver.
+   */
+  async notasPorTransmitirDeContingencia(documentoIds: string[]): Promise<Record<string, number>> {
+    const ids = documentoIds.filter((i) => Types.ObjectId.isValid(i)).slice(0, 200);
+    const out: Record<string, number> = {};
+    if (ids.length === 0) return out;
+    const docs = (await this.model
+      .find({ _id: { $in: ids }, 'contingencia.tipo': { $exists: true } })
+      .select({ _id: 1 })
+      .lean()
+      .exec()) as unknown as { _id: unknown }[];
+    for (const d of docs) out[String(d._id)] = 0;
+    const claves = Object.keys(out);
+    if (claves.length === 0) return out;
+    const notas = (await this.model
+      .find({
+        type: { $in: ['credit_note', 'debit_note'] },
+        referenceId: { $in: claves },
+        dianStatus: { $ne: 'accepted' },
+      })
+      .select({ referenceId: 1 })
+      .lean()
+      .exec()) as unknown as { referenceId?: unknown }[];
+    for (const n of notas) {
+      const k = String(n.referenceId);
+      if (k in out) out[k]! += 1;
+    }
+    return out;
+  }
+
   /** Genera (o devuelve si ya existe) la factura electrónica de una venta. */
   async createFromSale(
     saleId: string,

@@ -13,6 +13,7 @@ import { Sale, type SaleDocument } from '../infrastructure/schemas/sale.schema';
 import { SaleReturn, type SaleReturnDocument } from '../infrastructure/schemas/sale-return.schema';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { assertSedeAccess } from '../../core-auth/domain/sede-access';
+import { anulacionSinNota, FILTRO_RETORNO_SIN_NOTA } from '../domain/notas-pendientes';
 import { origenNotaAnulacion, type DocumentoFiscalVenta } from '../domain/documento-fiscal';
 import {
   EMISION_DOCUMENTO_FISCAL,
@@ -109,6 +110,47 @@ export class ContingenciaVentasService {
     return { documento, notas, pendientes };
   }
 
+  /**
+   * Agrega `documentoFiscal.notasPendientes` a las ventas que se entregan a la
+   * pantalla: las notas que un reintento de «Transcribir» todavía tiene que
+   * emitir (mismas reglas que `emitirNotasPendientes`) más las ya emitidas que la
+   * DIAN no ha aceptado. Solo cuenta en ventas `emitido` cuyo documento es de
+   * contingencia; en el resto, 0. Solo lectura: no cambia permisos ni datos.
+   */
+  async conNotasPendientes<T extends object>(ventas: T[]): Promise<T[]> {
+    type Plana = { documentoFiscal?: DocumentoFiscalVenta; _id?: unknown; status?: string; notaAnulacion?: { estado?: string } };
+    const planas = ventas.map((v) => ((v as { toObject?: () => T }).toObject?.() ?? v) as T & Plana);
+    const candidatas = planas.filter((v) => v.documentoFiscal?.estado === 'emitido' && v.documentoFiscal.documentoId);
+    if (candidatas.length === 0) return this.conCero(planas);
+    const puerto = this.puerto();
+    const porTransmitir = (await puerto?.notasPorTransmitir?.(candidatas.map((v) => v.documentoFiscal!.documentoId!))) ?? {};
+    const deContingencia = candidatas.filter((v) => porTransmitir[v.documentoFiscal!.documentoId!] !== undefined);
+    const sinEmitir = new Map<string, number>();
+    if (deContingencia.length > 0) {
+      const registros = await this.returnModel
+        .find({ saleId: { $in: deContingencia.map((v) => v._id as Types.ObjectId) }, ...FILTRO_RETORNO_SIN_NOTA })
+        .select({ saleId: 1 })
+        .lean()
+        .exec();
+      for (const r of registros as unknown as { saleId: unknown }[]) {
+        sinEmitir.set(String(r.saleId), (sinEmitir.get(String(r.saleId)) ?? 0) + 1);
+      }
+    }
+    return planas.map((v) => {
+      if (!v.documentoFiscal) return v;
+      const id = v.documentoFiscal.documentoId;
+      const esContingencia = v.documentoFiscal.estado === 'emitido' && id != null && porTransmitir[id] !== undefined;
+      const n = esContingencia
+        ? (sinEmitir.get(String(v._id)) ?? 0) + (anulacionSinNota(v) ? 1 : 0) + porTransmitir[id]!
+        : 0;
+      return { ...v, documentoFiscal: { ...v.documentoFiscal, notasPendientes: n } };
+    });
+  }
+
+  private conCero<T extends { documentoFiscal?: DocumentoFiscalVenta }>(planas: T[]): T[] {
+    return planas.map((v) => (v.documentoFiscal ? { ...v, documentoFiscal: { ...v.documentoFiscal, notasPendientes: 0 } } : v));
+  }
+
   /** La venta pasa a `emitido` con su documento de contingencia. No pisa otro documento. */
   private async marcarEmitido(
     sale: SaleDocument,
@@ -144,7 +186,7 @@ export class ContingenciaVentasService {
    */
   private async emitirNotasPendientes(sale: SaleDocument, user: JwtUser): Promise<NotaTranscrita[]> {
     const registros = await this.returnModel
-      .find({ saleId: sale._id, 'notaFiscal.estado': { $ne: 'emitida' } })
+      .find({ saleId: sale._id, ...FILTRO_RETORNO_SIN_NOTA })
       .sort({ createdAt: 1, _id: 1 })
       .exec();
     const out: NotaTranscrita[] = [];
@@ -160,8 +202,7 @@ export class ContingenciaVentasService {
         return out;
       }
     }
-    const anulacion = (sale as { notaAnulacion?: { estado?: string } }).notaAnulacion;
-    if (sale.status === 'void' && anulacion?.estado !== 'emitida') {
+    if (anulacionSinNota(sale as { status?: string; notaAnulacion?: { estado?: string } })) {
       const id = String(sale._id);
       try {
         const nota = await this.notas.emitir(

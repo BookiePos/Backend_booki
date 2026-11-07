@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { Types } from 'mongoose';
 
 // Patrón de `orders.service.checkout.spec.ts`: neutraliza los decoradores.
 vi.mock('@nestjs/mongoose', async (importOriginal) => {
@@ -43,5 +44,40 @@ describe('EinvoicingService · resolutionStatus', () => {
     });
     const [fila] = await svc.resolutionStatus(user);
     expect(fila!.otras[0]!.resolucion).not.toHaveProperty('corteTalonario');
+  });
+});
+
+/** Notas por transmitir de los documentos de contingencia (alimenta `documentoFiscal.notasPendientes` de la venta). */
+describe('EinvoicingService · notasPorTransmitirDeContingencia', () => {
+  const doc1 = new Types.ObjectId();
+  const doc2 = new Types.ObjectId();
+
+  function montar(contingencia: Types.ObjectId[], notas: Types.ObjectId[]) {
+    const consultas: any[] = [];
+    const model = {
+      find: vi.fn((f: any) => {
+        consultas.push(f);
+        const filas = f.type ? notas.map((referenceId) => ({ referenceId })) : contingencia.map((_id) => ({ _id }));
+        const c: any = { select: () => c, lean: () => c, exec: async () => filas };
+        return c;
+      }),
+    };
+    return { svc: new EinvoicingService(model as any, {} as any, {} as any, {} as any, {} as any, {} as any), consultas };
+  }
+
+  it('solo salen los de contingencia, con sus notas sin aceptar', async () => {
+    const { svc, consultas } = montar([doc1], [doc1, doc1]);
+    const r = await svc.notasPorTransmitirDeContingencia([String(doc1), String(doc2), 'no-es-id']);
+    expect(r).toEqual({ [String(doc1)]: 2 });
+    expect(consultas[0]).toMatchObject({ 'contingencia.tipo': { $exists: true } });
+    expect(consultas[1]).toMatchObject({ type: { $in: ['credit_note', 'debit_note'] }, dianStatus: { $ne: 'accepted' } });
+  });
+
+  it('un documento de contingencia sin notas da 0 y sin ids válidos no consulta', async () => {
+    const { svc } = montar([doc1], []);
+    expect(await svc.notasPorTransmitirDeContingencia([String(doc1)])).toEqual({ [String(doc1)]: 0 });
+    const { svc: s2, consultas } = montar([], []);
+    expect(await s2.notasPorTransmitirDeContingencia(['x'])).toEqual({});
+    expect(consultas).toHaveLength(0);
   });
 });

@@ -145,19 +145,20 @@ export class SalesController {
 
   @RequirePermissions(PERMISSIONS.POS_SELL)
   @Get()
-  list(
+  async list(
     @CurrentUser() user: JwtUser,
     @Query('sedeId') sedeId: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
     if (!sedeId) throw new BadRequestException('sedeId es obligatorio');
-    return this.sales.list(
+    const r = await this.sales.list(
       sedeId,
       user,
       page ? Number.parseInt(page, 10) : undefined,
       limit ? Number.parseInt(limit, 10) : undefined,
     );
+    return { ...r, rows: await this.contingencia.conNotasPendientes(r.rows) };
   }
 
   /** Resumen de ventas de hoy (cantidad + total) de una sede. Antes de :id. */
@@ -193,8 +194,9 @@ export class SalesController {
 
   @RequirePermissions(PERMISSIONS.POS_SELL)
   @Get(':id')
-  get(@Param('id') id: string, @CurrentUser() user: JwtUser) {
-    return this.sales.getForUser(id, user);
+  async get(@Param('id') id: string, @CurrentUser() user: JwtUser) {
+    const [venta] = await this.contingencia.conNotasPendientes([await this.sales.getForUser(id, user)]);
+    return venta;
   }
 
   @RequirePermissions(PERMISSIONS.POS_SELL)

@@ -84,6 +84,11 @@ export class EmisionDocumentoFiscalDian
     };
   }
 
+  /** Documentos de contingencia entre los dados, con sus notas aún sin aceptar. */
+  notasPorTransmitir(documentoIds: string[]): Promise<Record<string, number>> {
+    return this.einvoicing.notasPorTransmitirDeContingencia(documentoIds);
+  }
+
   /** Documento de contingencia y después sus notas, en orden. Nunca lanza. */
   async transmitirContingencia(documentoId: string, user: JwtUser): Promise<void> {
     try {
