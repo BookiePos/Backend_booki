@@ -178,6 +178,8 @@ export interface ResolucionVista {
   rangoHasta?: number;
   vigenciaDesde?: Date;
   vigenciaHasta?: Date;
+  /** Solo la de contingencia: último número del talonario de papel (el corte guardado). */
+  corteTalonario?: number;
 }
 
 /** Resolución de un tipo de documento distinto de la factura, con su estado. */
@@ -1533,6 +1535,7 @@ export class EinvoicingService {
       rangoHasta: r.rangoHasta,
       vigenciaDesde: r.vigenciaDesde,
       vigenciaHasta: r.vigenciaHasta,
+      ...(r.corteTalonario != null ? { corteTalonario: r.corteTalonario } : {}),
     });
     return Promise.all(
       sedes.map(async (sede) => {

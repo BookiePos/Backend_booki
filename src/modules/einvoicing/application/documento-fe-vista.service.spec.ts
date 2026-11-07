@@ -108,6 +108,33 @@ describe('DocumentoFeVistaService', () => {
       expect(d.motivos[0]!.regla).toBe('FAJ43b');
       expect(d.correo.puedeEnviar).toBe(false);
     });
+    it('un documento normal no trae contingencia', async () => {
+      const { svc } = montar(fila());
+      const d = await enContexto(() => svc.detalle(String(DOC_ID), user()));
+      expect(d.contingencia).toBeUndefined();
+    });
+    it('un documento de contingencia trae sus campos y nunca la ruta del XML original', async () => {
+      const declaradaAt = new Date('2026-11-01T10:00:00Z');
+      const { svc } = montar(
+        fila({
+          contingencia: {
+            tipo: '07',
+            declaradaAt,
+            superadaAt: new Date('2026-11-02T10:00:00Z'),
+            referencia: { id: 'T-12', fecha: '2026-11-01' },
+            intentos: 3,
+            enviosXml: 1,
+            enviosXmlConRespuesta: 1,
+            noAplico: false,
+            xmlOriginalPath: ruta('xml').replace('documento.xml', 'original.xml'),
+          },
+        }),
+      );
+      const d = await enContexto(() => svc.detalle(String(DOC_ID), user()));
+      expect(d.contingencia).toMatchObject({ tipo: '07', declaradaAt, intentos: 3, referencia: { id: 'T-12', fecha: '2026-11-01' } });
+      expect(d.contingencia).not.toHaveProperty('xmlOriginalPath');
+      expect(JSON.stringify(d)).not.toContain('original.xml');
+    });
     it('sede ajena da 403 y documento inexistente 404', async () => {
       const { svc } = montar(fila({ sedeId: OTRA_SEDE }));
       await expect(enContexto(() => svc.detalle(String(DOC_ID), user()))).rejects.toBeInstanceOf(ForbiddenException);
