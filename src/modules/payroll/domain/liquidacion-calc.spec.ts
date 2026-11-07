@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 
-import { computeLiquidacion, dias360, dias360Inclusivo } from './liquidacion-calc';
+import {
+  computeLiquidacion,
+  dias360,
+  dias360Inclusivo,
+  porcentajeExentoCesantias,
+  retencionIndemnizacion,
+} from './liquidacion-calc';
 import { DEFAULT_PAYROLL_SETTINGS } from './payroll.constants';
 
 /**
@@ -318,5 +324,88 @@ describe('computeLiquidacion', () => {
       const largo2 = computeLiquidacion({ ...base, motivo: 'sin_justa_causa', contractType: 'obra_labor', diasFaltantesContrato: 40 }, s);
       expect(largo2.indemnizacion).toBe(1_333_333);
     });
+  });
+});
+
+/**
+ * Retención al retiro (tarea 14 del dueño, punto 1). UVT 2026: 52.374 (Res. DIAN 000238 del 15-dic-2025).
+ * Cesantías: exentas por tramos del ET 206-4 y nunca con retención (DUR 1625/2016 art. 1.2.4.1.11).
+ * Indemnización: 20 % si el ingreso mensual pasa de 204 UVT (ET 401-3; DUR art. 1.2.4.1.13), con el 25 % exento.
+ */
+describe('retención en la liquidación de retiro', () => {
+  const UVT = 52_374;
+  const s = { ...DEFAULT_PAYROLL_SETTINGS, uvt: UVT };
+
+  it('la UVT por defecto es la de 2026', () => {
+    expect(DEFAULT_PAYROLL_SETTINGS.uvt).toBe(52_374);
+  });
+
+  it('exención de cesantías por tramos del ET 206-4 (cada tramo incluye su tope)', () => {
+    expect(porcentajeExentoCesantias(350 * UVT, UVT)).toBe(1);
+    expect(porcentajeExentoCesantias(350 * UVT + 1, UVT)).toBe(0.9);
+    expect(porcentajeExentoCesantias(410 * UVT, UVT)).toBe(0.9);
+    expect(porcentajeExentoCesantias(470 * UVT, UVT)).toBe(0.8);
+    expect(porcentajeExentoCesantias(500 * UVT, UVT)).toBe(0.6);
+    expect(porcentajeExentoCesantias(590 * UVT, UVT)).toBe(0.4);
+    expect(porcentajeExentoCesantias(650 * UVT, UVT)).toBe(0.2);
+    expect(porcentajeExentoCesantias(650 * UVT + 1, UVT)).toBe(0);
+  });
+
+  it('indemnización: sin retención con ingreso de 204 UVT o menos', () => {
+    expect(retencionIndemnizacion(5_000_000, 204 * UVT, s).retencion).toBe(0);
+  });
+
+  it('indemnización: 20 % sobre lo que queda tras el 25 % exento (topado en 790/12 UVT)', () => {
+    // 4.000.000 × 25 % = 1.000.000 (< 65,83 UVT = 3.447.955): base 3.000.000, retención 600.000.
+    expect(retencionIndemnizacion(4_000_000, 205 * UVT, s)).toEqual({ retencion: 600_000, exenta: 1_000_000, base: 3_000_000 });
+    // 40.000.000 × 25 % = 10.000.000 → se topa en 790/12 × 52.374 = 3.447.955.
+    const r = retencionIndemnizacion(40_000_000, 300 * UVT, s);
+    expect(r.exenta).toBe(3_447_955);
+    expect(r.retencion).toBe(7_310_409); // 20 % de 36.552.045
+  });
+
+  it('computeLiquidacion: despido sin justa causa de un salario alto descuenta la retención del neto', () => {
+    const liq = computeLiquidacion(
+      {
+        salarioBase: 20_000_000,
+        salaryType: 'ordinario',
+        fechaInicio: '2026-01-01',
+        fechaFin: '2026-06-30',
+        motivo: 'sin_justa_causa',
+        contractType: 'indefinido',
+      },
+      s,
+    );
+    // 20.000.000 = 381,9 UVT > 204: hay retención. Indefinido ≥ 10 SMMLV, menos de un año: 20 días = 13.333.333.
+    expect(liq.indemnizacion).toBe(13_333_333);
+    expect(liq.retencionFuente).toBe(2_000_000); // 20 % de (13.333.333 − 3.333.333)
+    expect(liq.netoPagar).toBe(liq.total - 2_000_000);
+    expect(liq.porcentajeExentoCesantias).toBe(0.9); // 381,9 UVT: tramo de 350 a 410
+    expect(liq.detalleRetencion).toMatch(/401-3/);
+  });
+
+  it('computeLiquidacion: el ingreso promedio de 6 meses manda sobre el salario pactado', () => {
+    const input = {
+      salarioBase: 8_000_000,
+      salaryType: 'ordinario' as const,
+      fechaInicio: '2026-01-01',
+      fechaFin: '2026-06-30',
+      motivo: 'sin_justa_causa' as const,
+      contractType: 'indefinido',
+    };
+    expect(computeLiquidacion(input, s).retencionFuente).toBe(0); // 8.000.000 = 153 UVT
+    const conExtras = computeLiquidacion({ ...input, ingresoMensualPromedio: 25_000_000 }, s); // 477 UVT
+    expect(conExtras.retencionFuente).toBeGreaterThan(0);
+    expect(conExtras.porcentajeExentoCesantias).toBe(0.6);
+  });
+
+  it('renuncia: sin indemnización no hay retención y el neto es el total', () => {
+    const liq = computeLiquidacion(
+      { salarioBase: 30_000_000, salaryType: 'ordinario', fechaInicio: '2026-01-01', fechaFin: '2026-06-30', motivo: 'renuncia' },
+      s,
+    );
+    expect(liq.retencionFuente).toBe(0);
+    expect(liq.netoPagar).toBe(liq.total);
+    expect(liq.detalleRetencion).toBeUndefined();
   });
 });

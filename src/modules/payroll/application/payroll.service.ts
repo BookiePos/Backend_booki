@@ -103,7 +103,7 @@ import {
   lineasNominaCausada,
   type PartesNomina,
 } from '../../core-ledger/application/ledger-posting.service';
-import { cop, sumBy } from '../../finance/domain/money.util';
+import { cop, sumBy, sumCop } from '../../finance/domain/money.util';
 import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 import { motivoPagoInvalido } from '../domain/pago-nomina';
 import { esDuplicadoEn } from '../../core-ledger/domain/journal-entry.indices';
@@ -1106,6 +1106,7 @@ export class PayrollService {
       diasFaltantesContrato: dto.diasFaltantesContrato,
       inicioCesantias: dto.inicioCesantias,
       vacacionesDisfrutadasDias: dto.vacacionesDisfrutadasDias,
+      ...(dto.employeeId ? { ingresoMensualPromedio: await this.ingresoMensualPromedio(dto.employeeId, dto.fechaFin) } : {}),
     };
     return {
       input: {
@@ -1349,6 +1350,32 @@ export class PayrollService {
           `En los últimos 3 meses tuvo devengos variables (${variable}: horas extra, recargos, comisiones o bonificaciones). Por el art. 253 CST las prestaciones se liquidan con el salario PROMEDIO, y este cálculo usa el salario fijo: revísalo con el contador.`,
         ]
       : [];
+  }
+
+  /**
+   * Ingreso mensual promedio de los últimos 6 meses hasta el retiro: devengado
+   * total de las colillas cerradas, mes a mes (un mes con dos corridas suma).
+   * Mide la exención de cesantías (ET 206-4) y la retención de la indemnización
+   * (ET 401-3). Sin colillas, `undefined`: el cálculo usa el salario base.
+   */
+  private async ingresoMensualPromedio(employeeId: string, fechaFin: string): Promise<number | undefined> {
+    const y = Number(fechaFin.slice(0, 4));
+    const m = Number(fechaFin.slice(5, 7));
+    const meses = Array.from({ length: 6 }, (_, i) => new Date(Date.UTC(y, m - 1 - i, 1)).toISOString().slice(0, 7));
+    const corridas = (await this.runs
+      .find({ period: { $in: meses }, status: 'cerrada', 'slips.employeeId': employeeId })
+      .select('period slips.employeeId slips.breakdown.devengados.total')
+      .lean()
+      .exec()) as unknown as { period: string; slips: { employeeId: string; breakdown?: PayrollBreakdown }[] }[];
+    const porMes = new Map<string, number>();
+    for (const r of corridas) {
+      for (const sl of r.slips) {
+        if (sl.employeeId !== employeeId) continue;
+        porMes.set(r.period, (porMes.get(r.period) ?? 0) + (sl.breakdown?.devengados?.total ?? 0));
+      }
+    }
+    const valores = [...porMes.values()].filter((v) => v > 0);
+    return valores.length > 0 ? cop(sumCop(valores) / valores.length) : undefined;
   }
 
   /** Suma de horas extra, recargos, comisiones y bonificaciones salariales en las corridas cerradas de los últimos `n` meses. */

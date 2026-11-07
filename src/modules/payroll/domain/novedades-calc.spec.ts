@@ -185,13 +185,24 @@ describe('computeSlip con ausencias', () => {
     expect(min.basePensionNoRemunerada).toBe(1_500_000);
   });
 
-  it('licencia no remunerada: no paga ni cotiza salud; el empleador aporta pensión sobre esos días', () => {
+  it('licencia no remunerada: no paga; el empleador aporta pensión y su 8,5 % de salud sobre esos días (tarea 14)', () => {
     const aus = liquidarAusencias([{ tipo: 'licencia_no_remunerada', fechaInicio: '2026-10-01', fechaFin: '2026-10-10' }], '2026-10', SAL, SMMLV);
     const b = computeSlip({ salarioBase: SAL, salaryType: 'ordinario', diasTrabajados: 20, ausencias: aus, fechaCorte: '2026-10-31' }, s);
     expect(b.devengados.ausencias).toBe(0);
     expect(b.ibc).toBe(2_000_000);
     expect(b.aportesEmpleador.pension).toBe(240_000 + 120_000); // 12 % de 2.000.000 + 12 % de 1.000.000
+    // Salud: el trabajador no aporta sobre la licencia (su 4 % es solo del IBC trabajado); el empleador sí (Decreto 806/1998 art. 71).
+    expect(b.deducciones.salud).toBe(80_000); // 4 % de 2.000.000
+    expect(b.aportesEmpleador.salud).toBe(170_000 + 85_000); // 8,5 % de 2.000.000 + 8,5 % de 1.000.000
     expect(b.devengados.total).toBe(2_000_000 + b.devengados.auxilioTransporte);
+  });
+
+  it('licencia no remunerada con empresa exonerada (art. 114-1 ET): salud del empleador en cero, pensión igual', () => {
+    const ex = { ...s, empresaExoneradaAportes: true, exoneracionConfirmada: true };
+    const aus = liquidarAusencias([{ tipo: 'licencia_no_remunerada', fechaInicio: '2026-10-01', fechaFin: '2026-10-10' }], '2026-10', SAL, SMMLV);
+    const b = computeSlip({ salarioBase: SAL, salaryType: 'ordinario', diasTrabajados: 20, ausencias: aus, fechaCorte: '2026-10-31' }, ex);
+    expect(b.aportesEmpleador.salud).toBe(0);
+    expect(b.aportesEmpleador.pension).toBe(240_000 + 120_000);
   });
 });
 
