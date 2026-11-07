@@ -40,7 +40,7 @@ function armar(liqInicial?: any, errorAlAprobar?: unknown, empleadosVisibles: st
         return { ...actual };
       },
     })),
-    find: vi.fn(() => ({ sort: () => ({ limit: () => ({ exec: async () => [] }) }) })),
+    find: vi.fn(() => ({ sort: () => ({ limit: () => ({ exec: async () => [] }) }), select: () => ({ lean: () => ({ exec: async () => [] }) }) })),
   };
   const empUpdate = vi.fn(() => ({ exec: async () => ({}) }));
   const employees = {
@@ -52,8 +52,9 @@ function armar(liqInicial?: any, errorAlAprobar?: unknown, empleadosVisibles: st
     updateOne: empUpdate,
   };
   const runs = { find: vi.fn(() => ({ select: () => ({ lean: () => ({ exec: async () => corridas }) }) })) };
+  const ledgerPosting = { postLiquidacionRetiro: vi.fn(async () => undefined), reverseLiquidacionRetiro: vi.fn(async () => undefined) };
   const service = new PayrollService(
-    {} as any, runs as any, employees as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any,
+    {} as any, runs as any, employees as any, {} as any, {} as any, {} as any, {} as any, {} as any, ledgerPosting as any, {} as any,
     liquidaciones as any,
     { find: () => ({ exec: async () => [] }) } as any,
   );
@@ -62,7 +63,7 @@ function armar(liqInicial?: any, errorAlAprobar?: unknown, empleadosVisibles: st
     breakdown: { diasLiquidados: 980, diasPrima: 110, cesantias: 1, interesesCesantias: 1, prima: 1, vacaciones: 1, indemnizacion: 0, salariosPendientes: 0, vacacionesDisfrutadasDias: 0 } as any,
     advertencias: [],
   });
-  return { service, creadas, liquidaciones, employees, empUpdate, get liq() { return actual; } };
+  return { service, creadas, liquidaciones, employees, empUpdate, ledgerPosting, runs, get liq() { return actual; } };
 }
 const borrador = (o: any = {}) => ({
   _id: new Types.ObjectId(),
@@ -211,6 +212,69 @@ function cumpleFiltro(f: any, e: { status: string; terminationDate?: string; sal
     k === '$or' ? (cond as any[]).some((sub) => cumpleFiltro(sub, e)) : campo(cond, (e as any)[k]),
   );
 }
+
+describe('PayrollService: asiento y renta exenta de la liquidación', () => {
+  const brk = { vacacionesDisfrutadasDias: 0, cesantias: 1_500_000, interesesCesantias: 90_000, prima: 750_000, vacaciones: 400_000, indemnizacion: 2_000_000, salariosPendientes: 0, retencionFuente: 120_000 };
+  const pago = { medioPago: '10', fechaPago: '2026-10-25' };
+
+  it('aprobar asienta la liquidación en la fecha del retiro con sus conceptos y la retención', async () => {
+    const t = armar(borrador({ breakdown: brk, sedeId: SEDE, employeeName: 'Ana' }));
+    await t.service.aprobarLiquidacion(LID, pago, owner);
+    expect(t.ledgerPosting.postLiquidacionRetiro).toHaveBeenCalledTimes(1);
+    expect(t.ledgerPosting.postLiquidacionRetiro).toHaveBeenCalledWith(
+      expect.objectContaining({
+        date: '2026-10-20',
+        sedeId: String(SEDE),
+        partes: { cesantias: 1_500_000, interesesCesantias: 90_000, prima: 750_000, vacaciones: 400_000, indemnizacion: 2_000_000, salariosPendientes: 0, retencionFuente: 120_000 },
+      }),
+    );
+  });
+
+  it('el reintento de aprobar vuelve a pedir el asiento (idempotente en el ledger por sourceId)', async () => {
+    const t = armar(borrador({ estado: 'aprobada', breakdown: brk }));
+    await t.service.aprobarLiquidacion(LID, pago, owner);
+    expect(t.ledgerPosting.postLiquidacionRetiro).toHaveBeenCalledWith(expect.objectContaining({ liquidacionId: expect.any(String) }));
+  });
+
+  it('anular un borrador no asienta; la reversa se pide igual y sin asiento no hace nada', async () => {
+    const t = armar(borrador({ breakdown: brk }));
+    await t.service.anularLiquidacion(LID, owner);
+    expect(t.ledgerPosting.postLiquidacionRetiro).not.toHaveBeenCalled();
+    expect(t.ledgerPosting.reverseLiquidacionRetiro).toHaveBeenCalledTimes(1);
+  });
+
+  it('anular una aprobada hace el contra-asiento', async () => {
+    const t = armar(borrador({ estado: 'aprobada', breakdown: brk }));
+    await t.service.anularLiquidacion(LID, owner);
+    expect(t.ledgerPosting.reverseLiquidacionRetiro).toHaveBeenCalledWith(expect.any(String), 'o@x.co');
+  });
+
+  it('la corrida del mes recibe por empleado la renta exenta que tomaron sus liquidaciones no anuladas', async () => {
+    const t = armar();
+    (t.liquidaciones.find as any).mockReturnValue({
+      select: () => ({ lean: () => ({ exec: async () => [
+        { employeeId: EMP, breakdown: { rentaExenta25Indemnizacion: 1_200_000 } },
+        { employeeId: EMP, breakdown: { rentaExenta25Indemnizacion: 300_000 } },
+        { employeeId: 'otro', breakdown: {} },
+      ] }) }),
+    });
+    const mapa = await (t.service as any).exentaDeLiquidacionesDelMes('2026-10');
+    expect(mapa.get(EMP)).toBe(1_500_000);
+    expect(mapa.has('otro')).toBe(false);
+    expect((t.liquidaciones.find as any).mock.calls[0][0].estado).toEqual({ $in: ['borrador', 'aprobada'] });
+  });
+
+  it('renta exenta: cuenta también la colilla en borrador del mes (no usa el tope dos veces)', async () => {
+    const s = { rentaExentaMaxUvtMes: 66, uvt: 50_000, rentaExentaPorc: 0.25 } as any;
+    const corrida = { slips: [{ employeeId: EMP, breakdown: { rentaExenta25: 700_000 } }] };
+    const t = armar(undefined, undefined, [EMP], [corrida]);
+    const usado = await (t.service as any).rentaExentaUsadaEnMes(EMP, '2026-10-20', s);
+    expect(usado).toBe(700_000);
+    const filtro = (t.runs.find.mock.calls as any[][])[0]![0];
+    expect(filtro.status).toEqual({ $in: ['cerrada', 'borrador'] });
+    expect(filtro.period).toBe('2026-10');
+  });
+});
 
 describe('filtroNominables: el retirado del mes entra en la corrida', () => {
   it('el retirado de octubre (aunque siga «activo» por error) no entra en la corrida de noviembre', () => {

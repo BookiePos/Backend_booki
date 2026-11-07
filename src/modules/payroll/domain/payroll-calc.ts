@@ -62,6 +62,12 @@ export interface PayrollInput {
    * (`liquidarAusencias`). Sus días NO van en `diasTrabajados`.
    */
   ausencias?: AusenciasLiquidadas;
+  /**
+   * Renta exenta del 25 % que ya tomó la indemnización de la liquidación de
+   * retiro del mismo mes (aprobada o en borrador): el tope mensual (790/12 UVT,
+   * ET 206 num. 10) es uno solo y se comparte.
+   */
+  rentaExentaUsadaLiquidacion?: number;
 }
 
 export interface RecargoLinea {
@@ -370,7 +376,7 @@ export function computeSlip(
   const deduccionesRenta = depDeduccion + vivienda + prepagada;
   const rentaExenta = Math.min(
     s.rentaExentaPorc * (ingresoNeto - deduccionesRenta),
-    s.rentaExentaMaxUvtMes * s.uvt,
+    Math.max(0, s.rentaExentaMaxUvtMes * s.uvt - Math.max(0, input.rentaExentaUsadaLiquidacion ?? 0)),
   );
   const beneficios = Math.min(
     deduccionesRenta + Math.max(0, rentaExenta),

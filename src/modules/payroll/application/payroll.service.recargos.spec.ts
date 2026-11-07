@@ -99,7 +99,7 @@ function armar(opts: {
     {} as any,
     params as any,
     ledgerPosting as any,
-    {} as any, {} as any,
+    {} as any, { find: () => ({ select: () => ({ lean: () => ({ exec: async () => [] }) }) }) } as any,
     { find: () => ({ exec: async () => opts.novedades ?? [] }) } as any,
   );
   return { service, created, attendance, ledgerPosting };
