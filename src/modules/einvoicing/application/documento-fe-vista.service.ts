@@ -77,6 +77,8 @@ export interface DetalleDocumentoFe {
   puedeReintentar: boolean;
   entrega?: { estado?: string; motivo?: string; archivo?: string };
   descargas: { xml: boolean; pdf: boolean; zip: boolean };
+  /** Solo los documentos de contingencia (03/04/07/08). */
+  contingencia?: ContingenciaDocumentoFe;
   correo: { envios: number; restantes: number; ultimoAt?: Date; puedeEnviar: boolean };
 }
 
