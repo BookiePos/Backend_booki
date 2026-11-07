@@ -108,4 +108,22 @@ describe('computeResolutionStatus', () => {
     );
     expect(s.estado).toBe('vencida');
   });
+
+  it('cuenta los días enteros hasta el fin de la vigencia, sin importar la hora', () => {
+    const r = sana();
+    const dias = (hoyConHora: Date, hasta: Date) =>
+      computeResolutionStatus({ ...r, vigenciaHasta: hasta }, 1, hoyConHora).vigencia.diasRestantes;
+    expect(dias(hoy, new Date(2026, 8, 30))).toBe(30);
+    expect(dias(new Date(2026, 7, 31, 23, 59, 59), new Date(2026, 8, 1, 0, 0, 1))).toBe(1);
+    expect(dias(new Date(2026, 7, 31, 0, 0, 1), new Date(2026, 7, 31, 23, 59))).toBe(0);
+    expect(dias(hoy, new Date(2026, 7, 29))).toBe(-2);
+  });
+
+  it('cruza el cambio de año y el 29 de febrero con días exactos', () => {
+    const r = sana();
+    const dias = (h: Date, hasta: Date) =>
+      computeResolutionStatus({ ...r, vigenciaHasta: hasta }, 1, h).vigencia.diasRestantes;
+    expect(dias(new Date(2026, 11, 31), new Date(2027, 0, 1))).toBe(1);
+    expect(dias(new Date(2028, 1, 28), new Date(2028, 2, 1))).toBe(2);
+  });
 });

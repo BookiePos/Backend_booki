@@ -66,12 +66,16 @@ export interface ResolutionStatus {
   };
 }
 
-/** Días completos entre dos fechas (positivo si `hasta` es futuro). */
+/**
+ * Días completos entre dos fechas (positivo si `hasta` es futuro). No es dinero:
+ * ambos extremos se llevan a medianoche UTC, así que la resta es un múltiplo
+ * exacto de un día y no hace falta redondear.
+ */
 function diasEntre(desde: Date, hasta: Date): number {
   const MS_DIA = 24 * 60 * 60 * 1000;
   const a = Date.UTC(desde.getFullYear(), desde.getMonth(), desde.getDate());
   const b = Date.UTC(hasta.getFullYear(), hasta.getMonth(), hasta.getDate());
-  return Math.round((b - a) / MS_DIA);
+  return (b - a) / MS_DIA;
 }
 
 /**
