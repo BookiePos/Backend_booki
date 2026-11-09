@@ -243,7 +243,7 @@ export const CAMPOS_INTERNOS_DOCUMENTO = ['xmlPath', 'pdfPath', 'attachedPath', 
 export function sinCamposInternos(doc: ElectronicDocumentDocument): Record<string, unknown> {
   const plano = (
     typeof doc.toObject === 'function' ? doc.toObject() : { ...doc }
-  ) as Record<string, unknown>;
+  ) as unknown as Record<string, unknown>;
   for (const campo of CAMPOS_INTERNOS_DOCUMENTO) delete plano[campo];
   const c = plano.contingencia;
   if (c && typeof c === 'object') {
