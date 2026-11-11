@@ -390,6 +390,14 @@ export class ElectronicDocument {
   @Prop({ type: [DocAsignacionSchema], default: undefined })
   asignaciones?: DocAsignacion[];
 
+  /**
+   * Candado de notas (deuda de la 6C): mientras se emite una nota crédito
+   * contra este documento, nadie más lee su saldo acreditable. No es dato
+   * fiscal: se quita al terminar y vence solo en `hasta`.
+   */
+  @Prop({ type: Object })
+  candadoNotas?: { token: string; hasta: Date };
+
   // ── DIAN / proveedor tecnológico (se rellenan al validar) ────────────────────
   /** CUFE (facturas) / CUDE (notas). SHA-384 del Anexo 1.9. */
   @Prop()

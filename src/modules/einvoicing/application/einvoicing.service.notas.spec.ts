@@ -111,6 +111,8 @@ describe('EinvoicingService · notas de la venta (Fase 6B)', () => {
       findById: vi.fn(() => cadena(doc)),
       find: vi.fn(() => cadena(previas)),
       updateOne: vi.fn(() => cadena({})),
+      // Candado de notas por documento: aquí siempre libre.
+      findOneAndUpdate: vi.fn(() => cadena({})),
       create: vi.fn(async (d: any) => ({ ...d, _id: new Types.ObjectId() })),
     };
     counters = {

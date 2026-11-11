@@ -27,6 +27,15 @@ export class SaldoFavorCliente {
 
   @Prop({ trim: true })
   customerName?: string;
+
+  /**
+   * Movimientos cuyo efecto ya está en `saldo`. Se escribe en la MISMA
+   * operación que el `$inc`, condicionada a que el id no esté: es lo que hace
+   * que aplicar un movimiento dos veces no mueva nada. El barrido poda los ya
+   * confirmados.
+   */
+  @Prop({ type: [Types.ObjectId], default: undefined })
+  aplicados?: Types.ObjectId[];
 }
 
 export const SaldoFavorClienteSchema = SchemaFactory.createForClass(SaldoFavorCliente);
@@ -67,8 +76,9 @@ export class SaldoFavorMovimiento {
 
   /**
    * Si ya movió el saldo del cliente. Nace en `false` (salvo sin tercero) y
-   * se reclama a `true` antes de mover el saldo: el barrido aplica los que
-   * quedaron en `false` por un corte.
+   * pasa a `true` DESPUÉS de mover el saldo, que lleva su propia marca
+   * (`SaldoFavorCliente.aplicados`). El barrido repasa los que quedaron en
+   * `false` por un corte, y la marca impide aplicarlos dos veces.
    */
   @Prop({ default: false })
   aplicado!: boolean;

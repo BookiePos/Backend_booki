@@ -3,8 +3,10 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -253,8 +255,18 @@ export function sinCamposInternos(doc: ElectronicDocumentDocument): Record<strin
   return plano;
 }
 
+/** Otra nota crédito se está emitiendo sobre el mismo documento. */
+export const MENSAJE_NOTA_EN_CURSO =
+  'Hay otra nota crédito en curso sobre este documento. Espera unos segundos e inténtalo de nuevo.';
+/** Vencimiento del candado de notas: muy por encima de lo que tarda guardar una nota en `draft`. */
+const CANDADO_NOTAS_MS = 60_000;
+const CANDADO_NOTAS_INTENTOS = 25;
+const CANDADO_NOTAS_ESPERA_MS = 120;
+
 @Injectable()
 export class EinvoicingService {
+  private readonly logger = new Logger(EinvoicingService.name);
+
   constructor(
     @InjectModel(ElectronicDocument.name)
     private readonly model: Model<ElectronicDocumentDocument>,
@@ -1147,94 +1159,98 @@ export class EinvoicingService {
       throw new ConflictException(`El documento ${referido.fullNumber} no tiene CUFE/CUDE o fecha: no se puede referenciar.`);
     }
 
-    const previas = await this.model
-      .find({
-        type: 'credit_note',
-        dianStatus: { $ne: 'rejected' },
-        // Tope cruzado (Fase 6C): también lo que una nota sin referencia le asignó.
-        $or: [{ referenceId: referido._id }, { 'asignaciones.referenceId': referido._id }],
-      })
-      .exec();
-    // Una nota de antes de la Fase 6B (sin `refKey`) ya anuló el documento
-    // entero ante la DIAN sin tocar el libro: es justo el hueco que deja la
-    // venta con ingreso e IVA/INC vivos. Anular la venta ahora la reutiliza
-    // como su nota de anulación en vez de emitir otra.
-    const legado = previas.find(
-      (p) =>
-        !(p.asignaciones ?? []).length &&
-        ((p.lines ?? []).length === 0 || (p.lines ?? []).some((l) => !this.plano(l)?.refKey)),
-    );
-    if (s.concepto === '2' && legado) {
-      return { estado: 'emitida', nota: legado };
-    }
-    const lineasPrevias = previas.map((p) => this.lineasPreviasDe(p, referido._id));
-    let lineas: LineaReferida[];
-    let cargos: CargoDocumento[];
-    try {
-      const referidas = gruposDelDocumento(
-        (referido.lines ?? []).map((l) => this.plano(l) as unknown as LineaDocumento),
-        sale.lines.map((l) => l.productId.toString()),
-        cop(sale.deliveryFee ?? 0) > 0,
+    // Lo ya reconocido se lee y la nota se guarda con el candado del documento
+    // tomado: otra nota a la vez sobre él (con o sin referencia) espera aquí.
+    return this.conCandadoDeNotas([referido._id], async () => {
+      const previas = await this.model
+        .find({
+          type: 'credit_note',
+          dianStatus: { $ne: 'rejected' },
+          // Tope cruzado (Fase 6C): también lo que una nota sin referencia le asignó.
+          $or: [{ referenceId: referido._id }, { 'asignaciones.referenceId': referido._id }],
+        })
+        .exec();
+      // Una nota de antes de la Fase 6B (sin `refKey`) ya anuló el documento
+      // entero ante la DIAN sin tocar el libro: es justo el hueco que deja la
+      // venta con ingreso e IVA/INC vivos. Anular la venta ahora la reutiliza
+      // como su nota de anulación en vez de emitir otra.
+      const legado = previas.find(
+        (p) =>
+          !(p.asignaciones ?? []).length &&
+          ((p.lines ?? []).length === 0 || (p.lines ?? []).some((l) => !this.plano(l)?.refKey)),
       );
-      if (s.concepto === '2') {
-        ({ lineas, cargos } = lineasDeAnulacion(
-          referidas,
-          (referido.charges ?? []).map((c) => this.plano(c) as unknown as CargoDocumento),
-          lineasPrevias,
-        ));
-      } else if (sinCantidad) {
-        // Rebaja o descuento (Fase 6C): valor sin unidades y sin propina.
-        lineas = lineasDeDevolucion(
-          referidas,
-          lineasPrevias,
-          (s.lineas ?? []).map((l) => ({
-            refKey: l.productId,
-            qty: 0,
-            valor: cop(l.valor),
-            impuesto: cop(l.impuesto),
-          })),
-          { sinCantidad: true },
-        );
-        cargos = [];
-      } else {
-        lineas = lineasDeDevolucion(
-          referidas,
-          lineasPrevias,
-          (s.lineas ?? []).map((l) => ({
-            refKey: l.productId,
-            qty: l.qty,
-            valor: cop(l.valor),
-            impuesto: cop(l.impuesto),
-          })),
-        );
-        // La propina devuelta (decisión 4) viaja como cargo, topada contra la
-        // facturada menos la que acreditaron las notas previas.
-        cargos = cargosDeDevolucion(
-          (referido.charges ?? []).map((c) => this.plano(c) as unknown as CargoDocumento),
-          previas.map((p) => (p.charges ?? []).map((c) => this.plano(c) as unknown as CargoDocumento)),
-          cop(s.propina ?? 0),
-        );
+      if (s.concepto === '2' && legado) {
+        return { estado: 'emitida', nota: legado };
       }
-    } catch (err) {
-      if (err instanceof TopeNotaExcedidoError || err instanceof NotaNoRelacionableError) {
-        throw new ConflictException(err.message);
+      const lineasPrevias = previas.map((p) => this.lineasPreviasDe(p, referido._id));
+      let lineas: LineaReferida[];
+      let cargos: CargoDocumento[];
+      try {
+        const referidas = gruposDelDocumento(
+          (referido.lines ?? []).map((l) => this.plano(l) as unknown as LineaDocumento),
+          sale.lines.map((l) => l.productId.toString()),
+          cop(sale.deliveryFee ?? 0) > 0,
+        );
+        if (s.concepto === '2') {
+          ({ lineas, cargos } = lineasDeAnulacion(
+            referidas,
+            (referido.charges ?? []).map((c) => this.plano(c) as unknown as CargoDocumento),
+            lineasPrevias,
+          ));
+        } else if (sinCantidad) {
+          // Rebaja o descuento (Fase 6C): valor sin unidades y sin propina.
+          lineas = lineasDeDevolucion(
+            referidas,
+            lineasPrevias,
+            (s.lineas ?? []).map((l) => ({
+              refKey: l.productId,
+              qty: 0,
+              valor: cop(l.valor),
+              impuesto: cop(l.impuesto),
+            })),
+            { sinCantidad: true },
+          );
+          cargos = [];
+        } else {
+          lineas = lineasDeDevolucion(
+            referidas,
+            lineasPrevias,
+            (s.lineas ?? []).map((l) => ({
+              refKey: l.productId,
+              qty: l.qty,
+              valor: cop(l.valor),
+              impuesto: cop(l.impuesto),
+            })),
+          );
+          // La propina devuelta (decisión 4) viaja como cargo, topada contra la
+          // facturada menos la que acreditaron las notas previas.
+          cargos = cargosDeDevolucion(
+            (referido.charges ?? []).map((c) => this.plano(c) as unknown as CargoDocumento),
+            previas.map((p) => (p.charges ?? []).map((c) => this.plano(c) as unknown as CargoDocumento)),
+            cop(s.propina ?? 0),
+          );
+        }
+      } catch (err) {
+        if (err instanceof TopeNotaExcedidoError || err instanceof NotaNoRelacionableError) {
+          throw new ConflictException(err.message);
+        }
+        throw err;
       }
-      throw err;
-    }
-    const totales = totalesDeNota(lineas, cargos);
-    if (totales.payableAmount <= 0) {
-      return { estado: 'sin_nota', motivo: 'Lo devuelto no tiene valor: no hay nada que acreditar ante la DIAN.' };
-    }
-    return this.emitirNota({
-      user,
-      sedeId,
-      origen: s.origen,
-      concepto: s.concepto,
-      motivo: s.motivo,
-      referido,
-      lineas,
-      cargos,
-      notaDeVenta: sale._id,
+      const totales = totalesDeNota(lineas, cargos);
+      if (totales.payableAmount <= 0) {
+        return { estado: 'sin_nota', motivo: 'Lo devuelto no tiene valor: no hay nada que acreditar ante la DIAN.' };
+      }
+      return this.emitirNota({
+        user,
+        sedeId,
+        origen: s.origen,
+        concepto: s.concepto,
+        motivo: s.motivo,
+        referido,
+        lineas,
+        cargos,
+        notaDeVenta: sale._id,
+      });
     });
   }
 
@@ -1431,74 +1447,140 @@ export class EinvoicingService {
       .sort({ issueDate: -1, createdAt: -1 })
       .exec();
     if (facturas.length === 0) throw new BadRequestException(MENSAJE_SIN_REFERENCIA_SIN_FACTURAS);
-    // Unidades del reparto: lo que queda de cada producto (y del domicilio) de
-    // cada factura, descontando sus notas con referencia y lo que ya le
-    // asignaron notas sin referencia previas (tope cruzado).
-    const unidades: UnidadSinReferencia[] = [];
-    try {
-      for (const f of facturas) {
-        if (!f.saleId) continue;
-        const venta = await this.sales.getOrFail(f.saleId.toString());
-        const referidas = gruposDelDocumento(
-          (f.lines ?? []).map((l) => this.plano(l) as unknown as LineaDocumento),
-          venta.lines.map((l) => l.productId.toString()),
-          cop(venta.deliveryFee ?? 0) > 0,
-        );
-        let saldo: Map<string, SaldoGrupo>;
+    // El candado de TODAS las facturas del periodo: el saldo de cada una se lee
+    // y la nota se guarda sin que otra nota (con o sin referencia) se cuele.
+    return this.conCandadoDeNotas(
+      facturas.map((f) => f._id as Types.ObjectId),
+      async () => {
+        // Unidades del reparto: lo que queda de cada producto (y del domicilio) de
+        // cada factura, descontando sus notas con referencia y lo que ya le
+        // asignaron notas sin referencia previas (tope cruzado).
+        const unidades: UnidadSinReferencia[] = [];
         try {
-          saldo = saldoAcreditable(referidas, await this.previasDe(f._id));
+          for (const f of facturas) {
+            if (!f.saleId) continue;
+            const venta = await this.sales.getOrFail(f.saleId.toString());
+            const referidas = gruposDelDocumento(
+              (f.lines ?? []).map((l) => this.plano(l) as unknown as LineaDocumento),
+              venta.lines.map((l) => l.productId.toString()),
+              cop(venta.deliveryFee ?? 0) > 0,
+            );
+            let saldo: Map<string, SaldoGrupo>;
+            try {
+              saldo = saldoAcreditable(referidas, await this.previasDe(f._id));
+            } catch (err) {
+              // Ya anulada por una nota por el total (anterior a la 6B): no le queda nada.
+              if (err instanceof TopeNotaExcedidoError) continue;
+              throw err;
+            }
+            for (const r of referidas) {
+              const g = saldo.get(r.refKey);
+              if (!g || unidades.some((u) => u.referenceId === String(f._id) && u.refKey === r.refKey)) continue;
+              const scheme = r.taxScheme === '01' || r.taxScheme === '04' ? r.taxScheme : undefined;
+              const impuesto = Math.max(g.iva + g.inc, 0);
+              const valor = Math.max(g.base, 0) + impuesto;
+              unidades.push({
+                referenceId: String(f._id),
+                saleId: f.saleId.toString(),
+                refKey: r.refKey,
+                taxScheme: scheme,
+                taxRate: scheme ? (r.taxRate ?? 0) : 0,
+                valor,
+                impuesto: Math.min(impuesto, valor),
+              });
+            }
+          }
         } catch (err) {
-          // Ya anulada por una nota por el total (anterior a la 6B): no le queda nada.
-          if (err instanceof TopeNotaExcedidoError) continue;
+          if (err instanceof NotaNoRelacionableError) throw new ConflictException(err.message);
           throw err;
         }
-        for (const r of referidas) {
-          const g = saldo.get(r.refKey);
-          if (!g || unidades.some((u) => u.referenceId === String(f._id) && u.refKey === r.refKey)) continue;
-          const scheme = r.taxScheme === '01' || r.taxScheme === '04' ? r.taxScheme : undefined;
-          const impuesto = Math.max(g.iva + g.inc, 0);
-          const valor = Math.max(g.base, 0) + impuesto;
-          unidades.push({
-            referenceId: String(f._id),
-            saleId: f.saleId.toString(),
-            refKey: r.refKey,
-            taxScheme: scheme,
-            taxRate: scheme ? (r.taxRate ?? 0) : 0,
-            valor,
-            impuesto: Math.min(impuesto, valor),
-          });
+        let reparto: ReturnType<typeof repartoSinReferencia>;
+        try {
+          reparto = repartoSinReferencia(unidades, monto, CONCEPTOS_NOTA_CREDITO[s.concepto] ?? 'Descuento');
+        } catch (err) {
+          if (err instanceof TopeNotaExcedidoError || err instanceof NotaNoRelacionableError) {
+            throw new ConflictException(err.message);
+          }
+          throw err;
+        }
+        const r = await this.emitirNota({
+          user,
+          sedeId: s.sedeId,
+          origen: s.origen,
+          concepto: s.concepto,
+          motivo: s.motivo,
+          referido: facturas[0]!,
+          sinReferencia: { desde: s.desde, hasta: s.hasta },
+          lineas: reparto.lineas,
+          cargos: [],
+          asignaciones: reparto.asignaciones.map((a) => ({
+            ...a,
+            referenceId: new Types.ObjectId(a.referenceId),
+            saleId: a.saleId ? new Types.ObjectId(a.saleId) : undefined,
+          })),
+        });
+        return r.nota;
+      },
+    );
+  }
+
+  /**
+   * Candado de notas por documento (deuda de la 6C). Leer lo ya reconocido a
+   * una factura y guardar la nota nueva son dos pasos: sin esto, una nota con
+   * referencia y otra sin referencia a la vez sobre la misma factura leían el
+   * mismo saldo y entre las dos reconocían de más.
+   *
+   * El candado vive en el propio documento (`candadoNotas`) y se toma con un
+   * `findOneAndUpdate` condicionado a que esté libre o vencido: una sola
+   * escritura, un solo ganador. Los ids se toman en orden para que dos notas
+   * con facturas en común no se bloqueen entre sí. Quien no lo consigue espera
+   * un poco y, si sigue ocupado, responde 409 sin haber tocado nada.
+   *
+   * Vence solo (`CANDADO_NOTAS_MS`) por si el proceso muere con él tomado. Si
+   * al soltarlo ya no era nuestro, la emisión tardó más que el vencimiento y
+   * pudo cruzarse con otra: queda en el log para conciliar.
+   */
+  private async conCandadoDeNotas<T>(ids: Types.ObjectId[], fn: () => Promise<T>): Promise<T> {
+    const orden = [...new Map(ids.map((id) => [String(id), id])).values()].sort((a, b) =>
+      String(a) < String(b) ? -1 : 1,
+    );
+    const token = randomUUID();
+    const tomados: Types.ObjectId[] = [];
+    const soltar = async () => {
+      for (const id of tomados) {
+        const r = await this.model
+          .updateOne({ _id: id, 'candadoNotas.token': token }, { $unset: { candadoNotas: 1 } }, { timestamps: false })
+          .exec()
+          .catch(() => null);
+        if (r && r.modifiedCount === 0) {
+          this.logger.error(
+            `CONCILIAR: el candado de notas del documento ${String(id)} venció antes de terminar la emisión; revisa sus notas crédito.`,
+          );
         }
       }
-    } catch (err) {
-      if (err instanceof NotaNoRelacionableError) throw new ConflictException(err.message);
-      throw err;
-    }
-    let reparto: ReturnType<typeof repartoSinReferencia>;
+    };
     try {
-      reparto = repartoSinReferencia(unidades, monto, CONCEPTOS_NOTA_CREDITO[s.concepto] ?? 'Descuento');
-    } catch (err) {
-      if (err instanceof TopeNotaExcedidoError || err instanceof NotaNoRelacionableError) {
-        throw new ConflictException(err.message);
+      for (const id of orden) {
+        let tomado = false;
+        for (let intento = 0; intento < CANDADO_NOTAS_INTENTOS && !tomado; intento += 1) {
+          if (intento > 0) await new Promise((r) => setTimeout(r, CANDADO_NOTAS_ESPERA_MS));
+          const ahora = new Date();
+          const doc = await this.model
+            .findOneAndUpdate(
+              { _id: id, $or: [{ candadoNotas: { $exists: false } }, { 'candadoNotas.hasta': { $lt: ahora } }] },
+              { $set: { candadoNotas: { token, hasta: new Date(ahora.getTime() + CANDADO_NOTAS_MS) } } },
+              { new: true, timestamps: false },
+            )
+            .exec();
+          tomado = !!doc;
+        }
+        if (!tomado) throw new ConflictException(MENSAJE_NOTA_EN_CURSO);
+        tomados.push(id);
       }
-      throw err;
+      return await fn();
+    } finally {
+      await soltar();
     }
-    const r = await this.emitirNota({
-      user,
-      sedeId: s.sedeId,
-      origen: s.origen,
-      concepto: s.concepto,
-      motivo: s.motivo,
-      referido: facturas[0]!,
-      sinReferencia: { desde: s.desde, hasta: s.hasta },
-      lineas: reparto.lineas,
-      cargos: [],
-      asignaciones: reparto.asignaciones.map((a) => ({
-        ...a,
-        referenceId: new Types.ObjectId(a.referenceId),
-        saleId: a.saleId ? new Types.ObjectId(a.saleId) : undefined,
-      })),
-    });
-    return r.nota;
   }
 
   /**

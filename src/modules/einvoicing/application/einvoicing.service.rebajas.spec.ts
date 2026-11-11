@@ -105,6 +105,8 @@ describe('EinvoicingService · rebajas y notas sin referencia (Fase 6C)', () => 
       findById: vi.fn(() => cadena(doc)),
       find: vi.fn(() => cadena(previas)),
       updateOne: vi.fn(() => cadena({})),
+      // Candado de notas por documento: aquí siempre libre.
+      findOneAndUpdate: vi.fn(() => cadena({})),
       create: vi.fn(async (d: any) => ({ ...d, _id: new Types.ObjectId() })),
     };
     counters = {

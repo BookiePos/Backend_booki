@@ -48,18 +48,30 @@ export interface FilaSaldoFavor {
  *    el reporte: lo que no cuadra no queda escondido.
  *
  * Orden de cada paso: primero el movimiento (reserva el origen, `aplicado:
- * false`), después se RECLAMA (`aplicado: true`, condicionado) y se mueve el
- * saldo. Si el saldo falla, el movimiento se retira y el error sube. Un corte
- * entre la reserva y el saldo deja el movimiento sin aplicar, y el barrido de
- * varadas del cron diario lo aplica (`aplicarPendientes`). Reclamar antes de
- * aplicar hace que nunca se aplique dos veces; un corte justo después del
- * reclamo se ve como `descuadre` ≠ 0 en el reporte.
+ * false`) y después el saldo. El saldo se mueve y se MARCA en una sola
+ * escritura sobre la fila del cliente: el `$inc` va con el id del movimiento
+ * en `aplicados`, condicionado a que no esté ya. Esa escritura es la verdad:
+ * o el peso se movió y quedó marcado, o no pasó nada. Luego el movimiento se
+ * confirma (`aplicado: true`), que es solo la señal para que el barrido deje
+ * de mirarlo.
+ *
+ * Un corte en cualquier punto es reintentable: si fue antes del saldo, el
+ * barrido (`aplicarPendientes`) lo mueve; si fue después, el barrido ve la
+ * marca, no lo mueve otra vez y solo confirma. La petición y el barrido a la
+ * vez tampoco lo aplican dos veces. Las marcas ya confirmadas se podan
+ * pasadas `PODA_MS`.
  */
 @Injectable()
 export class SaldoFavorService {
   private readonly logger = new Logger(SaldoFavorService.name);
   /** Antigüedad a partir de la cual el barrido aplica un movimiento sin efecto. */
   static readonly VARADO_MS = 10 * 60 * 1000;
+  /**
+   * Antigüedad a partir de la cual se poda la marca de un movimiento ya
+   * confirmado. Muy por encima de lo que vive una petición: quien leyó el
+   * movimiento sin confirmar ya no puede estar a medio aplicarlo.
+   */
+  static readonly PODA_MS = 24 * 60 * 60 * 1000;
 
   constructor(
     @InjectModel(SaldoFavorCliente.name)
@@ -93,7 +105,9 @@ export class SaldoFavorService {
     const amount = cop(o.amount);
     if (amount <= 0) return;
     const customerId = o.customerId ? new Types.ObjectId(String(o.customerId)) : null;
-    const nuevo = await this.reservar('abono', { ...o, amount, customerId });
+    const nuevo =
+      (await this.reservar('abono', { ...o, amount, customerId })) ??
+      (await this.pendiente('abono', o.sourceType, o.sourceId));
     if (!nuevo || !customerId) return;
     try {
       await this.aplicar(nuevo, o.customerName);
@@ -112,14 +126,15 @@ export class SaldoFavorService {
     if (amount <= 0) return;
     if (!Types.ObjectId.isValid(o.customerId)) throw new BadRequestException('Cliente inválido para el saldo a favor.');
     const customerId = new Types.ObjectId(o.customerId);
-    const nuevo = await this.reservar('consumo', {
-      customerId,
-      amount,
-      sourceType: 'sale',
-      sourceId: o.saleId,
-      sedeId: o.sedeId,
-      memo: o.memo,
-    });
+    const nuevo =
+      (await this.reservar('consumo', {
+        customerId,
+        amount,
+        sourceType: 'sale',
+        sourceId: o.saleId,
+        sedeId: o.sedeId,
+        memo: o.memo,
+      })) ?? (await this.pendiente('consumo', 'sale', o.saleId));
     if (!nuevo) return;
     let hecho: boolean;
     try {
@@ -140,14 +155,15 @@ export class SaldoFavorService {
     try {
       const consumo = await this.movimientos.findOne({ sourceType: 'sale', sourceId: saleId, tipo: 'consumo' }).exec();
       if (!consumo?.customerId) return;
-      nuevo = await this.reservar('reverso', {
-        customerId: consumo.customerId,
-        amount: consumo.amount,
-        sourceType: 'sale',
-        sourceId: saleId,
-        sedeId: consumo.sedeId?.toString(),
-        memo: 'Anulación de la venta',
-      });
+      nuevo =
+        (await this.reservar('reverso', {
+          customerId: consumo.customerId,
+          amount: consumo.amount,
+          sourceType: 'sale',
+          sourceId: saleId,
+          sedeId: consumo.sedeId?.toString(),
+          memo: 'Anulación de la venta',
+        })) ?? (await this.pendiente('reverso', 'sale', saleId));
       if (!nuevo) return;
       await this.aplicar(nuevo);
     } catch (err) {
@@ -160,43 +176,79 @@ export class SaldoFavorService {
   }
 
   /**
-   * Aplica al saldo un movimiento reservado. Primero lo RECLAMA (`aplicado`
-   * de false a true, condicionado): quien no lo reclama no lo aplica, así el
-   * barrido y la petición nunca lo aplican dos veces. Devuelve `false` si un
-   * consumo no alcanza (lo reclamado se suelta) o si otro ya lo reclamó.
-   * Si el saldo falla, lo devuelve a «sin aplicar» y lanza.
+   * Aplica al saldo un movimiento reservado. El saldo se mueve y se marca en
+   * UNA escritura (`$inc` + id en `aplicados`, condicionada a que el id no
+   * esté): repetirla no mueve nada. Después confirma el movimiento.
+   * Devuelve `false` solo si un consumo no alcanza. Si la escritura del saldo
+   * falla, lanza y no deja nada marcado; si lo que falla es la confirmación,
+   * el saldo ya está bien y el barrido la repite.
    */
   private async aplicar(m: SaldoFavorMovimientoDocument, customerName?: string): Promise<boolean> {
     if (!m.customerId) return true;
-    const reclamado = await this.movimientos
-      .findOneAndUpdate({ _id: m._id, aplicado: false }, { $set: { aplicado: true } }, { new: true })
-      .exec();
-    if (!reclamado) return false;
-    const desmarcar = () =>
-      this.movimientos.updateOne({ _id: m._id }, { $set: { aplicado: false } }).exec().catch(() => undefined);
-    try {
-      if (m.tipo === 'consumo') {
-        const hecho = await this.saldos
-          .findOneAndUpdate({ customerId: m.customerId, saldo: { $gte: m.amount } }, { $inc: { saldo: -m.amount } }, { new: true })
-          .exec();
-        if (!hecho) {
-          await desmarcar();
-          return false;
-        }
-        return true;
-      }
-      await this.saldos
-        .findOneAndUpdate(
-          { customerId: m.customerId },
-          { $inc: { saldo: m.amount }, ...(customerName ? { $set: { customerName } } : {}) },
-          { upsert: true, new: true },
-        )
+    const sinMarca = { customerId: m.customerId, aplicados: { $ne: m._id } };
+    const marca = { $addToSet: { aplicados: m._id } };
+    if (m.tipo === 'consumo') {
+      const hecho = await this.saldos
+        .findOneAndUpdate({ ...sinMarca, saldo: { $gte: m.amount } }, { $inc: { saldo: -m.amount }, ...marca }, { new: true })
         .exec();
-      return true;
-    } catch (err) {
-      await desmarcar();
-      throw err;
+      // No entró: o no alcanza, o ya estaba aplicado (reintento tras un corte).
+      if (!hecho && !(await this.marcado(m))) return false;
+    } else {
+      try {
+        await this.saldos
+          .findOneAndUpdate(
+            sinMarca,
+            { $inc: { saldo: m.amount }, ...marca, ...(customerName ? { $set: { customerName } } : {}) },
+            { upsert: true, new: true },
+          )
+          .exec();
+      } catch (err) {
+        // La fila existe y ya tiene la marca: el upsert choca con el índice
+        // único del cliente. Es un reintento de algo ya aplicado. También
+        // chocan dos primeros abonos a la vez del mismo cliente: se repite.
+        if ((err as { code?: number })?.code !== 11000) throw err;
+        if (!(await this.marcado(m))) {
+          await this.saldos
+            .findOneAndUpdate(sinMarca, { $inc: { saldo: m.amount }, ...marca }, { upsert: true, new: true })
+            .exec();
+        }
+      }
     }
+    await this.confirmar(m);
+    return true;
+  }
+
+  /**
+   * El movimiento de un origen que ya estaba reservado pero sigue sin
+   * confirmar (un corte lo dejó a medias): el reintento de la misma operación
+   * lo termina en vez de esperar al barrido. Aplicarlo es idempotente.
+   */
+  private async pendiente(
+    tipo: TipoMovimientoSaldoFavor,
+    sourceType: string,
+    sourceId: string,
+  ): Promise<SaldoFavorMovimientoDocument | null> {
+    const m = await this.movimientos.findOne({ sourceType, sourceId, tipo }).exec();
+    return m && m.aplicado === false && m.customerId ? m : null;
+  }
+
+  /** Si el saldo del cliente ya lleva el efecto de este movimiento. */
+  private async marcado(m: SaldoFavorMovimientoDocument): Promise<boolean> {
+    const fila = await this.saldos.findOne({ customerId: m.customerId, aplicados: m._id }).exec();
+    return !!fila;
+  }
+
+  /**
+   * Señal para el barrido: el saldo ya lleva este movimiento. Nunca lanza: el
+   * peso ya se movió, y si la confirmación no entra el barrido la repite.
+   */
+  private async confirmar(m: SaldoFavorMovimientoDocument): Promise<void> {
+    await this.movimientos
+      .updateOne({ _id: m._id }, { $set: { aplicado: true } })
+      .exec()
+      .catch((err: unknown) =>
+        this.logger.warn(`Movimiento de saldo a favor ${String(m._id)} aplicado sin confirmar: ${(err as Error).message}`),
+      );
   }
 
   /**
@@ -226,7 +278,31 @@ export class SaldoFavorService {
         this.logger.warn(`Movimiento de saldo a favor ${String(m._id)} sin aplicar: ${(err as Error).message}`);
       }
     }
+    await this.podarMarcas().catch((err: unknown) =>
+      this.logger.warn(`No se podaron las marcas del saldo a favor: ${(err as Error).message}`),
+    );
     return r;
+  }
+
+  /**
+   * Quita de `aplicados` las marcas de movimientos ya confirmados hace más de
+   * `PODA_MS`, para que la fila del cliente no crezca sin fin. Una marca sin
+   * confirmar nunca se poda: es lo que impide aplicar dos veces.
+   */
+  private async podarMarcas(): Promise<void> {
+    const limite = new Date(Date.now() - SaldoFavorService.PODA_MS);
+    const filas = await this.saldos
+      .find({ 'aplicados.0': { $exists: true } })
+      .limit(200)
+      .exec();
+    for (const fila of filas) {
+      const viejos = await this.movimientos
+        .find({ _id: { $in: fila.aplicados ?? [] }, aplicado: true, createdAt: { $lt: limite } })
+        .select('_id')
+        .exec();
+      if (viejos.length === 0) continue;
+      await this.saldos.updateOne({ _id: fila._id }, { $pull: { aplicados: { $in: viejos.map((v) => v._id) } } }).exec();
+    }
   }
 
   /**
@@ -312,12 +388,26 @@ export class SaldoFavorService {
     }
   }
 
+  /**
+   * Retira un movimiento que no se pudo aplicar. Si el saldo alcanzó a
+   * moverse (la escritura entró pero su respuesta se perdió), primero lo
+   * deshace en una sola escritura condicionada a la marca. Si no se puede
+   * comprobar, el movimiento NO se retira: queda para el barrido y a la vista.
+   */
   private async soltar(m: SaldoFavorMovimientoDocument): Promise<void> {
-    await this.movimientos
-      .deleteOne({ _id: m._id })
-      .exec()
-      .catch((err: unknown) =>
-        this.logger.error(`CONCILIAR: no se pudo retirar el movimiento ${String(m._id)}: ${(err as Error).message}`),
-      );
+    try {
+      if (m.customerId) {
+        await this.saldos
+          .findOneAndUpdate(
+            { customerId: m.customerId, aplicados: m._id },
+            { $inc: { saldo: m.tipo === 'consumo' ? m.amount : -m.amount }, $pull: { aplicados: m._id } },
+            { new: true },
+          )
+          .exec();
+      }
+      await this.movimientos.deleteOne({ _id: m._id }).exec();
+    } catch (err) {
+      this.logger.error(`CONCILIAR: no se pudo retirar el movimiento ${String(m._id)}: ${(err as Error).message}`);
+    }
   }
 }
