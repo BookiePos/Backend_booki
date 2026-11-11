@@ -51,31 +51,18 @@ export class CierreAnualService {
     return Number(fechaColombia().slice(0, 4));
   }
 
+  /**
+   * Las consultas de todos los años salen juntas (antes iban una tras otra,
+   * hasta cuatro por año). El orden de los años y la regla «los anteriores
+   * cerrados» se aplican después, sobre lo leído.
+   */
   async estado(): Promise<EstadoAnio[]> {
     const actual = this.anioActual();
     const anios = await this.ledger.aniosConMovimiento();
+    const leidos = await Promise.all(anios.map((anio) => this.leerAnio(anio)));
     const out: EstadoAnio[] = [];
     let anterioresCerrados = true;
-    for (const anio of anios) {
-      const cierre = await this.ledger.findBySource(ORIGEN_CIERRE, String(anio));
-      const traslado = cierre
-        ? await this.ledger.findBySource(ORIGEN_TRASLADO, String(anio))
-        : null;
-      const tb = await this.ledger.trialBalance({
-        from: inicioDeAnio(anio),
-        to: finDeAnio(anio),
-        excluirOrigenes: ORIGENES_FUERA_DE_RESULTADOS,
-      });
-      const resultado = tb.rows
-        .filter((r) => r.type === 'income' || r.type === 'expense')
-        .reduce((a, r) => a + (r.type === 'income' ? r.balance : -r.balance), 0);
-      // Suma de valores absolutos: un +x y un −x residuales no se tapan.
-      const saldoPosteriorAlCierre = cierre
-        ? (await this.ledger.saldosDeResultado(finDeAnio(anio))).reduce(
-            (a, s) => a + Math.abs(s.credit - s.debit),
-            0,
-          )
-        : 0;
+    for (const { anio, cierre, traslado, resultado, saldoPosteriorAlCierre } of leidos) {
       out.push({
         anio,
         cerrado: !!cierre,
@@ -94,6 +81,30 @@ export class CierreAnualService {
       if (!cierre && anio < actual) anterioresCerrados = false;
     }
     return out;
+  }
+
+  /** Lo que `estado()` necesita de un año. El traslado y el saldo posterior solo se leen si está cerrado. */
+  private async leerAnio(anio: number) {
+    const [cierre, tb] = await Promise.all([
+      this.ledger.findBySource(ORIGEN_CIERRE, String(anio)),
+      this.ledger.trialBalance({
+        from: inicioDeAnio(anio),
+        to: finDeAnio(anio),
+        excluirOrigenes: ORIGENES_FUERA_DE_RESULTADOS,
+      }),
+    ]);
+    const [traslado, saldos] = cierre
+      ? await Promise.all([
+          this.ledger.findBySource(ORIGEN_TRASLADO, String(anio)),
+          this.ledger.saldosDeResultado(finDeAnio(anio)),
+        ])
+      : [null, []];
+    const resultado = tb.rows
+      .filter((r) => r.type === 'income' || r.type === 'expense')
+      .reduce((a, r) => a + (r.type === 'income' ? r.balance : -r.balance), 0);
+    // Suma de valores absolutos: un +x y un −x residuales no se tapan.
+    const saldoPosteriorAlCierre = saldos.reduce((a, s) => a + Math.abs(s.credit - s.debit), 0);
+    return { anio, cierre, traslado, resultado, saldoPosteriorAlCierre };
   }
 
   async cerrar(anioTexto: string, email: string) {
