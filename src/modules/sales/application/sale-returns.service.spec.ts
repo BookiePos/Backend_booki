@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Types } from 'mongoose';
 
 // SWC emite `Object` como metadata para los @Prop() con uniones de literales y
@@ -507,6 +507,36 @@ describe('SaleReturnsService.create · lo que se mueve', () => {
       await expect(
         service.create(saleId.toString(), devolucion({ refundMethod: 'credit_note' }), user),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('bandeja de pendientes (6D)', () => {
+    function bandeja(user_: any, q: any = {}) {
+      build();
+      const find = vi.fn().mockReturnValue({
+        sort: () => ({ skip: (n: number) => ({ limit: (l: number) => ({ exec: () => Promise.resolve([{ n, l }]) }) }) }),
+      });
+      const countDocuments = vi.fn().mockReturnValue({ exec: () => Promise.resolve(7) });
+      Object.assign(modelo, { find, countDocuments });
+      return { find, run: () => service.listarPendientes(user_, q) };
+    }
+
+    it('limitado por sede: filtra por sus sedes y solo estados abiertos, paginado', async () => {
+      const mia = new Types.ObjectId().toString();
+      const { find, run } = bandeja({ ...user, role: 'cashier', permissions: [], sedeIds: [mia] }, { page: 3, limit: 10 });
+      const r = await run();
+      const filtro = find.mock.calls[0]?.[0];
+      expect(filtro.estado.$in).toEqual(['en_curso', 'pendiente_caja']);
+      expect(filtro.sedeId.$in.map(String)).toEqual([mia]);
+      expect(r).toMatchObject({ total: 7, page: 3, limit: 10, items: [{ n: 20, l: 10 }] });
+    });
+
+    it('sede ajena: 403', async () => {
+      const { run } = bandeja(
+        { ...user, role: 'cashier', permissions: [], sedeIds: [new Types.ObjectId().toString()] },
+        { sedeId: new Types.ObjectId().toString() },
+      );
+      await expect(run()).rejects.toBeInstanceOf(ForbiddenException);
     });
   });
 });

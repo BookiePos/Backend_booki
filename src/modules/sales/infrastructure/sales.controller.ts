@@ -15,6 +15,7 @@ import { PackagingSuggestionDto } from '../application/dto/packaging-suggestion.
 import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
 import { SaleReturnsService } from '../application/sale-returns.service';
 import { CreateSaleReturnDto } from '../application/dto/create-sale-return.dto';
+import { ListPendingReturnsQueryDto } from '../application/dto/list-pending-returns-query.dto';
 import {
   CreateNotaSinReferenciaDto,
   CreateSaleRebateDto,
@@ -227,6 +228,21 @@ export class SalesController {
     @CurrentUser() user: JwtUser,
   ) {
     return this.returns.create(id, dto, user);
+  }
+
+  /**
+   * Bandeja global de devoluciones pendientes (stock, caja o libro sin
+   * terminar), con filtro opcional por sede y paginada. Mismo permiso que
+   * registrarlas y completarlas. Va antes de `:id/returns` solo por orden de
+   * lectura: las rutas no chocan.
+   */
+  @RequirePermissions(PERMISSIONS.POS_REFUND)
+  @Get('returns/pendientes')
+  listarDevolucionesPendientes(
+    @Query() q: ListPendingReturnsQueryDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.returns.listarPendientes(user, q);
   }
 
   /**

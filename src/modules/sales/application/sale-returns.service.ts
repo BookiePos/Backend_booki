@@ -42,7 +42,7 @@ import { CatalogService } from '../../catalog/application/catalog.service';
 import { CajaService } from '../../caja/application/caja.service';
 import { LedgerPostingService } from '../../core-ledger/application/ledger-posting.service';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
-import { assertSedeAccess } from '../../core-auth/domain/sede-access';
+import { assertSedeAccess, resolveSedeScope } from '../../core-auth/domain/sede-access';
 import {
   buildReturnPlan,
   cogsForReturn,
@@ -708,6 +708,33 @@ export class SaleReturnsService {
         `No se pudo soltar el turno de la devolución ${registro._id.toString()} (vence solo): ${(err as Error).message}`,
       );
     }
+  }
+
+  /**
+   * Bandeja global de devoluciones que quedaron a medias (`en_curso` o
+   * `pendiente_caja`), de la más vieja a la más nueva, paginada. Con `sedeId`
+   * se valida el acceso (403); sin él, solo las sedes del usuario (sin sedes
+   * asignadas no ve nada). Cada una se completa con `completarPendiente`.
+   */
+  async listarPendientes(
+    user: JwtUser,
+    q: { sedeId?: string; page?: number; limit?: number } = {},
+  ): Promise<{ items: SaleReturnDocument[]; total: number; page: number; limit: number }> {
+    const alcance = resolveSedeScope(user, q.sedeId);
+    const filtro: Record<string, unknown> = { estado: { $in: ESTADOS_ABIERTOS } };
+    if (alcance) filtro.sedeId = { $in: alcance.map((id) => new Types.ObjectId(id)) };
+    const limit = Math.min(Math.max(q.limit ?? 50, 1), 100);
+    const page = Math.max(q.page ?? 1, 1);
+    const [items, total] = await Promise.all([
+      this.model
+        .find(filtro)
+        .sort({ createdAt: 1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .exec(),
+      this.model.countDocuments(filtro).exec(),
+    ]);
+    return { items, total, page, limit };
   }
 
   /**
