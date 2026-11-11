@@ -17,6 +17,7 @@
  * Basado en la referencia de AlíaCorp (`apps/erp/lib/dian/attached-document.ts`).
  */
 import { leerApplicationResponseXml } from './lectura-application-response';
+import { DocumentoUblInvalidoError, assertTextoXml } from '../ubl/xml-ubl';
 
 
 export const VALIDADOR_DIAN = 'Unidad Especial Dirección de Impuestos y Aduanas Nacionales';
@@ -36,7 +37,8 @@ export class ErrorEntrega extends Error {
       | 'XML_NO_CORRESPONDE'
       | 'AR_ILEGIBLE'
       | 'AR_OTRO_DOCUMENTO'
-      | 'AR_NO_ACEPTADA',
+      | 'AR_NO_ACEPTADA'
+      | 'DATOS_NO_XML',
     mensaje: string,
   ) {
     super(mensaje);
@@ -104,8 +106,25 @@ function partyTaxSchemeDe(xmlFactura: string, parte: string): string {
   return pts.replace(/<cac:RegistrationAddress>[\s\S]*?<\/cac:RegistrationAddress>/, '');
 }
 
+/**
+ * Un carácter de control en un dato no se limpia ni se escapa (XML 1.0 no lo
+ * admite): el contenedor saldría ilegible. Se corta antes de firmar, igual que
+ * en la factura (`assertTextoXml`). El texto no se cita.
+ */
+function exigirTextoXml(valor: unknown, que: string): void {
+  try {
+    assertTextoXml(valor, que);
+  } catch (err) {
+    if (err instanceof DocumentoUblInvalidoError) {
+      throw new ErrorEntrega('DATOS_NO_XML', `${que} trae un carácter de control que el XML no admite.`);
+    }
+    throw err;
+  }
+}
+
 /** Respaldo: el `PartyTaxScheme` armado con los datos congelados del documento. */
-function partyTaxSchemeDeDatos(p: ParteAttached): string {
+function partyTaxSchemeDeDatos(p: ParteAttached, que: string): string {
+  exigirTextoXml(p, que);
   const tipo = p.tipoDocumento ?? '31';
   const dv = tipo === '31' && p.dv ? ` schemeID="${escapar(p.dv)}"` : '';
   return (
@@ -154,8 +173,12 @@ export function construirAttachedDocument(d: DatosAttached): string {
 
   const { fecha, hora } = bogota(d.ahora);
   const validado = bogota(d.validadoAt ?? d.ahora);
-  const sender = partyTaxSchemeDe(factura, 'AccountingSupplierParty') || partyTaxSchemeDeDatos(d.emisor);
-  const receiver = partyTaxSchemeDe(factura, 'AccountingCustomerParty') || partyTaxSchemeDeDatos(d.adquiriente);
+  const sender = partyTaxSchemeDe(factura, 'AccountingSupplierParty') || partyTaxSchemeDeDatos(d.emisor, 'emisor');
+  const receiver = partyTaxSchemeDe(factura, 'AccountingCustomerParty') || partyTaxSchemeDeDatos(d.adquiriente, 'adquiriente');
+  exigirTextoXml(
+    { fullNumber: d.fullNumber, issueDate: d.issueDate, tipoAmbiente: d.tipoAmbiente },
+    'documento',
+  );
   const numero = escapar(d.fullNumber);
 
   return (
