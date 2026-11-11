@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Types } from 'mongoose';
 
 // SWC emite `Object` como metadata para los @Prop() con uniones de literales y
@@ -438,5 +438,105 @@ describe('SaleReturnsService.create · lo que se mueve', () => {
       vi.useRealTimers();
     }
     expect(ledger.postSaleReturn.mock.calls[0][0].date).toBe('2026-10-14');
+  });
+
+  describe('cliente de la devolución (6D)', () => {
+    function conClientes(sale: any) {
+      build(sale);
+      const abonar = vi.fn().mockResolvedValue(undefined);
+      const getOrFail = vi.fn();
+      Object.assign(service as any, { saldoFavor: { abonar }, customers: { getOrFail } });
+      return { abonar, getOrFail };
+    }
+
+    it('venta sin cliente: acepta el indicado, lo guarda y le abona el saldo a favor', async () => {
+      const elegido = new Types.ObjectId();
+      const { abonar, getOrFail } = conClientes(venta({ customerId: undefined }));
+      getOrFail.mockResolvedValue({ _id: elegido, name: 'Doña Rosa' });
+
+      await service.create(
+        saleId.toString(),
+        devolucion({ refundMethod: 'credit_note', customerId: elegido.toString() }),
+        user,
+      );
+
+      expect(getOrFail).toHaveBeenCalledWith(elegido.toString());
+      expect(creado.customerId.toString()).toBe(elegido.toString());
+      expect(abonar).toHaveBeenCalledTimes(1);
+      expect(abonar.mock.calls[0]?.[0].customerId.toString()).toBe(elegido.toString());
+    });
+
+    it('cliente que no existe en la empresa: el 404 sale y no se mueve nada', async () => {
+      const { getOrFail } = conClientes(venta({ customerId: undefined }));
+      getOrFail.mockRejectedValue(new NotFoundException('Cliente no encontrado'));
+
+      await expect(
+        service.create(
+          saleId.toString(),
+          devolucion({ refundMethod: 'credit_note', customerId: new Types.ObjectId().toString() }),
+          user,
+        ),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(modelo.create).not.toHaveBeenCalled();
+      expect(stock.reverseSale).not.toHaveBeenCalled();
+    });
+
+    it('venta con otro cliente: se rechaza (la nota va al adquiriente de la factura)', async () => {
+      const { getOrFail } = conClientes(venta());
+      await expect(
+        service.create(
+          saleId.toString(),
+          devolucion({ customerId: new Types.ObjectId().toString() }),
+          user,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(getOrFail).not.toHaveBeenCalled();
+      expect(modelo.create).not.toHaveBeenCalled();
+    });
+
+    it('venta con cliente y el MISMO indicado: pasa sin consultar el catálogo de clientes', async () => {
+      const mismo = new Types.ObjectId();
+      const { getOrFail } = conClientes(venta({ customerId: mismo }));
+      await service.create(saleId.toString(), devolucion({ customerId: mismo.toString() }), user);
+      expect(getOrFail).not.toHaveBeenCalled();
+      expect(creado.customerId.toString()).toBe(mismo.toString());
+    });
+
+    it('sin cliente en la venta ni en la devolución, credit_note sigue rechazándose', async () => {
+      conClientes(venta({ customerId: undefined }));
+      await expect(
+        service.create(saleId.toString(), devolucion({ refundMethod: 'credit_note' }), user),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('bandeja de pendientes (6D)', () => {
+    function bandeja(user_: any, q: any = {}) {
+      build();
+      const find = vi.fn().mockReturnValue({
+        sort: () => ({ skip: (n: number) => ({ limit: (l: number) => ({ exec: () => Promise.resolve([{ n, l }]) }) }) }),
+      });
+      const countDocuments = vi.fn().mockReturnValue({ exec: () => Promise.resolve(7) });
+      Object.assign(modelo, { find, countDocuments });
+      return { find, run: () => service.listarPendientes(user_, q) };
+    }
+
+    it('limitado por sede: filtra por sus sedes y solo estados abiertos, paginado', async () => {
+      const mia = new Types.ObjectId().toString();
+      const { find, run } = bandeja({ ...user, role: 'cashier', permissions: [], sedeIds: [mia] }, { page: 3, limit: 10 });
+      const r = await run();
+      const filtro = find.mock.calls[0]?.[0];
+      expect(filtro.estado.$in).toEqual(['en_curso', 'pendiente_caja']);
+      expect(filtro.sedeId.$in.map(String)).toEqual([mia]);
+      expect(r).toMatchObject({ total: 7, page: 3, limit: 10, items: [{ n: 20, l: 10 }] });
+    });
+
+    it('sede ajena: 403', async () => {
+      const { run } = bandeja(
+        { ...user, role: 'cashier', permissions: [], sedeIds: [new Types.ObjectId().toString()] },
+        { sedeId: new Types.ObjectId().toString() },
+      );
+      await expect(run()).rejects.toBeInstanceOf(ForbiddenException);
+    });
   });
 });

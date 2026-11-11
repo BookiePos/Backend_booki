@@ -323,6 +323,7 @@ limitado por sede: el cierre cancela los resultados de toda la empresa.
 | `GET /sales/:id` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /sales` | `pos.sell` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /sales/:id/returns` | `pos.refund` | ✓ | ✓ | ✓ | ✓ | · |
+| `GET /sales/returns/pendientes` | `pos.refund` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /sales/returns/:id/completar` | `pos.refund` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /sales/:id/contingencia/transcribir` | `einvoicing.issue` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /sales/:id/rebajas` | `pos.void.authorize` | ✓ | ✓ | ✓ | · | · |

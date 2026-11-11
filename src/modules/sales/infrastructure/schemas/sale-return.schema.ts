@@ -158,6 +158,14 @@ export class SaleReturn {
   idempotencyKey?: string;
 
   /**
+   * Cliente efectivo de la devolución (el de la venta o el indicado al
+   * registrarla): a quien se le abona el saldo a favor. Se guarda para que
+   * completar una devolución a medias no dependa de volver a enviarlo.
+   */
+  @Prop({ type: Types.ObjectId, ref: 'Customer' })
+  customerId?: Types.ObjectId;
+
+  /**
    * Pasos de la devolución (D1). Nace `en_curso` y pasa a `completa` cuando
    * stock, caja y libro quedaron. `pendiente_caja` (N6): solo falta la salida
    * de efectivo, que el barrido no anota; la completa el cajero con
