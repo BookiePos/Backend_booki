@@ -36,6 +36,7 @@ import {
   type YaReconocido,
 } from '../domain/sale-rebate';
 import { SalesService } from './sales.service';
+import { CustomersService } from '../../customers/application/customers.service';
 import { StockService } from '../../inventory/application/stock.service';
 import { CatalogService } from '../../catalog/application/catalog.service';
 import { CajaService } from '../../caja/application/caja.service';
@@ -105,6 +106,9 @@ export class SaleReturnsService {
     /** Saldo a favor por cliente (Fase 6C): lo que la 2805 le acredita. */
     @Optional()
     private readonly saldoFavor?: SaldoFavorService,
+    /** Cliente indicado en la devolución (Fase 6D): existe en la empresa. */
+    @Optional()
+    private readonly customers?: CustomersService,
   ) {}
 
   /** Devoluciones ya registradas de una venta, de la más reciente atrás. */
@@ -309,7 +313,8 @@ export class SaleReturnsService {
         'La venta se fió a un empleado (descuento por nómina): no admite devoluciones parciales. Anula la venta completa.',
       );
     }
-    this.assertTerceroParaSaldo(dto.refundMethod, sale, cxc);
+    const clienteId = await this.resolverCliente(dto.customerId, sale, cxc);
+    this.assertTerceroParaSaldo(dto.refundMethod, sale, cxc, clienteId);
 
     const yaDevuelto = await this.alreadyReturned(sale._id);
     let plan: ReturnPlan;
@@ -382,6 +387,7 @@ export class SaleReturnsService {
     try {
       registro = await this.model.create({
       idempotencyKey: llave,
+      customerId: clienteId ? new Types.ObjectId(clienteId) : undefined,
       saleId: sale._id,
       saleNumber: sale.saleNumber,
       sedeId: new Types.ObjectId(sedeId),
@@ -1060,6 +1066,36 @@ export class SaleReturnsService {
   }
 
   /**
+   * Cliente de la devolución (Fase 6D). Regla: la nota crédito va al
+   * adquiriente de la factura original, así que si la venta ya tiene cliente
+   * (el de la venta o el deudor del fiado) el indicado tiene que ser ese mismo;
+   * otro distinto se RECHAZA. Solo cuando la venta no tiene cliente se acepta
+   * el indicado, y debe existir en la empresa (404 si no es de este tenant).
+   * Devuelve el cliente efectivo o undefined.
+   */
+  private async resolverCliente(
+    indicado: string | undefined,
+    sale: SaleDocument,
+    cxc: FinanceReceivableDocument | null,
+  ): Promise<string | undefined> {
+    const deLaVenta = sale.customerId?.toString() ?? cxc?.customerId?.toString();
+    if (!indicado) return deLaVenta;
+    if (deLaVenta) {
+      if (deLaVenta !== indicado) {
+        throw new BadRequestException(
+          'La venta ya tiene otro cliente: la nota crédito se emite al cliente de la factura original. Quita el cliente de la devolución o usa el de la venta.',
+        );
+      }
+      return deLaVenta;
+    }
+    if (!this.customers) {
+      throw new BadRequestException('No se puede validar el cliente de la devolución.');
+    }
+    const cliente = await this.customers.getOrFail(indicado);
+    return cliente._id.toString();
+  }
+
+  /**
    * Sin tercero no hay a quién dejarle saldo a favor (revisión 6C): la 2805
    * quedaría con un saldo que nadie puede gastar.
    */
@@ -1067,9 +1103,10 @@ export class SaleReturnsService {
     refundMethod: string,
     sale: SaleDocument,
     cxc: FinanceReceivableDocument | null,
+    clienteId?: string,
   ): void {
     if (refundMethod !== 'credit_note' && refundMethod !== 'none') return;
-    if (sale.customerId || cxc?.customerId) return;
+    if (sale.customerId || cxc?.customerId || clienteId) return;
     throw new BadRequestException(
       'La venta no tiene cliente registrado: identifica al cliente o devuelve en efectivo/transferencia.',
     );
@@ -1112,10 +1149,15 @@ export class SaleReturnsService {
     // Lo pagado con saldo a favor vuelve siempre al saldo; el resto, solo si el medio es a favor.
     const amount = aSaldo + (registro.refundMethod === 'credit_note' || registro.refundMethod === 'none' ? resto : 0);
     if (amount <= 0) return;
-    const deCxc = sale.customerId ? null : await this.cuentaPorCobrar(sale).catch(() => null);
+    const deCxc =
+      sale.customerId || registro.customerId ? null : await this.cuentaPorCobrar(sale).catch(() => null);
+    const clienteIndicado =
+      !sale.customer?.name && registro.customerId && this.customers
+        ? await this.customers.getOrFail(registro.customerId.toString()).catch(() => null)
+        : null;
     await this.saldoFavor.abonar({
-      customerId: sale.customerId ?? deCxc?.customerId ?? null,
-      customerName: sale.customer?.name,
+      customerId: registro.customerId ?? sale.customerId ?? deCxc?.customerId ?? null,
+      customerName: sale.customer?.name ?? clienteIndicado?.name,
       amount,
       sourceType: 'sale_return',
       sourceId: registro._id.toString(),
@@ -1278,6 +1320,7 @@ function mismaCarga(registro: SaleReturnDocument, dto: CreateSaleReturnDto): boo
     registro.refundMethod === dto.refundMethod &&
     registro.restock === dto.restock &&
     registro.reason === dto.reason &&
+    (!dto.customerId || registro.customerId?.toString() === dto.customerId) &&
     huella(registro.lines) === huella(dto.lines ?? [])
   );
 }
