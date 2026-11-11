@@ -290,20 +290,9 @@ export class TransmisionDianService {
     }
     const emisorId = emisor.id as string;
 
-    // El stub nunca sale a la red: si es lo que hay, ni se firma ni se marca
-    // `sent` (un `sent` que nunca salió dejaría el documento en vuelo para siempre).
-    let transmisor: TransmisorDian;
-    try {
-      transmisor = await this.transmisores.para(sedeId, decision.ambiente);
-    } catch (err) {
-      if (err instanceof AmbienteNoCoincideError) return this.sinRed(doc, [err.message]);
-      throw err;
-    }
-    if (transmisor instanceof StubDian) {
-      const r = await transmisor.enviar({ tipo: doc.type, fullNumber: doc.fullNumber });
-      return this.sinRed(doc, r.mensajes);
-    }
-
+    // El bloqueo va ANTES de pedir el transmisor: `para()` descifra el .p12 y
+    // deja una lectura en la auditoría. Con peticiones simultáneas solo la que
+    // gana el bloqueo toca el certificado.
     const bloqueo = await this.tomarBloqueo(doc);
     if (!bloqueo) {
       const actual = await this.cargar(docId);
@@ -312,6 +301,19 @@ export class TransmisionDianService {
       ]);
     }
     try {
+      // El stub nunca sale a la red: si es lo que hay, ni se firma ni se marca
+      // `sent` (un `sent` que nunca salió dejaría el documento en vuelo para siempre).
+      let transmisor: TransmisorDian;
+      try {
+        transmisor = await this.transmisores.para(sedeId, decision.ambiente);
+      } catch (err) {
+        if (err instanceof AmbienteNoCoincideError) return await this.sinRed(bloqueo.doc, [err.message], bloqueo.id);
+        throw err;
+      }
+      if (transmisor instanceof StubDian) {
+        const r = await transmisor.enviar({ tipo: doc.type, fullNumber: doc.fullNumber });
+        return await this.sinRed(bloqueo.doc, r.mensajes, bloqueo.id);
+      }
       const hasta = bloqueo.doc.bloqueoHasta ?? new Date(Date.now() + BLOQUEO_TRANSMISION_MS);
       return await this.transmitirConBloqueo(bloqueo.doc, bloqueo.id, hasta, emisorId, transmisor);
     } finally {

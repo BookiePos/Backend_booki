@@ -358,6 +358,23 @@ describe('TransmisionDianService', () => {
     expect(fila(d).intentos).toBe(1);
   });
 
+  it('concurrencia: solo quien gana el bloqueo pide el transmisor (una lectura del .p12)', async () => {
+    const d = sembrar();
+    await Promise.all([transmitir(d), transmitir(d), transmitir(d)]);
+    expect(proveedor.para).toHaveBeenCalledTimes(1);
+  });
+
+  it('transmisor stub: el bloqueo se suelta y deja el motivo', async () => {
+    proveedor.para.mockResolvedValue(new StubDian('Falta el certificado'));
+    const d = sembrar();
+    expect((await transmitir(d)).codigo).toBe('CONFIG_FALTANTE');
+    expect(fila(d).bloqueoTransmision).toBeUndefined();
+    expect(fila(d).ultimoIntentoSinRed).toMatchObject({ codigo: 'CONFIG_FALTANTE', motivos: ['Falta el certificado'] });
+    // Con el transmisor ya configurado, el siguiente intento sale.
+    proveedor.para.mockResolvedValue(transmisor);
+    expect((await transmitir(d)).dianStatus).toBe('accepted');
+  });
+
   it('bloqueo vigente de otro: no transmite; vencido: lo toma', async () => {
     const d = sembrar({ bloqueoTransmision: 'otro', bloqueoHasta: new Date(Date.now() + 60_000) });
     expect((await transmitir(d)).codigo).toBe('EN_CURSO');
