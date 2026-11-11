@@ -13,6 +13,8 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
+import { businessTracker } from '../../invoice-scan/infrastructure/ai-throttle';
 import { EinvoicingService } from '../application/einvoicing.service';
 import { FiscalEmittersService } from '../application/fiscal-emitters.service';
 import { TransmisionDianService } from '../application/transmision-dian.service';
@@ -42,6 +44,14 @@ import { RequirePermissions } from '../../core-auth/infrastructure/decorators/re
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
 import { PERMISSIONS } from '../../core-auth/domain/permissions';
 import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
+
+/**
+ * Tope de «regenerar la entrega»: por empresa (no por IP), como los endpoints
+ * con IA. El global de 100/min por IP no frena a quien repite la regeneración.
+ */
+const ENTREGA_THROTTLE = {
+  default: { limit: 10, ttl: 60_000, getTracker: businessTracker },
+};
 
 @Controller('einvoicing')
 export class EinvoicingController {
@@ -342,7 +352,11 @@ export class EinvoicingController {
    * AttachedDocument firmado + ZIP en el bucket privado (sin correo). Mismo
    * permiso que transmitir; el servicio comprueba el acceso a la sede, que
    * esté aceptado y lo deja en la auditoría. Idempotente: mismas rutas.
+   *
+   * Con tope propio (10 por minuto y empresa): cada llamada arma el PDF, abre
+   * el .p12 para firmar y escribe en el bucket.
    */
+  @Throttle(ENTREGA_THROTTLE)
   @RequirePermissions(PERMISSIONS.EINVOICING_ISSUE)
   @Post('documentos/:id/entrega')
   regenerarEntrega(@Param('id') id: string, @CurrentUser() user: JwtUser) {

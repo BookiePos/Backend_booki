@@ -135,4 +135,62 @@ describe('CierreAnualService', () => {
       [2026, false, false],
     ]);
   });
+
+  it('estado: año cerrado con traslado y saldo posterior; el resultado sale del balance sin el cierre', async () => {
+    vivos.set(`${ORIGEN_CIERRE}|2024`, { number: 'AS-1', date: '2024-12-31', createdByEmail: 'd@x.co' });
+    vivos.set(`${ORIGEN_TRASLADO}|2024`, { number: 'AS-2', date: '2025-01-01' });
+    ledger.saldosDeResultado.mockImplementation(async (hasta: string) =>
+      hasta === '2024-12-31'
+        ? [
+            { code: '4135', type: 'income', sedeId: S1, debit: 0, credit: 50 },
+            { code: '5105', type: 'expense', sedeId: S1, debit: 50, credit: 0 },
+          ]
+        : [],
+    );
+    ledger.trialBalance.mockImplementation(async ({ from }: { from: string }) => ({
+      rows:
+        from === '2025-01-01'
+          ? [
+              { type: 'income', balance: 1_000 },
+              { type: 'expense', balance: 400 },
+              { type: 'asset', balance: 9_999 },
+            ]
+          : [],
+    }));
+
+    const e = await service.estado();
+
+    expect(e[0]).toEqual({
+      anio: 2024,
+      cerrado: true,
+      puedeCerrar: false,
+      resultado: 0,
+      cierre: { number: 'AS-1', date: '2024-12-31', createdByEmail: 'd@x.co', trasladoNumber: 'AS-2' },
+      // +50 y −50 no se tapan: valores absolutos.
+      saldoPosteriorAlCierre: 100,
+    });
+    expect(e[1]).toMatchObject({ anio: 2025, cerrado: false, puedeCerrar: true, resultado: 600, cierre: null });
+    expect(e[2]).toMatchObject({ anio: 2026, puedeCerrar: false, saldoPosteriorAlCierre: 0 });
+    // El traslado y el saldo posterior solo se leen del año cerrado.
+    expect(ledger.findBySource.mock.calls.filter((c: any[]) => c[0] === ORIGEN_TRASLADO)).toEqual([
+      [ORIGEN_TRASLADO, '2024'],
+    ]);
+    expect(ledger.saldosDeResultado.mock.calls).toEqual([['2024-12-31']]);
+  });
+
+  it('estado: los años se leen a la vez, no uno tras otro', async () => {
+    let enCurso = 0;
+    let maximo = 0;
+    ledger.trialBalance.mockImplementation(async () => {
+      enCurso += 1;
+      maximo = Math.max(maximo, enCurso);
+      await Promise.resolve();
+      enCurso -= 1;
+      return { rows: [] };
+    });
+    const e = await service.estado();
+    expect(maximo).toBe(3);
+    // El orden de salida sigue siendo el de los años.
+    expect(e.map((a) => a.anio)).toEqual([2024, 2025, 2026]);
+  });
 });

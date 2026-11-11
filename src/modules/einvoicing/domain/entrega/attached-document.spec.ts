@@ -111,6 +111,32 @@ describe('AttachedDocument (anexo FEV 1.9)', () => {
     expect(id.getAttribute('schemeName')).toBe('31');
   });
 
+  it('respaldo: un carácter de control en los datos del documento corta la entrega (no sale XML ilegible)', () => {
+    const sinPartes = FACTURA.replace(PTS_EMISOR, '').replace(PTS_CLIENTE, '');
+    const conControl = (cambios: Partial<DatosAttached>) => {
+      try {
+        construirAttachedDocument(base({ xmlFactura: sinPartes, ...cambios }));
+      } catch (err) {
+        return err;
+      }
+      return null;
+    };
+    const emisor = conControl({ emisor: { nombre: 'Crunchy\u0001Munch', nit: '900123456', dv: '7' } });
+    expect(emisor).toBeInstanceOf(ErrorEntrega);
+    expect((emisor as ErrorEntrega).codigo).toBe('DATOS_NO_XML');
+    // El texto del dato no se cita en el mensaje.
+    expect((emisor as ErrorEntrega).message).not.toContain('Crunchy');
+    const cliente = conControl({ adquiriente: { nombre: 'Ana\u000bPérez', nit: '1020304050', tipoDocumento: '13' } });
+    expect((cliente as ErrorEntrega).codigo).toBe('DATOS_NO_XML');
+    // Tab y salto de línea sí son XML válido.
+    expect(conControl({ emisor: { nombre: 'Crunchy\tMunch\nSAS', nit: '900123456' } })).toBeNull();
+  });
+
+  it('con las partes de la factura firmada, los datos congelados ni se miran', () => {
+    const xml = construirAttachedDocument(base({ emisor: { nombre: 'x\u0001y', nit: '900123456' } }));
+    expect(xml).toContain('Crunchy &amp; Munch SAS');
+  });
+
   it('se firma con el perfil XAdES de siempre y la firma verifica', () => {
     const xml = construirAttachedDocument(base());
     const firmado = firmarXml(xml, { p12: p12DePrueba(), password: 'clave-de-prueba' });
