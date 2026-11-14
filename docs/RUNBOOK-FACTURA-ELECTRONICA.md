@@ -63,6 +63,13 @@ queda en vuelo (`sent`) y la reconsulta lo reenvía; no hay modo de contingencia
 - Norma (Res. 165/2023 art. 37, compilada en la 227/2025): transmitir dentro de las
   **48 horas** desde que se restablece el servicio, sea falla de la DIAN o del negocio.
   Las notas y la nómina no tienen contingencia: esperan a que vuelva el servicio.
+  - **Cola de notas y nómina.** Si la DIAN no responde (red, timeout o cualquier código
+    sin veredicto), la nota crédito/débito o el documento de nómina queda firmado y en
+    cola (`sent`, o `signed` con su XML si no alcanzó a salir). La reconsulta
+    (`GET /cron/dian-reconsulta`, cada 30 min) reenvía el **mismo XML firmado**, con el
+    mismo número, hasta que haya veredicto; si la DIAN responde «ya procesado» consulta
+    `GetStatus`. Nunca se re-firma con tipo 03/04 ni se renumera, y no hay tope de
+    reintentos. El detalle lo muestra como «En cola» (`enCola` y `estadoResumen`).
 - _A confirmar:_ cómo se numerarán y re-firmarán los documentos de contingencia cuando se
   construya la Fase 9.
 
