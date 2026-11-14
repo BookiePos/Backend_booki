@@ -21,6 +21,7 @@ import {
 } from '../domain/nomina/consolidar';
 import { empleadorDeEmisor, relojColombia, type ResultadoEmpleador } from '../domain/nomina/empleador';
 import { TipoNota, type DocumentoNe, type EmisionNe } from '../domain/nomina/modelo';
+import { RESUMEN_EN_COLA, enColaDeReenvio } from '../domain/reconsulta';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { allowedSedeIds, assertSedeAccess } from '../../core-auth/domain/sede-access';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
@@ -72,6 +73,9 @@ export interface VistaDocumentoNomina {
   superado: boolean;
   issueDate: string;
   rechazoMotivo?: string;
+  /** Firmado o enviado sin veredicto: la nómina no tiene contingencia, se reenvía sola el mismo XML. */
+  enCola?: true;
+  estadoResumen?: string;
 }
 
 interface ContextoPeriodo {
@@ -260,6 +264,7 @@ export class NominaPeriodoService {
       superado: d.superado === true,
       issueDate: d.issueDate,
       ...(d.rechazoMotivo ? { rechazoMotivo: d.rechazoMotivo } : {}),
+      ...(enColaDeReenvio(d) ? { enCola: true as const, estadoResumen: RESUMEN_EN_COLA } : {}),
     }));
   }
 

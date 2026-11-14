@@ -40,9 +40,11 @@ import {
 import { ENTREGA_DIAN, type EntregaDian } from './entrega-dian.puerto';
 import {
   MARGEN_PLAZO_RECONSULTA_MS,
-  REPOSO_RECONSULTA_MS,
+  TIPOS_SIN_CONTINGENCIA,
   cifrasVacias,
   esRechazoDeRegla,
+  filtroColaReconsulta,
+  salioDeLaCola,
   type CifrasReconsulta,
 } from '../domain/reconsulta';
 import {
@@ -195,7 +197,9 @@ export class TransmisionDianService {
 
   /**
    * Camino de SISTEMA (cron de reconsulta): los documentos que llevan más de 10 min en
-   * `sent`, de los más viejos a los más nuevos, hasta `limite`. Reenvía el MISMO
+   * `sent` (y las notas firmadas que no llegaron a salir), de los más viejos a
+   * los más nuevos, hasta `limite`. Sin tope de reintentos: una nota espera en
+   * cola hasta que la DIAN responda; nunca pasa a contingencia. Reenvía el MISMO
    * XML firmado (o consulta) por la misma ruta que el reintento manual, con su
    * gate de ambiente y su bloqueo. Sin usuario no hay chequeo de sede (el barrido
    * recorre todas) pero sí tenancy: exige un `TenantContext` abierto. Nunca
@@ -210,11 +214,9 @@ export class TransmisionDianService {
     const ahora = opts.ahora ?? new Date();
     const cifras = cifrasVacias();
     const docs = await this.model
-      .find({
-        dianStatus: 'sent',
-        enviadoAt: { $lte: new Date(ahora.getTime() - REPOSO_RECONSULTA_MS) },
-        $or: [{ bloqueoHasta: null }, { bloqueoHasta: { $lte: ahora } }],
-      })
+      // `sent` de cualquier tipo, más las notas que quedaron firmadas sin salir:
+      // no tienen contingencia, su única salida es esta cola (Fase 9).
+      .find(filtroColaReconsulta(ahora, TIPOS_SIN_CONTINGENCIA))
       .sort({ reconsultadoAt: 1, enviadoAt: 1 })
       .limit(Math.max(0, limite))
       .select('_id')
@@ -227,7 +229,7 @@ export class TransmisionDianService {
       await this.model.updateOne({ _id }, { $set: { reconsultadoAt: new Date() } }).exec();
       try {
         const r = await this.ejecutar(docId);
-        if (r.dianStatus !== 'sent') cifras.avanzados++;
+        if (salioDeLaCola(r.dianStatus)) cifras.avanzados++;
         await this.auditar(docId, undefined, true, r.codigo ?? r.dianStatus, r);
       } catch (err) {
         if (esRechazoDeRegla(err)) cifras.omitidos++;

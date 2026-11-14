@@ -23,6 +23,7 @@ import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import { cop } from '../../finance/domain/money.util';
 import { EntregaDianService } from './entrega-dian.service';
+import { RESUMEN_EN_COLA, TIPOS_SIN_CONTINGENCIA, enColaDeReenvio } from '../domain/reconsulta';
 
 /** Tope de envíos por correo de un mismo documento (incluye reenvíos). */
 export const CORREO_MAX_ENVIOS = 5;
@@ -62,6 +63,11 @@ export interface DetalleDocumentoFe {
   fecha: string;
   dianStatus: string;
   estadoResumen: string;
+  /**
+   * Nota (sin contingencia) firmada o enviada sin veredicto: la reconsulta la
+   * reenvía sola con el mismo número y XML. `estadoResumen` lo dice en texto.
+   */
+  enCola: boolean;
   cufe?: string;
   qrUrl?: string;
   ambiente?: string;
@@ -125,6 +131,7 @@ export class DocumentoFeVistaService {
     const envios = this.enviosDe(doc);
     const ultimoAt = this.fecha(doc.correoEntrega?.ultimoAt);
     const aceptado = doc.dianStatus === 'accepted';
+    const enCola = (TIPOS_SIN_CONTINGENCIA as readonly string[]).includes(doc.type) && enColaDeReenvio(doc);
     const entrega = doc.entregaDian as { estado?: string; motivo?: string; archivo?: string } | undefined;
     return {
       id: String(doc._id),
@@ -133,7 +140,8 @@ export class DocumentoFeVistaService {
       numero: doc.fullNumber,
       fecha: doc.issueDate,
       dianStatus: doc.dianStatus,
-      estadoResumen: resumenEstado(doc.dianStatus),
+      estadoResumen: enCola ? RESUMEN_EN_COLA : resumenEstado(doc.dianStatus),
+      enCola,
       cufe: doc.cufe,
       qrUrl: doc.qrUrl,
       ambiente: doc.tipoAmbiente,
