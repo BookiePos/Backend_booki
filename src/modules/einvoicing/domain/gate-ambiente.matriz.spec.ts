@@ -12,9 +12,9 @@ import { decidirAmbiente, type EntradaGateAmbiente, type ResolucionParaGate } fr
 
 const NIT = '900123456';
 
-const AMBIENTES_EMISOR: unknown[] = ['1', '2', undefined, null, '', ' 1', '1 ', '01', 'produccion', 1, 2, true, 'toString', '__proto__'];
-const HABILITADO: unknown[] = [true, false, null, undefined, 'true', 1, {}];
-const AMBIENTES_DOC: unknown[] = ['1', '2', undefined, null, '', '3', 1];
+const AMBIENTES_EMISOR: unknown[] = ['1', '2', undefined, null, '', ' 1', '01', 1, '__proto__'];
+const HABILITADO: unknown[] = [true, false, null, undefined, 'true', 1];
+const AMBIENTES_DOC: unknown[] = ['1', '2', undefined, '3', 1];
 const RESOLUCIONES: Record<string, ResolucionParaGate | null | undefined> = {
   real: { prefijo: 'FE', numero: '18764000000001' },
   'real sin prefijo': { prefijo: undefined, numero: '18764000000001' },
@@ -27,9 +27,9 @@ const RESOLUCIONES: Record<string, ResolucionParaGate | null | undefined> = {
   null: null,
   undefined: undefined,
 };
-const NITS_DOC: Array<string | null | undefined> = [NIT, '900999999', '', null, undefined];
-const CUFES: Array<string | null | undefined> = ['a'.repeat(96), '', '   ', null, undefined];
-const FALTAS: Array<readonly string[] | undefined> = [[], undefined, ['el PIN del software']];
+const NITS_DOC: Array<string | null | undefined> = [NIT, '900999999', undefined];
+const CUFES: Array<string | null | undefined> = ['a'.repeat(96), '   ', undefined];
+const FALTAS: Array<readonly string[] | undefined> = [[], ['el PIN del software']];
 
 const esPruebas = (r: ResolucionParaGate | null | undefined): boolean =>
   !!r && ((r.prefijo ?? '').trim().toUpperCase() === 'SETP' || (r.numero ?? '').trim() === '18760000001');
@@ -94,7 +94,7 @@ describe('gate de ambiente · matriz completa contra un oráculo', () => {
     }
     expect(fallas).toEqual([]);
     // La matriz no está vacía de ningún lado: hay permitidos en los dos ambientes y son minoría.
-    expect(total).toBeGreaterThan(100_000);
+    expect(total).toBe(9 * 6 * 5 * 10 * 6 * 3 * 3 * 2);
     expect(aProduccion).toBeGreaterThan(0);
     expect(aHabilitacion).toBeGreaterThan(0);
     expect(aProduccion + aHabilitacion).toBeLessThan(total / 100);

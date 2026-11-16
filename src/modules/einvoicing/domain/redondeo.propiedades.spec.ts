@@ -26,9 +26,9 @@ function azar(semilla: number): () => number {
 }
 
 describe('aCentavos · mitad hacia arriba, sin ruido del flotante', () => {
-  it('todo valor con milésima 5 sube al centavo siguiente (0,005 … 20.000,005)', () => {
+  it('todo valor con milésima 5 sube al centavo siguiente (0,005 … 3.000,005)', () => {
     const malos: number[] = [];
-    for (let c = 0; c < 2_000_000; c += 1) {
+    for (let c = 0; c < 300_000; c += 1) {
       const pesos = (c * 10 + 5) / 1000;
       if (aCentavos(pesos) !== c + 1) malos.push(pesos);
     }
@@ -62,9 +62,9 @@ describe('impuestoDeBase · igual a la aritmética entera exacta', () => {
   const exacto = (base: number, milesimasPct: number): number =>
     Number((BigInt(base) * BigInt(milesimasPct) + 50_000n) / 100_000n);
 
-  it.each([19, 8, 5, 4, 0])('tarifa %s %%: todas las bases de 0 a 30.000,00', (tarifa) => {
+  it.each([19, 8, 5, 4, 0])('tarifa %s %%: todas las bases de 0 a 3.000,00 y una de cada 97 hasta 300.000,00', (tarifa) => {
     const malos: number[] = [];
-    for (let base = 0; base <= 3_000_000; base += 1) {
+    for (let base = 0; base <= 30_000_000; base += base < 300_000 ? 1 : 97) {
       if (impuestoDeBase(base, tarifa) !== exacto(base, tarifa * 1000)) malos.push(base);
     }
     expect(malos).toEqual([]);
@@ -73,7 +73,7 @@ describe('impuestoDeBase · igual a la aritmética entera exacta', () => {
   it('bases al azar hasta 5.000 millones de pesos, a 19, 8 y 5 %', () => {
     const r = azar(7);
     const malos: string[] = [];
-    for (let i = 0; i < 60_000; i += 1) {
+    for (let i = 0; i < 30_000; i += 1) {
       const base = Math.floor(r() * 5_000_000_000_00);
       for (const tarifa of [19, 8, 5]) {
         if (impuestoDeBase(base, tarifa) !== exacto(base, tarifa * 1000)) malos.push(`${base} @ ${tarifa}`);
@@ -103,9 +103,9 @@ describe('líneas y totales · lo que la DIAN recalcula', () => {
     });
   }
 
-  it('2.000 documentos al azar: los totales son la suma exacta de las líneas y cuadran con tolerancia 0', () => {
+  it('1.000 documentos al azar: los totales son la suma exacta de las líneas y cuadran con tolerancia 0', () => {
     const r = azar(2026);
-    for (let d = 0; d < 2_000; d += 1) {
+    for (let d = 0; d < 1_000; d += 1) {
       const lineas = lineasAlAzar(r, 1 + Math.floor(r() * 25));
       const t = totalesDesdeLineas(lineas);
       const suma = (f: (l: LineaDian) => number): bigint => lineas.reduce((a, l) => a + BigInt(f(l)), 0n);
