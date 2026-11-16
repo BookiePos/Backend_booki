@@ -1,11 +1,14 @@
 import { DOMParser } from '@xmldom/xmldom';
 import { describe, expect, it } from 'vitest';
 import { splitTaxIncluded } from '../../../sales/domain/sale-amounts';
+import { firmarXml, verificarFirma } from '../../infrastructure/firma/firma-xades';
 import { calcularCude, calcularCudePos, calcularCufe, type DatosCodigoUnico } from '../cufe';
 import type { VentaParaDocumento } from '../documento-venta';
+import { p12DePrueba } from '../p12-de-prueba.test';
 import { CLAVE, CLIENTE_NIT, documento, EMISOR_FISCAL, linea, PIN, SOFTWARE_ID } from './__fixtures__/factura-de-prueba.test';
 import { codigoSeguridadNota, documentoNota } from './__fixtures__/nota-de-prueba.test';
 import { documentoPos } from './__fixtures__/pos-de-prueba.test';
+import { validarXsdDian } from './__fixtures__/validar-xsd.test';
 import { prepararFacturaUbl } from './factura-de-documento';
 import { armarFacturaUbl, codigoSeguridadSoftware } from './factura-ubl';
 import { prepararNotaUbl } from './nota-de-documento';
@@ -222,4 +225,47 @@ describe('código único recalculado desde el XML · barrido de ventas al azar',
       expect(calcularCufe({ ...x.datos, claveTecnica: CLAVE })).not.toBe(doc.cufe);
     }
   });
+});
+
+describe('builders contra el XSD oficial · ventas al azar con todo mezclado, firmadas', () => {
+  const CERT = { p12: p12DePrueba(), password: 'clave-de-prueba' };
+  const firmadoYValido = async (xml: string, nombre: string): Promise<void> => {
+    const firmado = firmarXml(xml, CERT);
+    expect(verificarFirma(firmado)).toEqual({ valida: true });
+    const r = await validarXsdDian(firmado, nombre);
+    expect(r.errores, nombre).toEqual([]);
+  };
+  const seguridad = (numero: string): string => codigoSeguridadSoftware(SOFTWARE_ID, PIN, numero);
+
+  // Las variantes fijas de cada builder prueban un rasgo por documento; aquí van juntos
+  // (varias tarifas + exento + excluido + bolsa + domicilio + propina en la misma venta).
+  it.each([0, 1, 2])('factura, POS, nota crédito y nota débito de la venta al azar n.º %i', async (i) => {
+    const r = azar(5000 + i);
+    const { venta } = ventaAlAzar(r, { extras: true });
+    const cliente = i % 2 ? CLIENTE_NIT : undefined;
+
+    const factura = documento(venta, { cliente });
+    await firmadoYValido(
+      armarFacturaUbl({ ...prepararFacturaUbl(factura, EMISOR_FISCAL), codigoSeguridadSoftware: seguridad(factura.fullNumber) }),
+      `barrido-factura-${i}.xml`,
+    );
+
+    const pos = documentoPos(venta, { cliente });
+    await firmadoYValido(
+      armarPosUbl({ ...prepararPosUbl(pos, EMISOR_FISCAL), codigoSeguridadSoftware: seguridad(pos.fullNumber) }),
+      `barrido-pos-${i}.xml`,
+    );
+
+    const { venta: parcial } = ventaAlAzar(r, { extras: false });
+    const nc = documentoNota(parcial, { tipo: 'credit_note', concepto: '1', cliente });
+    await firmadoYValido(
+      armarNotaCreditoUbl({ ...prepararNotaUbl(nc, EMISOR_FISCAL), codigoSeguridadSoftware: codigoSeguridadNota(nc.fullNumber) }),
+      `barrido-nc-${i}.xml`,
+    );
+    const nd = documentoNota(parcial, { tipo: 'debit_note', concepto: '3', cliente });
+    await firmadoYValido(
+      armarNotaDebitoUbl({ ...prepararNotaUbl(nd, EMISOR_FISCAL), codigoSeguridadSoftware: codigoSeguridadNota(nd.fullNumber) }),
+      `barrido-nd-${i}.xml`,
+    );
+  }, 120_000);
 });
