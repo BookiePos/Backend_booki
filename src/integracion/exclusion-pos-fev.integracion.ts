@@ -49,7 +49,7 @@ describe('electronic_documents · exclusión POS/FEV e idempotencia del POS', ()
       docs,
       counters,
       { getOrFail: async () => venta(saleId) } as never,
-      { findOrFail: async () => sede } as never,
+      { findOrFail: async () => sede, leerClaveTecnica: async () => 'clave' } as never,
       { consumeDocument: vi.fn(async () => 'monthly'), refundDocument: vi.fn(async () => undefined), findById: async () => null } as never,
       { obtenerPorSede: async () => ({ id: 'e1', tipoAmbiente: '2' }), leerSecreto: async () => 'pin' } as never,
     );

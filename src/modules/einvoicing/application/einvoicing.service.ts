@@ -20,6 +20,7 @@ import {
 } from '../../sales/infrastructure/schemas/counter.schema';
 import { SalesService } from '../../sales/application/sales.service';
 import { SedesService } from '../../sedes/application/sedes.service';
+import { camposClaveAlGuardar } from '../../sedes/application/clave-tecnica';
 import { BusinessService } from '../../control/application/business.service';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { SaleDocument } from '../../sales/infrastructure/schemas/sale.schema';
@@ -608,7 +609,10 @@ export class EinvoicingService {
     // calcular el CUFE (ni el QR), y el consecutivo del rango autorizado por la
     // DIAN es un recurso escaso. Validamos ANTES de incrementar el contador; si
     // falta, se aborta sin consumir número.
-    if (!resolucion?.claveTecnica) {
+    const claveTecnica = resolucion
+      ? await this.sedes.leerClaveTecnica(sedeId, 'invoice')
+      : undefined;
+    if (!resolucion || !claveTecnica) {
       throw new BadRequestException(
         'No se puede emitir: falta la clave técnica DIAN de la sede para calcular el CUFE.',
       );
@@ -661,7 +665,7 @@ export class EinvoicingService {
           ...doc.codigoUnico,
           nitEmisor: nitOfe,
           numAdquiriente: this.numeroAdquiriente(adquiriente),
-          claveTecnica: resolucion.claveTecnica as string,
+          claveTecnica,
           tipoAmbiente,
         });
         return {
@@ -1663,7 +1667,8 @@ export class EinvoicingService {
    * por qué número iba ni cuántos quedaban hasta que se acababan.
    */
   async resolutionStatus(user: JwtUser): Promise<ResolutionRow[]> {
-    const sedes = await this.sedes.list(allowedSedeIds(user));
+    // Con la clave cargada solo para saber si existe (`claveTecnicaOk`).
+    const sedes = await this.sedes.listConClaves(allowedSedeIds(user));
     // La clave técnica NO viaja: solo si está puesta, dentro del estado.
     const vista = (r: ResolucionFe): ResolucionVista => ({
       numero: r.numero,
@@ -1723,7 +1728,9 @@ export class EinvoicingService {
     user: JwtUser,
   ): Promise<ResolutionRow[]> {
     assertSedeAccess(user, sedeId);
-    const sede = await this.sedes.findOrFail(sedeId);
+    // Con las claves: al guardar se reescribe la resolución (y, en los demás
+    // tipos, el arreglo entero); sin traerlas se perderían.
+    const sede = await this.sedes.findOrFailConClaves(sedeId);
     const tipo = dto.tipoDocumento ?? TIPO_RESOLUCION_POR_DEFECTO;
     const previa = resolucionDeTipo(sede, tipo);
 
@@ -1792,8 +1799,9 @@ export class EinvoicingService {
       vigenciaDesde: dto.vigenciaDesde ? new Date(dto.vigenciaDesde) : undefined,
       vigenciaHasta: dto.vigenciaHasta ? new Date(dto.vigenciaHasta) : undefined,
       // La clave técnica se conserva si no viene una nueva: es un dato que se
-      // teclea una vez y perderlo dejaría la sede sin poder emitir.
-      claveTecnica: dto.claveTecnica ?? previa?.claveTecnica,
+      // teclea una vez y perderlo dejaría la sede sin poder emitir. La nueva se
+      // guarda cifrada; sin llave de cifrado esto lanza y no se guarda nada.
+      ...camposClaveAlGuardar(sedeId, tipo, dto.claveTecnica, previa),
       ...(corteTalonario != null ? { corteTalonario } : {}),
     };
     if (tipo === 'invoice') {
@@ -1846,7 +1854,7 @@ export class EinvoicingService {
         rangoHasta: String(nueva.rangoHasta ?? ''),
         vigenciaHasta: String(dto.vigenciaHasta).slice(0, 10),
         empezarEn: String(empezarEn),
-        claveTecnicaNueva: String(dto.claveTecnica != null),
+        claveTecnicaNueva: String(Boolean(dto.claveTecnica?.trim())),
       },
     });
 

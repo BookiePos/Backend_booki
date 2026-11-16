@@ -26,7 +26,12 @@ export interface ResolucionDatos {
   rangoHasta?: number;
   vigenciaDesde?: Date;
   vigenciaHasta?: Date;
-  claveTecnica?: string;
+  /** Campo viejo en claro (resoluciones sin migrar). Solo cuenta si existe. */
+  claveTecnica?: string | null;
+  /** Clave cifrada, si la consulta la trajo. Solo cuenta si existe: aquí no se descifra. */
+  claveTecnicaCifrada?: object | null;
+  /** Marca persistida de que hay clave guardada. */
+  tieneClaveTecnica?: boolean | null;
 }
 
 /**
@@ -100,7 +105,9 @@ export function computeResolutionStatus(
   if (!resolucion || !resolucion.numero) return vacio;
 
   const { rangoDesde, rangoHasta, vigenciaDesde, vigenciaHasta } = resolucion;
-  const claveTecnicaOk = Boolean(resolucion.claveTecnica);
+  const claveTecnicaOk = Boolean(
+    resolucion.tieneClaveTecnica || resolucion.claveTecnicaCifrada || resolucion.claveTecnica,
+  );
 
   // ── Consecutivo ──────────────────────────────────────────────────────────
   const desde = rangoDesde ?? 1;

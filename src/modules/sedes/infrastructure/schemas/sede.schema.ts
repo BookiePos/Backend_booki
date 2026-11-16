@@ -13,6 +13,7 @@ import {
   TIPOS_RESOLUCION,
   TipoResolucion,
 } from '../../../einvoicing/domain/resolucion-tipos';
+import { campoSecreto, type SecretoCifrado } from '../../../../shared/crypto/secretos';
 
 export type SedeDocument = HydratedDocument<Sede>;
 
@@ -20,7 +21,18 @@ export type SedeDocument = HydratedDocument<Sede>;
  * Resolución de numeración de factura electrónica autorizada por la DIAN.
  * Requerida para emitir: prefijo, rango, vigencia y clave técnica.
  */
-@Schema({ _id: false })
+@Schema({
+  _id: false,
+  toJSON: {
+    // La clave técnica no sale en ninguna respuesta: ni la vieja en claro ni la
+    // cifrada (aunque la consulta las haya pedido con `+campo`).
+    transform: (_doc: unknown, ret: Record<string, unknown>) => {
+      delete ret.claveTecnica;
+      delete ret.claveTecnicaCifrada;
+      return ret;
+    },
+  },
+})
 export class ResolucionFe {
   /**
    * Para qué documento es la resolución. Sin valor se entiende `invoice`: así
@@ -50,9 +62,25 @@ export class ResolucionFe {
   @Prop()
   vigenciaHasta?: Date;
 
-  /** Clave técnica entregada por la DIAN (para el CUFE). */
-  @Prop({ trim: true })
+  /**
+   * Clave técnica entregada por la DIAN (para el CUFE), EN CLARO: campo viejo.
+   * Nada lo escribe ya; se lee solo como respaldo hasta que
+   * `src/datos/2026-11-cifrar-clave-tecnica.ts` lo pase al campo cifrado.
+   * `select: false`: hay que pedirlo (`SELECT_CLAVES_TECNICAS`).
+   */
+  @Prop({ type: String, trim: true, select: false })
   claveTecnica?: string;
+
+  /**
+   * Clave técnica cifrada (`sedes/application/clave-tecnica.ts`). `select: false` y
+   * fuera de `toJSON`; en `aggregate()` / `.lean()` exclúyela a mano.
+   */
+  @Prop(campoSecreto())
+  claveTecnicaCifrada?: SecretoCifrado;
+
+  /** Hay clave guardada. Es lo único de la clave que ve la interfaz. */
+  @Prop({ type: Boolean })
+  tieneClaveTecnica?: boolean;
 
   /**
    * Solo contingencia (Fase 9): último número de la serie del talonario de
