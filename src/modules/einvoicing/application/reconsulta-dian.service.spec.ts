@@ -139,7 +139,9 @@ describe('reconsultarPendientes de los servicios (camino de sistema)', () => {
       select: vi.fn(() => q),
       exec: async () => ids.map((id) => ({ _id: id })),
     };
-    find.mockReturnValue(q);
+    // Las notas en `draft` (solo facturas) se buscan aparte: aquí no hay ninguna.
+    const vacia: any = { sort: () => vacia, limit: () => vacia, select: () => vacia, exec: async () => [] };
+    find.mockImplementation((f: any) => (f?.dianStatus === 'draft' ? vacia : q));
     return { find, q, updateOne };
   };
   const armar = (Clase: any, ids: string[], ejecutar: (id: string) => Promise<any>) => {

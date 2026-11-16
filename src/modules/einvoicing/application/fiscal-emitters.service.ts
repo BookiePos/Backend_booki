@@ -323,6 +323,20 @@ export class FiscalEmittersService {
   }
 
   /**
+   * ¿La empresa emite? Algún emisor habilitado o con el set de pruebas de factura
+   * configurado. Mismo criterio que la alerta de notas colgadas: una empresa que no
+   * emite no entra en las colas automáticas (solo metería ruido en la auditoría).
+   */
+  async algunoEmite(): Promise<boolean> {
+    const n = await this.model
+      .countDocuments({
+        $or: [{ habilitado: true }, { facturaTestSetId: { $exists: true, $nin: [null, ''] } }],
+      })
+      .exec();
+    return n > 0;
+  }
+
+  /**
    * Transmisor de la sede SIN pasar por el gate de ambiente: siempre es un stub
    * (dice qué falta o que el directo necesita el gate). El transmisor directo
    * solo lo arma `ProveedorTransmisorPorEmisor`, con el ambiente ya decidido.

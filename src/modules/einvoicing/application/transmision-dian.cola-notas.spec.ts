@@ -108,6 +108,7 @@ describe('Notas sin contingencia: cola y reenvío del mismo XML (Fase 9)', () =>
   let firmante: { firmar: ReturnType<typeof vi.fn> };
   let transmisor: TransmisorDian & { enviar: ReturnType<typeof vi.fn>; consultar: ReturnType<typeof vi.fn> };
   let emisor: Fila;
+  let emite: boolean;
   let svc: TransmisionDianService;
   let esperas: number[];
 
@@ -169,7 +170,9 @@ describe('Notas sin contingencia: cola y reenvío del mismo XML (Fase 9)', () =>
     const emisores = {
       obtenerPorSede: vi.fn(async () => emisor),
       estadoConfiguracion: vi.fn(async () => ({ faltaParaTransmitir: [] })),
+      algunoEmite: vi.fn(async () => emite),
     };
+    emite = true;
     armador = {
       armar: vi.fn(
         async (doc: Fila) => `<Nota n="${String(doc.fullNumber)}" cont="${String(doc.contingencia?.tipo ?? '')}"/>`,
@@ -328,13 +331,75 @@ describe('Notas sin contingencia: cola y reenvío del mismo XML (Fase 9)', () =>
       expect(transmisor.enviar).not.toHaveBeenCalled();
     });
 
-    it('no toca la recién firmada, la bloqueada por otro proceso, un borrador ni una factura o POS firmados', async () => {
+    it('no toca la recién firmada, la bloqueada por otro proceso, un borrador recién creado ni una factura o POS firmados', async () => {
       firmadaSinSalir({ updatedAt: new Date() });
       firmadaSinSalir({ bloqueoTransmision: 'otro', bloqueoHasta: new Date(Date.now() + 60_000) });
-      sembrar({ dianStatus: 'draft', updatedAt: new Date(Date.now() - ONCE_MIN) });
+      sembrar({ dianStatus: 'draft', createdAt: new Date(), updatedAt: new Date(Date.now() - ONCE_MIN) });
       firmadaSinSalir({ type: 'invoice', prefix: 'FE', fullNumber: 'FE1' });
       firmadaSinSalir({ type: 'pos', prefix: 'EPOS', fullNumber: 'EPOS1' });
       expect(await enEmpresa(() => svc.reconsultarPendientes(10))).toMatchObject({ revisados: 0 });
+      expect(transmisor.enviar).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('nota que se quedó en draft (la transmisión detrás de la respuesta no ocurrió)', () => {
+    const colgada = (cambios: Fila = {}) => sembrar({ createdAt: new Date(Date.now() - ONCE_MIN), ...cambios });
+
+    it('el cron la arma, la firma y la envía con el número que ya tenía', async () => {
+      const d = colgada({ type: 'debit_note' });
+      const c = await enEmpresa(() => svc.reconsultarPendientes(10));
+      expect(c).toEqual({ revisados: 1, avanzados: 1, omitidos: 0, errores: 0 });
+      expect(fila(d)).toMatchObject({ dianStatus: 'accepted', fullNumber: 'NC7', number: 7, intentos: 1 });
+      expect(armador.armar).toHaveBeenCalledTimes(1);
+      expect(firmante.firmar).toHaveBeenCalledTimes(1);
+      expect(xmlEnviado(0)).toBe(xmlGuardado(d));
+    });
+
+    it('DIAN caída: se firma UNA vez y las corridas siguientes reenvían el mismo XML y el mismo número', async () => {
+      transmisor.enviar.mockResolvedValue(RED);
+      const d = colgada();
+      expect(await enEmpresa(() => svc.reconsultarPendientes(10))).toMatchObject({ revisados: 1, avanzados: 0 });
+      expect(fila(d).dianStatus).toBe('sent');
+      const firmado = xmlGuardado(d);
+      fila(d).enviadoAt = new Date(Date.now() - ONCE_MIN);
+      transmisor.enviar.mockResolvedValue(ACEPTADA);
+      expect(await enEmpresa(() => svc.reconsultarPendientes(10))).toMatchObject({ revisados: 1, avanzados: 1 });
+      expect(fila(d)).toMatchObject({ dianStatus: 'accepted', fullNumber: 'NC7', number: 7, intentos: 2 });
+      expect(xmlEnviado(0)).toBe(firmado);
+      expect(xmlEnviado(1)).toBe(firmado);
+      expect(firmante.firmar).toHaveBeenCalledTimes(1);
+      expect(armador.armar).toHaveBeenCalledTimes(1);
+    });
+
+    it('si no puede salir (gate de ambiente) sigue en draft, sin firmar, y no cuenta como avance', async () => {
+      emisor.habilitado = false;
+      const d = colgada();
+      const c = await enEmpresa(() => svc.reconsultarPendientes(10));
+      expect(c).toEqual({ revisados: 1, avanzados: 0, omitidos: 0, errores: 0 });
+      expect(fila(d).dianStatus).toBe('draft');
+      expect(fila(d).xmlPath).toBeUndefined();
+      expect(firmante.firmar).not.toHaveBeenCalled();
+      expect(transmisor.enviar).not.toHaveBeenCalled();
+    });
+
+    it('en una empresa que no emite no se toca', async () => {
+      emite = false;
+      const d = colgada();
+      expect(await enEmpresa(() => svc.reconsultarPendientes(10))).toMatchObject({ revisados: 0 });
+      expect(fila(d).dianStatus).toBe('draft');
+      expect(fila(d).reconsultadoAt).toBeUndefined();
+    });
+
+    it('no toca la recién creada, la bloqueada, una factura o POS en draft ni la nota de un documento de contingencia', async () => {
+      colgada({ createdAt: new Date() });
+      colgada({ bloqueoTransmision: 'otro', bloqueoHasta: new Date(Date.now() + 60_000) });
+      colgada({ type: 'invoice', prefix: 'FE', fullNumber: 'FE1' });
+      colgada({ type: 'pos', prefix: 'EPOS', fullNumber: 'EPOS1' });
+      // La cola de contingencia manda esta nota, en orden, detrás de su documento.
+      const base = sembrar({ type: 'invoice', fullNumber: 'FE9', dianStatus: 'accepted', contingencia: { tipo: '03' } });
+      colgada({ referenceId: base._id });
+      expect(await enEmpresa(() => svc.reconsultarPendientes(10))).toMatchObject({ revisados: 0 });
+      expect(armador.armar).not.toHaveBeenCalled();
       expect(transmisor.enviar).not.toHaveBeenCalled();
     });
   });
