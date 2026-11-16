@@ -22,7 +22,7 @@ describe('EinvoicingService · resolutionStatus', () => {
 
   function montar(sede: Record<string, unknown>) {
     const counters = { findById: vi.fn(() => ({ exec: async () => null })) };
-    const sedes = { list: vi.fn(async () => [{ id: 's1', code: 'S1', name: 'Sede', ...sede }]) };
+    const sedes = { listConClaves: vi.fn(async () => [{ id: 's1', code: 'S1', name: 'Sede', ...sede }]) };
     return new EinvoicingService({} as any, counters as any, {} as any, sedes as any, {} as any, {} as any);
   }
 

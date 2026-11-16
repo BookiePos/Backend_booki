@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BadRequestException } from '@nestjs/common';
 import { Types } from 'mongoose';
@@ -20,6 +20,8 @@ import { EinvoicingService } from './einvoicing.service';
 import { AVISO_DOMICILIO_SIN_INC } from '../domain/documento-venta';
 import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import type { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
+import { cifrarClaveTecnica, leerClaveTecnicaDe } from '../../sedes/application/clave-tecnica';
+import { VARIABLE_LLAVE } from '../../../shared/crypto/secretos';
 
 /**
  * Fase 2 conectada en la emisión: tributo real por línea, domicilio como
@@ -36,6 +38,10 @@ describe('EinvoicingService · documento de la Fase 2', () => {
   const saleId = new Types.ObjectId();
   const user = { email: 'a@b.co', role: 'owner', permissions: [], sedeIds: [sedeId] } as unknown as JwtUser;
   const CLAVE = 'clave-tecnica';
+  // La clave llega a la emisión por el camino real: cifrada en la sede y
+  // descifrada al leerla. La sede del mock ya no la trae en claro.
+  const ENV = { [VARIABLE_LLAVE]: randomBytes(32).toString('base64') };
+  const cifrada = cifrarClaveTecnica(sedeId, 'invoice', CLAVE, { env: ENV });
 
   let venta: any;
   let emisor: { id: string; tipoAmbiente: string } | null;
@@ -103,11 +109,14 @@ describe('EinvoicingService · documento de la Fase 2', () => {
       findById: vi.fn(async () => ({ tipoNegocio })),
     };
     const sedes = {
+      leerClaveTecnica: vi.fn(async () =>
+        leerClaveTecnicaDe(sedeId, { claveTecnicaCifrada: cifrada }, { env: ENV }),
+      ),
       findOrFail: vi.fn(async () => ({
         id: sedeId,
         nit: '900.123.456-7',
         nitDv: '7',
-        resolucionFe: { prefijo: 'FE', rangoDesde: 1, rangoHasta: 1000, claveTecnica: CLAVE },
+        resolucionFe: { prefijo: 'FE', rangoDesde: 1, rangoHasta: 1000, tieneClaveTecnica: true },
         resolucionesFe: [],
       })),
     };

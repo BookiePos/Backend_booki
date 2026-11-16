@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { INestApplicationContext, Logger } from '@nestjs/common';
+import { ConsoleLogger, INestApplicationContext } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app.module';
 import { BusinessService } from '../modules/control/application/business.service';
@@ -103,7 +103,11 @@ export async function enCadaEmpresa(
     process.exit(2);
   }
 
-  const logger = new Logger('Datos');
+  // Logger propio del arnés: el contexto se crea con `['error', 'warn']` para
+  // callar el arranque de Nest, y eso también silenciaba `Logger.log` aquí (el
+  // resumen antes → después no se imprimía nunca). Un `ConsoleLogger` aparte
+  // lleva sus propios niveles y no depende de los del contexto.
+  const logger = new ConsoleLogger('Datos');
   const modo = opciones.aplicar ? 'APLICANDO' : 'EN SECO';
   const app = await NestFactory.createApplicationContext(AppModule, {
     logger: ['error', 'warn'],

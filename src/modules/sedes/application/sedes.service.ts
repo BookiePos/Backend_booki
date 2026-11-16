@@ -14,6 +14,37 @@ import { TenantContext } from '../../../shared/tenancy/tenant-context';
 import { effectiveEntitlements } from '../../control/domain/plans';
 import { PlanUpgradeRequiredException } from '../../control/domain/plan-upgrade.exception';
 import { advertenciasNoResponsableInc } from '../../core-tax/domain/sale-tax';
+import { resolucionDeTipo, type TipoResolucion } from '../../einvoicing/domain/resolucion-tipos';
+import type { ResolucionFeDto } from './dto/resolucion-fe.dto';
+import {
+  camposClaveAlGuardar,
+  leerClaveTecnicaDe,
+  SELECT_CLAVES_TECNICAS,
+  type ResolucionConClave,
+} from './clave-tecnica';
+
+/**
+ * Resolución de factura tal como se guarda desde la ficha de la sede: los datos
+ * del DTO, campo por campo (nada que el cliente mande de más llega a la base),
+ * y la clave técnica cifrada. Sin clave en el DTO se conserva la que había: la
+ * respuesta ya no la devuelve, así que el formulario no puede reenviarla.
+ */
+function resolucionFeParaGuardar(
+  sedeId: string,
+  dto: ResolucionFeDto,
+  previa: ResolucionConClave | null | undefined,
+) {
+  return {
+    numero: dto.numero,
+    fechaResolucion: dto.fechaResolucion,
+    prefijo: dto.prefijo,
+    rangoDesde: dto.rangoDesde,
+    rangoHasta: dto.rangoHasta,
+    vigenciaDesde: dto.vigenciaDesde,
+    vigenciaHasta: dto.vigenciaHasta,
+    ...camposClaveAlGuardar(sedeId, 'invoice', dto.claveTecnica, previa),
+  };
+}
 
 /** Error de índice único de Mongo (documento duplicado). */
 const MONGO_DUPLICATE_KEY = 11000;
@@ -87,7 +118,15 @@ export class SedesService {
       }
     }
     try {
-      return await this.sedeModel.create({ ...dto });
+      // El id se fija antes de crear: la clave técnica se cifra atada a él.
+      const _id = new Types.ObjectId();
+      return await this.sedeModel.create({
+        ...dto,
+        _id,
+        ...(dto.resolucionFe
+          ? { resolucionFe: resolucionFeParaGuardar(_id.toString(), dto.resolucionFe, null) }
+          : {}),
+      });
     } catch (err) {
       if (isDuplicateKeyError(err)) {
         throw new ConflictException(`Ya existe una sede con el código ${dto.code}`);
@@ -97,7 +136,12 @@ export class SedesService {
   }
 
   async update(id: string, dto: UpdateSedeDto): Promise<SedeDocument> {
-    const sede = await this.findOrFail(id);
+    // Con resolución en el DTO se reescribe el subdocumento entero: hay que
+    // traer la clave guardada para conservarla.
+    const sede =
+      dto.resolucionFe !== undefined
+        ? await this.findOrFailConClaves(id)
+        : await this.findOrFail(id);
 
     if (dto.code !== undefined) sede.code = dto.code;
     if (dto.name !== undefined) sede.name = dto.name;
@@ -130,7 +174,12 @@ export class SedesService {
       sede.emailFacturacion = dto.emailFacturacion || undefined;
     if (dto.resolucionFe !== undefined) {
       // Mongoose castea las fechas ISO string del DTO a Date al guardar.
-      sede.set('resolucionFe', dto.resolucionFe);
+      sede.set(
+        'resolucionFe',
+        dto.resolucionFe
+          ? resolucionFeParaGuardar(String(sede._id), dto.resolucionFe, sede.resolucionFe)
+          : dto.resolucionFe,
+      );
     }
 
     if (dto.cobroDigital !== undefined) {
@@ -208,5 +257,40 @@ export class SedesService {
       : null;
     if (!sede) throw new NotFoundException('Sede no encontrada');
     return sede;
+  }
+
+  /**
+   * La sede CON la clave técnica de sus resoluciones (cifrada y, si aún no se
+   * migró, en claro). Solo para quien reescribe una resolución o calcula el
+   * CUFE: no devuelvas `toObject()` de este documento ni lo loguees.
+   */
+  async findOrFailConClaves(id: string): Promise<SedeDocument> {
+    const sede = Types.ObjectId.isValid(id)
+      ? await this.sedeModel.findById(id).select(SELECT_CLAVES_TECNICAS).exec()
+      : null;
+    if (!sede) throw new NotFoundException('Sede no encontrada');
+    return sede;
+  }
+
+  /**
+   * Como `list`, con la clave técnica cargada: sirve para saber si existe
+   * aunque la resolución sea anterior al cifrado. Mismo cuidado que arriba.
+   */
+  listConClaves(scope?: string[] | null): Promise<SedeDocument[]> {
+    const filter = scope ? { _id: { $in: scope } } : {};
+    return this.sedeModel
+      .find(filter)
+      .select('-cobroDigital.qrImagen ' + SELECT_CLAVES_TECNICAS)
+      .sort({ code: 1 })
+      .exec();
+  }
+
+  /**
+   * Clave técnica de la resolución de ese tipo, descifrada, para el CUFE.
+   * `undefined` si no hay. Solo servidor: nunca a una respuesta ni a un log.
+   */
+  async leerClaveTecnica(id: string, tipo: TipoResolucion): Promise<string | undefined> {
+    const sede = await this.findOrFailConClaves(id);
+    return leerClaveTecnicaDe(String(sede._id), resolucionDeTipo(sede, tipo));
   }
 }

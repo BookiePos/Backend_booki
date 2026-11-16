@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BadRequestException, ConflictException } from '@nestjs/common';
+import { randomBytes } from 'node:crypto';
 import { Types } from 'mongoose';
 
 // Los esquemas se importan por el servicio; se neutralizan los decoradores
@@ -107,7 +108,7 @@ describe('EinvoicingService · emisión frente a choques del índice', () => {
       refundDocument: vi.fn(async () => undefined),
       findById: vi.fn(async () => null),
     };
-    sedes = { findOrFail: vi.fn(async () => sede()) };
+    sedes = { findOrFail: vi.fn(async () => sede()), leerClaveTecnica: vi.fn(async () => 'clave') };
     sales = { getOrFail: vi.fn(async () => sale()) };
     svc = new EinvoicingService(model, counters, sales, sedes, businesses, {
       obtenerPorSede: async () => null,
@@ -193,6 +194,8 @@ describe('EinvoicingService.registerResolution · número inicial y prefijo', ()
     mayor = 0;
     seqFijado = undefined;
     guardada = undefined;
+    // Registrar una clave técnica la cifra: sin llave lanzaría.
+    vi.stubEnv('EINVOICING_ENCRYPTION_KEY', randomBytes(32).toString('base64'));
     const sedeDoc: any = {
       id: sedeId,
       code: 'S1',
@@ -215,8 +218,8 @@ describe('EinvoicingService.registerResolution · número inicial y prefijo', ()
       findById: vi.fn(() => c(null)),
     };
     const sedes: any = {
-      findOrFail: vi.fn(async () => sedeDoc),
-      list: vi.fn(async () => []),
+      findOrFailConClaves: vi.fn(async () => sedeDoc),
+      listConClaves: vi.fn(async () => []),
     };
     audit = { record: vi.fn(async () => undefined) };
     svc = new EinvoicingService(model, counters, {} as any, sedes, {} as any, {} as any, audit as any);
@@ -238,6 +241,10 @@ describe('EinvoicingService.registerResolution · número inicial y prefijo', ()
       detail: { sedeId, tipoDocumento: 'invoice', numero: '18760000001', prefijo: 'FE', rangoHasta: '100', claveTecnicaNueva: 'true' },
     });
     expect(JSON.stringify(fila)).not.toContain('CLAVE-SECRETA-123');
+    // En la sede queda cifrada: ni rastro de la clave en claro.
+    expect(guardada.resolucionFe.claveTecnica).toBeUndefined();
+    expect(guardada.resolucionFe.tieneClaveTecnica).toBe(true);
+    expect(JSON.stringify(guardada.resolucionFe)).not.toContain('CLAVE-SECRETA-123');
   });
 
   it('rechaza sin vigenciaHasta y con una ya vencida', async () => {
