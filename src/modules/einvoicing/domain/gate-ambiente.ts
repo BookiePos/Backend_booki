@@ -125,7 +125,8 @@ export function decidirAmbiente(e: EntradaGateAmbiente): DecisionAmbiente {
     if (dePruebas) {
       motivos.push('la resolución de pruebas (SETP) no sirve en producción');
     }
-    if (!resolucion && TIPOS_CON_RESOLUCION_OBLIGATORIA.includes(documento.tipo)) {
+    // Sin número no hay resolución real: un subdocumento vacío no cuenta como tenerla.
+    if (!(resolucion?.numero ?? '').trim() && TIPOS_CON_RESOLUCION_OBLIGATORIA.includes(documento.tipo)) {
       motivos.push('el documento no tiene resolución de numeración');
     }
   } else if (ambienteEmisor === '2') {
