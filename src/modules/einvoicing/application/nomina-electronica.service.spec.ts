@@ -223,6 +223,67 @@ describe('NominaElectronicaService', () => {
     expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'einvoicing.nomina.emitida', success: true }));
   });
 
+  it('NO REORDENAR: número reservado → borrador → firma → bucket → signed → sent persistido → red → veredicto', async () => {
+    const log: string[] = [];
+    const estadoDe = () => filasOrdenadas()[0]?.dianStatus as string | undefined;
+    const reservar = contadores.findOneAndUpdate;
+    contadores.findOneAndUpdate = (f: Fila, u: Fila) => {
+      log.push('contador:reservar');
+      return reservar(f, u);
+    };
+    const crear = modelo.create;
+    modelo.create = async (d: Fila) => {
+      log.push(`crea:${d.dianStatus}:${d.fullNumber}`);
+      return crear(d);
+    };
+    const escribir = modelo.findOneAndUpdate;
+    modelo.findOneAndUpdate = (f: Fila, u: Fila) => {
+      const antes = estadoDe();
+      const q = escribir(f, u);
+      return {
+        exec: async () => {
+          const r = await q.exec();
+          if (r && u.$set?.dianStatus && u.$set.dianStatus !== antes) log.push(`escribe:${u.$set.dianStatus}`);
+          return r;
+        },
+      };
+    };
+    firmante.firmar.mockImplementation(async (xml: string) => {
+      // Se firma un documento que ya tiene número y fila: si la firma falla, el número no se pierde.
+      expect(filasOrdenadas()[0]).toMatchObject({ dianStatus: 'draft', fullNumber: 'NE1' });
+      log.push('firmar');
+      return `${xml}<!--firmado-->`;
+    });
+    const subir = bucket.set.bind(bucket);
+    bucket.set = (k: string, v: Buffer) => {
+      // El XML firmado llega al bucket ANTES de marcar signed.
+      expect(estadoDe()).toBe('draft');
+      log.push('bucket:guardar');
+      return subir(k, v);
+    };
+    transmisor.enviar.mockImplementation(async (envio: Fila) => {
+      // En el instante de la llamada de red el documento YA está en `sent`, con su XML y su CUNE.
+      const f = filasOrdenadas()[0]!;
+      expect(f).toMatchObject({ dianStatus: 'sent', intentos: 1, fullNumber: 'NE1', cune: envio.cufe });
+      expect(bucket.get(f.xmlPath)!.toString()).toBe(envio.xmlFirmado);
+      log.push('red:enviar');
+      return ACEPTADA;
+    });
+
+    await emitir();
+
+    expect(log).toEqual([
+      'contador:reservar',
+      'crea:draft:NE1',
+      'firmar',
+      'bucket:guardar',
+      'escribe:signed',
+      'escribe:sent',
+      'red:enviar',
+      'escribe:accepted',
+    ]);
+  });
+
   it('credenciales: solo las de NÓMINA (PIN de nómina, nunca el de la factura)', async () => {
     await emitir();
     expect(emisores.leerSecreto).toHaveBeenCalledWith('e1', 'nominaPin');
