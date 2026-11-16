@@ -35,7 +35,7 @@ import type { ResultadoBarrido } from '../../../shared/barridos/resultado-barrid
  * Es `@Public()` porque no hay usuario; lo protege el secreto `CRON_SECRET`.
  */
 /** Plazo para empezar empresas dentro de la función (tope de 300 s en Vercel). */
-const PLAZO_BARRIDOS_MS = 240_000;
+export const PLAZO_BARRIDOS_MS = 240_000;
 
 @Controller('cron')
 export class CronController {

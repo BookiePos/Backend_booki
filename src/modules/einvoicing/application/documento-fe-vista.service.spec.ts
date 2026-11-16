@@ -108,6 +108,34 @@ describe('DocumentoFeVistaService', () => {
       expect(d.motivos[0]!.regla).toBe('FAJ43b');
       expect(d.correo.puedeEnviar).toBe(false);
     });
+    it('nota en vuelo o firmada sin salir: enCola y el resumen dice que se reenvía sola (Fase 9)', async () => {
+      for (const extra of [
+        { type: 'credit_note', dianStatus: 'sent', respuestaDian: { codigo: 'RED', origen: 'adapter', mensajes: ['caída'] } },
+        { type: 'debit_note', dianStatus: 'signed' },
+      ]) {
+        const { svc } = montar(fila(extra));
+        const d = await enContexto(() => svc.detalle(String(DOC_ID), user()));
+        expect(d.enCola).toBe(true);
+        expect(d.estadoResumen).toMatch(/En cola.*se reenviará automáticamente.*mismo número.*mismo XML/i);
+        expect(d.puedeReintentar).toBe(true);
+        expect(d.contingencia).toBeUndefined();
+      }
+    });
+    it('enCola es solo de las notas sin veredicto: no una factura en vuelo, ni una nota aceptada, rechazada o sin firmar', async () => {
+      for (const extra of [
+        { type: 'invoice', dianStatus: 'sent' },
+        { type: 'pos', dianStatus: 'sent' },
+        { type: 'credit_note', dianStatus: 'accepted' },
+        { type: 'credit_note', dianStatus: 'rejected' },
+        { type: 'credit_note', dianStatus: 'draft', xmlPath: undefined },
+        { type: 'credit_note', dianStatus: 'signed', xmlPath: undefined },
+      ]) {
+        const { svc } = montar(fila(extra));
+        const d = await enContexto(() => svc.detalle(String(DOC_ID), user()));
+        expect(d.enCola).toBe(false);
+        expect(d.estadoResumen).not.toMatch(/En cola/);
+      }
+    });
     it('un documento normal no trae contingencia', async () => {
       const { svc } = montar(fila());
       const d = await enContexto(() => svc.detalle(String(DOC_ID), user()));

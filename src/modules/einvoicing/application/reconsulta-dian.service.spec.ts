@@ -166,12 +166,22 @@ describe('reconsultarPendientes de los servicios (camino de sistema)', () => {
         expect(m.find).not.toHaveBeenCalled();
       });
 
-      it('solo busca lo que lleva más de 10 min en sent y respeta el tope', async () => {
+      it('solo busca lo que lleva más de 10 min en sent, o firmado con XML sin salir, y respeta el tope', async () => {
         const { s, m } = armar(Clase, [], async () => ({}));
         await TenantContext.run(ctx, () => s.reconsultarPendientes(7, { ahora }));
-        const f = filtroDe(m);
-        expect(f.dianStatus).toBe('sent');
-        expect(f.enviadoAt.$lte.getTime()).toBe(ahora.getTime() - REPOSO_RECONSULTA_MS);
+        const [cola, bloqueo] = filtroDe(m).$and;
+        const [enVuelo, firmado] = cola.$or;
+        const corte = ahora.getTime() - REPOSO_RECONSULTA_MS;
+        expect(enVuelo.dianStatus).toBe('sent');
+        expect(enVuelo.enviadoAt.$lte.getTime()).toBe(corte);
+        // Sin contingencia (Fase 9): lo firmado que no salió también está en cola,
+        // solo con XML guardado. En la colección de ventas, solo las notas.
+        expect(firmado.dianStatus).toBe('signed');
+        expect(firmado.xmlPath).toEqual({ $gt: '' });
+        expect(firmado.updatedAt.$lte.getTime()).toBe(corte);
+        expect(firmado.type).toEqual(nombre === 'factura' ? { $in: ['credit_note', 'debit_note'] } : undefined);
+        expect(cola.$or).toHaveLength(2);
+        expect(bloqueo.$or).toEqual([{ bloqueoHasta: null }, { bloqueoHasta: { $lte: ahora } }]);
         expect(m.q.limit).toHaveBeenCalledWith(7);
         expect(m.q.sort).toHaveBeenCalledWith({ reconsultadoAt: 1, enviadoAt: 1 });
       });
@@ -180,7 +190,8 @@ describe('reconsultarPendientes de los servicios (camino de sistema)', () => {
         const { s } = armar(Clase, ['1', '2', '3', '4'], async (id: string) => {
           if (id === '2') throw new ConflictException('gate');
           if (id === '3') throw new Error('boom');
-          return { dianStatus: id === '1' ? 'accepted' : 'sent', codigo: '00', intentos: 1 };
+          // '4' sigue firmado (no salió): estar en cola no es avanzar.
+          return { dianStatus: id === '1' ? 'accepted' : id === '4' ? 'signed' : 'sent', codigo: '00', intentos: 1 };
         });
         const r = await TenantContext.run(ctx, () => s.reconsultarPendientes(10, { ahora }));
         expect(r).toEqual({ revisados: 4, avanzados: 1, omitidos: 1, errores: 1 });

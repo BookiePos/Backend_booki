@@ -222,6 +222,22 @@ describe('NominaPeriodoService.listar', () => {
     expect(r[0]!.empleado.documento).toBe('••••3456');
     expect(JSON.stringify(r)).not.toContain('SECRETO');
     expect(JSON.stringify(r)).not.toContain('1017123456');
+    expect(r[0]!.enCola).toBeUndefined();
+  });
+
+  it('en vuelo o firmado sin salir: enCola con el aviso de reenvío automático (la nómina no tiene contingencia)', async () => {
+    const base = { tipoXml: '102', periodo: '2026-10', issueDate: '2026-10-31', vigente: true, empleado: { name: 'Ana', docNumber: '1017123456' } };
+    const docs = [
+      { ...base, _id: new Types.ObjectId(), fullNumber: 'NE1', dianStatus: 'sent', xmlPath: 'p' },
+      { ...base, _id: new Types.ObjectId(), fullNumber: 'NE2', dianStatus: 'signed', xmlPath: 'p' },
+      { ...base, _id: new Types.ObjectId(), fullNumber: 'NE3', dianStatus: 'rejected', xmlPath: 'p' },
+      { ...base, _id: new Types.ObjectId(), fullNumber: 'NE4', dianStatus: 'draft' },
+    ];
+    const { s } = armar([], docs);
+    const r = await dentro(() => s.listar('2026-10', SEDE.toString(), owner));
+    expect(r.map((d) => d.enCola ?? false)).toEqual([true, true, false, false]);
+    expect(r[0]!.estadoResumen).toMatch(/En cola.*se reenviará automáticamente/i);
+    expect(r[2]!.estadoResumen).toBeUndefined();
   });
 
   it('sede ajena: 403', async () => {

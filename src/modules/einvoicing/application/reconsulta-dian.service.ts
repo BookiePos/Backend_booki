@@ -15,7 +15,7 @@ import { HabilitacionNominaService } from './habilitacion-nomina.service';
 import { HabilitacionFacturaService } from './habilitacion-factura.service';
 
 /** Plazo por defecto si quien llama no pasa `hasta` (la función dura 300 s). */
-const PRESUPUESTO_MS = 240_000;
+export const PRESUPUESTO_RECONSULTA_MS = 240_000;
 
 /**
  * Reconsulta periódica de documentos electrónicos DIAN (Fase 10), disparada por
@@ -49,7 +49,7 @@ export class ReconsultaDianService {
     }
     this.corriendo = true;
     try {
-      const hasta = opts.hasta ?? Date.now() + PRESUPUESTO_MS;
+      const hasta = opts.hasta ?? Date.now() + PRESUPUESTO_RECONSULTA_MS;
       const limite = opts.limitePorEmpresa ?? LIMITE_RECONSULTA_POR_EMPRESA;
       const businesses = await this.businesses.listActive();
       let facturas = cifrasVacias();

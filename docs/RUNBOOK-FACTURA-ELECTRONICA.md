@@ -63,6 +63,13 @@ queda en vuelo (`sent`) y la reconsulta lo reenvía; no hay modo de contingencia
 - Norma (Res. 165/2023 art. 37, compilada en la 227/2025): transmitir dentro de las
   **48 horas** desde que se restablece el servicio, sea falla de la DIAN o del negocio.
   Las notas y la nómina no tienen contingencia: esperan a que vuelva el servicio.
+  - **Cola de notas y nómina.** Si la DIAN no responde (red, timeout o cualquier código
+    sin veredicto), la nota crédito/débito o el documento de nómina queda firmado y en
+    cola (`sent`, o `signed` con su XML si no alcanzó a salir). La reconsulta
+    (`GET /cron/dian-reconsulta`, cada 30 min) reenvía el **mismo XML firmado**, con el
+    mismo número, hasta que haya veredicto; si la DIAN responde «ya procesado» consulta
+    `GetStatus`. Nunca se re-firma con tipo 03/04 ni se renumera, y no hay tope de
+    reintentos. El detalle lo muestra como «En cola» (`enCola` y `estadoResumen`).
 - _A confirmar:_ cómo se numerarán y re-firmarán los documentos de contingencia cuando se
   construya la Fase 9.
 
@@ -97,3 +104,26 @@ recargos de la Ley 2466. Detalle en `documentacion/fe-fase8-anexo-nomina.md` §8
 | `rejected` | Veredicto de la DIAN. | Leer los motivos, corregir y reintentar con el mismo número. |
 | Fila `einvoicing.certificado.uso_fallido` | Sin certificado, sin llave de cifrado o el bucket no respondió. | Revisar la tarjeta del certificado y la llave; recargar el .p12 si hace falta. |
 | 409 al emitir FEV o POS | La venta ya tiene el otro tipo. | Anular con nota de ajuste y emitir el correcto. |
+
+## 7. Presupuesto de tiempo por llamada
+
+La función de Vercel (toda la API es una sola, preset NestJS con Fluid compute) dura como
+máximo **300 s**: es el valor por defecto y el máximo del plan Hobby con Fluid; en Pro el
+máximo sube a 800 s. No se declara en `vercel.json`: con el preset NestJS la clave
+`functions` no empareja ninguna función y el build falla. Se fija en el panel de Vercel
+(Settings → Functions → Advanced Settings → Function Max Duration) y se comprueba con
+`vercel inspect <url> --json` (campo `timeout`). La cifra vive en
+`src/shared/config/duracion-funcion.ts` y su test hace las cuentas de esta tabla.
+
+| Llamada | Presupuesto | De dónde sale |
+|---|---|---|
+| Una llamada SOAP a la DIAN | 8 s (tope duro 25 s) | `PRESUPUESTO_POR_DEFECTO_MS` del cliente; `PRESUPUESTO_RED_MAX_MS` corta aunque el cliente no responda. |
+| Cobro en caja (POS) | 4 s de espera | `PLAZO_POR_DEFECTO_MS`; pasado el plazo responde `en_proceso` y la transmisión sigue detrás de la respuesta (`waitUntil`). |
+| Emisión o reintento de un documento | 16 s normal (envío + `GetStatus`); 42 s si la DIAN no responde (3 envíos con 5 s) | Tope duro: 50 s y 110 s. Las notas y la nómina hacen un solo envío. |
+| Nómina del periodo | 40 s por llamada, con cursor | `PRESUPUESTO_EMISION_MS`. |
+| Sets de habilitación | 45 s por corrida | `PRESUPUESTO_CORRIDA_MS`, `PRESUPUESTO_CORRIDA_FACTURA_MS`. |
+| Cron de reconsulta y cron diario | 240 s para empezar trabajo | `PLAZO_BARRIDOS_MS`; no empieza un documento con menos de 60 s (`MARGEN_PLAZO_RECONSULTA_MS`), así el último termina antes de los 300 s. El workflow corta a los 290 s. |
+| Bloqueo de un documento | 330 s | `BLOQUEO_TRANSMISION_MS`: más que la función, para que nadie lo tome mientras otra llamada sigue viva. |
+
+Sin Fluid compute el plan Hobby solo da 60 s: el cobro y la emisión seguirían cabiendo,
+los dos crons no. No apagar Fluid sin rehacer los barridos.

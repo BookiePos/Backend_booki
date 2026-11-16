@@ -37,9 +37,10 @@ import { assertSedeAccess } from '../../core-auth/domain/sede-access';
 import { AuditService } from '../../core-audit/application/audit.service';
 import {
   MARGEN_PLAZO_RECONSULTA_MS,
-  REPOSO_RECONSULTA_MS,
   cifrasVacias,
   esRechazoDeRegla,
+  filtroColaReconsulta,
+  salioDeLaCola,
   type CifrasReconsulta,
 } from '../domain/reconsulta';
 import { FiscalEmittersService, type EstadoNomina } from './fiscal-emitters.service';
@@ -199,7 +200,8 @@ export class NominaElectronicaService {
 
   /**
    * Camino de SISTEMA (cron de reconsulta): los documentos de nómina que llevan más de 10 min en
-   * `sent`, de los más viejos a los más nuevos, hasta `limite`. Reenvía el MISMO
+   * `sent` (y los firmados que no llegaron a salir), de los más viejos a los más
+   * nuevos, hasta `limite`. Sin tope de reintentos ni contingencia. Reenvía el MISMO
    * XML firmado (o consulta) por la misma ruta que el reintento manual, con su
    * gate de ambiente y su bloqueo. Sin usuario no hay chequeo de sede (el barrido
    * recorre todas) pero sí tenancy: exige un `TenantContext` abierto. Nunca
@@ -214,11 +216,9 @@ export class NominaElectronicaService {
     const ahora = opts.ahora ?? new Date();
     const cifras = cifrasVacias();
     const docs = await this.model
-      .find({
-        dianStatus: 'sent',
-        enviadoAt: { $lte: new Date(ahora.getTime() - REPOSO_RECONSULTA_MS) },
-        $or: [{ bloqueoHasta: null }, { bloqueoHasta: { $lte: ahora } }],
-      })
+      // La nómina no tiene contingencia (Fase 9): lo enviado sin veredicto y lo
+      // firmado que no llegó a salir esperan aquí hasta que la DIAN responda.
+      .find(filtroColaReconsulta(ahora))
       .sort({ reconsultadoAt: 1, enviadoAt: 1 })
       .limit(Math.max(0, limite))
       .select('_id')
@@ -231,7 +231,7 @@ export class NominaElectronicaService {
       await this.model.updateOne({ _id }, { $set: { reconsultadoAt: new Date() } }).exec();
       try {
         const r = await this.transmitirExistente(await this.cargar(docId));
-        if (r.dianStatus !== 'sent') cifras.avanzados++;
+        if (salioDeLaCola(r.dianStatus)) cifras.avanzados++;
         await this.auditar('einvoicing.nomina.transmitida', undefined, docId, true, r.codigo ?? r.dianStatus ?? '-', r);
       } catch (err) {
         if (esRechazoDeRegla(err)) cifras.omitidos++;

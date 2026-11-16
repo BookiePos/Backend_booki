@@ -31,7 +31,7 @@ export const PLAZO_EMISION_FISCAL_MS = 'PLAZO_EMISION_FISCAL_MS';
  * normales tarda decenas de milisegundos. El plazo solo protege el cobro de
  * una base lenta; si se pasa, la emisión sigue en segundo plano.
  */
-const PLAZO_POR_DEFECTO_MS = 4_000;
+export const PLAZO_POR_DEFECTO_MS = 4_000;
 
 const MENSAJE_ERROR_GENERICO =
   'No se pudo emitir el documento electrónico. La venta quedó registrada sin él: avísale al administrador del negocio.';

@@ -46,7 +46,9 @@ const leer = (f: Fila, ruta: string): any => ruta.split('.').reduce((a, k) => (a
 function cumple(fila: Fila, filtro: Record<string, any>): boolean {
   return Object.entries(filtro).every(([k, v]) => {
     if (k === '$or') return (v as Fila[]).some((x) => cumple(fila, x));
+    if (k === '$and') return (v as Fila[]).every((x) => cumple(fila, x));
     const actual = leer(fila, k);
+    if (v && typeof v === 'object' && '$gt' in v) return actual != null && actual > v.$gt;
     if (k === '_id') return String(actual) === String(v);
     if (actual && v && typeof actual === 'object' && typeof v === 'object' && !('$lte' in v)) return String(actual) === String(v);
     if (v === null) return actual == null;
@@ -72,6 +74,15 @@ function modeloFalso() {
     fallosCreate,
     findById: (id: string) => ({ exec: async () => copia(filas.get(String(id))) }),
     findOne: (filtro: Fila) => ({ exec: async () => copia(buscar(filtro)) }),
+    find: (filtro: Fila) => {
+      const q: any = {
+        sort: () => q,
+        limit: () => q,
+        select: () => q,
+        exec: async () => [...filas.values()].filter((f) => cumple(f, filtro)).map((f) => copia(f)),
+      };
+      return q;
+    },
     create: async (d: Fila) => {
       const fallo = fallosCreate.shift();
       if (fallo) throw fallo();
@@ -327,6 +338,76 @@ describe('NominaElectronicaService', () => {
     const r = await emitir();
     expect(transmisor.consultar).toHaveBeenCalledWith(expect.objectContaining({ cufe: r.cune }));
     expect(r).toMatchObject({ dianStatus: 'accepted', fullNumber: 'NE1' });
+  });
+
+  describe('sin contingencia: cola y reenvío por el cron (Fase 9)', () => {
+    const cron = (minutosDespues = 11) =>
+      enEmpresa(() => svc.reconsultarPendientes(10, { ahora: new Date(Date.now() + minutosDespues * 60_000) }));
+    const xmlEnviado = (i: number) => (transmisor.enviar.mock.calls[i]![0] as Fila).xmlFirmado as string;
+
+    it('102 (payroll): RED → en vuelo → el cron reenvía el MISMO XML, sin refirmar ni renumerar → aceptado', async () => {
+      transmisor.enviar.mockResolvedValueOnce(sinVeredicto('RED'));
+      const r = await emitir();
+      expect(r).toMatchObject({ dianStatus: 'sent', codigo: 'RED', fullNumber: 'NE1' });
+      expect(transmisor.enviar).toHaveBeenCalledTimes(1);
+      // Antes del reposo de 10 min no se toca.
+      expect(await cron(5)).toMatchObject({ revisados: 0 });
+      expect(await cron()).toEqual({ revisados: 1, avanzados: 1, omitidos: 0, errores: 0 });
+      const f = filasOrdenadas()[0]!;
+      expect(f).toMatchObject({ dianStatus: 'accepted', fullNumber: 'NE1', intentos: 2 });
+      expect(f.contingencia).toBeUndefined();
+      expect(xmlEnviado(1)).toBe(xmlEnviado(0));
+      expect((transmisor.enviar.mock.calls[1]![0] as Fila).tipo).toBe('payroll');
+      expect(firmante.firmar).toHaveBeenCalledTimes(1);
+      expect(contadores.seqs.get(contadorNomina(NIT, 'NE'))).toBe(1);
+      expect(modelo.filas.size).toBe(1);
+    });
+
+    it('la DIAN sigue caída: cada corrida reenvía el mismo XML y sigue en cola, sin rechazo ni tope', async () => {
+      transmisor.enviar.mockResolvedValue(sinVeredicto('RED'));
+      const r = await emitir();
+      const fila = modelo.filas.get(r.documentoId!)!;
+      for (let i = 0; i < 5; i++) {
+        fila.enviadoAt = new Date(Date.now() - 11 * 60_000);
+        expect(await enEmpresa(() => svc.reconsultarPendientes(10))).toMatchObject({ revisados: 1, avanzados: 0, errores: 0 });
+      }
+      expect(fila).toMatchObject({ dianStatus: 'sent', fullNumber: 'NE1', intentos: 6 });
+      expect(fila.rechazoMotivo).toBeUndefined();
+      expect(fila.contingencia).toBeUndefined();
+      expect(firmante.firmar).toHaveBeenCalledTimes(1);
+      for (let i = 1; i < 6; i++) expect(xmlEnviado(i)).toBe(xmlEnviado(0));
+    });
+
+    it('YA_PROCESADO en el reenvío del cron: consulta GetStatus por CUNE y toma ese veredicto', async () => {
+      transmisor.enviar
+        .mockResolvedValueOnce(sinVeredicto('RED'))
+        .mockResolvedValueOnce(sinVeredicto('YA_PROCESADO_DIAN', { origen: 'dian' }));
+      const r = await emitir();
+      expect(transmisor.consultar).not.toHaveBeenCalled();
+      expect(await cron()).toMatchObject({ revisados: 1, avanzados: 1 });
+      expect(transmisor.consultar).toHaveBeenCalledWith(expect.objectContaining({ cufe: r.cune }));
+      expect(filasOrdenadas()[0]!).toMatchObject({ dianStatus: 'accepted', fullNumber: 'NE1' });
+    });
+
+    it('firmado que no llegó a salir: el cron lo envía con el XML guardado cuando ya se puede', async () => {
+      proveedor.para.mockResolvedValueOnce(new StubDian('Falta configurar: certificado'));
+      const r = await emitir();
+      expect(r).toMatchObject({ dianStatus: 'signed', transmitido: false });
+      const fila = modelo.filas.get(r.documentoId!)!;
+      // Recién firmado no entra; pasado el reposo, sí.
+      fila.updatedAt = new Date();
+      expect(await enEmpresa(() => svc.reconsultarPendientes(10))).toMatchObject({ revisados: 0 });
+      fila.updatedAt = new Date(Date.now() - 11 * 60_000);
+      // Sigue sin poder salir: firmado, y no cuenta como avance.
+      proveedor.para.mockResolvedValueOnce(new StubDian('Falta configurar: certificado'));
+      expect(await enEmpresa(() => svc.reconsultarPendientes(10))).toEqual({ revisados: 1, avanzados: 0, omitidos: 0, errores: 0 });
+      expect(fila.dianStatus).toBe('signed');
+      // Ya hay transmisor: sale el XML que se firmó la primera vez.
+      expect(await enEmpresa(() => svc.reconsultarPendientes(10))).toMatchObject({ revisados: 1, avanzados: 1 });
+      expect(fila).toMatchObject({ dianStatus: 'accepted', fullNumber: 'NE1' });
+      expect(firmante.firmar).toHaveBeenCalledTimes(1);
+      expect(xmlEnviado(0)).toContain('<!--firmado-->');
+    });
   });
 
   it('ya aceptado: emitir de nuevo no vuelve a enviar ni renumera', async () => {
