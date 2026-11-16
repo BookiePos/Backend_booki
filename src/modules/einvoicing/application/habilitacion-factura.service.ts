@@ -134,6 +134,36 @@ export class HabilitacionFacturaService {
   }
 
   /**
+   * Solo lectura: el set tal como quedó guardado, con la misma vista de `consultar`.
+   * Sin red, sin bloqueo y sin auditoría: es lo que la pantalla pide al abrirse. No exige
+   * configuración completa (sin emisor o sin set responde `sin_iniciar`, nunca 409).
+   */
+  async estado(sedeId: string, user: JwtUser, clase: ClaseSet = 'fe'): Promise<VistaHabilitacionFactura> {
+    TenantContext.currentOrThrow();
+    assertSedeAccess(user, sedeId);
+    const sinIniciar = (mensaje: string): VistaHabilitacionFactura => ({
+      clase,
+      estado: 'sin_iniciar',
+      aprobada: false,
+      listoParaProduccion: false,
+      mensaje,
+      documentos: [],
+    });
+    const emisor = await this.emisores.obtenerPorSede(sedeId);
+    if (!emisor) return sinIniciar('La sede aún no tiene emisor fiscal.');
+    const emisorId = emisor.id as string;
+    const fila = await this.model.findOne({ emisorId, clase }).exec();
+    if (!fila) return sinIniciar('El set de pruebas aún no se inició.');
+    // Solo presencia y el valor del TestSetId (no es secreto): no descifra nada.
+    const { testSetId } = await this.emisores.estadoFactura(emisorId);
+    const cambio = testSetId !== fila.conjunto.testSetId;
+    return this.vista(
+      fila.conjunto,
+      cambio ? 'El TestSetId de factura cambió: inicia la habilitación de nuevo.' : undefined,
+    );
+  }
+
+  /**
    * Camino de SISTEMA (cron de reconsulta): avanza con su GET los sets de factura/POS
    * que siguen en curso. Solo consulta, no envía nada nuevo (enviar el set es una
    * acción del dueño). Exige un `TenantContext` abierto; nunca lanza por un set.

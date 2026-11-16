@@ -130,6 +130,7 @@ limitado por sede: el cierre cancela los resultados de toda la empresa.
 | `POST /einvoicing/nomina/:id/ajuste` | `payroll.einvoice` | ✓ | ✓ | · | · | · |
 | `POST /einvoicing/sedes/:sedeId/emisor/factura/habilitacion` | `einvoicing.certificate` | ✓ | · | · | · | · |
 | `GET /einvoicing/sedes/:sedeId/emisor/factura/habilitacion` | `einvoicing.certificate` | ✓ | · | · | · | · |
+| `GET /einvoicing/sedes/:sedeId/emisor/factura/habilitacion/estado` | `einvoicing.configure` | ✓ | ✓ | · | · | · |
 | `POST /einvoicing/sedes/:sedeId/emisor/pos/habilitacion` | `einvoicing.certificate` | ✓ | · | · | · | · |
 | `GET /einvoicing/sedes/:sedeId/emisor/pos/habilitacion` | `einvoicing.certificate` | ✓ | · | · | · | · |
 | `POST /einvoicing/sedes/:sedeId/emisor/nomina/habilitacion` | `einvoicing.certificate` | ✓ | · | · | · | · |

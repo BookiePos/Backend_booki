@@ -355,5 +355,49 @@ describe('HabilitacionFacturaService', () => {
       expect(otro.marcados).toHaveLength(0);
     });
   });
-});
 
+  describe('estado (solo lectura)', () => {
+    it('devuelve la misma vista guardada sin ir a la DIAN, sin bloqueo y sin auditar', async () => {
+      const { s, filas, envios } = armar();
+      const enviada = await dentro(() => s.iniciar(SEDE, owner));
+      envios.length = 0;
+      const record = vi.fn(async () => undefined);
+      (s as any).audit = { record };
+      (s as any).transmisores = {
+        para: async () => {
+          throw new Error('estado no debe pedir el transmisor');
+        },
+      };
+      const antes = JSON.stringify(filas[0]);
+      const v = await dentro(() => s.estado(SEDE, owner));
+      expect(v).toEqual(enviada);
+      expect(envios).toHaveLength(0);
+      expect(record).not.toHaveBeenCalled();
+      expect(JSON.stringify(filas[0])).toBe(antes);
+    });
+
+    it('sin set, o con la configuración incompleta, responde sin_iniciar en vez de 409', async () => {
+      const { s } = armar({ ambiente: '1', testSetId: undefined, falta: ['certificado .p12 vigente'] });
+      const v = await dentro(() => s.estado(SEDE, owner));
+      expect(v).toMatchObject({ estado: 'sin_iniciar', aprobada: false, documentos: [] });
+    });
+
+    it('sin emisor responde sin_iniciar', async () => {
+      const { s } = armar();
+      (s as any).emisores.obtenerPorSede = async () => null;
+      expect(await dentro(() => s.estado(SEDE, owner))).toMatchObject({ estado: 'sin_iniciar' });
+    });
+
+    it('avisa si el TestSetId cambió desde que se envió el set', async () => {
+      const { s, opts } = armar();
+      await dentro(() => s.iniciar(SEDE, owner));
+      opts.testSetId = 'OTRO';
+      expect((await dentro(() => s.estado(SEDE, owner))).error).toMatch(/TestSetId/);
+    });
+
+    it('sede ajena: 403', async () => {
+      const { s } = armar();
+      await expect(dentro(() => s.estado(SEDE, otra))).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
+});

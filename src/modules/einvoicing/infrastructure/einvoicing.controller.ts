@@ -239,6 +239,13 @@ export class EinvoicingController {
     return this.habilitacionFactura.consultar(sedeId, user, 'fe');
   }
 
+  /** Estado guardado del set de la factura: solo lectura, sin ir a la DIAN ni auditar (lo pide la pantalla al abrir). */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CONFIGURE)
+  @Get('sedes/:sedeId/emisor/factura/habilitacion/estado')
+  estadoGuardadoHabilitacionFactura(@Param('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
+    return this.habilitacionFactura.estado(sedeId, user, 'fe');
+  }
+
   /** Set del documento equivalente POS: estructura lista, DESACTIVADO (409 con el motivo) hasta confirmar el portal. */
   @RequirePermissions(PERMISSIONS.EINVOICING_CERTIFICATE)
   @Post('sedes/:sedeId/emisor/pos/habilitacion')
