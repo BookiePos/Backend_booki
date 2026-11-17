@@ -1,4 +1,5 @@
 import { normalizarNit } from './consecutivo-unico';
+import { municipioDesdeTexto } from './municipios-dane';
 import type { EmisorTransmision } from './resolver-transmisor';
 
 /**
@@ -66,6 +67,8 @@ export interface DatosEmisor {
   direccion?: string;
   departamento?: string;
   ciudad?: string;
+  /** Código DANE del municipio: se deduce de departamento + ciudad cuando no hay duda. */
+  municipioDane?: string;
   telefono?: string;
   emailFacturacion?: string;
 }
@@ -96,7 +99,17 @@ export const CAMPOS_CONTACTO = [
   'direccion',
   'departamento',
   'ciudad',
+  'municipioDane',
   'telefono',
+  'emailFacturacion',
+] as const satisfies readonly (keyof DatosEmisor)[];
+
+/** El domicilio fiscal: lo que el dueño puede fijar a mano en el emisor (ver `domicilioManual`). */
+export const CAMPOS_DOMICILIO = [
+  'direccion',
+  'departamento',
+  'ciudad',
+  'municipioDane',
   'emailFacturacion',
 ] as const satisfies readonly (keyof DatosEmisor)[];
 
@@ -125,6 +138,7 @@ export function datosEmisorDeSede(sede: SedeFiscal): DatosEmisor | null {
     direccion: limpio(sede.address),
     departamento: limpio(sede.departamento),
     ciudad: limpio(sede.ciudad),
+    municipioDane: municipioDesdeTexto(sede.departamento, sede.ciudad)?.codigo,
     telefono: limpio(sede.phone),
     emailFacturacion: limpio(sede.emailFacturacion)?.toLowerCase(),
   };
@@ -168,6 +182,7 @@ const ETIQUETAS_CAMPOS: Readonly<Record<string, string>> = {
   direccion: 'dirección',
   departamento: 'departamento',
   ciudad: 'ciudad',
+  municipioDane: 'municipio DANE',
   telefono: 'teléfono',
   emailFacturacion: 'correo de facturación',
 };
@@ -194,12 +209,15 @@ export interface CambiosEmisor {
  * se aplaza hasta que la última sede quede igual.
  */
 export function cambiosDeEmisor(
-  emisor: Partial<DatosEmisor>,
+  emisor: Partial<DatosEmisor> & { domicilioManual?: boolean },
   sede: DatosEmisor,
   hermanas: readonly DatosEmisor[],
 ): CambiosEmisor {
   const cambios: CambiosEmisor = { poner: {}, quitar: [], aplazados: [] };
   for (const c of CAMPOS_EMISOR_DESDE_SEDE) {
+    // El dueño fijó el domicilio fiscal en el emisor (el del RUT): la dirección
+    // de una sede no lo pisa.
+    if (emisor.domicilioManual && (CAMPOS_DOMICILIO as readonly string[]).includes(c)) continue;
     if (igual(emisor[c], sede[c])) continue;
     if (hermanas.some((h) => !igual(h[c], sede[c]))) cambios.aplazados.push(c);
     else if (sede[c] === undefined || sede[c] === null) cambios.quitar.push(c);
