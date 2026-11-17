@@ -16,8 +16,10 @@
  * intereses, prima, vacaciones compensadas e indemnización (decisión 4 del
  * dueño); sin ella, quien se retira en el mes se bloquea. Las novedades de la
  * colilla (`ausenciaDetalle`, decisión 3) van a VacacionesComunes,
- * Incapacidades y Licencias (MP, R y NR). El pago semestral de prima o la
- * consignación de cesantías no se inventan: si aparecen, el trabajador se bloquea.
+ * Incapacidades y Licencias (MP, R y NR). La prima del semestre, la
+ * consignación de cesantías y sus intereses entran por su REGISTRO DE PAGO
+ * (`prestaciones`, decisión 2 del dueño) en el mes en que se pagaron, a los
+ * nodos Primas y Cesantias; no se inventan desde la provisión ni desde la colilla.
  *
  * Pago: el medio y la fecha REAL de cada egreso los declara el negocio al
  * cerrar la corrida (`PayrollRun.pago`, decisión 1 del dueño, tarea 11). Una
@@ -148,6 +150,23 @@ export interface LiquidacionConsolidar {
   pago?: PagoCorrida;
 }
 
+/** Un pago de prima, cesantías o intereses fuera del retiro (`PayrollPagoPrestacion` vivo), en pesos. */
+export interface PagoPrestacionConsolidar {
+  id: string;
+  tipo: string;
+  /** Lo pagado antes de la retención. */
+  monto: number;
+  /** Retención en la fuente practicada (solo la prima). */
+  retencionFuente?: number;
+  /** Tramo que cubre (YYYY-MM-DD). */
+  periodoDesde: string;
+  periodoHasta: string;
+  /** Días del tramo (360): `Primas@Cantidad`. */
+  dias: number;
+  /** Medio y fecha real del egreso: la fecha decide el mes en que se reporta. */
+  pago?: PagoCorrida;
+}
+
 export interface EntradaConsolidar {
   /** YYYY-MM */
   periodo: string;
@@ -159,6 +178,8 @@ export interface EntradaConsolidar {
   smmlv?: number;
   /** Liquidación de retiro aprobada cuyo retiro cae en el mes. */
   liquidacion?: LiquidacionConsolidar;
+  /** Pagos vivos de prima, cesantías e intereses cuya fecha de pago cae en el mes (decisión 2 del dueño). */
+  prestaciones?: PagoPrestacionConsolidar[];
   /** UVT vigente (pesos): para la parte exenta de las cesantías (art. 206-4 ET). */
   uvt?: number;
   /**
@@ -222,6 +243,15 @@ const DEVENGADOS_CONOCIDOS = new Set([
   'ausenciaDetalle',
   'total',
 ]);
+
+/** Prestaciones que se reportan desde su registro de pago, nunca como un devengado suelto de la colilla. */
+const PRESTACION_EN_COLILLA = new Set(['prima', 'primaServicios', 'cesantias', 'interesesCesantias']);
+const TIPOS_PRESTACION_NE = new Set(['prima', 'cesantias', 'intereses_cesantias']);
+const NOMBRE_PRESTACION_NE: Record<string, string> = {
+  prima: 'prima',
+  cesantias: 'cesantías',
+  intereses_cesantias: 'intereses de cesantías',
+};
 
 const MEDIO_TRANSFERENCIA = '47';
 /** Tipo de incapacidad de la tabla 5.5.6: 1 común, 2 profesional, 3 laboral. */
@@ -391,6 +421,12 @@ function revisarColilla(c: CorridaColilla, quien: string, bloqueos: string[]): b
 
   for (const [clave, valor] of Object.entries(dev as unknown as Record<string, unknown>)) {
     if (!DEVENGADOS_CONOCIDOS.has(clave) && typeof valor === 'number' && valor > 0) {
+      if (PRESTACION_EN_COLILLA.has(clave)) {
+        bloqueos.push(
+          `${donde}: la colilla trae «${clave}» como devengado. La prima, las cesantías y sus intereses no se reportan desde la colilla (el documento exige los días que cubren): quítalo de la corrida y registra el pago en Nómina → Prestaciones.`,
+        );
+        continue;
+      }
       bloqueos.push(
         `${donde}: la colilla trae el concepto «${clave}» (prima, cesantías, vacaciones, incapacidad, licencia, retiro u otro) y aún no se reporta: ${PENDIENTE_DUENO}.`,
       );
@@ -636,8 +672,14 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
   if (borradores.length > 0) {
     bloqueos.push(`${quien}: la corrida de ${periodo} sigue en borrador. Ciérrala antes de generar la nómina electrónica.`);
   }
+  const prestaciones = entrada.prestaciones ?? [];
   if (cerradas.length === 0) {
-    if (borradores.length === 0) {
+    if (prestaciones.length > 0) {
+      // El XSD exige Basico (días y sueldo) y aquí no hay colilla de dónde tomarlo: no se inventa un básico en cero.
+      bloqueos.push(
+        `${quien}: en ${periodo} se le pagó ${[...new Set(prestaciones.map((p) => NOMBRE_PRESTACION_NE[p.tipo] ?? p.tipo))].join(', ')} y no tiene una corrida de nómina cerrada en el mes. El documento exige el básico del mes: cierra la corrida de ${periodo}; si no devengó sueldo ese mes, consulta con el contador cómo reportar ese pago.`,
+      );
+    } else if (borradores.length === 0) {
       bloqueos.push(`${quien}: no tiene ninguna corrida cerrada en ${periodo}; sin pagos en el mes no hay documento.`);
     }
     revisarTrabajador(e, periodo, undefined, entrada.smmlv, entrada.liquidacion, bloqueos);
@@ -684,6 +726,37 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
       const l = liq;
       const bruto = sumCop([l.cesantias, l.interesesCesantias, l.prima, l.vacaciones, l.indemnizacion]);
       pagos.push({ ...p, valor: Math.max(0, bruto - (l.retencionFuente ?? 0)) });
+    }
+  }
+  // Prima, cesantías e intereses pagados en el mes (decisión 2 del dueño): cada uno es otro egreso con su fecha.
+  // La consignación de cesantías va al fondo, no al trabajador: aporta su fecha pero no vota el medio del nodo Pago.
+  const fechasFondo: string[] = [];
+  const vistosPrest = new Set<string>();
+  for (const pr of prestaciones) {
+    const cual = `el pago de ${NOMBRE_PRESTACION_NE[pr.tipo] ?? pr.tipo} (${pr.periodoDesde} a ${pr.periodoHasta})`;
+    const p = pr.pago;
+    const ret = pr.retencionFuente ?? 0;
+    if (vistosPrest.has(pr.id)) {
+      bloqueos.push(`${quien}: ${cual} viene repetido; sumarlo dos veces duplicaría lo reportado. Revisa los datos de entrada.`);
+      continue;
+    }
+    vistosPrest.add(pr.id);
+    if (!TIPOS_PRESTACION_NE.has(pr.tipo)) {
+      bloqueos.push(`${quien}: hay un pago de prestaciones de tipo «${pr.tipo}» que la nómina electrónica no sabe reportar.`);
+    } else if (!Number.isInteger(pr.monto) || pr.monto <= 0 || !Number.isInteger(ret) || ret < 0 || ret >= pr.monto) {
+      bloqueos.push(`${quien}: ${cual} trae importes que no son pesos enteros válidos (monto ${String(pr.monto)}, retención ${String(ret)}). Anúlalo y regístralo de nuevo.`);
+    } else if (ret > 0 && pr.tipo !== 'prima') {
+      bloqueos.push(`${quien}: ${cual} trae retención en la fuente y las cesantías no la llevan (DUR 1625/2016 art. 1.2.4.1.11). Anúlalo y regístralo de nuevo.`);
+    } else if (!p?.medio || !p.fecha || !(MEDIOS_PAGO_NOMINA as readonly string[]).includes(p.medio) || !YYYYMMDD.test(p.fecha)) {
+      bloqueos.push(`${quien}: ${cual} no tiene un medio y una fecha de pago válidos. Anúlalo y regístralo de nuevo.`);
+    } else if (p.fecha.slice(0, 7) !== periodo) {
+      bloqueos.push(`${quien}: ${cual} se pagó el ${p.fecha}, fuera de ${periodo}; se reporta en el mes de su pago. Revisa los datos de entrada.`);
+    } else if (pr.tipo === 'prima' && (!Number.isInteger(pr.dias) || pr.dias <= 0)) {
+      bloqueos.push(`${quien}: ${cual} no trae los días que cubre. Anúlalo y regístralo de nuevo.`);
+    } else if (pr.tipo === 'cesantias') {
+      fechasFondo.push(p.fecha);
+    } else {
+      pagos.push({ ...p, valor: pr.monto - ret });
     }
   }
   // El XSD admite un solo nodo Pago: manda el medio por el que se pagó MÁS en el mes (con empate, el último).
@@ -812,6 +885,24 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
     }
   }
 
+  // Prima, cesantías e intereses pagados en el mes: se suman a lo que ya haya puesto la liquidación de retiro
+  // (un solo nodo Primas y un solo nodo Cesantias por documento). `Cesantias@Porcentaje` es la tasa de los
+  // intereses (12 %, Ley 52/1975) aunque en el mes solo se consigne el capital o solo se paguen los intereses.
+  let retencionPrestaciones = 0;
+  for (const pr of prestaciones) {
+    if (pr.tipo === 'prima') {
+      const antes = devengados.primas;
+      devengados.primas = { dias: (antes?.dias ?? 0) + pr.dias, pago: (antes?.pago ?? 0) + centavosDeCop(pr.monto) };
+      retencionPrestaciones += pr.retencionFuente ?? 0;
+    } else {
+      const antes = devengados.cesantias ?? { pago: 0, porcentaje: INTERESES_CESANTIAS_PCT, intereses: 0 };
+      devengados.cesantias =
+        pr.tipo === 'cesantias'
+          ? { ...antes, pago: antes.pago + centavosDeCop(pr.monto) }
+          : { ...antes, intereses: antes.intereses + centavosDeCop(pr.monto) };
+    }
+  }
+
   // Retención: incapacidades y licencias NO son renta exenta y van en la base de la colilla (tarea 14, punto 6).
   // El num. 1 del art. 206 ET exime la INDEMNIZACIÓN por accidente de trabajo o enfermedad, no el pago de la
   // incapacidad (Oficio DIAN 000321 de 2015, que revocó la doctrina contraria); el num. 2 exime indemnizaciones
@@ -823,7 +914,7 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
   const salud = sum((b) => b.deducciones.salud);
   const pension = sum((b) => b.deducciones.pension);
   const fsp = sum((b) => b.deducciones.fsp);
-  const retencion = sum((b) => b.deducciones.retencionFuente) + retencionLiquidacion;
+  const retencion = sum((b) => b.deducciones.retencionFuente) + retencionLiquidacion + retencionPrestaciones;
 
   if (e.subTipoTrabajador === '01' && pension > 0) {
     bloqueos.push(
@@ -961,8 +1052,8 @@ export function consolidarNominaMes(entrada: EntradaConsolidar): ResultadoConsol
   }
 
   const conCuenta = medio === MEDIO_TRANSFERENCIA || (medio === MEDIO_CONSIGNACION && !!e.accountNumber?.trim());
-  // Una FechaPago por egreso: las fechas distintas de las corridas, en orden.
-  const fechasPagos = [...new Set(pagos.map((p) => p.fecha))].sort();
+  // Una FechaPago por egreso: las fechas distintas de las corridas, la liquidación y las prestaciones, en orden.
+  const fechasPagos = [...new Set([...pagos.map((p) => p.fecha), ...fechasFondo])].sort();
 
   const desdeLiq = e.hireDate! > primero ? e.hireDate! : primero;
   const finLiq = liq && liq.fechaRetiro < ultimo ? liq.fechaRetiro : ultimo;

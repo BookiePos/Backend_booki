@@ -10,6 +10,7 @@ import {
   type EntradaConsolidar,
   type EmpleadoConsolidar,
   type LiquidacionConsolidar,
+  type PagoPrestacionConsolidar,
   type ResultadoConsolidar,
 } from './consolidar';
 import type { ContextoNomina, DocumentoNe, EmisionNe } from './modelo';
@@ -569,7 +570,7 @@ describe('consolidarNominaMes: bloqueos por trabajador', () => {
 
   it('concepto de la colilla que BookiPos no sabe reportar (prima, cesantías…)', () => {
     const bd = breakdown({ extra: { prima: 500_000 } });
-    expect(bloqueos(entrada({ slips: [corrida({ bd })] })).join()).toMatch(/«prima».*tarea 11/);
+    expect(bloqueos(entrada({ slips: [corrida({ bd })] })).join()).toMatch(/«prima».*Nómina → Prestaciones/);
   });
 
   it('colilla que no cuadra consigo misma', () => {
@@ -799,5 +800,117 @@ describe('consolidarNominaMes: novedades del mes (decisión 3 del dueño)', () =
   it('una novedad sin fechas válidas bloquea', () => {
     const bd = conNovedades([{ ...lineas[0]!, fechaFin: 'x' }]);
     expect(bloqueos(entrada({ slips: [corrida({ bd, dias: 25 })] })).join()).toMatch(/no tiene tipo, días o fechas válidos/);
+  });
+});
+
+describe('consolidarNominaMes: pago de prima, cesantías e intereses (decisión 2 del dueño)', () => {
+  const pago = (o: Partial<PagoPrestacionConsolidar> = {}): PagoPrestacionConsolidar => ({
+    id: 'pp1',
+    tipo: 'prima',
+    monto: 750_000,
+    periodoDesde: '2026-07-01',
+    periodoHasta: '2026-12-31',
+    dias: 180,
+    pago: { medio: '47', fecha: '2026-12-15' },
+    ...o,
+  });
+  const empBanco = { bank: 'Bancolombia', accountType: 'ahorros', accountNumber: '123456' };
+  const mes = (periodo: string, prestaciones: PagoPrestacionConsolidar[], e: Partial<EmpleadoConsolidar> = {}) =>
+    entrada({
+      periodo,
+      empleado: empleado({ ...empBanco, ...e }),
+      slips: [corrida({ periodo, pago: { medio: '47', fecha: `${periodo}-28` } })],
+      prestaciones,
+    });
+
+  it('diciembre: la prima del semestre va a Primas con sus días, y pasa el XSD', async () => {
+    const { modelo } = ok(mes('2026-12', [pago()]));
+    expect(modelo.devengados.primas).toEqual({ dias: 180, pago: 75_000_000 });
+    expect(modelo.devengados.cesantias).toBeUndefined();
+    expect(modelo.fechasPagos).toEqual(['2026-12-15', '2026-12-28']);
+    const r = await verificar(modelo, 1_500_000 + 750_000, 120_000);
+    expect(r.xml).toContain('<Primas Cantidad="180" Pago="750000.00"');
+  }, 60_000);
+
+  it('la retención practicada sobre la prima se suma a RetencionFuente', async () => {
+    const { modelo } = ok(mes('2026-12', [pago({ monto: 6_000_000, retencionFuente: 150_000 })]));
+    expect(modelo.devengados.primas).toEqual({ dias: 180, pago: 600_000_000 });
+    expect(modelo.deducciones.retencionFuente).toBe(15_000_000);
+    await verificar(modelo, 1_500_000 + 6_000_000, 120_000 + 150_000);
+  }, 60_000);
+
+  it('enero: solo los intereses → Cesantias con Pago 0.00, 12.00 y PagoIntereses, y pasa el XSD', async () => {
+    const intereses = pago({ id: 'pp2', tipo: 'intereses_cesantias', monto: 180_000, periodoDesde: '2026-01-01', periodoHasta: '2026-12-31', dias: 360, pago: { medio: '47', fecha: '2027-01-30' } });
+    const { modelo } = ok(mes('2027-01', [intereses]));
+    expect(modelo.devengados.cesantias).toEqual({ pago: 0, porcentaje: 12, intereses: 18_000_000 });
+    const r = await verificar(modelo, 1_500_000 + 180_000, 120_000);
+    expect(r.xml).toContain('<Cesantias Pago="0.00" Porcentaje="12.00" PagoIntereses="180000.00"');
+  }, 60_000);
+
+  it('febrero: la consignación al fondo → Cesantias@Pago; aporta su fecha pero no decide el medio del nodo Pago', async () => {
+    const consignacion = pago({ id: 'pp3', tipo: 'cesantias', monto: 1_500_000, periodoDesde: '2026-01-01', periodoHasta: '2026-12-31', dias: 360, pago: { medio: '42', fecha: '2027-02-12' } });
+    const { modelo, advertencias } = ok(mes('2027-02', [consignacion]));
+    expect(modelo.devengados.cesantias).toEqual({ pago: 150_000_000, porcentaje: 12, intereses: 0 });
+    expect(modelo.pago.metodo).toBe('47');
+    expect(modelo.fechasPagos).toEqual(['2027-02-12', '2027-02-28']);
+    expect(advertencias.join()).not.toMatch(/medios distintos/);
+    const r = await verificar(modelo, 1_500_000 + 1_500_000, 120_000);
+    expect(r.xml).toContain('<Cesantias Pago="1500000.00" Porcentaje="12.00" PagoIntereses="0.00"');
+  }, 60_000);
+
+  it('cesantías e intereses pagados el mismo mes van en un solo nodo', async () => {
+    const { modelo } = ok(
+      mes('2027-01', [
+        pago({ id: 'a', tipo: 'cesantias', monto: 1_500_000, periodoDesde: '2026-01-01', periodoHasta: '2026-12-31', dias: 360, pago: { medio: '42', fecha: '2027-01-20' } }),
+        pago({ id: 'b', tipo: 'intereses_cesantias', monto: 180_000, periodoDesde: '2026-01-01', periodoHasta: '2026-12-31', dias: 360, pago: { medio: '47', fecha: '2027-01-20' } }),
+      ]),
+    );
+    expect(modelo.devengados.cesantias).toEqual({ pago: 150_000_000, porcentaje: 12, intereses: 18_000_000 });
+    await verificar(modelo, 1_500_000 + 1_680_000, 120_000);
+  }, 60_000);
+
+  it('en el mes del retiro se suma a lo que paga la liquidación (un solo nodo Primas y uno Cesantias)', async () => {
+    const liq: LiquidacionConsolidar = {
+      id: 'liq1', fechaRetiro: '2027-02-20', diasLiquidados: 380, diasPrima: 50, diasVacacionesPendientes: 0, salarioBase: 1_500_000,
+      cesantias: 208_333, interesesCesantias: 3_472, prima: 208_333, vacaciones: 0, indemnizacion: 0, salariosPendientes: 0,
+      pago: { medio: '47', fecha: '2027-02-22' },
+    };
+    const consignacion = pago({ id: 'pp3', tipo: 'cesantias', monto: 1_500_000, periodoDesde: '2026-01-01', periodoHasta: '2026-12-31', dias: 360, pago: { medio: '42', fecha: '2027-02-12' } });
+    const primaAtrasada = pago({ id: 'pp4', monto: 750_000, pago: { medio: '47', fecha: '2027-02-05' } });
+    const bd = breakdown({ salario: 1_000_000 });
+    const { modelo } = ok(
+      entrada({
+        periodo: '2027-02',
+        empleado: empleado({ ...empBanco, terminationDate: '2027-02-20' }),
+        slips: [corrida({ periodo: '2027-02', dias: 20, bd, pago: { medio: '47', fecha: '2027-02-20' } })],
+        liquidacion: liq,
+        prestaciones: [consignacion, primaAtrasada],
+      }),
+    );
+    expect(modelo.devengados.cesantias).toEqual({ pago: 170_833_300, porcentaje: 12, intereses: 347_200 });
+    expect(modelo.devengados.primas).toEqual({ dias: 230, pago: 95_833_300 });
+    await verificar(modelo, bd.devengados.total + 208_333 + 3_472 + 208_333 + 1_500_000 + 750_000, bd.deducciones.total);
+  }, 60_000);
+
+  it('sin pagos registrados el mes sale como antes (sin Primas ni Cesantias)', () => {
+    const { modelo } = ok(mes('2026-12', []));
+    expect(modelo.devengados.primas).toBeUndefined();
+    expect(modelo.devengados.cesantias).toBeUndefined();
+  });
+
+  it('bloquea: pago de otro mes, repetido, importes malos, retención en cesantías, sin días o sin medio', () => {
+    expect(bloqueos(mes('2026-12', [pago({ pago: { medio: '47', fecha: '2026-11-30' } })])).join()).toMatch(/fuera de 2026-12/);
+    expect(bloqueos(mes('2026-12', [pago(), pago()])).join()).toMatch(/repetido/);
+    expect(bloqueos(mes('2026-12', [pago({ monto: 10.5 })])).join()).toMatch(/pesos enteros/);
+    expect(bloqueos(mes('2026-12', [pago({ monto: 100, retencionFuente: 100 })])).join()).toMatch(/pesos enteros/);
+    expect(bloqueos(mes('2026-12', [pago({ tipo: 'cesantias', retencionFuente: 1 })])).join()).toMatch(/no la llevan/);
+    expect(bloqueos(mes('2026-12', [pago({ dias: 0 })])).join()).toMatch(/días que cubre/);
+    expect(bloqueos(mes('2026-12', [pago({ pago: { medio: '99', fecha: '2026-12-15' } })])).join()).toMatch(/medio y una fecha/);
+    expect(bloqueos(mes('2026-12', [pago({ tipo: 'bono' })])).join()).toMatch(/no sabe reportar/);
+  });
+
+  it('con pago de prestaciones y sin corrida cerrada en el mes, bloquea con el motivo (no inventa un básico en cero)', () => {
+    const b = bloqueos(entrada({ periodo: '2026-12', slips: [], prestaciones: [pago()] })).join();
+    expect(b).toMatch(/se le pagó prima y no tiene una corrida de nómina cerrada/);
   });
 });

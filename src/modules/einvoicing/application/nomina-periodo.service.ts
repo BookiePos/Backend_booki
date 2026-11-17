@@ -8,6 +8,10 @@ import {
   PayrollLiquidacion,
   type PayrollLiquidacionDocument,
 } from '../../payroll/infrastructure/schemas/payroll-liquidacion.schema';
+import {
+  PayrollPagoPrestacion,
+  type PayrollPagoPrestacionDocument,
+} from '../../payroll/infrastructure/schemas/payroll-pago-prestacion.schema';
 import { Sede, type SedeDocument } from '../../sedes/infrastructure/schemas/sede.schema';
 import { EmployeesService } from '../../employees/application/employees.service';
 import { FiscalEmittersService } from './fiscal-emitters.service';
@@ -18,6 +22,7 @@ import {
   type DeduccionConsolidar,
   type EmpleadoConsolidar,
   type EntradaConsolidar,
+  type PagoPrestacionConsolidar,
 } from '../domain/nomina/consolidar';
 import { empleadorDeEmisor, relojColombia, type ResultadoEmpleador } from '../domain/nomina/empleador';
 import { TipoNota, type DocumentoNe, type EmisionNe } from '../domain/nomina/modelo';
@@ -91,6 +96,8 @@ interface ContextoPeriodo {
   veTodas: boolean;
   empleados: Map<string, EmpleadoConsolidar & { sedeId?: string }>;
   corridas: LeanRun[];
+  /** Pagos vivos de prima, cesantías e intereses con fecha de pago en el mes, de sedes de ESTE emisor, por trabajador. */
+  prestaciones: Map<string, (PagoPrestacionConsolidar & { sedeEfectiva: string })[]>;
   /** SMMLV vigente al cierre del mes (core-params), para el mínimo del salario integral. */
   smmlv: number;
   /** UVT vigente al cierre del mes (core-params), para el aviso de retención de cesantías. */
@@ -141,6 +148,7 @@ export class NominaPeriodoService {
     private readonly audit: AuditService,
     private readonly params: ParamsService,
     @InjectModel(PayrollLiquidacion.name) private readonly liquidaciones: Model<PayrollLiquidacionDocument>,
+    @InjectModel(PayrollPagoPrestacion.name) private readonly pagosPrestaciones: Model<PayrollPagoPrestacionDocument>,
   ) {}
 
   // ── Pre-vuelo ─────────────────────────────────────────────────────────────
@@ -401,7 +409,31 @@ export class NominaPeriodoService {
     const finMes = new Date(Date.UTC(Number(periodo.slice(0, 4)), Number(periodo.slice(5, 7)), 0)).toISOString().slice(0, 10);
     const smmlv = await this.params.number('nomina.salario_minimo', DEFAULT_PAYROLL_SETTINGS.smmlv, { date: finMes });
     const uvt = await this.params.number('fiscal.uvt', DEFAULT_PAYROLL_SETTINGS.uvt, { date: finMes });
-    return { periodo, sedeId, emisor, empleador: empleador.empleador, sedes, sedesEmisor, veTodas, empleados, corridas, smmlv, uvt };
+    // Prima, cesantías e intereses pagados en el mes (decisión 2 del dueño): se reportan en el mes de su pago.
+    const filas = (await this.pagosPrestaciones
+      .find({ estado: 'registrado', 'pago.fecha': { $gte: `${periodo}-01`, $lte: finMes } })
+      .lean()
+      .exec()) as unknown as (PayrollPagoPrestacion & { _id: Types.ObjectId })[];
+    const prestaciones: ContextoPeriodo['prestaciones'] = new Map();
+    for (const f of filas) {
+      const sedeEfectiva = f.sedeId ? String(f.sedeId) : empleados.get(f.employeeId)?.sedeId;
+      // Como las colillas: lo de otro NIT ni se suma ni bloquea.
+      if (!sedeEfectiva || !sedesEmisor.includes(sedeEfectiva)) continue;
+      const lista = prestaciones.get(f.employeeId) ?? [];
+      lista.push({
+        id: String(f._id),
+        tipo: f.tipo,
+        monto: f.monto,
+        retencionFuente: f.retencionFuente ?? 0,
+        periodoDesde: f.periodoDesde,
+        periodoHasta: f.periodoHasta,
+        dias: f.dias,
+        pago: f.pago,
+        sedeEfectiva,
+      });
+      prestaciones.set(f.employeeId, lista);
+    }
+    return { periodo, sedeId, emisor, empleador: empleador.empleador, sedes, sedesEmisor, veTodas, empleados, corridas, prestaciones, smmlv, uvt };
   }
 
   /** Contexto para ajustar un documento ya emitido: el de su mes. */
@@ -419,7 +451,11 @@ export class NominaPeriodoService {
     return s ? String(s) : empleados.get(slip.employeeId)?.sedeId;
   }
 
-  /** Trabajadores con colilla en una corrida CERRADA del mes, dentro de las sedes del emisor al alcance. Orden estable (el cursor). */
+  /**
+   * Trabajadores con colilla en una corrida CERRADA del mes o con un pago de prestaciones en el mes, dentro de las
+   * sedes del emisor al alcance. Quien solo tiene el pago aparece (bloqueado) en vez de quedar sin reportar en silencio.
+   * Orden estable (el cursor).
+   */
   private trabajadores(ctx: ContextoPeriodo): string[] {
     const ids = new Set<string>();
     for (const run of ctx.corridas) {
@@ -427,6 +463,9 @@ export class NominaPeriodoService {
       for (const slip of run.slips) {
         if (slip.sedeEfectiva && ctx.sedes.includes(slip.sedeEfectiva)) ids.add(slip.employeeId);
       }
+    }
+    for (const [employeeId, pagos] of ctx.prestaciones) {
+      if (pagos.some((p) => ctx.sedes.includes(p.sedeEfectiva))) ids.add(employeeId);
     }
     return [...ids].sort();
   }
@@ -447,9 +486,10 @@ export class NominaPeriodoService {
       return { ok: false as const, bloqueos: [`${nombre}: ya no está en el expediente de empleados.`] };
     }
     if (!ctx.veTodas) {
-      const fuera = ctx.corridas.some((r) =>
-        r.slips.some((sl) => sl.employeeId === id && sl.sedeEfectiva && !ctx.sedes.includes(sl.sedeEfectiva)),
-      );
+      const fuera =
+        ctx.corridas.some((r) =>
+          r.slips.some((sl) => sl.employeeId === id && sl.sedeEfectiva && !ctx.sedes.includes(sl.sedeEfectiva)),
+        ) || (ctx.prestaciones.get(id) ?? []).some((p) => !ctx.sedes.includes(p.sedeEfectiva));
       if (fuera) {
         return {
           ok: false as const,
@@ -507,6 +547,9 @@ export class NominaPeriodoService {
       smmlv: ctx.smmlv,
       uvt: ctx.uvt,
       ...(devengadoUltimos6Meses ? { devengadoUltimos6Meses } : {}),
+      ...(ctx.prestaciones.has(id)
+        ? { prestaciones: ctx.prestaciones.get(id)! }
+        : {}),
       ...(liq
         ? {
             liquidacion: {
