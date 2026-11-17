@@ -184,10 +184,45 @@ describe('SedesService.update · sincroniza el emisor fiscal', () => {
     expect(s.save).not.toHaveBeenCalled();
   });
 
-  it('sede con NIT pero sin emisor, sin cambiar el NIT: no crea nada (lo hace asegurarParaSede al configurar)', async () => {
+  it('sede con NIT pero sin emisor, sin cambiar el NIT: guardar crea el emisor y la enlaza (sin configuración)', async () => {
     const s = nuevaSede();
     await guardar(s, { businessName: 'Crunchy Munch S.A.S.' });
+    const creado = emisores.find((e) => e.nitNorm === '900123456')!;
+    expect(creado).toMatchObject({ razonSocial: 'Crunchy Munch S.A.S.', nitDv: '7' });
+    expect(creado.habilitado).toBeUndefined();
+    expect(creado.facturaSoftwareId).toBeUndefined();
+    expect(String(s.emisorId)).toBe(String(creado._id));
+    expect(s.save).toHaveBeenCalledTimes(1);
+  });
+
+  it('sede con NIT pero sin emisor y ya existe el emisor de ese NIT que coincide: solo la enlaza', async () => {
+    const e = nuevoEmisor();
+    const s = nuevaSede();
+    await guardar(s, { address: 'Calle 1' });
+    expect(String(s.emisorId)).toBe(String(e._id));
     expect(modeloEmisor().create).not.toHaveBeenCalled();
+  });
+
+  it('sede con NIT pero sin emisor y otra sede del NIT discrepa: guarda sin 409 y sin emisor, y al igualarlas se crea', async () => {
+    const b = nuevaSede({ code: 'B', name: 'Norte', businessName: 'Crunchy Munch S.A.S.', nitDv: '3' });
+    const a = nuevaSede();
+    // Igualar A con B aún deja el DV distinto: no hay emisor, pero tampoco 409.
+    await guardar(a, { businessName: 'Crunchy Munch S.A.S.' });
+    expect(a.save).toHaveBeenCalledTimes(1);
+    expect(a.emisorId).toBeUndefined();
+    expect(modeloEmisor().create).not.toHaveBeenCalled();
+    // La última que faltaba se iguala: ahora sí nace el emisor.
+    await guardar(b, { nitDv: '7' });
+    const creado = emisores.find((e) => e.nitNorm === '900123456')!;
+    expect(creado).toMatchObject({ razonSocial: 'Crunchy Munch S.A.S.', nitDv: '7' });
+    expect(String(b.emisorId)).toBe(String(creado._id));
+  });
+
+  it('sede con NIT pero sin emisor y el emisor de ese NIT tiene otra razón social: guarda sin 409 y no la enlaza', async () => {
+    nuevoEmisor({ razonSocial: 'Otra Empresa S.A.' });
+    const s = nuevaSede();
+    await guardar(s, { address: 'Calle 1' });
+    expect(s.save).toHaveBeenCalledTimes(1);
     expect(s.emisorId).toBeUndefined();
   });
 
