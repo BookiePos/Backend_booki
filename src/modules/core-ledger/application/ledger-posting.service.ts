@@ -776,6 +776,38 @@ export class LedgerPostingService {
     await this.safeReverse('liquidacion_retiro', liquidacionId, userEmail);
   }
 
+  /**
+   * Pago de prima, cesantías o intereses sobre cesantías fuera del retiro
+   * (decisión 2 del dueño, Fase 8). Consume la provisión (2610) contra la caja o
+   * el banco por donde salió la plata. Se asienta en la fecha REAL del pago.
+   * Idempotente por (pago_prestacion, id del pago). Devuelve si quedó asentado.
+   */
+  async postPagoPrestacion(input: {
+    pagoId: string;
+    date: string;
+    sedeId?: string;
+    concepto: string;
+    employeeName?: string;
+    partes: PartesPagoPrestacion;
+    userEmail?: string;
+  }): Promise<boolean> {
+    const lines = lineasPagoPrestacion(input.partes, input.sedeId);
+    if (lines.length === 0) return true;
+    return this.safePost({
+      date: input.date,
+      sourceType: 'pago_prestacion',
+      sourceId: input.pagoId,
+      memo: `Pago de ${input.concepto}${input.employeeName ? ` ${input.employeeName}` : ''}`,
+      lines,
+      userEmail: input.userEmail,
+    });
+  }
+
+  /** Contra-asiento al anular un pago de prestaciones (idempotente: reverseBySource). */
+  async reversePagoPrestacion(pagoId: string, userEmail?: string): Promise<void> {
+    await this.safeReverse('pago_prestacion', pagoId, userEmail);
+  }
+
   // ── Producción ────────────────────────────────────────────────────────────────
 
   /**
@@ -942,5 +974,43 @@ export function lineasLiquidacionRetiro(p: PartesLiquidacion, sedeId?: string): 
   if (gasto > 0) lines.push({ accountCode: ACC.GASTOS_PERSONAL, debit: gasto, sedeId, memo: 'Indemnización y salarios pendientes' });
   if (retencion > 0) lines.push({ accountCode: ACC.RETENCION_FUENTE, credit: retencion, sedeId });
   if (neto > 0) lines.push({ accountCode: ACC.SALARIOS_POR_PAGAR, credit: neto, sedeId, memo: 'Neto de la liquidación' });
+  return lines;
+}
+
+/** Un pago de prestaciones (ver `postPagoPrestacion`), en pesos enteros. */
+export interface PartesPagoPrestacion {
+  /** Lo pagado antes de la retención. */
+  monto: number;
+  /** Retención en la fuente practicada (solo la prima la lleva). */
+  retencionFuente: number;
+  /** Código DIAN del medio (10 efectivo; 20, 42 y 47 pasan por el banco). */
+  medio: string;
+}
+
+/**
+ * Renglones del asiento del pago de prima, cesantías o intereses. Puro.
+ *   D 2610 monto (el pasivo provisionado mes a mes en `lineasNominaCausada`)
+ *   C 2365 retención en la fuente (si la hubo)
+ *   C 1105 neto, si se pagó en efectivo; C 1110 si salió del banco
+ * Cuadra por construcción: el neto es el monto menos la retención.
+ * A CONFIRMAR CON EL CONTADOR: que la 2610 tenga saldo para cubrir el pago (si
+ * la provisión quedó corta, la diferencia es gasto 5105 y se ajusta con un
+ * asiento manual), y el uso de una sola 2610 en vez de las subcuentas del PUC
+ * (2510 cesantías, 2515 intereses, 2520 prima).
+ */
+export function lineasPagoPrestacion(p: PartesPagoPrestacion, sedeId?: string): PostLine[] {
+  const monto = cop(p.monto);
+  const retencion = cop(p.retencionFuente);
+  if (monto < 0 || retencion < 0) throw new Error('El pago de prestaciones trae un importe negativo.');
+  if (monto === 0) return [];
+  if (retencion >= monto) {
+    throw new Error('La retención del pago de prestaciones iguala o supera lo pagado: el asiento no cuadra.');
+  }
+  const neto = monto - retencion;
+  const lines: PostLine[] = [
+    { accountCode: ACC.PROVISIONES_LABORALES, debit: monto, sedeId, memo: 'Prestación social provisionada que se paga' },
+  ];
+  if (retencion > 0) lines.push({ accountCode: ACC.RETENCION_FUENTE, credit: retencion, sedeId });
+  lines.push({ accountCode: p.medio === '10' ? ACC.CAJA : ACC.BANCOS, credit: neto, sedeId });
   return lines;
 }

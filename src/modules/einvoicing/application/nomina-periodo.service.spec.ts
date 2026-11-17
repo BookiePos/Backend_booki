@@ -45,7 +45,7 @@ const lean = <T>(v: T) => ({ lean: () => ({ exec: async () => v }), exec: async 
 
 const SEDE2 = new Types.ObjectId();
 
-function armar(corridas: any[], docs: any[] = [], sedesEmisor: Types.ObjectId[] = [SEDE], liquidaciones: any[] = []) {
+function armar(corridas: any[], docs: any[] = [], sedesEmisor: Types.ObjectId[] = [SEDE], liquidaciones: any[] = [], prestaciones: any[] = []) {
   const auditoria: any[] = [];
   const consultas: any[] = [];
   const emitir = vi.fn(async (modelo: any) => ({
@@ -77,6 +77,7 @@ function armar(corridas: any[], docs: any[] = [], sedesEmisor: Types.ObjectId[] 
     { record: async (r: any) => auditoria.push(r) } as any,
     { number: async (_k: string, fallback: number) => fallback } as any,
     { findOne: (f: any) => lean(liquidaciones.find((l) => l.employeeId === f.employeeId && l.estado === f.estado) ?? null) } as any,
+    { find: () => lean(prestaciones) } as any,
   );
   return { s, emitir, auditoria, consultas };
 }
@@ -133,6 +134,32 @@ describe('NominaPeriodoService.preparar', () => {
       indemnizacion: 5,
       pago: { medio: '10', fecha: '2026-10-20' },
     });
+  });
+
+  it('pasa los pagos de prima y cesantías del mes; quien solo tiene el pago también aparece; otro NIT no cuenta', async () => {
+    const fila = (employeeId: Types.ObjectId, sedeId: Types.ObjectId | undefined, tipo = 'prima') => ({
+      _id: new Types.ObjectId(),
+      employeeId: employeeId.toString(),
+      sedeId,
+      tipo,
+      monto: 750_000,
+      retencionFuente: 0,
+      periodoDesde: '2026-07-01',
+      periodoHasta: '2026-12-31',
+      dias: 180,
+      pago: { medio: '47', fecha: '2026-10-15' },
+      estado: 'registrado',
+    });
+    const { s } = armar([run('cerrada', [[E1, 'Ana']])], [], [SEDE], [], [fila(E1, SEDE), fila(E2, undefined, 'cesantias'), fila(E3, OTRA_SEDE)]);
+    const r = await dentro(() => s.preparar('2026-10', SEDE.toString(), owner));
+    // E2 no tiene colilla, pero sí un pago (sede del expediente): aparece. E3 pagó en una sede de otro emisor: no.
+    expect(r.trabajadores.map((t) => t.empleadoId)).toEqual([E1.toString(), E2.toString()].sort());
+    const deE1 = consolidar.mock.calls.map((c) => c[0] as any).find((e) => e.empleado.id === E1.toString());
+    expect(deE1.prestaciones).toHaveLength(1);
+    expect(deE1.prestaciones[0]).toMatchObject({ tipo: 'prima', monto: 750_000, dias: 180, pago: { medio: '47', fecha: '2026-10-15' } });
+    const deE2 = consolidar.mock.calls.map((c) => c[0] as any).find((e) => e.empleado.id === E2.toString());
+    expect(deE2.slips).toEqual([]);
+    expect(deE2.prestaciones[0]).toMatchObject({ tipo: 'cesantias' });
   });
 
   it('marca el documento existente del trabajador', async () => {

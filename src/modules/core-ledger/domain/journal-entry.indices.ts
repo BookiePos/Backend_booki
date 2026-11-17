@@ -56,6 +56,8 @@ export const ORIGENES_AUTOMATICOS: readonly string[] = [
   'purchase_receipt',
   'payroll_run',
   'liquidacion_retiro',
+  // Pago de prima, cesantías e intereses fuera del retiro (decisión 2, Fase 8).
+  'pago_prestacion',
   'reclasificacion_puc',
   'production_order',
   // Cierre anual (R4, 1.16): solo por POST /ledger/cierres/:anio.
