@@ -17,6 +17,8 @@ import { CreateDeductionDto } from '../application/dto/deduction.dto';
 import { LiquidacionDto } from '../application/dto/liquidacion.dto';
 import { CerrarRunDto, PagoNominaDto } from '../application/dto/pago-nomina.dto';
 import { CrearNovedadDto } from '../application/dto/novedad.dto';
+import { AnularPagoPrestacionDto, RegistrarPagoPrestacionDto } from '../application/dto/pago-prestacion.dto';
+import { PagosPrestacionesService } from '../application/pagos-prestaciones.service';
 import { DeductionStatus } from '../infrastructure/schemas/payroll-deduction.schema';
 import {
   RequireAnyPermission,
@@ -31,7 +33,10 @@ import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 @RequireFeature(PLAN_FEATURES.PAYROLL)
 @Controller('payroll')
 export class PayrollController {
-  constructor(private readonly payroll: PayrollService) {}
+  constructor(
+    private readonly payroll: PayrollService,
+    private readonly prestaciones: PagosPrestacionesService,
+  ) {}
 
   @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)
   @Get('settings')
@@ -118,6 +123,33 @@ export class PayrollController {
   @Post('liquidaciones/:id/anular')
   anularLiquidacion(@Param('id') id: string, @CurrentUser() user: JwtUser) {
     return this.payroll.anularLiquidacion(id, user);
+  }
+
+  // ── Pago de prima, cesantías e intereses (decisión 2 del dueño, Fase 8) ─────
+
+  /** Registra el pago: consume la provisión (2610) y la nómina electrónica lo reporta en el mes del pago. */
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('prestaciones')
+  registrarPagoPrestacion(@Body() dto: RegistrarPagoPrestacionDto, @CurrentUser() user: JwtUser) {
+    return this.prestaciones.registrar(dto, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)
+  @Get('prestaciones')
+  listarPagosPrestaciones(
+    @Query('employeeId') employeeId: string | undefined,
+    @Query('anio') anio: string | undefined,
+    @Query('anulados') anulados: string | undefined,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.prestaciones.listar({ employeeId, anio, incluirAnulados: anulados === '1' }, user);
+  }
+
+  /** Anula el pago con contra-asiento; no se edita. */
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('prestaciones/:id/anular')
+  anularPagoPrestacion(@Param('id') id: string, @Body() dto: AnularPagoPrestacionDto, @CurrentUser() user: JwtUser) {
+    return this.prestaciones.anular(id, dto?.motivo, user);
   }
 
   @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
