@@ -127,9 +127,17 @@ export class EmisorDeSedeService {
       };
     }
 
-    // Mismo NIT de antes y sin emisor (o con el enlace viejo): no es esta
-    // edición la que lo crea; lo hace `asegurarParaSede` al configurar la FE.
-    if (datos.nitNorm === nitNormAntes) return null;
+    // Mismo NIT de antes y sin emisor (o con el enlace viejo). Antes no se
+    // hacía nada y la sede quedaba atascada: el asistente de FE esconde el
+    // formulario del .p12 y rechaza el SoftwareID/PIN sin emisor, y el emisor
+    // solo nacía al subir el .p12. Ahora guardar la sede lo enlaza o lo crea,
+    // pero sin 409: si las sedes de ese NIT aún discrepan, un 409 aquí
+    // bloquearía igualarlas (cada una choca con la otra). Se deja sin emisor
+    // y entra al guardar la última sede que faltaba.
+    if (datos.nitNorm === nitNormAntes) {
+      await this.enlazarSiCuadra(sede, datos, hermanas);
+      return null;
+    }
 
     // ── La sede cambió de NIT (o lo estrena): enlazar o crear el correcto ────
     let emisor = await this.emisores.findOne({ nitNorm: datos.nitNorm }).exec();
@@ -154,6 +162,44 @@ export class EmisorDeSedeService {
     this.assertCoincide(emisor, datos);
     sede.emisorId = emisor._id;
     return null;
+  }
+
+  /**
+   * Enlaza la sede al emisor de su NIT, creándolo si no existe, solo cuando no
+   * hay discrepancias. Nunca lanza 409: lo que no cuadra se registra y espera.
+   */
+  private async enlazarSiCuadra(
+    sede: SedeDocument,
+    datos: DatosEmisor,
+    hermanas: { nombre: string; datos: DatosEmisor }[],
+  ): Promise<void> {
+    let emisor = await this.emisores.findOne({ nitNorm: datos.nitNorm }).exec();
+    if (!emisor) {
+      const fusion = fusionarDatosEmisor([datos, ...hermanas.map((h) => h.datos)]);
+      if (!fusion.ok) {
+        this.logger.warn(
+          `Sede ${String(sede._id)}: sin emisor para el NIT ${nitOculto(datos.nitNorm)} hasta que coincidan ` +
+            `${etiquetasCamposEmisor(fusion.conflictos)} con ${hermanas.map((h) => h.nombre).join(', ')}.`,
+        );
+        return;
+      }
+      try {
+        emisor = await this.emisores.create(fusion.datos);
+      } catch (err) {
+        if (!esLlaveDuplicada(err)) throw err;
+        emisor = await this.emisores.findOne({ nitNorm: datos.nitNorm }).exec();
+        if (!emisor) throw err;
+      }
+    }
+    const campos = diferenciasFiscales(emisor, datos);
+    if (campos.length > 0) {
+      this.logger.warn(
+        `Sede ${String(sede._id)}: el emisor del NIT ${nitOculto(datos.nitNorm)} no coincide en ` +
+          `${etiquetasCamposEmisor(campos)}; la sede queda sin enlazar.`,
+      );
+      return;
+    }
+    sede.emisorId = emisor._id;
   }
 
   private assertCoincide(emisor: FiscalEmitterDocument, datos: DatosEmisor): void {
