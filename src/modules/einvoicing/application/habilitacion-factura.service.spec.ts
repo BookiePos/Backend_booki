@@ -355,5 +355,111 @@ describe('HabilitacionFacturaService', () => {
       expect(otro.marcados).toHaveLength(0);
     });
   });
-});
 
+  describe('estado (solo lectura)', () => {
+    it('devuelve la misma vista guardada sin ir a la DIAN, sin bloqueo y sin auditar', async () => {
+      const { s, filas, envios } = armar();
+      const enviada = await dentro(() => s.iniciar(SEDE, owner));
+      envios.length = 0;
+      const record = vi.fn(async () => undefined);
+      (s as any).audit = { record };
+      (s as any).transmisores = {
+        para: async () => {
+          throw new Error('estado no debe pedir el transmisor');
+        },
+      };
+      const antes = JSON.stringify(filas[0]);
+      const v = await dentro(() => s.estado(SEDE, owner));
+      expect(v).toEqual(enviada);
+      expect(envios).toHaveLength(0);
+      expect(record).not.toHaveBeenCalled();
+      expect(JSON.stringify(filas[0])).toBe(antes);
+    });
+
+    it('sin set, o con la configuración incompleta, responde sin_iniciar en vez de 409', async () => {
+      const { s } = armar({ ambiente: '1', testSetId: undefined, falta: ['certificado .p12 vigente'] });
+      const v = await dentro(() => s.estado(SEDE, owner));
+      expect(v).toMatchObject({ estado: 'sin_iniciar', aprobada: false, documentos: [] });
+    });
+
+    it('sin emisor responde sin_iniciar', async () => {
+      const { s } = armar();
+      (s as any).emisores.obtenerPorSede = async () => null;
+      expect(await dentro(() => s.estado(SEDE, owner))).toMatchObject({ estado: 'sin_iniciar' });
+    });
+
+    it('avisa si el TestSetId cambió desde que se envió el set', async () => {
+      const { s, opts } = armar();
+      await dentro(() => s.iniciar(SEDE, owner));
+      opts.testSetId = 'OTRO';
+      expect((await dentro(() => s.estado(SEDE, owner))).error).toMatch(/TestSetId/);
+    });
+
+    it('sede ajena: 403', async () => {
+      const { s } = armar();
+      await expect(dentro(() => s.estado(SEDE, otra))).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
+
+  describe('confirmarPortal (el dueño afirma que el portal ya lo muestra habilitado)', () => {
+    /** Todos los documentos aceptados uno a uno, sin que la DIAN diga «Set de prueba … Aceptado». */
+    const todoAceptado = async (a: ReturnType<typeof armar>) => {
+      for (let i = 0; i < 3; i++) {
+        await dentro(() => a.s.iniciar(SEDE, owner));
+        await dentro(() => a.s.consultar(SEDE, owner));
+      }
+      expect(a.filas[0].conjunto.documentos.every((d: any) => d.estado === 'aceptado')).toBe(true);
+      expect(a.filas[0].conjunto.aceptadoPorDian).toBeUndefined();
+    };
+
+    it('sin el veredicto del set, aceptar todos los documentos NO enciende habilitado; la confirmación sí, con auditoría', async () => {
+      const a = armar();
+      await todoAceptado(a);
+      expect(a.marcados).toHaveLength(0);
+      const antes = await dentro(() => a.s.estado(SEDE, owner));
+      expect(antes).toMatchObject({ aprobada: true, listoParaProduccion: false, puedeConfirmarPortal: true });
+      const record = vi.fn(async (_fila: any) => undefined);
+      (a.s as any).audit = { record };
+      const v = await dentro(() => a.s.confirmarPortal(SEDE, owner));
+      expect(v).toMatchObject({ listoParaProduccion: true, confirmadoEnPortal: true, puedeConfirmarPortal: false });
+      expect(a.marcados).toEqual([[EMISOR.id, 'fe']]);
+      expect(a.filas[0].conjunto.confirmadoPortalPor).toBe('u');
+      expect(a.filas[0].conjunto.aceptadoPorDian).toBeUndefined();
+      expect(a.filas[0].bloqueo).toBeUndefined();
+      expect(record).toHaveBeenCalledTimes(1);
+      expect(record.mock.calls[0]![0]).toMatchObject({
+        action: 'einvoicing.factura.habilitacion.confirmada_portal',
+        success: true,
+        userId: 'u',
+      });
+      // Idempotente: no vuelve a marcar.
+      await dentro(() => a.s.confirmarPortal(SEDE, owner));
+      expect(a.marcados).toHaveLength(1);
+    });
+
+    it('con documentos sin aceptar da 409, no marca nada y audita el intento', async () => {
+      const a = armar();
+      await dentro(() => a.s.iniciar(SEDE, owner));
+      const record = vi.fn(async (_fila: any) => undefined);
+      (a.s as any).audit = { record };
+      await expect(dentro(() => a.s.confirmarPortal(SEDE, owner))).rejects.toThrow(/todos los documentos/);
+      expect(a.marcados).toHaveLength(0);
+      expect(a.filas[0].conjunto.confirmadoPortalAt).toBeUndefined();
+      expect(a.filas[0].bloqueo).toBeUndefined();
+      expect(record.mock.calls[0]![0]).toMatchObject({ success: false });
+    });
+
+    it('sin set, en ambiente 1, con otro TestSetId o en sede ajena no confirma', async () => {
+      await expect(dentro(() => armar().s.confirmarPortal(SEDE, owner))).rejects.toBeInstanceOf(ConflictException);
+      const a = armar();
+      await todoAceptado(a);
+      a.opts.ambiente = '1';
+      await expect(dentro(() => a.s.confirmarPortal(SEDE, owner))).rejects.toThrow(/ambiente de habilitación/);
+      a.opts.ambiente = '2';
+      a.opts.testSetId = 'OTRO';
+      await expect(dentro(() => a.s.confirmarPortal(SEDE, owner))).rejects.toThrow(/TestSetId/);
+      await expect(dentro(() => a.s.confirmarPortal(SEDE, otra))).rejects.toBeInstanceOf(ForbiddenException);
+      expect(a.marcados).toHaveLength(0);
+    });
+  });
+});

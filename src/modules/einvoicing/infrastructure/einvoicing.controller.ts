@@ -33,6 +33,7 @@ import {
   CertificadoEmisorService,
   type ArchivoCertificado,
 } from '../application/certificado-emisor.service';
+import { ConfirmarHabilitacionDto } from '../application/dto/confirmar-habilitacion.dto';
 import { ConfigurarFacturaDto } from '../application/dto/configurar-factura.dto';
 import { ConfigurarNominaDto } from '../application/dto/configurar-nomina.dto';
 import { CargarCertificadoDto } from '../application/dto/cargar-certificado.dto';
@@ -237,6 +238,28 @@ export class EinvoicingController {
   @Get('sedes/:sedeId/emisor/factura/habilitacion')
   estadoHabilitacionFactura(@Param('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
     return this.habilitacionFactura.consultar(sedeId, user, 'fe');
+  }
+
+  /** Estado guardado del set de la factura: solo lectura, sin ir a la DIAN ni auditar (lo pide la pantalla al abrir). */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CONFIGURE)
+  @Get('sedes/:sedeId/emisor/factura/habilitacion/estado')
+  estadoGuardadoHabilitacionFactura(@Param('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {
+    return this.habilitacionFactura.estado(sedeId, user, 'fe');
+  }
+
+  /**
+   * El dueño confirma que el portal de la DIAN ya muestra el software habilitado. Solo con todos los documentos
+   * del set aceptados y sin veredicto del set (ningún servicio web de la DIAN lo consulta por TestSetId). Marca el
+   * emisor listo para producción, con auditoría; no lo pasa a producción.
+   */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CERTIFICATE)
+  @Post('sedes/:sedeId/emisor/factura/habilitacion/confirmar')
+  confirmarHabilitacionFactura(
+    @Param('sedeId') sedeId: string,
+    @Body() _dto: ConfirmarHabilitacionDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    return this.habilitacionFactura.confirmarPortal(sedeId, user, 'fe');
   }
 
   /** Set del documento equivalente POS: estructura lista, DESACTIVADO (409 con el motivo) hasta confirmar el portal. */

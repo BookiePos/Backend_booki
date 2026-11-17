@@ -34,6 +34,7 @@ import {
   mensajeAvance,
   mensajeSetAceptado,
   planSet,
+  puedeConfirmarPortal,
   reintentarRechazados,
   resumenSet,
   type ClaseSet,
@@ -78,6 +79,10 @@ export interface VistaHabilitacionFactura {
   }[];
   /** Algo que el dueño debe corregir (certificado, TestSetId…). */
   error?: string;
+  /** Todos los documentos aceptados y sin veredicto del set: el dueño puede confirmar lo que ve en el portal. */
+  puedeConfirmarPortal: boolean;
+  /** El dueño confirmó que el portal de la DIAN ya lo muestra habilitado (no fue veredicto por servicio web). */
+  confirmadoEnPortal: boolean;
 }
 
 /**
@@ -131,6 +136,120 @@ export class HabilitacionFacturaService {
       await this.auditar(accion, user, sedeId, clase, false, undefined, err, 'GET');
       throw err;
     }
+  }
+
+  /**
+   * Solo lectura: el set tal como quedó guardado, con la misma vista de `consultar`.
+   * Sin red, sin bloqueo y sin auditoría: es lo que la pantalla pide al abrirse. No exige
+   * configuración completa (sin emisor o sin set responde `sin_iniciar`, nunca 409).
+   */
+  async estado(sedeId: string, user: JwtUser, clase: ClaseSet = 'fe'): Promise<VistaHabilitacionFactura> {
+    TenantContext.currentOrThrow();
+    assertSedeAccess(user, sedeId);
+    const sinIniciar = (mensaje: string): VistaHabilitacionFactura => ({
+      clase,
+      estado: 'sin_iniciar',
+      aprobada: false,
+      listoParaProduccion: false,
+      mensaje,
+      documentos: [],
+      puedeConfirmarPortal: false,
+      confirmadoEnPortal: false,
+    });
+    const emisor = await this.emisores.obtenerPorSede(sedeId);
+    if (!emisor) return sinIniciar('La sede aún no tiene emisor fiscal.');
+    const emisorId = emisor.id as string;
+    const fila = await this.model.findOne({ emisorId, clase }).exec();
+    if (!fila) return sinIniciar('El set de pruebas aún no se inició.');
+    // Solo presencia y el valor del TestSetId (no es secreto): no descifra nada.
+    const { testSetId } = await this.emisores.estadoFactura(emisorId);
+    const cambio = testSetId !== fila.conjunto.testSetId;
+    return this.vista(
+      fila.conjunto,
+      cambio ? 'El TestSetId de factura cambió: inicia la habilitación de nuevo.' : undefined,
+    );
+  }
+
+  /**
+   * Acción EXPLÍCITA del dueño: «el portal de la DIAN ya muestra el software habilitado».
+   *
+   * Por qué existe: el veredicto del set solo llega por servicio web como «Set de prueba … se encuentra
+   * Aceptado», y la DIAN lo contesta a un documento que llega con el set ya cerrado. GetStatusZip consulta el
+   * ZipKey de UN envío y GetStatus un CUFE: ninguna operación recibe el TestSetId. Si los documentos exigidos
+   * quedaron aceptados uno a uno, no hay nada más que enviar ni que consultar, `aceptadoPorDian` nunca se enciende
+   * y el emisor no podría pasar a producción. Mandar un documento de más solo para provocar la respuesta gastaría
+   * envíos del set a ciegas; se prefiere que lo afirme una persona, con auditoría.
+   *
+   * Solo con TODOS los documentos aceptados, en ambiente 2 y con el TestSetId del set. No pasa a producción: marca
+   * `habilitado` (lo que el gate exige) igual que el veredicto de la DIAN. Idempotente. Si la afirmación fuera
+   * falsa, la DIAN rechazaría los documentos de producción (software no habilitado): no se emite nada válido.
+   */
+  async confirmarPortal(sedeId: string, user: JwtUser, clase: ClaseSet = 'fe', ahora: Date = new Date()): Promise<VistaHabilitacionFactura> {
+    TenantContext.currentOrThrow();
+    assertSedeAccess(user, sedeId);
+    const accion = `einvoicing.${this.nombre(clase)}.habilitacion.confirmada_portal`;
+    try {
+      const v = await this.confirmar(sedeId, user, clase, ahora);
+      await this.auditar(accion, user, sedeId, clase, true, v, undefined, 'POST', '/confirmar');
+      return v;
+    } catch (err) {
+      await this.auditar(accion, user, sedeId, clase, false, undefined, err, 'POST', '/confirmar');
+      throw err;
+    }
+  }
+
+  private async confirmar(sedeId: string, user: JwtUser, clase: ClaseSet, ahora: Date): Promise<VistaHabilitacionFactura> {
+    if (clase === 'pos' && !HABILITACION_POS_ACTIVA) throw new ConflictException(MENSAJE_POS_DESACTIVADO);
+    const emisor = await this.emisores.obtenerPorSede(sedeId);
+    if (!emisor) throw new ConflictException('La sede no tiene emisor fiscal.');
+    const emisorId = emisor.id as string;
+    const estado = await this.emisores.estadoFactura(emisorId);
+    if (estado.tipoAmbiente !== '2') {
+      throw new ConflictException(
+        'La habilitación solo se confirma en el ambiente de habilitación (2); el emisor está en producción.',
+      );
+    }
+    const fila = await this.model.findOne({ emisorId, clase }).exec();
+    if (!fila) throw new ConflictException('El set de pruebas aún no se inició: no hay nada que confirmar.');
+    const bloqueo = randomUUID();
+    const tomado = await this.model
+      .findOneAndUpdate(
+        { _id: fila._id, $or: [{ bloqueoHasta: null }, { bloqueoHasta: { $lte: new Date() } }] },
+        { $set: { bloqueo, bloqueoHasta: new Date(ahora.getTime() + BLOQUEO_CORRIDA_MS) } },
+        { returnDocument: 'after' },
+      )
+      .exec();
+    if (!tomado) {
+      throw new ConflictException('Ya hay una corrida de la habilitación en curso: espera un minuto y vuelve a intentarlo.');
+    }
+    // Manda la copia leída DESPUÉS de tomar el bloqueo.
+    let set = tomado.conjunto;
+    try {
+      if (set.testSetId !== estado.testSetId) {
+        throw new ConflictException('El TestSetId de factura cambió: inicia la habilitación de nuevo antes de confirmar.');
+      }
+      // Con el veredicto de la DIAN, o ya confirmado, no hay nada que hacer (idempotente).
+      if (set.aceptadoPorDian !== true && !set.confirmadoPortalAt) {
+        if (!puedeConfirmarPortal(set)) {
+          const r = resumenSet(set);
+          throw new ConflictException(
+            `Solo se puede confirmar con todos los documentos del set aceptados por la DIAN (van ${r.aceptados} de ${r.exigidos}).`,
+          );
+        }
+        await this.emisores.marcarSetAprobado(emisorId, clase, ahora);
+        set = {
+          ...set,
+          confirmadoPortalAt: ahora.toISOString(),
+          confirmadoPortalPor: String(user.userId).slice(0, 64),
+          listoMarcadoAt: set.listoMarcadoAt ?? ahora.toISOString(),
+        };
+      }
+    } finally {
+      await this.model
+        .updateOne({ _id: fila._id, bloqueo }, { $set: { conjunto: set }, $unset: { bloqueo: '', bloqueoHasta: '' } })
+        .exec();
+    }
+    return this.vista(set);
   }
 
   /**
@@ -193,6 +312,8 @@ export class HabilitacionFacturaService {
           listoParaProduccion: false,
           mensaje: 'El set de pruebas aún no se inició.',
           documentos: [],
+          puedeConfirmarPortal: false,
+          confirmadoEnPortal: false,
         };
       }
       try {
@@ -519,14 +640,16 @@ export class HabilitacionFacturaService {
       clase: set.clase,
       estado: resumen.aprobada ? 'aprobada' : 'en_curso',
       aprobada: resumen.aprobada,
-      listoParaProduccion: set.aceptadoPorDian === true && !!set.listoMarcadoAt,
+      listoParaProduccion: (set.aceptadoPorDian === true || !!set.confirmadoPortalAt) && !!set.listoMarcadoAt,
       mensaje:
         mensajeAvance(set) +
         (set.aceptadoPorDian === true && set.clase === 'fe'
           ? ' El emisor quedó listo para producción; el paso al ambiente de producción lo da el dueño.'
-          : resumen.aprobada
-            ? ' Todos los documentos están aceptados, pero falta el veredicto del set de la DIAN: confirma en el portal que el software figura como habilitado antes de pasar a producción.'
-            : ''),
+          : set.confirmadoPortalAt
+            ? ' Confirmaste que el portal de la DIAN ya muestra el software como habilitado: el emisor quedó listo para producción; el paso al ambiente de producción lo da el dueño.'
+            : resumen.aprobada
+              ? ' Todos los documentos están aceptados, pero falta el veredicto del set de la DIAN: revisa en el portal que el software figura como habilitado y confírmalo aquí antes de pasar a producción.'
+              : ''),
       testSetId: set.testSetId,
       resumen,
       documentos: set.documentos.map((d) => ({
@@ -538,6 +661,8 @@ export class HabilitacionFacturaService {
         intentos: d.intentos,
       })),
       ...(error ? { error } : {}),
+      puedeConfirmarPortal: puedeConfirmarPortal(set),
+      confirmadoEnPortal: !!set.confirmadoPortalAt,
     };
   }
 
@@ -550,6 +675,7 @@ export class HabilitacionFacturaService {
     v?: VistaHabilitacionFactura,
     err?: unknown,
     metodo: 'GET' | 'POST' = 'POST',
+    sufijo = '',
   ): Promise<void> {
     const detail: Record<string, string> = { sedeId: String(sedeId).slice(0, 64) };
     if (v) {
@@ -563,7 +689,7 @@ export class HabilitacionFacturaService {
       userName: user ? user.name : 'SYSTEM',
       role: user ? user.role : 'SYSTEM',
       method: user ? metodo : 'SERVER',
-      path: `/einvoicing/sedes/${detail.sedeId}/emisor/${this.nombre(clase)}/habilitacion`,
+      path: `/einvoicing/sedes/${detail.sedeId}/emisor/${this.nombre(clase)}/habilitacion${sufijo}`,
       success,
       action,
       detail,

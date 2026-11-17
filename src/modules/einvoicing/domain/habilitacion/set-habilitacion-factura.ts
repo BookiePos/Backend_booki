@@ -129,6 +129,24 @@ export interface SetHabilitacion {
   historial?: DocSet[];
   /** ISO del momento en que el emisor quedó marcado «listo para producción». */
   listoMarcadoAt?: string;
+  /**
+   * El dueño afirmó que el software ya figura habilitado en el portal de la DIAN (ISO). Salida para el set con
+   * todos los documentos aceptados al que la DIAN nunca le contestó «se encuentra Aceptado»: ningún servicio web
+   * consulta el veredicto de un TestSetId. No es `aceptadoPorDian`: queda constancia de que lo dijo una persona.
+   */
+  confirmadoPortalAt?: string;
+  /** Usuario que lo confirmó. */
+  confirmadoPortalPor?: string;
+}
+
+/**
+ * ¿Puede el dueño confirmar a mano que el portal ya lo muestra habilitado? Solo si TODOS los documentos exigidos
+ * están aceptados uno a uno y la DIAN no dio el veredicto del set (con veredicto no hace falta).
+ */
+export function puedeConfirmarPortal(s: SetHabilitacion): boolean {
+  if (s.aceptadoPorDian === true || s.confirmadoPortalAt) return false;
+  const r = resumenSet(s);
+  return r.exigidos > 0 && r.aceptados === r.exigidos;
 }
 
 const nuevoDoc = (tipo: TipoDocSet, numero: number): DocSet => ({

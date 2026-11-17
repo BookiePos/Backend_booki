@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -16,6 +17,8 @@ import { PlanUpgradeRequiredException } from '../../control/domain/plan-upgrade.
 import { advertenciasNoResponsableInc } from '../../core-tax/domain/sale-tax';
 import { resolucionDeTipo, type TipoResolucion } from '../../einvoicing/domain/resolucion-tipos';
 import type { ResolucionFeDto } from './dto/resolucion-fe.dto';
+import { normalizarNit } from '../../einvoicing/domain/consecutivo-unico';
+import { EmisorDeSedeService } from './emisor-de-sede.service';
 import {
   camposClaveAlGuardar,
   leerClaveTecnicaDe,
@@ -82,6 +85,8 @@ function validarImagenQr(dataUrl: string): string {
 export class SedesService {
   constructor(
     @InjectModel(Sede.name) private readonly sedeModel: Model<SedeDocument>,
+    // Opcional solo para los tests que arman el servicio a mano; el módulo siempre lo provee.
+    @Optional() private readonly emisorDeSede?: EmisorDeSedeService,
   ) {}
 
   /**
@@ -142,6 +147,7 @@ export class SedesService {
       dto.resolucionFe !== undefined
         ? await this.findOrFailConClaves(id)
         : await this.findOrFail(id);
+    const nitNormAntes = normalizarNit(sede.nit);
 
     if (dto.code !== undefined) sede.code = dto.code;
     if (dto.name !== undefined) sede.name = dto.name;
@@ -209,6 +215,14 @@ export class SedesService {
 
     if (dto.active !== undefined) sede.active = dto.active;
 
+    // Emisor fiscal: se valida ANTES de guardar (un conflicto de NIT es 409 y la
+    // sede no cambia) y se actualiza DESPUÉS (si falla, repetir el guardado lo
+    // vuelve a intentar: se compara contra el emisor, no contra la sede vieja).
+    const sincronizarEmisor =
+      this.emisorDeSede?.tocaDatosFiscales(dto) === true
+        ? await this.emisorDeSede.preparar(sede, nitNormAntes)
+        : null;
+
     try {
       await sede.save();
     } catch (err) {
@@ -217,6 +231,7 @@ export class SedesService {
       }
       throw err;
     }
+    if (sincronizarEmisor) await sincronizarEmisor();
     // La respuesta no devuelve la imagen del QR (~95 KB; se lee con
     // `cobroDigital()`). Ya se guardó: esto solo afecta al documento devuelto.
     if (sede.cobroDigital?.qrImagen) sede.cobroDigital.qrImagen = undefined;

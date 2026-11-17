@@ -21,7 +21,8 @@ export const TIPOS_SIN_CONTINGENCIA = ['credit_note', 'debit_note'] as const;
  * documento sin contingencia quedaría firmado para siempre: nadie lo reenvía.
  * `tiposFirmados` limita la parte `signed` a esos tipos (las notas); sin él no
  * filtra por tipo (la nómina, que vive en su propia colección).
- * Nunca incluye `draft` (no hay XML que reenviar) ni lo que otro proceso tiene
+ * Nunca incluye `draft` (no hay XML que reenviar; las notas en `draft` tienen su
+ * propio filtro, `filtroNotasDraftColgadas`) ni lo que otro proceso tiene
  * bloqueado.
  */
 export function filtroColaReconsulta(ahora: Date, tiposFirmados?: readonly string[]): { $and: Record<string, unknown>[] } {
@@ -45,11 +46,34 @@ export function filtroColaReconsulta(ahora: Date, tiposFirmados?: readonly strin
 }
 
 /**
- * ¿La corrida movió el documento a un veredicto? `sent` y `signed` son la
- * cola: quedarse ahí (o pasar de `signed` a `sent`) no es avanzar.
+ * Notas crédito/débito que se quedaron en `draft`: la transmisión que va detrás
+ * de la respuesta (`waitUntil`) no llegó a firmarlas (función congelada, gate de
+ * ambiente, certificado vencido). No tienen contingencia y nadie más las saca de
+ * ahí, así que entran en la cola de la reconsulta pasado el mismo reposo.
+ *
+ * Por qué es seguro armarlas, firmarlas y enviarlas desde el cron:
+ *  - el número se reservó al crear el documento y `transmitir` nunca renumera;
+ *  - un `draft` jamás salió a la red (`sent` se graba ANTES de llamar a la DIAN);
+ *  - es la misma ruta del reintento manual, con su gate, su bloqueo y sus
+ *    escrituras condicionadas al estado: dos corridas no firman dos veces.
+ * Solo notas: una factura o un POS en `draft` son de la contingencia (Fase 9).
+ */
+export function filtroNotasDraftColgadas(ahora: Date): Record<string, unknown> {
+  const corte = new Date(ahora.getTime() - REPOSO_RECONSULTA_MS);
+  return {
+    type: { $in: [...TIPOS_SIN_CONTINGENCIA] },
+    dianStatus: 'draft' as const,
+    createdAt: { $lte: corte },
+    $or: [{ bloqueoHasta: null }, { bloqueoHasta: { $lte: ahora } }],
+  };
+}
+
+/**
+ * ¿La corrida movió el documento a un veredicto? `draft`, `signed` y `sent` son
+ * la cola: quedarse ahí (o pasar de uno a otro) no es avanzar.
  */
 export function salioDeLaCola(dianStatus: string | undefined): boolean {
-  return dianStatus !== 'sent' && dianStatus !== 'signed';
+  return dianStatus !== 'sent' && dianStatus !== 'signed' && dianStatus !== 'draft';
 }
 
 /** Lo que ve el usuario en el detalle de un documento sin contingencia en cola. */

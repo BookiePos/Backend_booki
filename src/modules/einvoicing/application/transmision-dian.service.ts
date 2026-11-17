@@ -45,6 +45,7 @@ import {
   esRechazoDeRegla,
   filtroColaReconsulta,
   salioDeLaCola,
+  filtroNotasDraftColgadas,
   type CifrasReconsulta,
 } from '../domain/reconsulta';
 import {
@@ -88,6 +89,12 @@ const MAX_B64_APPLICATION_RESPONSE = 1_400_000;
 
 /** Estados desde los que se puede (re)transmitir. `contingency`: la cola de la Fase 9. */
 const ESTADOS_TRANSMITIBLES: readonly DianStatus[] = ['draft', 'signed', 'sent', 'rejected', 'contingency'];
+
+/** Lo que la cola de la reconsulta lee de cada documento. */
+interface FilaCola {
+  _id: Types.ObjectId;
+  reconsultadoAt?: Date | string | null;
+}
 
 /** Una nota de un documento de contingencia aún no aceptado espera: la DIAN no conoce su referencia. */
 export const CODIGO_ESPERA_REFERIDO = 'ESPERA_REFERIDO';
@@ -201,7 +208,13 @@ export class TransmisionDianService {
    * los más nuevos, hasta `limite`. Sin tope de reintentos: una nota espera en
    * cola hasta que la DIAN responda; nunca pasa a contingencia. Reenvía el MISMO
    * XML firmado (o consulta) por la misma ruta que el reintento manual, con su
-   * gate de ambiente y su bloqueo. Sin usuario no hay chequeo de sede (el barrido
+   * gate de ambiente y su bloqueo.
+   *
+   * También las notas que se quedaron en `draft` (la transmisión detrás de la
+   * respuesta no llegó a firmarlas): se arman, firman y envían con el número que
+   * ya tenían (`filtroNotasDraftColgadas` explica por qué es seguro). Solo en
+   * empresas que emiten, y no las de un documento de contingencia: esas las
+   * manda `transmitirContingencias`, en orden. Sin usuario no hay chequeo de sede (el barrido
    * recorre todas) pero sí tenancy: exige un `TenantContext` abierto. Nunca
    * lanza por un documento: las reglas cuentan como omitidos y lo inesperado
    * como errores.
@@ -213,14 +226,20 @@ export class TransmisionDianService {
     TenantContext.currentOrThrow();
     const ahora = opts.ahora ?? new Date();
     const cifras = cifrasVacias();
-    const docs = await this.model
+    const tope = Math.max(0, limite);
+    const enVuelo = (await this.model
       // `sent` de cualquier tipo, más las notas que quedaron firmadas sin salir:
       // no tienen contingencia, su única salida es esta cola (Fase 9).
       .find(filtroColaReconsulta(ahora, TIPOS_SIN_CONTINGENCIA))
       .sort({ reconsultadoAt: 1, enviadoAt: 1 })
-      .limit(Math.max(0, limite))
-      .select('_id')
-      .exec();
+      .limit(tope)
+      .select('_id reconsultadoAt')
+      .exec()) as FilaCola[];
+    const borradores = await this.notasDraftColgadas(ahora, tope);
+    // Un solo cupo para las dos partes: la menos reconsultada primero, para que
+    // una cola larga de `sent` no deje las notas en `draft` sin turno (ni al revés).
+    const cuando = (f: FilaCola) => (f.reconsultadoAt ? new Date(f.reconsultadoAt).getTime() : 0);
+    const docs = [...enVuelo, ...borradores].sort((a, b) => cuando(a) - cuando(b)).slice(0, tope);
     for (const { _id } of docs) {
       if (opts.hasta !== undefined && Date.now() + MARGEN_PLAZO_RECONSULTA_MS > opts.hasta) break;
       const docId = String(_id);
@@ -241,6 +260,33 @@ export class TransmisionDianService {
       }
     }
     return cifras;
+  }
+
+  /**
+   * Notas en `draft` que la reconsulta debe sacar. Vacío si la empresa no emite
+   * (su `draft` es el estado normal y el gate las frenaría en cada corrida). Las
+   * notas de un documento de contingencia se dejan a su cola, que las manda en
+   * orden detrás del documento.
+   */
+  private async notasDraftColgadas(ahora: Date, tope: number): Promise<FilaCola[]> {
+    if (tope === 0) return [];
+    const filas = (await this.model
+      .find(filtroNotasDraftColgadas(ahora))
+      .sort({ reconsultadoAt: 1, createdAt: 1 })
+      .limit(tope)
+      .select('_id reconsultadoAt referenceId')
+      .exec()) as (FilaCola & { referenceId?: Types.ObjectId })[];
+    if (filas.length === 0 || !(await this.emisores.algunoEmite())) return [];
+    const propias: FilaCola[] = [];
+    for (const f of filas) {
+      const referido = f.referenceId
+        ? ((await this.model.findOne({ _id: f.referenceId }).select({ contingencia: 1 }).lean().exec()) as {
+            contingencia?: { tipo?: string };
+          } | null)
+        : null;
+      if (!referido?.contingencia?.tipo) propias.push(f);
+    }
+    return propias;
   }
 
   private async ejecutar(docId: string, user?: JwtUser): Promise<ResultadoTransmision> {

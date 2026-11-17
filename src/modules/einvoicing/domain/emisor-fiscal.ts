@@ -145,6 +145,69 @@ export function diferenciasFiscales(
   return CAMPOS_IDENTIDAD_FISCAL.filter((c) => !igual(a[c], b[c]));
 }
 
+/** Lo que la ficha de la sede mantiene al día en su emisor: el NIT tal como se escribe, la identidad y el contacto. */
+export const CAMPOS_EMISOR_DESDE_SEDE = [
+  'nit',
+  ...CAMPOS_IDENTIDAD_FISCAL,
+  ...CAMPOS_CONTACTO,
+] as const satisfies readonly (keyof DatosEmisor)[];
+
+const ETIQUETAS_CAMPOS: Readonly<Record<string, string>> = {
+  nit: 'NIT',
+  nitNorm: 'NIT',
+  razonSocial: 'razón social',
+  nitDv: 'DV',
+  tipoPersona: 'tipo de persona',
+  responsabilidadFiscal: 'responsabilidad fiscal',
+  responsableIva: 'responsable de IVA',
+  responsableInc: 'responsable de INC',
+  franquicia: 'franquicia',
+  granContribuyente: 'gran contribuyente',
+  regimenRenta: 'régimen de renta',
+  ciiu: 'CIIU',
+  direccion: 'dirección',
+  departamento: 'departamento',
+  ciudad: 'ciudad',
+  telefono: 'teléfono',
+  emailFacturacion: 'correo de facturación',
+};
+
+/** Los campos en español, para un mensaje al usuario. */
+export function etiquetasCamposEmisor(campos: readonly string[]): string {
+  return campos.map((c) => ETIQUETAS_CAMPOS[c] ?? c).join(', ');
+}
+
+export interface CambiosEmisor {
+  /** Campos que pasan al emisor con su valor nuevo. */
+  poner: Partial<DatosEmisor>;
+  /** Campos que la sede dejó vacíos y se quitan del emisor. */
+  quitar: string[];
+  /** Campos que no se tocan todavía: otra sede del mismo NIT aún tiene otro valor. */
+  aplazados: string[];
+}
+
+/**
+ * Qué cambia en el emisor al editar una sede ya enlazada a él. Campo por campo:
+ * si el emisor ya coincide con la sede no hay nada que hacer; si difiere, solo
+ * pasa cuando TODAS las demás sedes del NIT (`hermanas`) tienen ese mismo valor.
+ * Mientras alguna discrepe no se elige (misma regla que la migración): el campo
+ * se aplaza hasta que la última sede quede igual.
+ */
+export function cambiosDeEmisor(
+  emisor: Partial<DatosEmisor>,
+  sede: DatosEmisor,
+  hermanas: readonly DatosEmisor[],
+): CambiosEmisor {
+  const cambios: CambiosEmisor = { poner: {}, quitar: [], aplazados: [] };
+  for (const c of CAMPOS_EMISOR_DESDE_SEDE) {
+    if (igual(emisor[c], sede[c])) continue;
+    if (hermanas.some((h) => !igual(h[c], sede[c]))) cambios.aplazados.push(c);
+    else if (sede[c] === undefined || sede[c] === null) cambios.quitar.push(c);
+    else (cambios.poner as Record<string, unknown>)[c] = sede[c];
+  }
+  return cambios;
+}
+
 export type Fusion =
   | { ok: true; datos: DatosEmisor; contactoOmitido: string[] }
   | { ok: false; conflictos: string[] };
