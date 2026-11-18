@@ -295,9 +295,8 @@ export class SedesService {
     // La razón social del emisor es `businessName` o, sin él, el nombre de la
     // sede: sin copiarla explícita, cada destino quedaría con su propio nombre.
     valores.businessName = origen.businessName || origen.name;
-    const emisorOrigen = origen.emisorId ? String(origen.emisorId) : null;
-
-    const resultados: ResultadoCopiaFiscal[] = [];
+    // En el orden pedido: la sede copiada o el resultado de su fallo.
+    const pasos: ({ id: string; sede: SedeDocument } | ResultadoCopiaFiscal)[] = [];
     for (const id of [...new Set(destinos)].filter((d) => d !== String(origen._id))) {
       try {
         const sede = await this.findOrFail(id);
@@ -305,17 +304,9 @@ export class SedesService {
         const s = sede as unknown as Record<string, unknown>;
         for (const [c, v] of Object.entries(valores)) s[c] = v === '' ? undefined : v;
         await this.guardarConEmisor(sede, nitNormAntes, true);
-        const enlazada = !!sede.emisorId && String(sede.emisorId) === emisorOrigen;
-        resultados.push({
-          sedeId: id,
-          nombre: sede.name,
-          ok: enlazada,
-          mensaje: enlazada
-            ? 'Datos copiados: comparte la configuración de factura electrónica.'
-            : 'Datos copiados, pero la sede aún no quedó enlazada al emisor: ábrela en el asistente para ver por qué.',
-        });
+        pasos.push({ id, sede });
       } catch (err) {
-        resultados.push({
+        pasos.push({
           sedeId: id,
           nombre: null,
           ok: false,
@@ -323,7 +314,28 @@ export class SedesService {
         });
       }
     }
-    return resultados;
+
+    // El caso que motiva esto: dos sedes del mismo NIT con datos distintos no
+    // tienen emisor (ninguna gana). Al igualarlas, el último destino lo crea,
+    // pero el origen no se guardó: se enlaza ahora para que quede con ellas.
+    if (!origen.emisorId && pasos.some((p) => 'sede' in p)) {
+      await this.guardarConEmisor(origen, normalizarNit(origen.nit), true);
+    }
+    const emisorOrigen = origen.emisorId ? String(origen.emisorId) : null;
+
+    return pasos.map((p) => {
+      if (!('sede' in p)) return p;
+      const { id, sede } = p;
+      const enlazada = !!emisorOrigen && String(sede.emisorId ?? '') === emisorOrigen;
+      return {
+        sedeId: id,
+        nombre: sede.name,
+        ok: enlazada,
+        mensaje: enlazada
+          ? 'Datos copiados: comparte la configuración de factura electrónica.'
+          : 'Datos copiados, pero la sede aún no quedó enlazada al emisor: ábrela en el asistente para ver por qué.',
+      };
+    });
   }
 
   /**

@@ -272,6 +272,17 @@ describe('SedesService.update · sincroniza el emisor fiscal', () => {
       expect(origen.save).not.toHaveBeenCalled();
     });
 
+    it('dos sedes del mismo NIT que no coinciden y sin emisor: al copiar se crea y quedan las dos enlazadas', async () => {
+      const origen = nuevaSede({ businessName: 'RAMIREZ MONTOYA KAREN' });
+      const otra = nuevaSede({ code: 'B', name: 'Marinilla', businessName: 'Crunchy Munch' });
+      const [r] = await service.copiarDatosFiscales(String(origen._id), [String(otra._id)]);
+      expect(r).toMatchObject({ ok: true, nombre: 'Marinilla' });
+      expect(emisores).toHaveLength(1);
+      expect(emisores[0]).toMatchObject({ razonSocial: 'RAMIREZ MONTOYA KAREN' });
+      expect(String(origen.emisorId)).toBe(String(emisores[0]!._id));
+      expect(String(otra.emisorId)).toBe(String(emisores[0]!._id));
+    });
+
     it('una sede sin NIT lo recibe y se enlaza', async () => {
       const e = nuevoEmisor();
       const origen = nuevaSede({ emisorId: e._id });
