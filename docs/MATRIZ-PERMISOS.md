@@ -343,6 +343,7 @@ limitado por sede: el cierre cancela los resultados de toda la empresa.
 | `GET /sedes/:id/cobro-digital` | con sesión | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `POST /sedes` | `sede.manage` | ✓ | ✓ | ✓ | · | · |
 | `PATCH /sedes/:id` | `sede.manage` | ✓ | ✓ | ✓ | · | · |
+| `POST /sedes/:id/copiar-datos-fiscales` | `sede.manage` | ✓ | ✓ | ✓ | · | · |
 | `GET /suppliers` | `inventory.view` | ✓ | ✓ | ✓ | ✓ | · |
 | `POST /suppliers` | `inventory.adjust` | ✓ | ✓ | ✓ | · | · |
 | `PATCH /suppliers/:id/status` | `inventory.adjust` | ✓ | ✓ | ✓ | · | · |

@@ -42,4 +42,15 @@ describe('SedesController · alcance por sede al editar', () => {
     ctrl.update('sB', {} as never, dueno);
     expect(sedes.update).toHaveBeenCalledTimes(2);
   });
+
+  it('copiar datos fiscales a una sede ajena: 403 sin tocar ninguna', () => {
+    const sedes = { copiarDatosFiscales: vi.fn() };
+    const ctrl = new SedesController(sedes as never);
+    expect(() => ctrl.copiarDatosFiscales('sA', { destinos: ['sA2', 'sB'] }, { ...gerente, sedeIds: ['sA', 'sA2'] } as never)).toThrow(
+      ForbiddenException,
+    );
+    expect(sedes.copiarDatosFiscales).not.toHaveBeenCalled();
+    ctrl.copiarDatosFiscales('sA', { destinos: ['sB'] }, dueno);
+    expect(sedes.copiarDatosFiscales).toHaveBeenCalledWith('sA', ['sB']);
+  });
 });
