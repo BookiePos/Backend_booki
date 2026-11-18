@@ -49,6 +49,34 @@ function resolucionFeParaGuardar(
   };
 }
 
+/**
+ * Lo del RUT que se copia de una sede a otra. No va la dirección, la ciudad ni
+ * el teléfono (son del local) ni el correo de facturación: el domicilio fiscal
+ * vive en el emisor y lo comparten todas las sedes del NIT.
+ */
+export const CAMPOS_RUT_COPIABLES = [
+  'nit',
+  'nitDv',
+  'businessName',
+  'tipoPersona',
+  'responsabilidadFiscal',
+  'responsableIva',
+  'responsableInc',
+  'franquicia',
+  'granContribuyente',
+  'regimenRenta',
+  'ciiu',
+] as const satisfies readonly (keyof Sede)[];
+
+export interface ResultadoCopiaFiscal {
+  sedeId: string;
+  /** `null` si la sede no se encontró. */
+  nombre: string | null;
+  /** `true` si quedó enlazada al mismo emisor que la sede de origen. */
+  ok: boolean;
+  mensaje: string;
+}
+
 /** Error de índice único de Mongo (documento duplicado). */
 const MONGO_DUPLICATE_KEY = 11000;
 
@@ -215,14 +243,25 @@ export class SedesService {
 
     if (dto.active !== undefined) sede.active = dto.active;
 
-    // Emisor fiscal: se valida ANTES de guardar (un conflicto de NIT es 409 y la
-    // sede no cambia) y se actualiza DESPUÉS (si falla, repetir el guardado lo
-    // vuelve a intentar: se compara contra el emisor, no contra la sede vieja).
-    const sincronizarEmisor =
-      this.emisorDeSede?.tocaDatosFiscales(dto) === true
-        ? await this.emisorDeSede.preparar(sede, nitNormAntes)
-        : null;
+    await this.guardarConEmisor(sede, nitNormAntes, this.emisorDeSede?.tocaDatosFiscales(dto) === true);
+    // La respuesta no devuelve la imagen del QR (~95 KB; se lee con
+    // `cobroDigital()`). Ya se guardó: esto solo afecta al documento devuelto.
+    if (sede.cobroDigital?.qrImagen) sede.cobroDigital.qrImagen = undefined;
+    return sede;
+  }
 
+  /**
+   * Emisor fiscal: se valida ANTES de guardar (un conflicto de NIT es 409 y la
+   * sede no cambia) y se actualiza DESPUÉS (si falla, repetir el guardado lo
+   * vuelve a intentar: se compara contra el emisor, no contra la sede vieja).
+   */
+  private async guardarConEmisor(
+    sede: SedeDocument,
+    nitNormAntes: string | undefined,
+    tocaFiscal: boolean,
+  ): Promise<void> {
+    const sincronizarEmisor =
+      tocaFiscal && this.emisorDeSede ? await this.emisorDeSede.preparar(sede, nitNormAntes) : null;
     try {
       await sede.save();
     } catch (err) {
@@ -232,10 +271,59 @@ export class SedesService {
       throw err;
     }
     if (sincronizarEmisor) await sincronizarEmisor();
-    // La respuesta no devuelve la imagen del QR (~95 KB; se lee con
-    // `cobroDigital()`). Ya se guardó: esto solo afecta al documento devuelto.
-    if (sede.cobroDigital?.qrImagen) sede.cobroDigital.qrImagen = undefined;
-    return sede;
+  }
+
+  /**
+   * Copia los datos del RUT de una sede ya configurada a otras sedes de la
+   * misma empresa, para no llenar el formulario fiscal una vez por sede. Con
+   * el mismo NIT y la misma identidad fiscal, cada destino queda enlazado al
+   * emisor del origen y comparte con él certificado, SoftwareID, PIN y
+   * domicilio fiscal.
+   *
+   * Se copia solo la identidad (`CAMPOS_RUT_COPIABLES`): la dirección, la
+   * ciudad y el teléfono son del local y la resolución de numeración no se
+   * toca (cada sede necesita su propio prefijo). Un destino que falla no
+   * frena a los demás: el resultado dice qué pasó con cada uno.
+   */
+  async copiarDatosFiscales(origenId: string, destinos: string[]): Promise<ResultadoCopiaFiscal[]> {
+    const origen = await this.findOrFail(origenId);
+    if (!normalizarNit(origen.nit)) {
+      throw new BadRequestException('Esta sede no tiene NIT: llena sus datos fiscales antes de copiarlos.');
+    }
+    const valores: Record<string, unknown> = {};
+    for (const c of CAMPOS_RUT_COPIABLES) valores[c] = (origen as unknown as Record<string, unknown>)[c];
+    // La razón social del emisor es `businessName` o, sin él, el nombre de la
+    // sede: sin copiarla explícita, cada destino quedaría con su propio nombre.
+    valores.businessName = origen.businessName || origen.name;
+    const emisorOrigen = origen.emisorId ? String(origen.emisorId) : null;
+
+    const resultados: ResultadoCopiaFiscal[] = [];
+    for (const id of [...new Set(destinos)].filter((d) => d !== String(origen._id))) {
+      try {
+        const sede = await this.findOrFail(id);
+        const nitNormAntes = normalizarNit(sede.nit);
+        const s = sede as unknown as Record<string, unknown>;
+        for (const [c, v] of Object.entries(valores)) s[c] = v === '' ? undefined : v;
+        await this.guardarConEmisor(sede, nitNormAntes, true);
+        const enlazada = !!sede.emisorId && String(sede.emisorId) === emisorOrigen;
+        resultados.push({
+          sedeId: id,
+          nombre: sede.name,
+          ok: enlazada,
+          mensaje: enlazada
+            ? 'Datos copiados: comparte la configuración de factura electrónica.'
+            : 'Datos copiados, pero la sede aún no quedó enlazada al emisor: ábrela en el asistente para ver por qué.',
+        });
+      } catch (err) {
+        resultados.push({
+          sedeId: id,
+          nombre: null,
+          ok: false,
+          mensaje: err instanceof Error ? err.message : 'No se pudo copiar.',
+        });
+      }
+    }
+    return resultados;
   }
 
   /**

@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { SedesService } from '../application/sedes.service';
 import { CreateSedeDto } from '../application/dto/create-sede.dto';
 import { UpdateSedeDto } from '../application/dto/update-sede.dto';
+import { CopiarDatosFiscalesDto } from '../application/dto/copiar-datos-fiscales.dto';
 import { RequirePermissions } from '../../core-auth/infrastructure/decorators/require-permissions.decorator';
 import { NoPermissionRequired } from '../../core-auth/infrastructure/decorators/no-permission-required.decorator';
 import { CurrentUser } from '../../core-auth/infrastructure/decorators/current-user.decorator';
@@ -63,5 +64,19 @@ export class SedesController {
   ) {
     assertSedeAccess(user, id);
     return this.sedes.update(id, dto);
+  }
+
+  // Copiar los datos del RUT a otras sedes es editarlas: mismo permiso y acceso
+  // a la sede de origen y a CADA destino (antes de tocar ninguna).
+  @RequirePermissions(PERMISSIONS.SEDE_MANAGE)
+  @Post(':id/copiar-datos-fiscales')
+  copiarDatosFiscales(
+    @Param('id') id: string,
+    @Body() dto: CopiarDatosFiscalesDto,
+    @CurrentUser() user: JwtUser,
+  ) {
+    assertSedeAccess(user, id);
+    for (const d of dto.destinos) assertSedeAccess(user, d);
+    return this.sedes.copiarDatosFiscales(id, dto.destinos);
   }
 }

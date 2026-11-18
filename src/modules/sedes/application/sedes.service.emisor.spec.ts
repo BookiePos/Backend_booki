@@ -248,4 +248,56 @@ describe('SedesService.update · sincroniza el emisor fiscal', () => {
     expect(e).toMatchObject({ nit: '900123456-7', nitNorm: '900123456' });
     expect(modeloEmisor().create).not.toHaveBeenCalled();
   });
+
+  describe('copiarDatosFiscales', () => {
+    it('la sede con otra razón social queda igual al origen y enlazada a su emisor', async () => {
+      const e = nuevoEmisor({ razonSocial: 'RAMIREZ MONTOYA KAREN', tipoPersona: 'natural', ciiu: '5611' });
+      const origen = nuevaSede({
+        emisorId: e._id,
+        businessName: 'RAMIREZ MONTOYA KAREN',
+        tipoPersona: 'natural',
+        ciiu: '5611',
+      });
+      const otra = nuevaSede({ code: 'B', name: 'Marinilla', businessName: 'Crunchy Munch', address: 'Carrera 9' });
+
+      const r = await service.copiarDatosFiscales(String(origen._id), [String(otra._id), String(origen._id)]);
+
+      expect(r).toEqual([expect.objectContaining({ sedeId: String(otra._id), nombre: 'Marinilla', ok: true })]);
+      expect(otra).toMatchObject({ businessName: 'RAMIREZ MONTOYA KAREN', tipoPersona: 'natural', ciiu: '5611' });
+      expect(String(otra.emisorId)).toBe(String(e._id));
+      // La dirección es del local: no se copia.
+      expect(otra.address).toBe('Carrera 9');
+      // Ni se toca el emisor (ni sus credenciales) ni se guarda el origen.
+      expect(e).toMatchObject({ facturaSoftwareId: 'sw-1', habilitado: true });
+      expect(origen.save).not.toHaveBeenCalled();
+    });
+
+    it('una sede sin NIT lo recibe y se enlaza', async () => {
+      const e = nuevoEmisor();
+      const origen = nuevaSede({ emisorId: e._id });
+      const sinNit = nuevaSede({ code: 'C', name: 'Nueva', nit: undefined, businessName: undefined, nitDv: undefined });
+      const [r] = await service.copiarDatosFiscales(String(origen._id), [String(sinNit._id)]);
+      expect(r?.ok).toBe(true);
+      expect(sinNit).toMatchObject({ nit: '900.123.456-7', businessName: 'Crunchy S.A.S.' });
+    });
+
+    it('un destino que no existe no frena a los demás', async () => {
+      const e = nuevoEmisor();
+      const origen = nuevaSede({ emisorId: e._id });
+      const otra = nuevaSede({ code: 'B', name: 'Norte' });
+      const r = await service.copiarDatosFiscales(String(origen._id), [
+        String(new Types.ObjectId()),
+        String(otra._id),
+      ]);
+      expect(r.map((x) => x.ok)).toEqual([false, true]);
+      expect(r[0]?.mensaje).toMatch(/no encontrada/i);
+    });
+
+    it('sin NIT en el origen no copia nada', async () => {
+      const origen = nuevaSede({ nit: undefined });
+      const otra = nuevaSede({ code: 'B' });
+      await expect(service.copiarDatosFiscales(String(origen._id), [String(otra._id)])).rejects.toThrow(/no tiene NIT/);
+      expect(otra.save).not.toHaveBeenCalled();
+    });
+  });
 });
