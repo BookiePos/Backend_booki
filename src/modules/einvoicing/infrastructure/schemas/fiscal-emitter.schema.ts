@@ -79,8 +79,9 @@ export class FiscalEmitter {
   ciudad?: string;
 
   /**
-   * Código DANE del municipio (5 dígitos). La sede no lo tiene: solo guarda el
-   * nombre de la ciudad, así que la migración no lo rellena.
+   * Código DANE del municipio (5 dígitos). Se deduce del departamento y la
+   * ciudad de la sede cuando no hay duda (`municipioDesdeTexto`); si no, lo
+   * fija el dueño en el domicilio fiscal del emisor.
    */
   @Prop({ type: String, trim: true })
   municipioDane?: string;
@@ -90,6 +91,14 @@ export class FiscalEmitter {
 
   @Prop({ type: String, trim: true, lowercase: true })
   emailFacturacion?: string;
+
+  /**
+   * El dueño fijó el domicilio fiscal (dirección, municipio, correo) a mano, el
+   * del RUT. Desde entonces editar una sede ya no lo cambia: con varias sedes
+   * del mismo NIT, cada una tiene su dirección y ninguna es el domicilio fiscal.
+   */
+  @Prop({ type: Boolean })
+  domicilioManual?: boolean;
 
   // ── Habilitación ────────────────────────────────────────────────────────────
   /** '1' producción, '2' habilitación. Viaja en el CUFE. */

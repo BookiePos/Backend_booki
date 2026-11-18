@@ -22,15 +22,21 @@ import {
 } from '../../../shared/crypto/secretos';
 import type { ConfigurarNominaDto } from './dto/configurar-nomina.dto';
 import type { ConfigurarFacturaDto } from './dto/configurar-factura.dto';
+import type { ConfigurarDomicilioDto } from './dto/configurar-domicilio.dto';
 import { normalizarNit } from '../domain/consecutivo-unico';
 import {
   CAMPOS_SECRETOS_EMISOR,
   certificadoVigente,
   datosEmisorDeSede,
+  diferenciasFiscales,
   estadoDeEmisor,
+  etiquetasCamposEmisor,
   type CampoSecretoEmisor,
+  type DatosEmisor,
   type EstadoConfiguracion,
+  type SedeFiscal,
 } from '../domain/emisor-fiscal';
+import { municipioPorCodigo } from '../domain/municipios-dane';
 import {
   faltantesParaTransmitir,
   resolverTransmisor,
@@ -103,6 +109,18 @@ export interface EmisorVista {
   /** SoftwareID + PIN de nómina guardados. */
   nominaConfigurada: boolean;
   tieneCertificado: boolean;
+  /** El domicilio fiscal se fijó a mano: editar una sede ya no lo cambia. */
+  domicilioManual: boolean;
+}
+
+/** Por qué una sede todavía no tiene emisor fiscal, para decírselo al dueño. */
+export interface BloqueoEmisor {
+  motivo: 'sin_nit' | 'sedes_no_coinciden' | 'no_coincide_con_emisor' | 'sin_guardar';
+  mensaje: string;
+  /** Las sedes que hay que abrir y corregir (la propia primero). */
+  sedes: { id: string; nombre: string }[];
+  /** Los datos en conflicto, en español. */
+  campos: string[];
 }
 
 /** Lo que el emisor tiene para transmitir nómina (ver `estadoNomina`). */
@@ -409,9 +427,8 @@ export class FiscalEmittersService {
     }
     const emisor = await this.obtenerPorSede(sedeId);
     if (!emisor) {
-      throw new BadRequestException(
-        'La sede no tiene emisor fiscal: configura primero los datos fiscales de la sede.',
-      );
+      // El motivo concreto (qué sede y qué dato), no un genérico.
+      throw new BadRequestException((await this.bloqueoSinEmisor(sedeId)).mensaje);
     }
     const antes = await this.conSecretosOrFail(emisor.id as string);
     const teniaPin = antes.get('nominaPin') != null;
@@ -463,9 +480,8 @@ export class FiscalEmittersService {
     }
     const emisor = await this.obtenerPorSede(sedeId);
     if (!emisor) {
-      throw new BadRequestException(
-        'La sede no tiene emisor fiscal: configura primero los datos fiscales de la sede.',
-      );
+      // El motivo concreto (qué sede y qué dato), no un genérico.
+      throw new BadRequestException((await this.bloqueoSinEmisor(sedeId)).mensaje);
     }
     const antes = await this.conSecretosOrFail(emisor.id as string);
     const teniaPin = antes.get('facturaPin') != null;
@@ -564,19 +580,136 @@ export class FiscalEmittersService {
     });
   }
 
-  /** Emisor de la sede para la pantalla, con su estado. Sin secretos. */
+  /**
+   * Emisor de la sede para la pantalla, con su estado. Sin secretos. Si la sede
+   * aún no tiene emisor, `bloqueo` dice POR QUÉ y qué sedes hay que corregir:
+   * un «completa NIT y razón social» genérico dejaba al dueño adivinando.
+   */
   async vistaDeSede(
     sedeId: string,
     user: JwtUser,
-  ): Promise<{ emisor: EmisorVista | null; estado: EstadoConfiguracion | null }> {
+  ): Promise<{ emisor: EmisorVista | null; estado: EstadoConfiguracion | null; bloqueo?: BloqueoEmisor }> {
     assertSedeAccess(user, sedeId);
     const emisor = await this.obtenerPorSede(sedeId);
-    if (!emisor) return { emisor: null, estado: null };
+    if (!emisor) return { emisor: null, estado: null, bloqueo: await this.bloqueoSinEmisor(sedeId) };
     const conSecretos = await this.conSecretosOrFail(emisor.id as string);
     return {
       emisor: this.vista(conSecretos),
       estado: await this.estadoConfiguracion(emisor.id as string),
     };
+  }
+
+  /**
+   * Por qué la sede no tiene emisor. Solo lee: el emisor nace al guardar la
+   * sede (`EmisorDeSedeService`) o al subir el .p12, nunca en un GET.
+   */
+  async bloqueoSinEmisor(sedeId: string): Promise<BloqueoEmisor> {
+    const sede = await this.sedeOrFail(sedeId);
+    const propia = { id: String(sede._id), nombre: sede.name };
+    const datos = datosEmisorDeSede(sede);
+    if (!datos) {
+      return {
+        motivo: 'sin_nit',
+        mensaje: 'La sede no tiene NIT: escríbelo en sus datos fiscales (Editar sede).',
+        sedes: [propia],
+        campos: ['NIT'],
+      };
+    }
+    const otras = (await this.sedes
+      .find({ _id: { $ne: sede._id }, nit: { $gt: '' } })
+      .select('name businessName nit nitDv tipoPersona responsabilidadFiscal responsableIva responsableInc franquicia granContribuyente regimenRenta ciiu')
+      .lean()
+      .exec()) as unknown as (SedeFiscal & { _id: Types.ObjectId })[];
+    const hermanas = otras
+      .map((o) => ({ id: String(o._id), nombre: o.name ?? 'sin nombre', datos: datosEmisorDeSede(o) }))
+      .filter((h): h is { id: string; nombre: string; datos: DatosEmisor } => h.datos?.nitNorm === datos.nitNorm);
+
+    const existente = await this.model.findOne({ nitNorm: datos.nitNorm }).exec();
+    if (existente) {
+      const campos = diferenciasFiscales(existente, datos);
+      if (campos.length > 0) {
+        return {
+          motivo: 'no_coincide_con_emisor',
+          mensaje:
+            `Ya hay un emisor fiscal con este NIT y la sede no coincide con él en: ${etiquetasCamposEmisor(campos)}. ` +
+            'Escríbelos igual que en el RUT y guarda la sede.',
+          sedes: [propia],
+          campos: campos.map((c) => etiquetasCamposEmisor([c])),
+        };
+      }
+    } else {
+      const conflictos = hermanas
+        .map((h) => ({ h, campos: diferenciasFiscales(datos, h.datos) }))
+        .filter((x) => x.campos.length > 0);
+      if (conflictos.length > 0) {
+        const campos = [...new Set(conflictos.flatMap((x) => x.campos))];
+        const nombres = [propia.nombre, ...conflictos.map((x) => x.h.nombre)];
+        return {
+          motivo: 'sedes_no_coinciden',
+          mensaje:
+            `Las sedes ${nombres.join(' y ')} tienen el mismo NIT pero distinta ${etiquetasCamposEmisor(campos)}. ` +
+            'Comparten un solo emisor, así que esos datos deben ser iguales en todas (los del RUT): corrígelos y guarda cada sede.',
+          sedes: [propia, ...conflictos.map((x) => ({ id: x.h.id, nombre: x.h.nombre }))],
+          campos: campos.map((c) => etiquetasCamposEmisor([c])),
+        };
+      }
+    }
+    return {
+      motivo: 'sin_guardar',
+      mensaje: 'Los datos fiscales están completos: abre la sede y dale «Guardar cambios» una vez para crear su emisor.',
+      sedes: [propia],
+      campos: [],
+    };
+  }
+
+  /**
+   * Domicilio fiscal del emisor (el del RUT): dirección, municipio DANE y
+   * correo. Sirve para todas las sedes del NIT y, desde que se guarda, editar
+   * una sede ya no lo cambia (`domicilioManual`).
+   */
+  async configurarDomicilio(
+    sedeId: string,
+    dto: ConfigurarDomicilioDto,
+    user: JwtUser,
+    ip?: string,
+  ): Promise<{ emisor: EmisorVista | null; estado: EstadoConfiguracion | null; bloqueo?: BloqueoEmisor }> {
+    assertSedeAccess(user, sedeId);
+    const emisor = await this.obtenerPorSede(sedeId);
+    if (!emisor) {
+      const bloqueo = await this.bloqueoSinEmisor(sedeId);
+      throw new BadRequestException(bloqueo.mensaje);
+    }
+    const municipio = municipioPorCodigo(dto.municipioDane);
+    if (!municipio) throw new BadRequestException('Elige el municipio de la lista: ese código DANE no existe.');
+    await this.model
+      .updateOne(
+        { _id: emisor._id },
+        {
+          $set: {
+            direccion: dto.direccion,
+            municipioDane: municipio.codigo,
+            ciudad: municipio.municipio,
+            departamento: municipio.departamento,
+            ...(dto.emailFacturacion ? { emailFacturacion: dto.emailFacturacion } : {}),
+            domicilioManual: true,
+          },
+        },
+      )
+      .exec();
+    await this.audit.record({
+      userId: user.userId,
+      userEmail: user.email,
+      userName: user.name,
+      role: user.role,
+      method: 'PUT',
+      path: `/einvoicing/sedes/${sedeId}/emisor/domicilio`,
+      statusCode: 200,
+      success: true,
+      ip,
+      action: 'einvoicing.domicilio.actualizado',
+      detail: { emisorId: emisor.id as string, municipioDane: municipio.codigo },
+    });
+    return this.vistaDeSede(sedeId, user);
   }
 
   /** Proyección cerrada del emisor: solo campos públicos y booleanos. */
@@ -619,6 +752,7 @@ export class FiscalEmittersService {
       tieneNominaTestSetId: !!e.nominaTestSetId,
       nominaConfigurada: !!e.nominaSoftwareId && e.get('nominaPin') != null,
       tieneCertificado: !!e.certPath && tieneCertPassword,
+      domicilioManual: e.domicilioManual === true,
     };
   }
 

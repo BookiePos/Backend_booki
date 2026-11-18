@@ -35,6 +35,8 @@ import {
 } from '../application/certificado-emisor.service';
 import { ConfirmarHabilitacionDto } from '../application/dto/confirmar-habilitacion.dto';
 import { ConfigurarFacturaDto } from '../application/dto/configurar-factura.dto';
+import { ConfigurarDomicilioDto } from '../application/dto/configurar-domicilio.dto';
+import { listarMunicipiosDane } from '../domain/municipios-dane';
 import { ConfigurarNominaDto } from '../application/dto/configurar-nomina.dto';
 import { CargarCertificadoDto } from '../application/dto/cargar-certificado.dto';
 import { LlaveCifradoInterceptor } from './llave-cifrado.interceptor';
@@ -130,6 +132,29 @@ export class EinvoicingController {
    * Emisor fiscal de la sede y qué le falta para emitir. Solo lectura: nunca
    * devuelve secretos, a lo sumo si están configurados.
    */
+  /** Municipios con su código DANE, para elegir el domicilio fiscal del emisor. */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CONFIGURE)
+  @Get('municipios-dane')
+  municipiosDane() {
+    return listarMunicipiosDane();
+  }
+
+  /**
+   * Domicilio fiscal del emisor (dirección, municipio DANE y correo del RUT).
+   * Uno por NIT: vale para todas las sedes que lo comparten. No es un secreto,
+   * así que basta con poder configurar la facturación.
+   */
+  @RequirePermissions(PERMISSIONS.EINVOICING_CONFIGURE)
+  @Put('sedes/:sedeId/emisor/domicilio')
+  configurarDomicilio(
+    @Param('sedeId') sedeId: string,
+    @Body() dto: ConfigurarDomicilioDto,
+    @CurrentUser() user: JwtUser,
+    @Ip() ip: string,
+  ) {
+    return this.emisores.configurarDomicilio(sedeId, dto, user, ip);
+  }
+
   @RequirePermissions(PERMISSIONS.EINVOICING_CONFIGURE)
   @Get('sedes/:sedeId/emisor')
   emisorDeSede(@Param('sedeId') sedeId: string, @CurrentUser() user: JwtUser) {

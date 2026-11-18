@@ -83,6 +83,11 @@ describe('FiscalEmittersService', () => {
     };
     sedeModel = {
       findById: vi.fn((id: string) => chain(sedes.get(id) ?? null)),
+      find: vi.fn((f: { _id: { $ne: unknown } }) => {
+        const filas = [...sedes.values()].filter((x) => String(x._id) !== String(f._id.$ne) && x.nit);
+        const q: any = { select: () => q, lean: () => q, exec: () => Promise.resolve(filas) };
+        return q;
+      }),
       updateOne: vi.fn((f: { _id: unknown }, u: { $set: Record<string, unknown> }) => {
         Object.assign(sedes.get(String(f._id)), u.$set);
         return chain({ acknowledged: true });
@@ -297,9 +302,10 @@ describe('FiscalEmittersService', () => {
       expect(Object.keys(r.emisor!)).not.toContain('facturaPin');
 
       const otraSede = nuevaSede();
-      expect(await svc.vistaDeSede(otraSede, { ...user, sedeIds: [otraSede] } as JwtUser)).toEqual({
+      expect(await svc.vistaDeSede(otraSede, { ...user, sedeIds: [otraSede] } as JwtUser)).toMatchObject({
         emisor: null,
         estado: null,
+        bloqueo: { motivo: 'sin_guardar' },
       });
 
       const cajero = { role: 'cashier', permissions: [], sedeIds: [otraSede] } as unknown as JwtUser;
@@ -459,6 +465,76 @@ describe('FiscalEmittersService', () => {
     it('testSetId: null es válido (borra el guardado)', async () => {
       const uuid = '3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b';
       expect(await validar({ softwareId: uuid, pin: 'x', testSetId: null })).toEqual([]);
+    });
+  });
+
+  describe('bloqueoSinEmisor: por qué la sede no tiene emisor', () => {
+    it('sin NIT', async () => {
+      const s = nuevaSede({ nit: '' });
+      expect(await svc.bloqueoSinEmisor(s)).toMatchObject({ motivo: 'sin_nit', campos: ['NIT'] });
+    });
+
+    it('dos sedes del mismo NIT con distinta razón social: nombra las sedes y el campo', async () => {
+      const a = nuevaSede({ name: 'Crunchy Munch SA', businessName: 'Crunchy Munch' });
+      const b = nuevaSede({ name: 'Crunchy Munch Marinilla', businessName: 'Crunchy Munch Marinilla' });
+      const r = await svc.bloqueoSinEmisor(a);
+      expect(r.motivo).toBe('sedes_no_coinciden');
+      expect(r.campos).toEqual(['razón social']);
+      expect(r.sedes.map((x) => x.id)).toEqual([a, b]);
+      expect(r.mensaje).toMatch(/Crunchy Munch SA y Crunchy Munch Marinilla.*razón social/);
+    });
+
+    it('existe el emisor del NIT y la sede no coincide', async () => {
+      const a = nuevaSede();
+      await svc.asegurarParaSede(a);
+      const b = nuevaSede({ name: 'Norte', businessName: 'Otra SAS' });
+      expect(await svc.bloqueoSinEmisor(b)).toMatchObject({ motivo: 'no_coincide_con_emisor', campos: ['razón social'] });
+    });
+
+    it('todo cuadra pero nunca se guardó: pide guardar la sede', async () => {
+      const s = nuevaSede();
+      expect(await svc.bloqueoSinEmisor(s)).toMatchObject({ motivo: 'sin_guardar' });
+    });
+
+    it('guardar el SoftwareID sin emisor responde con el motivo concreto', async () => {
+      const a = nuevaSede({ name: 'A', businessName: 'Uno' });
+      nuevaSede({ name: 'B', businessName: 'Dos' });
+      const dueno = { userId: 'u1', role: 'owner', permissions: [], sedeIds: [a] } as unknown as JwtUser;
+      await expect(
+        svc.configurarFactura(a, { softwareId: '3f1c2b4a-5d6e-4f70-8a9b-0c1d2e3f4a5b', pin: 'p' }, dueno),
+      ).rejects.toThrow(/A y B.*razón social/);
+    });
+  });
+
+  describe('configurarDomicilio', () => {
+    const dueno = (s: string) => ({ userId: 'u1', role: 'owner', permissions: [], sedeIds: [s] }) as unknown as JwtUser;
+
+    it('guarda dirección, municipio (con su nombre y departamento del catálogo) y correo, y lo marca manual', async () => {
+      const s = nuevaSede();
+      const e = await svc.asegurarParaSede(s);
+      const r = await svc.configurarDomicilio(s, { direccion: 'Cra 30 # 10-20', municipioDane: '05615', emailFacturacion: 'fe@x.co' }, dueno(s));
+      expect(emisores.get(e.id)).toMatchObject({
+        direccion: 'Cra 30 # 10-20',
+        municipioDane: '05615',
+        ciudad: 'RIONEGRO',
+        departamento: 'ANTIOQUIA',
+        emailFacturacion: 'fe@x.co',
+        domicilioManual: true,
+      });
+      expect(r.emisor).toMatchObject({ municipioDane: '05615', domicilioManual: true });
+      expect(JSON.stringify(audit.record.mock.calls)).toContain('einvoicing.domicilio.actualizado');
+    });
+
+    it('código DANE que no existe: 400 y no escribe', async () => {
+      const s = nuevaSede();
+      await svc.asegurarParaSede(s);
+      await expect(svc.configurarDomicilio(s, { direccion: 'x', municipioDane: '99999' }, dueno(s))).rejects.toBeInstanceOf(BadRequestException);
+      expect(model.updateOne).not.toHaveBeenCalled();
+    });
+
+    it('sin emisor: 400 con el motivo', async () => {
+      const s = nuevaSede({ nit: '' });
+      await expect(svc.configurarDomicilio(s, { direccion: 'x', municipioDane: '05615' }, dueno(s))).rejects.toThrow(/no tiene NIT/);
     });
   });
 });

@@ -226,6 +226,20 @@ describe('SedesService.update · sincroniza el emisor fiscal', () => {
     expect(s.emisorId).toBeUndefined();
   });
 
+  it('el municipio DANE sale del departamento y la ciudad de la sede', async () => {
+    const s = nuevaSede();
+    await guardar(s, { departamento: 'Antioquia', ciudad: 'Rionegro' });
+    const creado = emisores.find((e) => e.nitNorm === '900123456')!;
+    expect(creado).toMatchObject({ municipioDane: '05615', ciudad: 'Rionegro' });
+  });
+
+  it('con el domicilio fijado a mano en el emisor, editar la sede no lo pisa (sí la identidad)', async () => {
+    const e = nuevoEmisor({ direccion: 'Dirección del RUT', municipioDane: '05440', domicilioManual: true });
+    const s = nuevaSede({ emisorId: e._id });
+    await guardar(s, { address: 'Otra calle', departamento: 'Antioquia', ciudad: 'Rionegro', businessName: 'Crunchy Munch S.A.S.' });
+    expect(e).toMatchObject({ direccion: 'Dirección del RUT', municipioDane: '05440', razonSocial: 'Crunchy Munch S.A.S.' });
+  });
+
   it('reescribir el NIT con otro formato no cambia de emisor', async () => {
     const e = nuevoEmisor();
     const s = nuevaSede({ emisorId: e._id });
