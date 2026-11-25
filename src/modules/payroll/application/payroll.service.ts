@@ -101,6 +101,7 @@ import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import {
   allowedSedeIds,
   assertSedeAccess,
+  canViewAllSedes,
   type SedeScopeUser,
 } from '../../core-auth/domain/sede-access';
 import { ParamsService } from '../../core-params/application/params.service';
@@ -530,6 +531,14 @@ export class PayrollService {
     dto: ActualizarValoresLeyDto,
     user: JwtUser,
   ): Promise<ValoresLeyVista> {
+    // Los valores de ley rigen para TODA la empresa. Quien maneja la nómina de
+    // una sola sede no debe poder cambiar el salario mínimo de las demás: la
+    // misma regla que ya limita pagar la quincena de toda la empresa.
+    if (!canViewAllSedes(user)) {
+      throw new ForbiddenException(
+        'Los valores de ley valen para toda la empresa: solo quien ve todas las sedes puede cambiarlos.',
+      );
+    }
     const desde = dto.vigenteDesde;
     const ley = armarValoresLey(desde, await this.parametrosEn(desde)).enUso;
     const min = ley.recargosMinimos;
