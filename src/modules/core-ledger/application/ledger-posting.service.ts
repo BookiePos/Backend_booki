@@ -771,6 +771,41 @@ export class LedgerPostingService {
     });
   }
 
+  /**
+   * Pago de salarios: la primera quincena (`pago_quincena`) o el pago que se
+   * declara de la nómina del mes (`pago_nomina`). Idempotente por origen; para
+   * cambiar el medio o la fecha se reversa y se vuelve a postear.
+   */
+  async postPagoSalarios(input: {
+    sourceType: 'pago_quincena' | 'pago_nomina';
+    sourceId: string;
+    date: string;
+    sedeId?: string;
+    monto: number;
+    medio: string;
+    memo: string;
+    userEmail?: string;
+  }): Promise<boolean> {
+    const lines = lineasPagoSalarios(input.monto, input.medio, input.sedeId);
+    if (lines.length === 0) return true;
+    return this.safePost({
+      date: input.date,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      memo: input.memo,
+      lines,
+      userEmail: input.userEmail,
+    });
+  }
+
+  async reversePagoSalarios(
+    sourceType: 'pago_quincena' | 'pago_nomina',
+    sourceId: string,
+    userEmail?: string,
+  ): Promise<void> {
+    await this.safeReverse(sourceType, sourceId, userEmail);
+  }
+
   /** Contra-asiento al anular una liquidación aprobada (idempotente: reverseBySource). */
   async reverseLiquidacionRetiro(liquidacionId: string, userEmail?: string): Promise<void> {
     await this.safeReverse('liquidacion_retiro', liquidacionId, userEmail);
@@ -874,6 +909,12 @@ export interface PartesNomina {
    * (`source: 'arrastre'`): cancelan la 1365 que abrió la corrida de origen.
    */
   arrastre?: number;
+  /**
+   * Lo que ya se pagó en la primera quincena del mes. Ese pago debitó la 2505
+   * (`lineasPagoSalarios`); el cierre la vuelve a acreditar por la misma
+   * cifra, así la 2505 queda con lo que falta pagar (la segunda quincena).
+   */
+  quincena?: number;
   aportesEmpleador: number;
   provisiones: number;
 }
@@ -886,7 +927,7 @@ export interface PartesNomina {
  */
 export function lineasNominaCausada(p: PartesNomina, sedeId?: string): PostLine[] {
   const creditos: [string, number][] = [
-    [ACC.SALARIOS_POR_PAGAR, cop(p.neto)],
+    [ACC.SALARIOS_POR_PAGAR, cop(p.neto) + cop(p.quincena ?? 0)],
     [ACC.APORTES_NOMINA, cop(p.seguridadSocialEmpleado) + cop(p.aportesEmpleador)],
     [ACC.PROVISIONES_LABORALES, cop(p.provisiones)],
     [ACC.RETENCION_FUENTE, cop(p.retencionFuente)],
@@ -895,7 +936,7 @@ export function lineasNominaCausada(p: PartesNomina, sedeId?: string): PostLine[
   ];
   const arrastre = cop(p.arrastre ?? 0);
   const saldoBruto = cop(p.saldoACargoEmpleados ?? 0);
-  if (saldoBruto < 0 || arrastre < 0 || creditos.some(([, monto]) => monto < 0)) {
+  if (saldoBruto < 0 || arrastre < 0 || cop(p.quincena ?? 0) < 0 || creditos.some(([, monto]) => monto < 0)) {
     throw new Error(
       'El asiento de la nómina recibió un concepto negativo: el neto negativo de una colilla va como saldo a cargo del empleado.',
     );
@@ -933,6 +974,21 @@ export function lineasNominaCausada(p: PartesNomina, sedeId?: string): PostLine[
     });
   }
   return lines;
+}
+
+/**
+ * Salida de caja o bancos con que se paga salario ya causado o por causar del
+ * mes: D 2505 Salarios por pagar / C 1105 Caja (efectivo) o 1110 Bancos.
+ * No es un anticipo (1330): paga días ya trabajados (NIIF Pymes 28.3).
+ */
+export function lineasPagoSalarios(monto: number, medio: string, sedeId?: string): PostLine[] {
+  const m = cop(monto);
+  if (m < 0) throw new Error('El pago de salarios trae un importe negativo.');
+  if (m === 0) return [];
+  return [
+    { accountCode: ACC.SALARIOS_POR_PAGAR, debit: m, sedeId },
+    { accountCode: medio === '10' ? ACC.CAJA : ACC.BANCOS, credit: m, sedeId },
+  ];
 }
 
 /** Conceptos de una liquidación de retiro (ver `postLiquidacionRetiro`). */

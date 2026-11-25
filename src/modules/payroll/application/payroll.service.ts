@@ -48,6 +48,10 @@ import {
   type PayrollLiquidacionDocument,
 } from '../infrastructure/schemas/payroll-liquidacion.schema';
 import {
+  PayrollQuincena,
+  PayrollQuincenaDocument,
+} from '../infrastructure/schemas/payroll-quincena.schema';
+import {
   PayrollNovedad,
   type PayrollNovedadDocument,
 } from '../infrastructure/schemas/payroll-novedad.schema';
@@ -81,6 +85,8 @@ import {
   SalaryType,
 } from '../domain/payroll-calc';
 import { UpdatePayrollSettingsDto } from './dto/update-settings.dto';
+import { ActualizarValoresLeyDto } from './dto/valores-ley.dto';
+import { armarValoresLey, type ValoresLeyVista } from '../domain/valores-ley';
 import { PreviewPayrollDto } from './dto/preview-payroll.dto';
 import { CreateRunDto } from './dto/create-run.dto';
 import { CreateDeductionDto } from './dto/deduction.dto';
@@ -95,6 +101,7 @@ import { JwtUser } from '../../core-auth/infrastructure/jwt.strategy';
 import {
   allowedSedeIds,
   assertSedeAccess,
+  canViewAllSedes,
   type SedeScopeUser,
 } from '../../core-auth/domain/sede-access';
 import { ParamsService } from '../../core-params/application/params.service';
@@ -103,12 +110,13 @@ import {
   lineasNominaCausada,
   type PartesNomina,
 } from '../../core-ledger/application/ledger-posting.service';
-import { cop, sumBy, sumCop } from '../../finance/domain/money.util';
+import { cop, redondearA, sumBy, sumCop } from '../../finance/domain/money.util';
 import { fechaColombia } from '../../core-ledger/domain/fecha-contable';
 import { motivoPagoInvalido } from '../domain/pago-nomina';
 import { esDuplicadoEn } from '../../core-ledger/domain/journal-entry.indices';
 import { INDICE_ARRASTRE_VIVO } from '../domain/payroll-deduction.indices';
 import { diasALiquidar } from '../domain/descanso-remunerado';
+import { contar } from '../../../shared/texto/contar';
 
 export interface PreviewResult {
   input: {
@@ -192,7 +200,83 @@ export class PayrollService {
     private readonly liquidaciones: Model<PayrollLiquidacionDocument>,
     @InjectModel(PayrollNovedad.name)
     private readonly novedades: Model<PayrollNovedadDocument>,
+    @InjectModel(PayrollQuincena.name)
+    private readonly quincenas?: Model<PayrollQuincenaDocument>,
   ) {}
+
+  /**
+   * Lo pagado en la primera quincena de `period` por empleado (solo las
+   * vigentes). Sin el modelo inyectado (pruebas viejas) no hay quincenas.
+   */
+  async pagadoEnQuincena(period: string, employeeIds: string[]): Promise<Map<string, number>> {
+    const porEmp = new Map<string, number>();
+    if (!this.quincenas || employeeIds.length === 0) return porEmp;
+    const filas = await this.quincenas
+      .find({ period, estado: 'pagada', 'lineas.employeeId': { $in: employeeIds } })
+      .select('lineas.employeeId lineas.neto')
+      .exec();
+    for (const q of filas) {
+      for (const l of q.lineas) {
+        if (employeeIds.includes(l.employeeId)) porEmp.set(l.employeeId, (porEmp.get(l.employeeId) ?? 0) + l.neto);
+      }
+    }
+    return porEmp;
+  }
+
+  /**
+   * Por qué no se puede cerrar la nómina por la primera quincena, o null. Dos
+   * casos dejarían la 2505 con saldo (auditoría de dinero, 20-nov-2026):
+   * - la quincena se pagó con otra cobertura (empresa contra sede): la debita
+   *   en un sitio y el cierre la acredita en otro;
+   * - alguien recibió quincena y no está en esta nómina (quedó inactivo, sin
+   *   sueldo o se retiró antes): ese pago nunca se causaría como gasto ni
+   *   saldría en su nómina electrónica.
+   */
+  private async quincenaFueraDeNomina(run: PayrollRunDocument): Promise<string | null> {
+    if (!this.quincenas) return null;
+    const vivas = await this.quincenas
+      .find({ period: run.period, estado: 'pagada' })
+      .select('coverage sedeId lineas.employeeId lineas.employeeName')
+      .exec();
+    const enNomina = new Set(run.slips.map((sl) => sl.employeeId));
+    const misma = (q: { coverage: string; sedeId?: unknown }) =>
+      q.coverage === run.coverage && (run.coverage === 'all' || String(q.sedeId) === String(run.sedeId));
+    for (const q of vivas) {
+      if (!misma(q)) {
+        if (q.lineas.some((l) => enNomina.has(l.employeeId))) {
+          return q.coverage === 'all'
+            ? 'La primera quincena se pagó para toda la empresa y esta nómina es de una sede. Para que las cuentas cuadren se hacen igual: calcula la nómina para toda la empresa, o anula la quincena y págala por sede.'
+            : 'La primera quincena se pagó por sede y esta nómina tiene otra cobertura. Calcula la nómina de esa misma sede, o anula la quincena y págala igual que la nómina.';
+        }
+        continue;
+      }
+      const fuera = q.lineas.filter((l) => !enNomina.has(l.employeeId));
+      if (fuera.length > 0) {
+        const nombres = fuera.map((l) => l.employeeName || l.employeeId).join(', ');
+        // No se ofrece anular la quincena: reversaría el pago de todos y la
+        // plata que de verdad se le entregó dejaría de existir en el libro.
+        return `${nombres} recibió la primera quincena y no está en esta nómina. Si quedó inactivo, sin sueldo o con una fecha de retiro equivocada, corrígelo en Equipo → Personas y recalcula. Si lo cambiaste de sede este mes, déjalo en la sede donde cobró la quincena hasta cerrar el mes.`;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Recalcula las nóminas en borrador de un mes (p. ej. tras pagar o anular la
+   * primera quincena). Lo que no se pueda recalcular vuelve como aviso.
+   */
+  async recalcularBorradoresDelPeriodo(period: string, user: JwtUser): Promise<string[]> {
+    const borradores = await this.runs.find({ period, status: 'borrador' }).select('_id').exec();
+    const avisos: string[] = [];
+    for (const r of borradores) {
+      try {
+        await this.recalcRun(String(r._id), user);
+      } catch (err) {
+        avisos.push(`No se pudo recalcular la nómina en borrador de ${period}: ${(err as Error).message}. Recalcúlala a mano.`);
+      }
+    }
+    return avisos;
+  }
 
   /** Genera el comprobante (PDF) de un desprendible y lo envía al correo del empleado. */
   async sendSlip(
@@ -209,7 +293,7 @@ export class PayrollService {
     const run = await this.getRun(runId, user);
     const slip = run.slips.find((s) => s.employeeId === employeeId);
     if (!slip) {
-      throw new NotFoundException('Desprendible no encontrado en esta corrida.');
+      throw new NotFoundException('Desprendible no encontrado en esta nómina.');
     }
 
     const emp = await this.employees.findById(employeeId).exec();
@@ -259,6 +343,7 @@ export class PayrollService {
       period: run.period,
       periodLabel: run.label,
       breakdown: slip.breakdown,
+      pagadoQuincena: slip.pagadoQuincena ?? 0,
       nominaElectronica: await this.nominaAceptada(employeeId, run.period, normalizarNit(employerNit)),
     });
 
@@ -428,6 +513,87 @@ export class PayrollService {
     return doc;
   }
 
+  /**
+   * Valores de ley con los que se liquida en `fecha` (por defecto hoy en
+   * Colombia). Salen de `parametrosEn`: lo que se ve es lo que se calcula.
+   */
+  async valoresLey(fecha?: string): Promise<ValoresLeyVista> {
+    const f = fecha ?? fechaColombia(new Date());
+    return armarValoresLey(f, await this.parametrosEn(f));
+  }
+
+  /**
+   * Abre vigencias nuevas de los valores que la nómina lee de Parámetros. Los
+   * recargos no pueden quedar por debajo de la ley en esa fecha (CST arts. 13,
+   * 168 y 179): la ley es un mínimo y solo se pacta por encima.
+   */
+  async actualizarValoresLey(
+    dto: ActualizarValoresLeyDto,
+    user: JwtUser,
+  ): Promise<ValoresLeyVista> {
+    // Los valores de ley rigen para TODA la empresa. Quien maneja la nómina de
+    // una sola sede no debe poder cambiar el salario mínimo de las demás: la
+    // misma regla que ya limita pagar la quincena de toda la empresa.
+    if (!canViewAllSedes(user)) {
+      throw new ForbiddenException(
+        'Los valores de ley valen para toda la empresa: solo quien ve todas las sedes puede cambiarlos.',
+      );
+    }
+    const desde = dto.vigenteDesde;
+    const ley = armarValoresLey(desde, await this.parametrosEn(desde)).enUso;
+    const min = ley.recargosMinimos;
+    const nota = dto.motivo?.trim() || 'Cambiado en Nómina → Valores de ley';
+    const cambios: [string, number][] = [];
+    const recargo = (valor: number | undefined, minimo: number, clave: string, nombre: string) => {
+      if (valor === undefined) return;
+      if (valor < redondearA(minimo * 100, 1)) {
+        throw new BadRequestException(
+          `El ${nombre} no puede ser menor que el de ley (${redondearA(minimo * 100, 1)} %). Solo se puede pactar por encima.`,
+        );
+      }
+      cambios.push([clave, valor]);
+    };
+    if (dto.smmlv !== undefined) cambios.push(['nomina.salario_minimo', dto.smmlv]);
+    if (dto.auxilioTransporte !== undefined) cambios.push(['nomina.auxilio_transporte', dto.auxilioTransporte]);
+    recargo(dto.recargoNocturno, min.recargoNocturno, 'recargo.nocturno', 'recargo nocturno');
+    recargo(dto.extraDiurna, min.extraDiurna, 'recargo.hora_extra_diurna', 'recargo de la hora extra de día');
+    recargo(dto.extraNocturna, min.extraNocturna, 'recargo.hora_extra_nocturna', 'recargo de la hora extra de noche');
+    recargo(dto.recargoDominical, ley.recargoDominicalLegal, 'recargo.dominical_festivo', 'recargo dominical y festivo');
+    if (cambios.length === 0) {
+      throw new BadRequestException('No hay ningún valor para cambiar.');
+    }
+    // Un mes con la nómina cerrada ya se pagó y se reportó con sus valores:
+    // abrir una vigencia dentro de él cambiaría su nómina electrónica.
+    const ultimaCerrada = await this.runs.findOne({ status: 'cerrada' }).sort({ period: -1 }).select('period').exec();
+    if (ultimaCerrada && desde <= fechaCorteDePeriodo(ultimaCerrada.period)) {
+      throw new BadRequestException(
+        `La nómina de ${ultimaCerrada.period} ya está cerrada: el cambio puede regir desde el ${sumarDiasIso(fechaCorteDePeriodo(ultimaCerrada.period), 1)} en adelante.`,
+      );
+    }
+    // Se revisan todas las fechas ANTES de escribir: si una choca, no queda
+    // ningún valor grabado a medias.
+    for (const [clave] of cambios) {
+      if (await this.params.tieneVigenciaEn(clave, desde)) {
+        throw new BadRequestException(
+          `Ya hay un valor que empieza a regir el ${desde}. Elige otra fecha desde la que rija el cambio.`,
+        );
+      }
+    }
+    for (const [clave, valor] of cambios) {
+      try {
+        await this.params.setVersion(clave, { value: valor, effectiveFrom: desde, note: nota }, user.email);
+      } catch (err) {
+        if (err instanceof BadRequestException) {
+          throw new BadRequestException(
+            `Ya hay un valor que empieza a regir el ${desde}. Elige otra fecha desde la que rija el cambio.`,
+          );
+        }
+        throw err;
+      }
+    }
+    return this.valoresLey();
+  }
+
   async preview(
     dto: PreviewPayrollDto,
     user?: SedeScopeUser,
@@ -527,7 +693,7 @@ export class PayrollService {
     const existing = await this.runs.findOne(dupFilter).exec();
     if (existing) {
       throw new ConflictException(
-        `Ya existe una corrida de nómina para el período ${dto.period} (${coverage}). Elimínala o recalcúlala en borrador antes de crear otra.`,
+        `Ya calculaste la nómina de ${dto.period} para ${coverage === 'sede' ? 'esa sede' : 'toda la empresa'}. Ábrela para recalcularla, o elimínala si sigue en borrador, antes de calcular otra.`,
       );
     }
 
@@ -552,7 +718,7 @@ export class PayrollService {
         emps.length > quotas.payrollEmployees
       ) {
         throw new PlanUpgradeRequiredException(
-          `Tu plan cubre nómina para ${quotas.payrollEmployees} empleado(s) y esta corrida tiene ${emps.length}. Agrega empleados adicionales o mejora tu plan.`,
+          `Tu plan cubre nómina para ${contar(quotas.payrollEmployees, 'empleado')} y esta nómina tiene ${emps.length}. Agrega empleados adicionales o mejora tu plan.`,
           { reason: 'quota', quota: 'payrollEmployees' },
         );
       }
@@ -602,11 +768,11 @@ export class PayrollService {
       ? await this.runs.findById(id).exec()
       : null;
     if (!run || !this.corridaEnAlcance(run, user)) {
-      throw new NotFoundException('Corrida no encontrada');
+      throw new NotFoundException('Nómina no encontrada');
     }
     if (run.status !== 'borrador') {
       throw new BadRequestException(
-        'Solo se puede recalcular una corrida en borrador.',
+        'Solo se puede recalcular una nómina en borrador.',
       );
     }
 
@@ -724,6 +890,7 @@ export class PayrollService {
     }
 
     const exentaLiqPorEmp = await this.exentaDeLiquidacionesDelMes(period);
+    const quincenaPorEmp = await this.pagadoEnQuincena(period, emps.map((e) => e.id));
 
     const slips: PayrollSlip[] = emps.map((e) => {
       const empDeductions = dedByEmp.get(e.id) ?? [];
@@ -789,6 +956,9 @@ export class PayrollService {
         ...(exentaLiqPorEmp.get(e.id) ? { rentaExentaUsadaLiquidacion: exentaLiqPorEmp.get(e.id) } : {}),
       };
       const breakdown = computeSlip(input, s);
+      // Lo ya pagado en la primera quincena se descuenta del neto, no del
+      // devengado ni de las deducciones: el mes se liquida completo.
+      const pagadoQuincena = quincenaPorEmp.get(e.id) ?? 0;
       return {
         employeeId: e.id,
         employeeName: `${e.firstName} ${e.lastName}`.trim(),
@@ -807,9 +977,18 @@ export class PayrollService {
         })),
         totalDevengado: breakdown.devengados.total,
         totalDeducciones: breakdown.deducciones.total,
-        netoPagar: breakdown.netoPagar,
+        pagadoQuincena,
+        netoPagar: breakdown.netoPagar - pagadoQuincena,
         costoEmpleador: breakdown.costoEmpleador,
-        alertas: [...alertasDeTope(turnos.topeExtras), ...alertasSinSalida(registros, from)],
+        alertas: [
+          ...alertasDeTope(turnos.topeExtras),
+          ...alertasSinSalida(registros, from),
+          ...(breakdown.netoPagar - pagadoQuincena < 0
+            ? [
+                `En la primera quincena se le pagó más de lo que ganó en el mes: queda debiendo $${(pagadoQuincena - breakdown.netoPagar).toLocaleString('es-CO')} y se le descontará en la próxima nómina. Para descontarlo la ley exige su autorización escrita (art. 149 CST).`,
+              ]
+            : []),
+        ],
       };
     });
 
@@ -873,7 +1052,7 @@ export class PayrollService {
         )
         .exec();
       throw new ConflictException(
-        'Un consumo de nómina cambió mientras se generaba la corrida (se anuló o lo tomó otra corrida). Vuelve a generarla.',
+        'Un consumo de nómina cambió mientras se calculaba la nómina (se anuló o lo tomó otra nómina). Vuelve a calcularla.',
       );
     }
   }
@@ -1475,7 +1654,7 @@ export class PayrollService {
       ? await this.runs.findById(id).exec()
       : null;
     if (!run || (user && !this.corridaEnAlcance(run, user))) {
-      throw new NotFoundException('Corrida de nómina no encontrada');
+      throw new NotFoundException('Nómina no encontrada');
     }
     return run;
   }
@@ -1696,7 +1875,7 @@ export class PayrollService {
     const tope = diasPagablesHastaRetiro(emp?.hireDate, liq.fechaRetiro);
     if (dias <= tope) return [];
     return [
-      `La nómina de ${periodo} ya se cerró y le paga ${dias} días; hasta el retiro (${liq.fechaRetiro}) van ${tope}. La nómina electrónica de ese mes queda bloqueada: registra con el contador el pago de más (${dias - tope} días) como una deducción o un ajuste del empleado. Para la próxima, aprueba la liquidación antes de cerrar la corrida del mes.`,
+      `La nómina de ${periodo} ya se cerró y le paga ${dias} días; hasta el retiro (${liq.fechaRetiro}) van ${tope}. La nómina electrónica de ese mes queda bloqueada: registra con el contador el pago de más (${dias - tope} días) como una deducción o un ajuste del empleado. Para la próxima, aprueba la liquidación antes de cerrar la nómina del mes.`,
     ];
   }
 
@@ -1753,6 +1932,7 @@ export class PayrollService {
     this.validarPago(run, pago.medioPago, pago.fechaPago);
     run.pago = { medio: pago.medioPago, fecha: pago.fechaPago, declaradoPor: user?.email, declaradoEn: new Date() };
     await run.save();
+    await this.asentarPagoNomina(run, user?.email);
     return run;
   }
 
@@ -1790,6 +1970,20 @@ export class PayrollService {
       );
     }
 
+    // La primera quincena que descuentan las colillas debe ser la vigente: si
+    // se pagó o anuló después de calcular la nómina, hay que recalcularla.
+    const quincenaHoy = await this.pagadoEnQuincena(run.period, run.slips.map((sl) => sl.employeeId));
+    const quincenaDesfasada = run.slips.some(
+      (sl) => (sl.pagadoQuincena ?? 0) !== (quincenaHoy.get(sl.employeeId) ?? 0),
+    );
+    if (quincenaDesfasada) {
+      throw new BadRequestException(
+        'La primera quincena cambió después de calcular esta nómina. Recalcúlala antes de cerrarla.',
+      );
+    }
+    const quincenaSinCerrar = await this.quincenaFueraDeNomina(run);
+    if (quincenaSinCerrar) throw new BadRequestException(quincenaSinCerrar);
+
     // Asiento contable de la nómina causada, con el pasivo separado por
     // concepto (ítem 1.9). Las partes salen de las colillas: su suma es el
     // costo del empleador (devengados + aportes + provisiones). De las "otras
@@ -1818,6 +2012,7 @@ export class PayrollService {
       retencionFuente: sumBy(run.slips, (sl) => ded(sl)?.retencionFuente ?? 0),
       fiado,
       arrastre,
+      quincena: sumBy(run.slips, (sl) => sl.pagadoQuincena ?? 0),
       otrasDeducciones: sumBy(run.slips, (sl) => ded(sl)?.otras ?? 0) - fiado - arrastre,
       aportesEmpleador: sumBy(
         run.slips,
@@ -1846,6 +2041,26 @@ export class PayrollService {
     }
     await run.save();
 
+    // Escribe primero y comprueba después: si mientras cerraba se pagó o se
+    // anuló una primera quincena, el cierre no la descontó bien y la 2505
+    // quedaría con saldo. `registrar` y `anular` hacen lo mismo del otro lado,
+    // así que al menos uno de los dos ve la escritura del otro (auditoría de
+    // dinero, 20-nov-2026). Se deshace el cierre antes de asentar nada.
+    const quincenaAlCerrar = await this.pagadoEnQuincena(run.period, run.slips.map((sl) => sl.employeeId));
+    const cambio =
+      run.slips.some((sl) => (sl.pagadoQuincena ?? 0) !== (quincenaAlCerrar.get(sl.employeeId) ?? 0)) ||
+      (await this.quincenaFueraDeNomina(run)) !== null;
+    if (cambio) {
+      run.status = 'borrador';
+      run.closedAt = undefined;
+      run.pago = undefined;
+      await run.save();
+      await this.anularArrastresDe(run);
+      throw new BadRequestException(
+        'Se pagó o anuló una primera quincena mientras cerrabas el mes. Recalcula la nómina y vuelve a cerrarla.',
+      );
+    }
+
     // Best-effort e idempotente por (payroll_run, runId): igual que el posteo
     // de ventas, un fallo del ledger NO tumba el cierre de la corrida (la
     // corrida es la fuente de verdad y el asiento puede reconstruirse).
@@ -1857,8 +2072,31 @@ export class PayrollService {
       partes,
       userEmail: run.createdByEmail,
     });
+    if (run.pago) await this.asentarPagoNomina(run, user?.email);
 
     return run;
+  }
+
+  /**
+   * Salida de caja o bancos del pago declarado de la nómina del mes (lo que
+   * quedó por pagar después de la primera quincena): D 2505 / C 1105 o 1110.
+   * Si el pago se vuelve a declarar (otro medio u otra fecha), el asiento
+   * anterior se reversa y se postea el nuevo.
+   */
+  private async asentarPagoNomina(run: PayrollRunDocument, userEmail?: string): Promise<void> {
+    if (!run.pago) return;
+    const runId = run._id.toString();
+    await this.ledgerPosting.reversePagoSalarios('pago_nomina', runId, userEmail);
+    await this.ledgerPosting.postPagoSalarios({
+      sourceType: 'pago_nomina',
+      sourceId: runId,
+      date: run.pago.fecha,
+      sedeId: run.sedeId ? run.sedeId.toString() : undefined,
+      monto: sumBy(run.slips, (sl) => Math.max(0, sl.netoPagar ?? 0)),
+      medio: run.pago.medio,
+      memo: `Pago de la nómina ${run.period}`,
+      userEmail,
+    });
   }
 
   async removeRun(id: string, user?: SedeScopeUser): Promise<void> {
@@ -1975,7 +2213,7 @@ function alertasSinSalida(
   // si la semana está completa, pero ese día no se liquida en esta colilla.
   const n = registros.filter((r) => r.workDate >= desde && r.checkIn && !r.checkOut).length;
   return n > 0
-    ? [`${n} turno(s) sin salida: el día se paga, pero sin horas extra ni recargos. Corrige la asistencia antes de cerrar.`]
+    ? [`${contar(n, 'turno')} sin hora de salida: el día se paga, pero sin horas extra ni recargos. Corrige la asistencia antes de cerrar.`]
     : [];
 }
 

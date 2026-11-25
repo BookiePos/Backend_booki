@@ -38,6 +38,7 @@ import {
   ReceivePurchaseOrderDto,
   UpdatePurchaseOrderDto,
 } from './dto/purchasing.dto';
+import { contar } from '../../../shared/texto/contar';
 
 @Injectable()
 export class PurchasingService {
@@ -287,7 +288,7 @@ export class PurchasingService {
       const remaining = line.qty - line.qtyReceived;
       if (rl.qty > remaining) {
         throw new BadRequestException(
-          `El renglón "${line.description}" solo tiene ${remaining} pendiente(s) por recibir`,
+          `El renglón "${line.description}" solo tiene ${contar(remaining, 'unidad pendiente', 'unidades pendientes')} por recibir`,
         );
       }
 

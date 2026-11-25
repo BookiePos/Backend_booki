@@ -480,7 +480,7 @@ describe('PayrollController', () => {
   it('pasa cada petición al servicio con el usuario', async () => {
     const run = corrida();
     const { service } = armar({ run, deduccion: { status: 'pending', save: vi.fn() } });
-    const c = new PayrollController(service, {} as any);
+    const c = new PayrollController(service, {} as any, {} as any);
     const id = new Types.ObjectId().toString();
     await c.getSettings();
     await c.updateSettings({} as never);

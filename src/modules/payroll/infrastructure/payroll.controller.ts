@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { PayrollService } from '../application/payroll.service';
 import { UpdatePayrollSettingsDto } from '../application/dto/update-settings.dto';
+import { ActualizarValoresLeyDto } from '../application/dto/valores-ley.dto';
 import { PreviewPayrollDto } from '../application/dto/preview-payroll.dto';
 import { CreateRunDto } from '../application/dto/create-run.dto';
 import { CreateDeductionDto } from '../application/dto/deduction.dto';
@@ -19,6 +20,8 @@ import { CerrarRunDto, PagoNominaDto } from '../application/dto/pago-nomina.dto'
 import { CrearNovedadDto } from '../application/dto/novedad.dto';
 import { AnularPagoPrestacionDto, RegistrarPagoPrestacionDto } from '../application/dto/pago-prestacion.dto';
 import { PagosPrestacionesService } from '../application/pagos-prestaciones.service';
+import { QuincenaService } from '../application/quincena.service';
+import { AnularQuincenaDto, RegistrarQuincenaDto } from '../application/dto/quincena.dto';
 import { DeductionStatus } from '../infrastructure/schemas/payroll-deduction.schema';
 import {
   RequireAnyPermission,
@@ -36,7 +39,43 @@ export class PayrollController {
   constructor(
     private readonly payroll: PayrollService,
     private readonly prestaciones: PagosPrestacionesService,
+    private readonly quincena: QuincenaService,
   ) {}
+
+  // ── Primera quincena ────────────────────────────────────────────────────────
+
+  /** Cuánto se le pagaría a cada trabajador en la primera quincena del mes. */
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Get('quincenas/propuesta')
+  propuestaQuincena(
+    @Query('period') period: string,
+    @Query('coverage') coverage: string,
+    @Query('sedeId') sedeId: string | undefined,
+    @CurrentUser() user: JwtUser,
+  ) {
+    if (!/^\d{4}-\d{2}$/.test(period ?? '')) throw new BadRequestException('period debe ser YYYY-MM');
+    if (coverage !== 'all' && coverage !== 'sede') throw new BadRequestException('coverage debe ser all o sede');
+    return this.quincena.propuesta(period, coverage, sedeId || undefined, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('quincenas')
+  registrarQuincena(@Body() dto: RegistrarQuincenaDto, @CurrentUser() user: JwtUser) {
+    return this.quincena.registrar(dto, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Get('quincenas')
+  listarQuincenas(@Query('period') period: string | undefined, @CurrentUser() user: JwtUser) {
+    if (period !== undefined && !/^\d{4}-\d{2}$/.test(period)) throw new BadRequestException('period debe ser YYYY-MM');
+    return this.quincena.listar(period, user);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Post('quincenas/:id/anular')
+  anularQuincena(@Param('id') id: string, @Body() dto: AnularQuincenaDto, @CurrentUser() user: JwtUser) {
+    return this.quincena.anular(id, dto.motivo, user);
+  }
 
   @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)
   @Get('settings')
@@ -48,6 +87,22 @@ export class PayrollController {
   @Put('settings')
   updateSettings(@Body() dto: UpdatePayrollSettingsDto) {
     return this.payroll.updateSettings(dto);
+  }
+
+  /** Valores de ley con los que se liquida hoy (o en `fecha`). */
+  @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)
+  @Get('valores-ley')
+  valoresLey(@Query('fecha') fecha?: string) {
+    if (fecha !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+      throw new BadRequestException('fecha debe ser YYYY-MM-DD');
+    }
+    return this.payroll.valoresLey(fecha);
+  }
+
+  @RequirePermissions(PERMISSIONS.PAYROLL_MANAGE)
+  @Put('valores-ley')
+  actualizarValoresLey(@Body() dto: ActualizarValoresLeyDto, @CurrentUser() user: JwtUser) {
+    return this.payroll.actualizarValoresLey(dto, user);
   }
 
   @RequirePermissions(PERMISSIONS.PAYROLL_VIEW)

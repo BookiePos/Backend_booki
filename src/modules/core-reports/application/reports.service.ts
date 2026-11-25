@@ -234,6 +234,20 @@ export class ReportsService {
                 },
                 { $sort: { _id: 1 } },
               ],
+              // Por hora de Colombia (0–23), para la curva del día en Inicio.
+              // Va en bruto: las devoluciones no tienen una hora que valga
+              // comparar contra la de la venta, y la cifra del día ya sale
+              // neteada en `days`.
+              hours: [
+                {
+                  $group: {
+                    _id: { $hour: { date: '$createdAt', timezone: TZ } },
+                    revenue: { $sum: '$total' },
+                    tickets: { $sum: 1 },
+                  },
+                },
+                { $sort: { _id: 1 } },
+              ],
               // Cobro mixto (ítem 6.9): ver `BY_METHOD_PIPELINE`.
               byMethod: BY_METHOD_PIPELINE,
               bySede: [
@@ -290,6 +304,7 @@ export class ReportsService {
     ])) as [
       {
         days: { _id: string; revenue: number; tax: number; tickets: number }[];
+        hours: { _id: number; revenue: number; tickets: number }[];
         byMethod: {
           _id: string;
           revenue: number;
@@ -315,11 +330,19 @@ export class ReportsService {
       tickets: r.tickets,
     }));
     const neto = netearVentas(facet, retornos);
+    // Las 24 horas, con 0 donde no se vendió: la curva no tiene huecos.
+    const porHora = new Map((facet?.hours ?? []).map((h) => [h._id, h]));
+    const hours = Array.from({ length: 24 }, (_, hour) => ({
+      hour,
+      revenue: porHora.get(hour)?.revenue ?? 0,
+      tickets: porHora.get(hour)?.tickets ?? 0,
+    }));
     return {
       from: query.from,
       to: query.to,
       sedeId: query.sedeId ?? null,
       byMethod,
+      hours,
       ...neto,
     };
   }

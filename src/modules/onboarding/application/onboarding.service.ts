@@ -30,6 +30,7 @@ import {
   type Plantilla,
 } from '../domain/plantillas';
 import type { AplicarPlantillaDto } from './dto/aplicar-plantilla.dto';
+import { contar } from '../../../shared/texto/contar';
 
 export interface ResumenPlantilla {
   tipo: string;
@@ -275,7 +276,7 @@ export class OnboardingService {
       omitidosPorGiro,
       aviso:
         omitidosPorGiro > 0
-          ? `No se cargaron ${omitidosPorGiro} ítem(s) servidos: van con un negocio de tipo restaurante.`
+          ? `No se cargaron ${contar(omitidosPorGiro, 'plato servido', 'platos servidos')}: van con un negocio de tipo restaurante.`
           : undefined,
     };
   }

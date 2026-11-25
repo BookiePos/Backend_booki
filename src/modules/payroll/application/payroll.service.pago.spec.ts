@@ -26,7 +26,11 @@ function armar(status: string) {
   };
   const runs = { findById: () => ({ exec: async () => run }) };
   const deductions = { find: () => ({ select: () => ({ exec: async () => [] }) }), updateMany: () => ({ exec: async () => ({}) }) };
-  const ledgerPosting = { postPayrollRun: vi.fn(async () => undefined) };
+  const ledgerPosting = {
+    postPayrollRun: vi.fn(async () => undefined),
+    postPagoSalarios: vi.fn(async () => true),
+    reversePagoSalarios: vi.fn(async () => undefined),
+  };
   const service = new PayrollService(
     {} as any,
     runs as any,

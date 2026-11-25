@@ -183,6 +183,12 @@ export interface PayrollSettingsData {
    * domingo remunerado (CST art. 173, ítem 1.19). Por defecto, 6.
    */
   diasLaborablesSemana?: number;
+  /**
+   * Cada cuánto se les paga a los trabajadores. Con 'quincenal' se paga la
+   * primera quincena el 15 (`PayrollQuincena`) y el resto al cerrar el mes; la
+   * liquidación, la PILA y la nómina electrónica siguen siendo mensuales.
+   */
+  frecuenciaPago?: 'mensual' | 'quincenal';
 }
 
 export const DEFAULT_PAYROLL_SETTINGS: PayrollSettingsData = {

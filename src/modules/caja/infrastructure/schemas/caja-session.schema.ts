@@ -34,6 +34,14 @@ export class CajaSession {
   @Prop({ required: true })
   openedByEmail!: string;
 
+  /**
+   * Nombre de quien abrió, como se ve en pantalla. El correo sigue siendo la
+   * identidad; el nombre es para que el cajero lea "Camila" y no
+   * "demo@sistemapos.local". Los turnos viejos no lo traen.
+   */
+  @Prop()
+  openedByName?: string;
+
   @Prop({ required: true })
   openedAt!: Date;
 
@@ -56,6 +64,9 @@ export class CajaSession {
 
   @Prop()
   closedByEmail?: string;
+
+  @Prop()
+  closedByName?: string;
 
   /** Efectivo contado físicamente al cerrar (billetes + monedas). */
   @Prop({ min: 0 })

@@ -24,6 +24,7 @@ import {
   PayrollPagoPrestacion,
   PayrollPagoPrestacionSchema,
 } from '../payroll/infrastructure/schemas/payroll-pago-prestacion.schema';
+import { PayrollQuincena, PayrollQuincenaSchema } from '../payroll/infrastructure/schemas/payroll-quincena.schema';
 import { EmployeesModule } from '../employees/employees.module';
 import { NominaPeriodoService } from './application/nomina-periodo.service';
 import { HabilitacionNominaService } from './application/habilitacion-nomina.service';
@@ -74,6 +75,7 @@ import { ControlModule } from '../control/control.module';
       { name: PayrollDeduction.name, schema: PayrollDeductionSchema },
       { name: PayrollLiquidacion.name, schema: PayrollLiquidacionSchema },
       { name: PayrollPagoPrestacion.name, schema: PayrollPagoPrestacionSchema },
+      { name: PayrollQuincena.name, schema: PayrollQuincenaSchema },
       { name: Counter.name, schema: CounterSchema },
       { name: FiscalEmitter.name, schema: FiscalEmitterSchema },
       { name: Sede.name, schema: SedeSchema },

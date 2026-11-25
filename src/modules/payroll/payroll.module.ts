@@ -38,6 +38,11 @@ import {
   PayrollPagoPrestacionSchema,
 } from './infrastructure/schemas/payroll-pago-prestacion.schema';
 import { PagosPrestacionesService } from './application/pagos-prestaciones.service';
+import { QuincenaService } from './application/quincena.service';
+import {
+  PayrollQuincena,
+  PayrollQuincenaSchema,
+} from './infrastructure/schemas/payroll-quincena.schema';
 import { CoreAuthModule } from '../core-auth/core-auth.module';
 import { CoreParamsModule } from '../core-params/core-params.module';
 import { CoreLedgerModule } from '../core-ledger/core-ledger.module';
@@ -60,10 +65,11 @@ import { PayrollController } from './infrastructure/payroll.controller';
       { name: PayrollLiquidacion.name, schema: PayrollLiquidacionSchema },
       { name: PayrollNovedad.name, schema: PayrollNovedadSchema },
       { name: PayrollPagoPrestacion.name, schema: PayrollPagoPrestacionSchema },
+      { name: PayrollQuincena.name, schema: PayrollQuincenaSchema },
     ]),
   ],
   controllers: [PayrollController],
-  providers: [PayrollService, PagosPrestacionesService],
+  providers: [PayrollService, PagosPrestacionesService, QuincenaService],
   exports: [PayrollService],
 })
 export class PayrollModule {}

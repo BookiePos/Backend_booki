@@ -58,6 +58,9 @@ export const ORIGENES_AUTOMATICOS: readonly string[] = [
   'liquidacion_retiro',
   // Pago de prima, cesantías e intereses fuera del retiro (decisión 2, Fase 8).
   'pago_prestacion',
+  // Pago de salarios: primera quincena y pago declarado de la nómina del mes.
+  'pago_quincena',
+  'pago_nomina',
   'reclasificacion_puc',
   'production_order',
   // Cierre anual (R4, 1.16): solo por POST /ledger/cierres/:anio.

@@ -78,6 +78,7 @@ function armar(corridas: any[], docs: any[] = [], sedesEmisor: Types.ObjectId[] 
     { number: async (_k: string, fallback: number) => fallback } as any,
     { findOne: (f: any) => lean(liquidaciones.find((l) => l.employeeId === f.employeeId && l.estado === f.estado) ?? null) } as any,
     { find: () => lean(prestaciones) } as any,
+    { find: () => lean([]) } as any,
   );
   return { s, emitir, auditoria, consultas };
 }

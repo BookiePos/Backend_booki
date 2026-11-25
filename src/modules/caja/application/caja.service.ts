@@ -27,6 +27,8 @@ import { allowedSedeIds, assertSedeAccess } from '../../core-auth/domain/sede-ac
 import { OpenCajaDto } from './dto/open-caja.dto';
 import { CloseCajaDto } from './dto/close-caja.dto';
 import { CajaMovementDto } from './dto/caja-movement.dto';
+import { nombreVisible } from '../domain/nombre-visible';
+import { contar } from '../../../shared/texto/contar';
 
 /** Totales calculados de un turno de caja. */
 export interface CajaTotals {
@@ -49,8 +51,10 @@ export interface CajaOverviewRow {
   openingAmount?: number;
   openedAt?: Date;
   openedByEmail?: string;
+  openedByName?: string;
   closedAt?: Date;
   closedByEmail?: string;
+  closedByName?: string;
   countedAmount?: number;
   expectedCash?: number;
   difference?: number;
@@ -85,6 +89,7 @@ export interface CajaClosingRow {
   openedAt: Date;
   closedAt?: Date;
   closedByEmail?: string;
+  closedByName?: string;
   openingAmount: number;
   salesCount: number;
   salesTotal: number;
@@ -233,8 +238,10 @@ export class CajaService {
         openingAmount: session.openingAmount,
         openedAt: session.openedAt,
         openedByEmail: session.openedByEmail,
+        openedByName: session.openedByName,
         closedAt: session.closedAt,
         closedByEmail: session.closedByEmail,
+        closedByName: session.closedByName,
         countedAmount: session.countedAmount,
         expectedCash: t.expectedCash,
         difference: session.difference,
@@ -370,6 +377,7 @@ export class CajaService {
       openedAt: s.openedAt,
       closedAt: s.closedAt,
       closedByEmail: s.closedByEmail,
+      closedByName: s.closedByName,
       openingAmount: s.openingAmount,
       salesCount: s.salesCount ?? 0,
       salesTotal: s.salesTotal ?? 0,
@@ -434,6 +442,7 @@ export class CajaService {
         openingCoins: dto.openingCoins,
         openedById: user.userId,
         openedByEmail: user.email,
+        openedByName: nombreVisible(user),
         openedAt: new Date(),
         note: dto.note,
       });
@@ -458,7 +467,7 @@ export class CajaService {
       .exec();
     if (openOrders > 0) {
       throw new ConflictException(
-        `Hay ${openOrders} cuenta(s) abierta(s) en esta sede. Cóbralas o ciérralas antes de cerrar la caja.`,
+        `Hay ${contar(openOrders, 'cuenta abierta', 'cuentas abiertas')} en esta sede. Cóbralas o ciérralas antes de cerrar la caja.`,
       );
     }
     const { totals } = await this.summarize(session);
@@ -485,6 +494,7 @@ export class CajaService {
     session.closedAt = new Date();
     session.closedById = user.userId;
     session.closedByEmail = user.email;
+    session.closedByName = nombreVisible(user);
     session.countedAmount = dto.countedAmount;
     session.countedBills = dto.countedBills;
     session.countedCoins = dto.countedCoins;
@@ -526,6 +536,7 @@ export class CajaService {
       note: dto.note,
       userId: user.userId,
       userEmail: user.email,
+      userName: nombreVisible(user),
     });
   }
 

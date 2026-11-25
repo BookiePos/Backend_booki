@@ -12,6 +12,7 @@ import {
   PayrollPagoPrestacion,
   type PayrollPagoPrestacionDocument,
 } from '../../payroll/infrastructure/schemas/payroll-pago-prestacion.schema';
+import { PayrollQuincena, type PayrollQuincenaDocument } from '../../payroll/infrastructure/schemas/payroll-quincena.schema';
 import { Sede, type SedeDocument } from '../../sedes/infrastructure/schemas/sede.schema';
 import { EmployeesService } from '../../employees/application/employees.service';
 import { FiscalEmittersService } from './fiscal-emitters.service';
@@ -23,6 +24,7 @@ import {
   type EmpleadoConsolidar,
   type EntradaConsolidar,
   type PagoPrestacionConsolidar,
+  type PagoQuincenaConsolidar,
 } from '../domain/nomina/consolidar';
 import { empleadorDeEmisor, relojColombia, type ResultadoEmpleador } from '../domain/nomina/empleador';
 import { TipoNota, type DocumentoNe, type EmisionNe } from '../domain/nomina/modelo';
@@ -122,6 +124,7 @@ interface LeanRun {
     /** Sede efectiva ya resuelta (colilla, corrida o expediente). */
     sedeEfectiva?: string;
     otrasDeduccionesDetalle?: { concept: string; amount: number; source?: string }[];
+    pagadoQuincena?: number;
   }[];
 }
 
@@ -149,6 +152,7 @@ export class NominaPeriodoService {
     private readonly params: ParamsService,
     @InjectModel(PayrollLiquidacion.name) private readonly liquidaciones: Model<PayrollLiquidacionDocument>,
     @InjectModel(PayrollPagoPrestacion.name) private readonly pagosPrestaciones: Model<PayrollPagoPrestacionDocument>,
+    @InjectModel(PayrollQuincena.name) private readonly quincenas: Model<PayrollQuincenaDocument>,
   ) {}
 
   // ── Pre-vuelo ─────────────────────────────────────────────────────────────
@@ -343,7 +347,7 @@ export class NominaPeriodoService {
     const r = await this.consolidar(ctx, empleadoId);
     if (!r.ok) {
       throw new ConflictException(
-        `No se puede reemplazar: ${r.bloqueos.join(' ')} Si la corrida ya no existe, usa Eliminar y emite el documento de nuevo.`,
+        `No se puede reemplazar: ${r.bloqueos.join(' ')} Si la nómina ya no existe, usa Eliminar y emite el documento de nuevo.`,
       );
     }
     const docNuevo = String(r.modelo.trabajador.numeroDocumento ?? '').replace(/\D/g, '');
@@ -516,9 +520,20 @@ export class NominaPeriodoService {
           salaryType: slip.salaryType,
           breakdown: slip.breakdown,
           otrasDeduccionesDetalle: slip.otrasDeduccionesDetalle,
+          ...(slip.pagadoQuincena ? { pagadoQuincena: slip.pagadoQuincena } : {}),
         },
       });
     }
+    // Primera quincena del mes pagada a este trabajador.
+    const quincenas = (await this.quincenas
+      .find({ period: ctx.periodo, estado: 'pagada', 'lineas.employeeId': id })
+      .lean()
+      .exec()) as unknown as (PayrollQuincena & { _id: Types.ObjectId })[];
+    const pagosQuincena: PagoQuincenaConsolidar[] = quincenas.flatMap((q) =>
+      q.lineas
+        .filter((l) => l.employeeId === id)
+        .map((l) => ({ id: String(q._id), valor: l.neto, pago: { medio: q.pago.medio, fecha: q.pago.fecha } })),
+    );
     const cerradas = ctx.corridas.filter((r) => r.status === 'cerrada').map((r) => r._id);
     const filas = cerradas.length
       ? await this.deducciones.find({ employeeId: id, appliedRunId: { $in: cerradas } }).lean().exec()
@@ -544,6 +559,7 @@ export class NominaPeriodoService {
       empleador: { razonSocial: ctx.emisor.razonSocial, municipioDane: ctx.emisor.municipioDane, direccion: ctx.emisor.direccion },
       slips,
       deducciones,
+      ...(pagosQuincena.length > 0 ? { pagosQuincena } : {}),
       smmlv: ctx.smmlv,
       uvt: ctx.uvt,
       ...(devengadoUltimos6Meses ? { devengadoUltimos6Meses } : {}),

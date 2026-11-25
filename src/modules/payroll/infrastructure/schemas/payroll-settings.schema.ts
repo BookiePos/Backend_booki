@@ -129,6 +129,10 @@ export class PayrollSettings {
   /** Ver `PayrollSettingsData.diasLaborablesSemana` (ítem 1.19). */
   @Prop({ default: 6, min: 5, max: 6 })
   diasLaborablesSemana!: number;
+
+  /** Ver `PayrollSettingsData.frecuenciaPago`. */
+  @Prop({ default: 'mensual', enum: ['mensual', 'quincenal'] })
+  frecuenciaPago!: 'mensual' | 'quincenal';
 }
 
 export const PayrollSettingsSchema =

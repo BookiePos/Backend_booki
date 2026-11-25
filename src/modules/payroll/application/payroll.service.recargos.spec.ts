@@ -231,6 +231,7 @@ describe('PayrollService.closeRun · deducciones amarradas', () => {
           retencionFuente: 20_000,
           fiado: 16_900,
           arrastre: 0,
+          quincena: 0,
           otrasDeducciones: 0,
           aportesEmpleador: 300_000,
           provisiones: 240_000,
@@ -388,7 +389,7 @@ describe('PayrollService.createRun · descanso remunerado (ítem 1.19)', () => {
     const slip = (created[0]!.slips as any[])[0];
     expect(slip.diasTrabajados).toBe(30);
     expect(slip.alertas).toHaveLength(1);
-    expect(slip.alertas[0]).toContain('1 turno(s) sin salida');
+    expect(slip.alertas[0]).toContain('1 turno sin hora de salida');
   });
 });
 

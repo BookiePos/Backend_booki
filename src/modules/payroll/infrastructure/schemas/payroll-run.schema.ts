@@ -46,6 +46,15 @@ export class PayrollSlip {
   @Prop({ type: [{ concept: String, amount: Number, source: String }], default: [] })
   otrasDeduccionesDetalle!: { concept: string; amount: number; source?: string }[];
 
+  /**
+   * Lo que ya se le pagó en la primera quincena del mes. NO es una deducción
+   * (no reduce salud, pensión ni lo que se reporta como devengado): es plata
+   * del mismo salario que ya salió. `netoPagar` = devengado − deducciones −
+   * esto, es decir, lo que queda por pagar en la segunda quincena.
+   */
+  @Prop({ default: 0 })
+  pagadoQuincena?: number;
+
   @Prop({ required: true })
   totalDevengado!: number;
 
