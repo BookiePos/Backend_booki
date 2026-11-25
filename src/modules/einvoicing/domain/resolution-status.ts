@@ -11,6 +11,7 @@
  *
  * Dominio puro: sin Nest ni Mongoose, para poder probarlo sin base de datos.
  */
+import { contar } from '../../../shared/texto/contar';
 
 /** Umbral de consumo del rango a partir del cual conviene ir tramitando otra. */
 export const RANGO_AVISO = 0.8;
@@ -144,7 +145,7 @@ export function computeResolutionStatus(
   if (vencida) {
     estado = 'vencida';
     alertas.unshift(
-      `La resolución venció hace ${Math.abs(diasRestantes as number)} día(s). Hay que renovarla antes de seguir facturando.`,
+      `La resolución venció hace ${contar(Math.abs(diasRestantes as number), 'día')}. Hay que renovarla antes de seguir facturando.`,
     );
   } else if (restantes !== undefined && restantes <= 0) {
     estado = 'rango_agotado';
@@ -157,12 +158,12 @@ export function computeResolutionStatus(
   } else if (diasRestantes !== undefined && diasRestantes <= DIAS_AVISO) {
     estado = 'por_vencer';
     alertas.unshift(
-      `Vence en ${diasRestantes} día(s). Tramita la renovación con tiempo: la DIAN no responde al instante.`,
+      `Vence en ${contar(diasRestantes, 'día')}. Tramita la renovación con tiempo: la DIAN no responde al instante.`,
     );
   } else if (consumido !== undefined && consumido >= RANGO_AVISO) {
     estado = 'rango_bajo';
     alertas.unshift(
-      `Quedan ${restantes} número(s) de ${total}. Conviene pedir la próxima resolución ya.`,
+      `Quedan ${contar(restantes ?? 0, 'número')} de ${total}. Conviene pedir la próxima resolución ya.`,
     );
   }
 

@@ -23,6 +23,8 @@ export interface PayslipPdfData {
   /** Etiqueta opcional de la corrida. */
   periodLabel?: string;
   breakdown: PayrollBreakdown;
+  /** Lo que ya se le pagó en la primera quincena: el neto del PDF es lo que falta. */
+  pagadoQuincena?: number;
   /** Documento soporte de nómina electrónica aceptado y vigente del período, si existe. */
   nominaElectronica?: PayslipNominaElectronica;
 }
@@ -173,6 +175,14 @@ export function buildPayslipPdf(data: PayslipPdfData): Promise<Buffer> {
   if (de.otras) row(doc, left, right, 'Otras deducciones', `− ${money.format(de.otras)}`);
   totalRow(doc, left, right, 'Total deducciones', `− ${money.format(de.total)}`);
 
+  // ── Primera quincena ya pagada (si se paga por quincenas) ─────────────────
+  const quincena = data.pagadoQuincena ?? 0;
+  if (quincena > 0) {
+    doc.moveDown(0.4);
+    row(doc, left, right, 'Neto del mes', money.format(b.netoPagar));
+    row(doc, left, right, 'Ya pagado en la primera quincena', `− ${money.format(quincena)}`);
+  }
+
   // ── Neto a pagar ───────────────────────────────────────────────────────────
   doc.moveDown(0.6);
   const netY = doc.y;
@@ -181,12 +191,12 @@ export function buildPayslipPdf(data: PayslipPdfData): Promise<Buffer> {
     .fillColor(ACCENT)
     .font('Helvetica-Bold')
     .fontSize(11)
-    .text('Neto a pagar', left + 12, netY + 9, { width: width / 2 });
+    .text(quincena > 0 ? 'Segunda quincena' : 'Neto a pagar', left + 12, netY + 9, { width: width / 2 });
   doc
     .fillColor(ACCENT)
     .font('Helvetica-Bold')
     .fontSize(14)
-    .text(money.format(b.netoPagar), left, netY + 7, { width: width - 12, align: 'right' });
+    .text(money.format(b.netoPagar - quincena), left, netY + 7, { width: width - 12, align: 'right' });
   doc.y = netY + 30;
   doc.moveDown(0.6);
 

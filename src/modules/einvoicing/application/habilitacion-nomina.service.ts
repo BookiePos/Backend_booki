@@ -187,7 +187,7 @@ export class HabilitacionNominaService {
         { returnDocument: 'after' },
       )
       .exec();
-    if (!tomado) throw new ConflictException('Ya hay una corrida de la habilitación en curso: espera un minuto y consulta el avance.');
+    if (!tomado) throw new ConflictException('Ya hay una prueba de habilitación en curso: espera un minuto y consulta el avance.');
 
     // Desde aquí manda la copia leída DESPUÉS de tomar el bloqueo: la anterior pudo quedar vieja.
     let set = tomado.conjunto;
@@ -432,7 +432,7 @@ export class HabilitacionNominaService {
   ): Promise<RespuestaDian> {
     const presupuestoMs = Math.min(PRESUPUESTO_RED_MAX_MS, limite - Date.now());
     const red = (m: string): RespuestaDian => ({ ok: false, codigo: 'RED', origen: 'adapter', mensajes: [m] });
-    if (presupuestoMs <= 0) return red('Se agotó el tiempo de la corrida.');
+    if (presupuestoMs <= 0) return red('Se agotó el tiempo de la prueba.');
     const control = new AbortController();
     let reloj: ReturnType<typeof setTimeout> | undefined;
     const vencido = new Promise<RespuestaDian>((resolve) => {

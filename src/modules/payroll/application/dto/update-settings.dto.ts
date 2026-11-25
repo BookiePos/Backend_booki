@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
+  IsIn,
   IsInt,
   IsNumber,
   IsObject,
@@ -91,4 +92,7 @@ export class UpdatePayrollSettingsDto {
 
   /** Semana de 5 o 6 días laborables (descanso dominical, ítem 1.19). */
   @IsOptional() @IsInt() @Min(5) @Max(6) diasLaborablesSemana?: number;
+
+  /** Cada cuánto se paga: mensual o por quincenas. */
+  @IsOptional() @IsIn(['mensual', 'quincenal']) frecuenciaPago?: 'mensual' | 'quincenal';
 }

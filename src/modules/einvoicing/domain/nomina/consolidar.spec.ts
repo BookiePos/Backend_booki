@@ -533,7 +533,7 @@ describe('consolidarNominaMes: bloqueos por trabajador', () => {
   });
 
   it('sin corridas del mes', () => {
-    expect(bloqueos(entrada({ slips: [] })).join()).toMatch(/ninguna corrida cerrada/);
+    expect(bloqueos(entrada({ slips: [] })).join()).toMatch(/ninguna nómina cerrada/);
   });
 
   it('dos corridas cerradas del mismo mes, all y sede', () => {
@@ -570,7 +570,7 @@ describe('consolidarNominaMes: bloqueos por trabajador', () => {
 
   it('concepto de la colilla que BookiPos no sabe reportar (prima, cesantías…)', () => {
     const bd = breakdown({ extra: { prima: 500_000 } });
-    expect(bloqueos(entrada({ slips: [corrida({ bd })] })).join()).toMatch(/«prima».*Nómina → Prestaciones/);
+    expect(bloqueos(entrada({ slips: [corrida({ bd })] })).join()).toMatch(/«prima».*Nómina → Prima y cesantías/);
   });
 
   it('colilla que no cuadra consigo misma', () => {
@@ -911,6 +911,40 @@ describe('consolidarNominaMes: pago de prima, cesantías e intereses (decisión 
 
   it('con pago de prestaciones y sin corrida cerrada en el mes, bloquea con el motivo (no inventa un básico en cero)', () => {
     const b = bloqueos(entrada({ periodo: '2026-12', slips: [], prestaciones: [pago()] })).join();
-    expect(b).toMatch(/se le pagó prima y no tiene una corrida de nómina cerrada/);
+    expect(b).toMatch(/se le pagó prima y no tiene una nómina cerrada/);
+  });
+});
+
+describe('consolidar · primera quincena (pago quincenal)', () => {
+  // Devengado 1.500.000, salud y pensión 60.000 c/u: neto del mes 1.380.000.
+  const colillaConQuincena = (pagadoQuincena: number): CorridaColilla => {
+    const c = corrida();
+    return { ...c, colilla: { ...c.colilla, pagadoQuincena } };
+  };
+  const quincena = (valor: number, fecha = '2026-10-15', medio = '47') => ({
+    id: 'q1',
+    valor,
+    pago: { medio, fecha },
+  });
+
+  it('reporta el mes completo con dos fechas de pago y período quincenal, sin deducción de anticipos', async () => {
+    const { modelo } = ok(entrada({ slips: [colillaConQuincena(690_000)], pagosQuincena: [quincena(690_000)] }));
+    expect(modelo.periodoNomina).toBe('4');
+    expect(modelo.fechasPagos).toEqual(['2026-10-15', '2026-10-31']);
+    expect(modelo.deducciones.anticipos).toEqual([]);
+    // Devengados y deducciones del mes no cambian por pagar en dos partes.
+    await verificar(modelo, 1_500_000, 120_000);
+  });
+
+  it('bloquea si la nómina del mes descuenta una quincena distinta de la pagada', () => {
+    const b = bloqueos(entrada({ slips: [colillaConQuincena(600_000)], pagosQuincena: [quincena(690_000)] }));
+    expect(b.join()).toMatch(/primera quincena.*Recalcula/);
+  });
+
+  it('bloquea una quincena con fecha fuera del mes', () => {
+    const b = bloqueos(
+      entrada({ slips: [colillaConQuincena(690_000)], pagosQuincena: [quincena(690_000, '2026-11-01')] }),
+    );
+    expect(b.join()).toMatch(/fuera del mes/);
   });
 });

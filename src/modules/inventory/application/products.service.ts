@@ -46,6 +46,7 @@ import {
   ImportProductsResult,
 } from './dto/import-products.dto';
 import { redondearA } from '../../finance/domain/money.util';
+import { contar } from '../../../shared/texto/contar';
 
 /** Producto cartesiano de varias listas: [[S,M],[Rojo,Azul]] → [[S,Rojo],…]. */
 function cartesian(lists: string[][]): string[][] {
@@ -719,7 +720,7 @@ export class ProductsService {
       .exec();
     if (inUse > 0) {
       throw new ConflictException(
-        `La categoría tiene ${inUse} ítem(s) asignado(s); reasígnalos primero`,
+        `La categoría tiene ${contar(inUse, 'producto asignado', 'productos asignados')}; pásalos a otra categoría primero`,
       );
     }
     await category.deleteOne();

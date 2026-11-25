@@ -56,6 +56,7 @@ import { INVOICE_EXTRACTOR, InvoiceExtractor } from './invoice-extractor';
 import { InvoiceMatchingService } from './invoice-matching.service';
 import { UpdateInvoiceScanDto } from './dto/invoice-scan.dto';
 import { ApplyAsExpenseDto } from './dto/apply-as-expense.dto';
+import { contar } from '../../../shared/texto/contar';
 
 /** Archivo subido. Se declara aquí para no añadir `@types/multer` al proyecto. */
 export interface UploadedInvoiceImage {
@@ -187,7 +188,7 @@ export class InvoiceScanService {
       scan,
       user,
       'extracted',
-      `Leída del XML de la factura electrónica: ${fromXml.lines.length} renglón(es) con los datos exactos, sin IA`,
+      `Leída del XML de la factura electrónica: ${contar(fromXml.lines.length, 'renglón', 'renglones')} con los datos exactos, sin IA`,
     );
     await scan.save();
     return scan;
@@ -664,7 +665,7 @@ export class InvoiceScanService {
       scan,
       user,
       'applied',
-      `${plan.inventory.length} línea(s) al inventario y ${plan.expenses.length} a gastos`,
+      `${contar(plan.inventory.length, 'línea')} al inventario y ${plan.expenses.length} a gastos`,
     );
     await scan.save();
     return scan;

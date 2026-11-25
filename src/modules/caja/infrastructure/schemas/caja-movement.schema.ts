@@ -34,6 +34,10 @@ export class CajaMovement {
 
   @Prop({ required: true })
   userEmail!: string;
+
+  /** Nombre visible de quien registró el movimiento (ver CajaSession.openedByName). */
+  @Prop()
+  userName?: string;
 }
 
 export const CajaMovementSchema = SchemaFactory.createForClass(CajaMovement);

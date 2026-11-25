@@ -272,6 +272,11 @@ export class ParamsService {
   }
 
   /** Abre una vigencia nueva de una clave existente (no edita el histórico). */
+  /** ¿Ya hay una vigencia de `key` que arranca exactamente en `fecha`? */
+  async tieneVigenciaEn(key: string, fecha: string): Promise<boolean> {
+    return (await this.params.exists({ key, effectiveFrom: fecha }).exec()) !== null;
+  }
+
   async setVersion(
     key: string,
     dto: SetParameterVersionDto,
